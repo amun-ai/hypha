@@ -614,6 +614,7 @@
                                     <span className={`text-sm ${isDisabled ? 'text-red-400' : 'text-green-400'}`}>
                                         {isDisabled ? 'Disabled' : 'Enabled'}
                                     </span>
+                                    {!isPublic && (
                                     <label className="flex items-center cursor-pointer">
                                         <div className="relative">
                                             <input
@@ -631,6 +632,7 @@
                                             }`}></div>
                                         </div>
                                     </label>
+                                    )}
                                 </div>
                             </div>
                             <p className="text-gray-400 text-sm">App ID: <code className="bg-gray-700 px-1 rounded">{app.id}</code></p>
@@ -790,6 +792,8 @@
 
         const WorkerCard = ({ worker, isPublic }) => {
             const [copiedWorkerId, setCopiedWorkerId] = React.useState(false);
+            const [isDisabled, setIsDisabled] = React.useState(worker.disabled || false);
+            const [isToggling, setIsToggling] = React.useState(false);
             
             const copyWorkerId = async (workerId) => {
                 try {
@@ -812,7 +816,7 @@
             
             return (
                 <div className={`flex flex-col items-start p-4 rounded-lg shadow-lg mb-4 w-full transition-all duration-300 ${
-                    isPublic ? 'bg-gray-700 border border-blue-500' : 'bg-gray-800'
+                    isPublic ? 'bg-gray-700 border border-blue-500' : (isDisabled ? 'bg-gray-900 border-2 border-red-600 opacity-75' : 'bg-gray-800')
                 }`}>
                     <div className="flex items-center mb-3 w-full">
                         <i className={`fas fa-cogs fa-2x mr-3 ${isPublic ? 'text-blue-400' : 'text-green-400'}`}></i>
@@ -821,11 +825,49 @@
                                 <h3 className="text-lg font-bold text-white">
                                     {worker.name || worker.id.split('/').pop()}
                                 </h3>
-                                {isPublic && (
-                                    <span className="bg-blue-600 text-white px-2 py-1 rounded text-xs">
-                                        <i className="fas fa-globe mr-1"></i> Public
+                                <div className="flex items-center space-x-2">
+                                    {isPublic && (
+                                        <span className="bg-blue-600 text-white px-2 py-1 rounded text-xs">
+                                            <i className="fas fa-globe mr-1"></i> Public
+                                        </span>
+                                    )}
+                                    <span className={`text-xs ${isDisabled ? 'text-red-400' : 'text-green-400'}`}>
+                                        {isDisabled ? 'Disabled' : 'Enabled'}
                                     </span>
-                                )}
+                                    <label className="flex items-center cursor-pointer">
+                                        <div className="relative">
+                                            <input
+                                                type="checkbox"
+                                                className="sr-only"
+                                                checked={!isDisabled}
+                                                onChange={async () => {
+                                                    if (isToggling) return;
+                                                    setIsToggling(true);
+                                                    try{
+                                                        // call server to toggle worker
+                                                        const controller = await window.remoteServer.getService('public/server-apps');
+                                                        await controller.edit_worker(worker.id, { disabled: !isDisabled, _rkwargs: true });
+                                                        setIsDisabled(!isDisabled);
+                                                        worker.disabled = !isDisabled;
+                                                    }
+                                                    catch(err){
+                                                        alert(`Failed to ${isDisabled ? 'enable' : 'disable'} worker: ${err.message}`);
+                                                    }
+                                                    finally{
+                                                        setIsToggling(false);
+                                                    }
+                                                }}
+                                                disabled={isToggling}
+                                            />
+                                            <div className={`block w-10 h-6 rounded-full transition-colors ${
+                                                isDisabled ? 'bg-red-600' : 'bg-green-600'
+                                            } ${isToggling ? 'opacity-50' : ''}`}></div>
+                                            <div className={`dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform ${
+                                                isDisabled ? 'transform translate-x-0' : 'transform translate-x-4'
+                                            }`}></div>
+                                        </div>
+                                    </label>
+                                </div>
                             </div>
                             <p className="text-gray-400 text-sm">ID: <code className="bg-gray-700 px-1 rounded text-xs">{worker.id}</code></p>
                             {worker.description && (

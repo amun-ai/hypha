@@ -136,7 +136,6 @@ async def test_conda_worker_service_registration(fastapi_server, test_user_token
     assert hasattr(worker_service, "stop")
     assert hasattr(worker_service, "execute")
     assert hasattr(worker_service, "get_logs")
-    assert hasattr(worker_service, "list_sessions")
 
     print("✓ Conda worker registered successfully")
 
@@ -187,7 +186,6 @@ async def test_browser_worker_service_registration(fastapi_server, test_user_tok
     assert hasattr(worker_service, "stop")
     assert hasattr(worker_service, "take_screenshot")
     assert hasattr(worker_service, "get_logs")
-    assert hasattr(worker_service, "list_sessions")
     assert hasattr(worker_service, "compile")
 
     print("✓ Browser worker registered successfully")
@@ -245,11 +243,6 @@ async def test_conda_worker_session_lifecycle(fastapi_server, test_user_token):
     # Note: We can't actually start a conda session without proper setup
     # So we'll test the session management methods directly
 
-    # Test list sessions (should be empty initially)
-    sessions = await worker_service.list_sessions(workspace)
-    assert isinstance(sessions, list)
-    print("✓ List sessions works")
-
     # Test get logs for non-existent session (should handle gracefully)
     try:
         logs = await worker_service.get_logs("non-existent-session")
@@ -291,12 +284,6 @@ async def test_browser_worker_session_lifecycle(fastapi_server, test_user_token)
 
     await api.rpc.register_service(service_config)
     worker_service = await api.get_service("test-browser-session-worker")
-
-    # Test session lifecycle
-    # Test list sessions (should be empty initially)
-    sessions = await worker_service.list_sessions(workspace)
-    assert isinstance(sessions, list)
-    print("✓ List sessions works")
 
     # Test get logs for non-existent session (should handle gracefully)
     try:
@@ -897,10 +884,6 @@ async def test_workspace_worker_registration(fastapi_server, test_user_token):
         """Get logs for a custom worker session."""
         return {"log": [f"Custom worker log for {session_id}"], "error": []}
 
-    @schema_function
-    async def list_sessions(workspace: str) -> list:
-        """List sessions for a workspace."""
-        return []
 
     # Register the custom worker
     worker_service = await api.register_service(
@@ -916,7 +899,6 @@ async def test_workspace_worker_registration(fastapi_server, test_user_token):
             "start": start,
             "stop": stop,
             "get_logs": get_logs,
-            "list_sessions": list_sessions,
         }
     )
 
@@ -932,7 +914,6 @@ async def test_workspace_worker_registration(fastapi_server, test_user_token):
     assert hasattr(worker, "start")
     assert hasattr(worker, "stop")
     assert hasattr(worker, "get_logs")
-    assert hasattr(worker, "list_sessions")
     print("✓ Worker methods are accessible")
 
     # Test calling the worker methods directly
@@ -959,11 +940,6 @@ async def test_workspace_worker_registration(fastapi_server, test_user_token):
     # Test stopping session
     await worker.stop(session_data["session_id"])
     print("✓ Worker stop method works correctly")
-
-    # Test listing sessions
-    sessions = await worker.list_sessions(workspace)
-    assert isinstance(sessions, list)
-    print("✓ Worker list_sessions method works correctly")
 
     # Clean up
     await api.unregister_service(worker_service["id"])
@@ -1413,27 +1389,11 @@ async def test_worker_death_session_cleanup(fastapi_server, test_user_token):
             if session_id in self._sessions:
                 self._sessions.pop(session_id)
                 print(f"🛑 TestWorker stopped session: {session_id}")
-                
-        async def list_sessions(self, workspace, context=None):
-            """List all sessions for a workspace."""
-            return [info for info in self._sessions.values() if info.workspace == workspace]
-            
+
         async def get_logs(self, session_id, log_type=None, offset=0, limit=None, context=None):
             """Get logs for a session."""
             return [f"Log from {session_id}"]
-            
-        async def get_session_info(self, session_id, context=None):
-            """Get information about a session."""
-            return self._sessions.get(session_id)
-            
-        async def prepare_workspace(self, workspace, context=None):
-            """Prepare workspace for worker operations."""
-            pass
-            
-        async def close_workspace(self, workspace, context=None):
-            """Close workspace and cleanup sessions."""
-            pass
-    
+
     # Connect as a worker client and register the test worker
     worker_client_id = "test-worker-client-" + random_id()
     worker_api = await connect_to_server(
@@ -1560,21 +1520,11 @@ async def test_use_local_url_functionality(fastapi_server, test_user_token):
             
         async def stop(self, session_id, context=None):
             pass
-            
-        async def list_sessions(self, context=None):
-            return []
+
             
         async def get_logs(self, session_id, context=None):
             return ""
-            
-        async def get_session_info(self, session_id, context=None):
-            return {}
-            
-        async def prepare_workspace(self, workspace, context=None):
-            pass
-            
-        async def close_workspace(self, workspace, context=None):
-            pass
+
     
     test_worker = TestWorker()
     assert hasattr(test_worker, 'use_local_url'), "BaseWorker should have use_local_url property"

@@ -771,12 +771,6 @@ Get logs for a conda environment session.
 - `offset`: Starting position for log entries  
 - `limit`: Maximum number of log entries to return
 
-#### `get_session_info(session_id: str) -> SessionInfo`
-Get information about a conda environment session including status and metadata.
-
-#### `list_sessions(workspace: str) -> List[SessionInfo]`
-List all conda environment sessions for a workspace.
-
 ## Advanced Configuration
 
 ### Custom Docker Setup

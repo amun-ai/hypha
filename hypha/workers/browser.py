@@ -385,23 +385,6 @@ class BrowserWorker(BaseWorker):
         self._sessions.pop(session_id, None)
         self._session_data.pop(session_id, None)
 
-    async def list_sessions(
-        self, workspace: str, context: Optional[Dict[str, Any]] = None
-    ) -> List[SessionInfo]:
-        """List all browser sessions for a workspace."""
-        return [
-            session_info
-            for session_info in self._sessions.values()
-            if session_info.workspace == workspace
-        ]
-
-    async def get_session_info(
-        self, session_id: str, context: Optional[Dict[str, Any]] = None
-    ) -> SessionInfo:
-        """Get information about a browser session."""
-        if session_id not in self._sessions:
-            raise SessionNotFoundError(f"Browser session {session_id} not found")
-        return self._sessions[session_id]
 
     async def get_logs(
         self,
@@ -440,36 +423,7 @@ class BrowserWorker(BaseWorker):
                 result[log_type_key] = log_entries[offset:end_idx]
             return result
 
-    async def prepare_workspace(
-        self, workspace: str, context: Optional[Dict[str, Any]] = None
-    ) -> None:
-        """Prepare workspace for browser operations."""
-        logger.info(f"Preparing workspace {workspace} for browser worker")
-        pass
-
-    async def close_workspace(
-        self, workspace: str, context: Optional[Dict[str, Any]] = None
-    ) -> None:
-        """Close all browser sessions for a workspace."""
-        logger.info(f"Closing workspace {workspace} for browser worker")
-
-        # Stop all sessions for this workspace
-        sessions_to_stop = [
-            session_id
-            for session_id, session_info in self._sessions.items()
-            if session_info.workspace == workspace
-        ]
-
-        for session_id in sessions_to_stop:
-            await self.stop(session_id)
-
-        # Clear all cache entries for this workspace if cache manager is available
-        if self.cache_manager:
-            # Note: This is a simplified approach. In a production system,
-            # you might want to be more selective about cache clearing
-            logger.info(
-                f"Cache cleanup for workspace {workspace} would be handled by app uninstall"
-            )
+    
 
     async def shutdown(self, context: Optional[Dict[str, Any]] = None) -> None:
         """Shutdown the browser worker."""

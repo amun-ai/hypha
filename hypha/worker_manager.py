@@ -64,7 +64,7 @@ class WorkerManager:
         # Track workspaces that have requested workers
         self._monitored_workspaces: Dict[str, bool] = {}  # workspace_id -> is_monitoring
         self._workspace_listeners: Dict[str, Any] = {}  # workspace_id -> workspace_api
-    
+
     async def start(self):
         """Start the worker manager."""
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
@@ -120,6 +120,28 @@ class WorkerManager:
             self._workspace_listeners[workspace] = workspace_interface
         
         self._monitored_workspaces[workspace] = True
+
+    async def _get_disabled_key(self, workspace: str) -> str:
+        return f"disabled_workers:{workspace}"
+
+    async def disable_worker(self, worker_id: str, workspace: str, disabled: bool) -> None:
+        """Enable/disable a worker in a workspace and update cache/persistence."""
+        redis = self.store.get_redis()
+        key = await self._get_disabled_key(workspace)
+        if disabled:
+            await redis.sadd(key, worker_id)
+            # Also close active connection to prevent use
+            await self.force_cleanup_worker(worker_id)
+        else:
+            await redis.srem(key, worker_id)
+
+    async def is_worker_disabled(self, worker_id: str, workspace: str) -> bool:
+        """Check if a worker is disabled for a given workspace."""
+        # Check persistent storage
+        redis = self.store.get_redis()
+        key = await self._get_disabled_key(workspace)
+        is_member = await redis.sismember(key, worker_id)
+        return bool(is_member)
     
     async def _setup_workspace_listeners(self, workspace: str, workspace_api: Any):
         """Set up event listeners for workspace changes."""

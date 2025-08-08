@@ -102,12 +102,6 @@ class WorkerProtocol(Protocol):
         """Stop a worker session."""
         ...
 
-    async def list_sessions(
-        self, workspace: str, context: Optional[Dict[str, Any]] = None
-    ) -> List[SessionInfo]:
-        """List all sessions for a workspace."""
-        ...
-
     async def get_logs(
         self,
         session_id: str,
@@ -119,23 +113,6 @@ class WorkerProtocol(Protocol):
         """Get logs for a session."""
         ...
 
-    async def get_session_info(
-        self, session_id: str, context: Optional[Dict[str, Any]] = None
-    ) -> SessionInfo:
-        """Get information about a session."""
-        ...
-
-    async def prepare_workspace(
-        self, workspace: str, context: Optional[Dict[str, Any]] = None
-    ) -> None:
-        """Prepare workspace for worker operations."""
-        ...
-
-    async def close_workspace(
-        self, workspace: str, context: Optional[Dict[str, Any]] = None
-    ) -> None:
-        """Close workspace and cleanup sessions."""
-        ...
 
     async def execute(
         self,
@@ -244,20 +221,6 @@ class BaseWorker(ABC):
         pass
 
     @abstractmethod
-    async def list_sessions(
-        self, workspace: str, context: Optional[Dict[str, Any]] = None
-    ) -> List[SessionInfo]:
-        """List all sessions for a workspace."""
-        pass
-
-    @abstractmethod
-    async def get_session_info(
-        self, session_id: str, context: Optional[Dict[str, Any]] = None
-    ) -> SessionInfo:
-        """Get information about a session."""
-        pass
-
-    @abstractmethod
     async def get_logs(
         self,
         session_id: str,
@@ -269,19 +232,6 @@ class BaseWorker(ABC):
         """Get logs for a session."""
         pass
 
-    @abstractmethod
-    async def prepare_workspace(
-        self, workspace: str, context: Optional[Dict[str, Any]] = None
-    ) -> None:
-        """Prepare workspace for worker operations."""
-        pass
-
-    @abstractmethod
-    async def close_workspace(
-        self, workspace: str, context: Optional[Dict[str, Any]] = None
-    ) -> None:
-        """Close workspace and cleanup sessions."""
-        pass
 
     async def compile(
         self,
@@ -330,11 +280,7 @@ class BaseWorker(ABC):
             "use_local_url": self.use_local_url,
             "start": self.start,
             "stop": self.stop,
-            "list_sessions": self.list_sessions,
             "get_logs": self.get_logs,
-            "get_session_info": self.get_session_info,
-            "prepare_workspace": self.prepare_workspace,
-            "close_workspace": self.close_workspace,
             "compile": self.compile,
             "execute": self.execute,
             "shutdown": self.shutdown,

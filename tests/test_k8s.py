@@ -572,68 +572,6 @@ class TestKubernetesWorker:
             await worker.execute(worker_config.id, "echo test")
 
     @pytest.mark.asyncio
-    async def test_list_sessions(self, mock_k8s_config, mock_k8s_client, worker_config):
-        """Test listing sessions."""
-        worker = KubernetesWorker()
-        
-        # Add some sessions
-        session1 = SessionInfo(
-            session_id="session1",
-            app_id="app1",
-            workspace="test-workspace",
-            client_id="client1",
-            status=SessionStatus.RUNNING,
-            app_type="k8s-pod",
-            created_at=datetime.now().isoformat()
-        )
-        session2 = SessionInfo(
-            session_id="session2",
-            app_id="app2",
-            workspace="other-workspace", 
-            client_id="client2",
-            status=SessionStatus.RUNNING,
-            app_type="k8s-pod",
-            created_at=datetime.now().isoformat()
-        )
-        
-        worker._sessions["session1"] = session1
-        worker._sessions["session2"] = session2
-        
-        sessions = await worker.list_sessions("test-workspace")
-        
-        assert len(sessions) == 1
-        assert sessions[0].session_id == "session1"
-
-    @pytest.mark.asyncio
-    async def test_get_session_info(self, mock_k8s_config, mock_k8s_client, worker_config):
-        """Test getting session info."""
-        worker = KubernetesWorker()
-        
-        session_info = SessionInfo(
-            session_id=worker_config.id,
-            app_id=worker_config.app_id,
-            workspace=worker_config.workspace,
-            client_id=worker_config.client_id,
-            status=SessionStatus.RUNNING,
-            app_type="k8s-pod",
-            created_at=datetime.now().isoformat()
-        )
-        worker._sessions[worker_config.id] = session_info
-        
-        retrieved_info = await worker.get_session_info(worker_config.id)
-        
-        assert retrieved_info.session_id == worker_config.id
-        assert retrieved_info.status == SessionStatus.RUNNING
-
-    @pytest.mark.asyncio
-    async def test_get_session_info_not_found(self, mock_k8s_config, mock_k8s_client):
-        """Test getting info for nonexistent session."""
-        worker = KubernetesWorker()
-        
-        with pytest.raises(SessionNotFoundError):
-            await worker.get_session_info("nonexistent")
-
-    @pytest.mark.asyncio
     async def test_get_logs(self, mock_k8s_config, mock_k8s_client, worker_config):
         """Test getting logs."""
         mock_client, mock_api = mock_k8s_client
@@ -678,38 +616,6 @@ class TestKubernetesWorker:
         
         with pytest.raises(SessionNotFoundError):
             await worker.get_logs("nonexistent")
-
-    @pytest.mark.asyncio
-    async def test_prepare_workspace(self, mock_k8s_config, mock_k8s_client):
-        """Test workspace preparation."""
-        worker = KubernetesWorker()
-        
-        # Should complete without error
-        await worker.prepare_workspace("test-workspace")
-
-    @pytest.mark.asyncio
-    async def test_close_workspace(self, mock_k8s_config, mock_k8s_client, worker_config):
-        """Test workspace closure."""
-        mock_client, mock_api = mock_k8s_client
-        worker = KubernetesWorker()
-        
-        # Set up sessions in workspace
-        session_info = SessionInfo(
-            session_id=worker_config.id,
-            app_id=worker_config.app_id,
-            workspace="test-workspace",
-            client_id=worker_config.client_id,
-            status=SessionStatus.RUNNING,
-            app_type="k8s-pod",
-            created_at=datetime.now().isoformat()
-        )
-        worker._sessions[worker_config.id] = session_info
-        worker._session_data[worker_config.id] = {"pod_name": "test-pod"}
-        
-        await worker.close_workspace("test-workspace")
-        
-        # Sessions should be stopped
-        assert worker_config.id not in worker._sessions
 
     @pytest.mark.asyncio
     async def test_shutdown(self, mock_k8s_config, mock_k8s_client, worker_config):

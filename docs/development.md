@@ -956,15 +956,7 @@ async function registerWorker() {
             supported_types: ["javascript-custom", "js-worker"],
             start: start,
             stop: stop,
-            list_sessions: listSessions,
             get_logs: getLogs,
-            get_session_info: async (sessionId) => {
-                const sessionData = global.sessionStorage[sessionId];
-                if (!sessionData) throw new Error(`Session ${sessionId} not found`);
-                return { session_id: sessionId, status: sessionData.status };
-            },
-            prepare_workspace: async (workspace) => console.log(`Preparing workspace ${workspace}`),
-            close_workspace: async (workspace) => console.log(`Closing workspace ${workspace}`),
         });
         
         console.log(`JavaScript worker registered: ${workerService.id}`);

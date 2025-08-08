@@ -21,11 +21,7 @@ All workers must implement these core methods:
 
 - `start(config, context=None)` - Start a new session and return session_id
 - `stop(session_id, context=None)` - Stop a session
-- `list_sessions(workspace, context=None)` - List sessions for a workspace
-- `get_session_info(session_id, context=None)` - Get detailed session information
 - `get_logs(session_id, type, offset, limit, context=None)` - Get logs for a session
-- `prepare_workspace(workspace, context=None)` - Prepare workspace for operations
-- `close_workspace(workspace, context=None)` - Close workspace and cleanup sessions
 
 Optional methods:
 - `compile(manifest, files, config, context=None)` - Compile application files (for build-time processing)
@@ -454,19 +450,6 @@ class MyCustomWorker(BaseWorker):
             self._sessions.pop(session_id, None)
             self._session_data.pop(session_id, None)
     
-    async def list_sessions(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> List[SessionInfo]:
-        """List all sessions for a workspace."""
-        return [
-            session_info for session_info in self._sessions.values()
-            if session_info.workspace == workspace
-        ]
-    
-    async def get_session_info(self, session_id: str, context: Optional[Dict[str, Any]] = None) -> SessionInfo:
-        """Get information about a session."""
-        if session_id not in self._sessions:
-            raise SessionNotFoundError(f"Session {session_id} not found")
-        return self._sessions[session_id]
-    
     async def get_logs(
         self, 
         session_id: str, 
@@ -493,25 +476,7 @@ class MyCustomWorker(BaseWorker):
         else:
             return {"log": logs, "error": []}
     
-    async def prepare_workspace(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> None:
-        """Prepare workspace for worker operations."""
-        print(f"Preparing workspace {workspace}")
-    
-    async def close_workspace(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> None:
-        """Close workspace and cleanup sessions."""
-        print(f"Closing workspace {workspace}")
-        
-        # Stop all sessions for this workspace
-        sessions_to_stop = [
-            session_id for session_id, session_info in self._sessions.items()
-            if session_info.workspace == workspace
-        ]
-        
-        for session_id in sessions_to_stop:
-            try:
-                await self.stop(session_id, context=context)
-            except Exception as e:
-                print(f"Failed to stop session {session_id}: {e}")
+    # Workspace lifecycle is handled by the app controller
 
 # Register and start the worker
 async def main():
@@ -600,19 +565,6 @@ async def stop(session_id, context=None):
         session_data.pop(session_id, None)
         print(f"Session {session_id} stopped")
 
-async def list_sessions(workspace, context=None):
-    """List all sessions for a workspace."""
-    return [
-        session for session in sessions.values()
-        if session["workspace"] == workspace
-    ]
-
-async def get_session_info(session_id, context=None):
-    """Get information about a session."""
-    if session_id not in sessions:
-        raise Exception(f"Session {session_id} not found")
-    return sessions[session_id]
-
 async def get_logs(session_id, type=None, offset=0, limit=None, context=None):
     """Get logs for a session."""
     if session_id not in session_data:
@@ -627,20 +579,6 @@ async def get_logs(session_id, type=None, offset=0, limit=None, context=None):
         logs = logs[offset:]
     
     return logs if type else {"log": logs, "error": []}
-
-async def prepare_workspace(workspace, context=None):
-    """Prepare workspace for worker operations."""
-    print(f"Preparing workspace {workspace}")
-
-async def close_workspace(workspace, context=None):
-    """Close workspace and cleanup sessions."""
-    print(f"Closing workspace {workspace}")
-    sessions_to_stop = [
-        session_id for session_id, session in sessions.items()
-        if session["workspace"] == workspace
-    ]
-    for session_id in sessions_to_stop:
-        await stop(session_id, context=context)
 
 # Register the worker
 async def main():
@@ -662,11 +600,7 @@ async def main():
         "use_local_url": False,  # Set to True if worker runs in same cluster/host
         "start": start,
         "stop": stop,
-        "list_sessions": list_sessions,
         "get_logs": get_logs,
-        "get_session_info": get_session_info,
-        "prepare_workspace": prepare_workspace,
-        "close_workspace": close_workspace,
         "execute": execute,  # Optional: if your worker supports script execution
     })
     
@@ -953,11 +887,7 @@ class MyCustomWorker {
             use_local_url: this.useLocalUrl,
             start: this.start.bind(this),
             stop: this.stop.bind(this),
-            list_sessions: this.listSessions.bind(this),
             get_logs: this.getLogs.bind(this),
-            get_session_info: this.getSessionInfo.bind(this),
-            prepare_workspace: this.prepareWorkspace.bind(this),
-            close_workspace: this.closeWorkspace.bind(this),
             execute: this.execute.bind(this),  // Optional: if your worker supports script execution
         };
     }
@@ -1132,11 +1062,7 @@ async function main() {
             use_local_url: false,  // Set to true if worker runs in same cluster/host
             start: start,
             stop: stop,
-            list_sessions: listSessions,
             get_logs: getLogs,
-            get_session_info: getSessionInfo,
-            prepare_workspace: prepareWorkspace,
-            close_workspace: closeWorkspace,
             execute: execute,  // Optional: if your worker supports script execution
         });
         
@@ -1304,24 +1230,6 @@ Sessions follow these status transitions:
 - `starting` → `failed` (if startup fails)
 - `running` → `failed` (if runtime error occurs)
 
-### Session Information
-
-The `get_session_info()` method returns:
-
-```python
-{
-    "session_id": "workspace/client_id",
-    "app_id": "my-app",
-    "workspace": "workspace",
-    "client_id": "client_id",
-    "status": "running",  # SessionStatus enum value
-    "app_type": "python-eval",
-    "entry_point": "main.py",
-    "created_at": "2024-01-01T00:00:00Z",
-    "metadata": {...},  # Application manifest
-    "error": "error message"  # Only if status is "failed"
-}
-```
 
 ## Compilation Support
 
@@ -1374,6 +1282,6 @@ node my-worker.js
 3. **Session Management**: Built-in session tracking with `SessionInfo` objects
 4. **Error Handling**: Standardized exceptions (`SessionNotFoundError`, `WorkerError`)
 5. **Type Safety**: Optional Pydantic models for Python workers
-6. **Consistent Returns**: `start()` returns only `session_id`, detailed info via `get_session_info()`
+6. **Consistent Returns**: `start()` returns only `session_id`.
 
 The new worker API is designed to be simple, consistent, and easy to implement while providing all the necessary functionality for managing application sessions.
