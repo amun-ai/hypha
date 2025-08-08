@@ -1260,28 +1260,3 @@ async def compile(self, manifest: Dict[str, Any], files: List[Dict[str, Any]], c
     
     return processed_manifest, processed_files
 ```
-
-## Running Your Hypha Workers
-
-### Python
-```bash
-pip install hypha-rpc
-python my-worker.py
-```
-
-### JavaScript
-```bash
-npm install hypha-rpc
-node my-worker.js
-```
-
-## Key Changes from Previous API
-
-1. **Simplified Interface**: No complex base classes required - implement functions directly
-2. **Standardized Config**: All workers receive the same `WorkerConfig` structure
-3. **Session Management**: Built-in session tracking with `SessionInfo` objects
-4. **Error Handling**: Standardized exceptions (`SessionNotFoundError`, `WorkerError`)
-5. **Type Safety**: Optional Pydantic models for Python workers
-6. **Consistent Returns**: `start()` returns only `session_id`.
-
-The new worker API is designed to be simple, consistent, and easy to implement while providing all the necessary functionality for managing application sessions.
