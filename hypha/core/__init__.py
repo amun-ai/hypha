@@ -840,6 +840,8 @@ class RedisEventBus:
         self._health_check_channel = "health_check:" + str(uuid.uuid4())
         self._health_check_pubsub = None
         self._pubsub_health_future = None
+        # Ensure only one pubsub health check runs at a time to avoid races
+        self._health_check_lock = asyncio.Lock()
         # Track local clients for optimized routing
         self._local_clients = set()  # Set of "workspace/client_id" strings
         self._subscribed_patterns = set()  # Track which patterns we've subscribed to
@@ -1084,57 +1086,63 @@ class RedisEventBus:
             pass
 
     async def _check_pubsub_health(self):
-        """Check if pubsub is working by sending and receiving a test message."""
-        try:
-            if not self._health_check_pubsub:
-                self._health_check_pubsub = self._redis.pubsub()
-                await self._health_check_pubsub.subscribe(self._health_check_channel)
+        """Check if pubsub is working by sending and receiving a test message.
 
-            # Create a future to wait for the message
-            self._pubsub_health_future = asyncio.Future()
-
-            # Send test message with timestamp
-            test_message = str(time.time())
-            await self._redis.publish(self._health_check_channel, test_message)
-
-            # Wait for message with timeout
+        Guarded by a lock to avoid concurrent health checks racing each other
+        (e.g. readiness endpoint vs. background health task) which could lead
+        to message/future mismatches and intermittent failures.
+        """
+        async with self._health_check_lock:
             try:
-                start_time = time.time()
-                received = await asyncio.wait_for(
-                    self._pubsub_health_future, timeout=2.0
-                )
-                end_time = time.time()
+                if not self._health_check_pubsub:
+                    self._health_check_pubsub = self._redis.pubsub()
+                    await self._health_check_pubsub.subscribe(self._health_check_channel)
 
-                # Verify it's the message we sent
-                if received == test_message:
-                    latency = end_time - start_time
-                    self._pubsub_latency.set(latency)
-                    self._counter.labels(event="pubsub_health", status="success").inc()
-                    return True
-                else:
-                    logger.warning("Received unexpected message in pubsub health check")
-                    self._counter.labels(event="pubsub_health", status="mismatch").inc()
+                # Create a future to wait for the message
+                self._pubsub_health_future = asyncio.Future()
+
+                # Send test message with timestamp
+                test_message = str(time.time())
+                await self._redis.publish(self._health_check_channel, test_message)
+
+                # Wait for message with timeout
+                try:
+                    start_time = time.time()
+                    received = await asyncio.wait_for(
+                        self._pubsub_health_future, timeout=2.0
+                    )
+                    end_time = time.time()
+
+                    # Verify it's the message we sent
+                    if received == test_message:
+                        latency = end_time - start_time
+                        self._pubsub_latency.set(latency)
+                        self._counter.labels(event="pubsub_health", status="success").inc()
+                        return True
+                    else:
+                        logger.warning("Received unexpected message in pubsub health check")
+                        self._counter.labels(event="pubsub_health", status="mismatch").inc()
+                        return False
+
+                except asyncio.TimeoutError:
+                    logger.warning("Pubsub health check timed out")
+                    self._counter.labels(event="pubsub_health", status="timeout").inc()
                     return False
 
-            except asyncio.TimeoutError:
-                logger.warning("Pubsub health check timed out")
-                self._counter.labels(event="pubsub_health", status="timeout").inc()
+            except Exception as e:
+                logger.error(f"Pubsub health check failed: {str(e)}")
+                self._counter.labels(event="pubsub_health", status="error").inc()
+                # Clean up health check pubsub on error
+                if self._health_check_pubsub:
+                    try:
+                        await self._health_check_pubsub.unsubscribe()
+                        await self._health_check_pubsub.close()
+                        self._health_check_pubsub = None
+                    except Exception as cleanup_error:
+                        logger.warning(
+                            f"Error cleaning up health check pubsub: {str(cleanup_error)}"
+                        )
                 return False
-
-        except Exception as e:
-            logger.error(f"Pubsub health check failed: {str(e)}")
-            self._counter.labels(event="pubsub_health", status="error").inc()
-            # Clean up health check pubsub on error
-            if self._health_check_pubsub:
-                try:
-                    await self._health_check_pubsub.unsubscribe()
-                    await self._health_check_pubsub.close()
-                    self._health_check_pubsub = None
-                except Exception as cleanup_error:
-                    logger.warning(
-                        f"Error cleaning up health check pubsub: {str(cleanup_error)}"
-                    )
-            return False
 
     async def _process_health_check_message(self, message):
         """Process incoming health check messages."""
