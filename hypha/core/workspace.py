@@ -1416,10 +1416,8 @@ class WorkspaceManager:
                 )
             query["visibility"] = "public"
         elif workspace not in ["public", cws]:
-            # Check user permission for the specified workspace only once
-            if not user_info.check_permission(workspace, UserPermission.read):
-                raise PermissionError(f"Permission denied for workspace {workspace}")
-            # Check permission for including unlisted services
+            # Do not block listing here; later logic will restrict visibility to public
+            # Check permission for including unlisted services from other workspaces
             if include_unlisted and workspace != cws:
                 raise PermissionError(
                     f"Cannot include unlisted services from workspace {workspace}. Only services from your current workspace ({cws}) can include unlisted services."
