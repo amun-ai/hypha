@@ -70,8 +70,6 @@ hypha-server:
   
   # Hypha environment configuration - matching the actual hypha-server chart
   env:
-    - name: HOME
-      value: "/data"
     - name: HYPHA_LOGLEVEL
       value: "INFO"
     - name: HYPHA_JWT_SECRET
