@@ -72,6 +72,8 @@ hypha-server:
   env:
     - name: HYPHA_LOGLEVEL
       value: "INFO"
+    - name: MC_CONFIG_DIR
+      value: "/data/.mc"
     - name: HYPHA_JWT_SECRET
       valueFrom:
         secretKeyRef:
