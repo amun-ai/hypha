@@ -3032,6 +3032,26 @@ class ServerAppController:
         await self.worker_manager.shutdown()
 
 
+    async def prepare_workspace(self, workspace_info: WorkspaceInfo):
+        """Prepare the workspace."""
+        context = {
+            "ws": workspace_info.id,
+            "user": self.store.get_root_user().model_dump(),
+        }
+        apps = await self.list_apps(context=context)
+        # start daemon apps
+        for app in apps:
+            if app.get("daemon"):
+                logger.info(f"Starting daemon app: {app['id']}")
+                try:
+                    # Prefer the launch context stored with the app (from installation time)
+                    launch_context = app.get("startup_context") or context
+                    await self.start(app["id"], context=launch_context)
+                except Exception as exp:
+                    logger.error(
+                        f"Failed to start daemon app: {app['id']}, error: {exp}"
+                    )
+
     async def close_workspace(self, workspace_info: WorkspaceInfo):
         """Archive the workspace."""
         # Define context first
