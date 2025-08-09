@@ -73,8 +73,10 @@ class WorkspaceInterfaceContextManager:
         return self._get_workspace_manager().__await__()
 
     async def _get_workspace_manager(self):
-        # Check if workspace exists
-        await self._store.load_or_create_workspace(self._user_info, self._workspace)
+        # For the special "public" workspace, do not force creation; allow lightweight access
+        if self._workspace != "public":
+            # Check if workspace exists or create if appropriate
+            await self._store.load_or_create_workspace(self._user_info, self._workspace)
         self._wm = await self._rpc.get_manager_service({"timeout": self._timeout})
         self._wm.rpc = self._rpc
         self._wm.disconnect = self._rpc.disconnect
@@ -167,7 +169,8 @@ class RedisStore:
         self._enable_service_search = enable_service_search
         self._activity_check_interval = activity_check_interval
         self._enable_s3_for_anonymous_users = enable_s3_for_anonymous_users
-        # Create a fixed HTTP anonymous user
+        # Create a fixed HTTP anonymous user. Grant read on public; set current to public
+        # so we can use it to create a workspace interface safely.
         self._http_anonymous_user = UserInfo(
             id="http-anonymous",
             is_anonymous=True,
@@ -321,23 +324,36 @@ class RedisStore:
         workspace_info = await self.get_workspace_info(workspace, load=True)
 
         # If workspace does not exist, automatically create it
-        if not workspace_info and workspace == user_info.get_workspace():
-            if not user_info.check_permission(workspace, UserPermission.read):
-                raise PermissionError(
-                    f"User {user_info.id} does not have permission to access workspace {workspace}"
+        if not workspace_info:
+            if workspace == "public":
+                logger.debug("Creating public workspace on demand")
+                workspace_info = await self.register_workspace(
+                    {
+                        "id": "public",
+                        "name": "public",
+                        "description": "Public workspace",
+                        "persistent": True,
+                        "owners": [],
+                        "read_only": False,
+                    }
                 )
-            logger.debug(f"Creating workspace {workspace} for user {user_info.id}")
-            workspace_info = await self.register_workspace(
-                {
-                    "id": workspace,
-                    "name": workspace,
-                    "description": f"Workspace for user {user_info.id}",
-                    "persistent": not user_info.is_anonymous,
-                    "owners": [user_info.id],
-                    "read_only": user_info.is_anonymous
-                    and not self._enable_s3_for_anonymous_users,
-                }
-            )
+            elif workspace == user_info.get_workspace():
+                if not user_info.check_permission(workspace, UserPermission.read):
+                    raise PermissionError(
+                        f"User {user_info.id} does not have permission to access workspace {workspace}"
+                    )
+                logger.debug(f"Creating workspace {workspace} for user {user_info.id}")
+                workspace_info = await self.register_workspace(
+                    {
+                        "id": workspace,
+                        "name": workspace,
+                        "description": f"Workspace for user {user_info.id}",
+                        "persistent": not user_info.is_anonymous,
+                        "owners": [user_info.id],
+                        "read_only": user_info.is_anonymous
+                        and not self._enable_s3_for_anonymous_users,
+                    }
+                )
         else:
             if not workspace_info:
                 raise KeyError(

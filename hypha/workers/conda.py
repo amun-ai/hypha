@@ -172,6 +172,9 @@ class EnvironmentCache:
         # Evict old entries if cache is full
         self._evict_if_needed()
 
+        # Ensure the ready marker exists to indicate a fully initialized environment
+        marker_path = env_path / READY_MARKER
+        marker_path.touch(exist_ok=True)
         self.index[env_hash] = {
             "path": str(env_path),
             "dependencies": dependencies,
@@ -368,10 +371,14 @@ class CondaWorker(BaseWorker):
 
         session_id = config.id
         async def progress_callback(message: dict):
-            if inspect.iscoroutinefunction(config.progress_callback):
-                await config.progress_callback(message)
+            """Invoke optional progress callback if provided, supporting sync or async callables."""
+            callback = getattr(config, "progress_callback", None)
+            if callback is None:
+                return
+            if inspect.iscoroutinefunction(callback):
+                await callback(message)
             else:
-                config.progress_callback(message)
+                callback(message)
 
         if session_id in self._sessions:
             raise WorkerError(f"Session {session_id} already exists")
