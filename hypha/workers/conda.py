@@ -573,7 +573,7 @@ class CondaWorker(BaseWorker):
 
             # Run environment creation directly (now async)
             try:
-                setup_time = await executor._extract_env(await progress_callback)
+                setup_time = await executor._extract_env(progress_callback)
             except Exception as e:
                 await progress_callback(
                     {
