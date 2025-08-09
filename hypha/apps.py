@@ -6,11 +6,12 @@ import sys
 import multihash
 import asyncio
 import logging
-import yaml
+import inspect
 import sys
 import time
 from pathlib import Path
 import base64
+from functools import partial
 
 from hypha import hypha_rpc_version
 from jinja2 import Environment, PackageLoader, select_autoescape
@@ -42,6 +43,24 @@ logger.setLevel(LOGLEVEL)
 
 multihash.CodecReg.register("base58", base58.b58encode, base58.b58decode)
 
+logging_emoji = {
+    "info": "ℹ️",
+    "success": "✅", 
+    "error": "❌",
+    "warning": "⚠️",
+}
+
+def call_progress_callback(progress_callback: Any, message: dict):
+    logger.info("%s %s", logging_emoji.get(message.get("type", "info"), "🔸"), message.get("message", ""))
+    if not progress_callback:
+        return
+    try:
+        if inspect.iscoroutinefunction(progress_callback):
+            asyncio.create_task(progress_callback(message))
+        else:
+            progress_callback(message)
+    except Exception as cb_err:
+        logger.debug(f"Progress callback invocation error: {cb_err}")
 
 class WorkerSelectionConfig(BaseModel):
     mode: Optional[str] = Field(
@@ -1156,8 +1175,8 @@ class ServerAppController:
         if not workspace:
             workspace = context["ws"]
 
-        progress_callback = progress_callback or (lambda x: None)
-        progress_callback(
+        _progress_callback = partial(call_progress_callback, progress_callback)
+        _progress_callback(
             {
                 "type": "info",
                 "message": "Parsing app manifest...",
@@ -1342,7 +1361,7 @@ class ServerAppController:
             if not worker:
                 raise Exception(f"No server app worker found for app type: {app_type}")
 
-        progress_callback(
+        _progress_callback(
             {
                 "type": "info",
                 "message": f"Compiling app using worker {worker.id}...",
@@ -1395,7 +1414,7 @@ class ServerAppController:
             # All browser-based apps should have a worker available
             raise Exception(f"No worker available for browser app type: {app_type}")
 
-        progress_callback(
+        _progress_callback(
             {
                 "type": "info",
                 "message": "Creating application artifact...",
@@ -1539,7 +1558,7 @@ class ServerAppController:
             put_url = await self.artifact_manager.put_file(
                 artifact["id"], file_path=file_path, use_proxy=False, context=context
             )
-            progress_callback(
+            _progress_callback(
                 {
                     "type": "info",
                     "message": f"Uploading file {file_path}...",
@@ -1550,7 +1569,7 @@ class ServerAppController:
                 assert response.status_code == 200, f"Failed to upload file {file_path}"
 
         if not stage:
-            progress_callback(
+            _progress_callback(
                 {
                     "type": "info",
                     "message": "Committing application artifact...",
@@ -1568,14 +1587,14 @@ class ServerAppController:
             updated_artifact_info = await self.artifact_manager.read(
                 app_id, version=version, context=context
             )
-            progress_callback(
+            _progress_callback(
                 {
                     "type": "success",
                     "message": "Installation complete!",
                 }
             )
             return updated_artifact_info.get("manifest", artifact_obj)
-        progress_callback(
+        _progress_callback(
             {
                 "type": "success",
                 "message": "Installation complete!",
@@ -1954,9 +1973,6 @@ class ServerAppController:
         ),
     ):
         """Start the app and keep it alive."""
-
-        progress_callback = progress_callback or (lambda x: None)
-
         workspace = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
 
@@ -1973,6 +1989,8 @@ class ServerAppController:
                 f"User {user_info.id} does not have permission"
                 f" to run app {app_id} in workspace {workspace}."
             )
+            
+        _progress_callback = partial(call_progress_callback, progress_callback)
 
         # If stage is True, use stage version, otherwise use provided version
         read_version = "stage" if stage else version
@@ -1992,7 +2010,7 @@ class ServerAppController:
             wait_for_service=wait_for_service,
             additional_kwargs=additional_kwargs,
             stop_after_inactive=stop_after_inactive,
-            progress_callback=progress_callback,
+            progress_callback=_progress_callback,
         )
 
         final_startup_config = merge_startup_config_with_runtime(
@@ -2085,7 +2103,7 @@ class ServerAppController:
                     collected_services.append(sinfo)
                     # Report service registration progress
                     service_name = info["id"].split(":")[-1]
-                    progress_callback(
+                    _progress_callback(
                         {
                             "type": "success",
                             "message": f"Service '{service_name}' registered successfully",
@@ -2096,7 +2114,7 @@ class ServerAppController:
                     for key in ["config", "name", "description"]:
                         if info.get(key):
                             app_info[key] = info[key]
-                    progress_callback(
+                    _progress_callback(
                         {"type": "success", "message": "Default service configured"}
                     )
 
@@ -2107,7 +2125,7 @@ class ServerAppController:
                     and info["id"] == full_client_id + ":" + wait_for_service
                 ):
                     if not event_future.done():
-                        progress_callback(
+                        _progress_callback(
                             {
                                 "type": "success",
                                 "message": f"Target service '{wait_for_service}' found",
@@ -2118,13 +2136,13 @@ class ServerAppController:
 
             def client_connected(info: dict):
                 logger.info(f"Client connected: {info}")
-                progress_callback(
+                _progress_callback(
                     {"type": "success", "message": "Client connection established"}
                 )
                 # Check if this is the target client we're waiting for
                 if not wait_for_service and info["id"] == full_client_id:
                     if not event_future.done():
-                        progress_callback(
+                        _progress_callback(
                             {"type": "success", "message": "Application ready"}
                         )
                         event_future.set_result(info)
@@ -2174,7 +2192,7 @@ class ServerAppController:
                 token=token,
                 timeout=timeout,
                 manifest=manifest,
-                progress_callback=progress_callback,
+                progress_callback=_progress_callback,
                 additional_kwargs=additional_kwargs,
                 worker=selected_worker,
                 worker_selection_mode=worker_selection_mode if not selected_worker else None,
@@ -2187,18 +2205,18 @@ class ServerAppController:
             # Progress update after worker starts but before waiting for services
             if not detached:
                 if wait_for_service:
-                    progress_callback(
+                    _progress_callback(
                         {
                             "type": "info",
                             "message": f"Waiting for service '{wait_for_service}'...",
                         }
                     )
                 else:
-                    progress_callback(
+                    _progress_callback(
                         {"type": "info", "message": "Waiting for client connection..."}
                     )
             else:
-                progress_callback(
+                _progress_callback(
                     {
                         "type": "success",
                         "message": "Application started in detached mode",
@@ -2242,7 +2260,7 @@ class ServerAppController:
                 )
                 await asyncio.sleep(0.1)  # Brief delay to allow service registration
 
-                progress_callback(
+                _progress_callback(
                     {"type": "info", "message": "Finalizing application startup..."}
                 )
             elif detached:
@@ -2252,7 +2270,7 @@ class ServerAppController:
 
             # save the services
             # service_count = len(collected_services)
-            progress_callback(
+            _progress_callback(
                 {"type": "info", "message": "Updating application manifest..."}
             )
             manifest.name = manifest.name or app_info.get("name", "Untitled App")
@@ -2289,7 +2307,7 @@ class ServerAppController:
                 context=context,
             )
 
-            progress_callback(
+            _progress_callback(
                 {
                     "type": "success",
                     "message": "Application manifest updated successfully",
@@ -2339,14 +2357,14 @@ class ServerAppController:
 
         # Start autoscaling if enabled
         if manifest.autoscaling and manifest.autoscaling.enabled:
-            progress_callback({"type": "info", "message": "Configuring autoscaling..."})
+            _progress_callback({"type": "info", "message": "Configuring autoscaling..."})
             await self.autoscaling_manager.start_autoscaling(
                 app_id, manifest.autoscaling, context
             )
-            progress_callback({"type": "success", "message": "Autoscaling enabled"})
+            _progress_callback({"type": "success", "message": "Autoscaling enabled"})
 
         # Final completion message
-        progress_callback(
+        _progress_callback(
             {"type": "success", "message": "Application startup completed successfully"}
         )
 
@@ -2535,6 +2553,8 @@ class ServerAppController:
             )
         session_data = await self._get_session_from_redis(session_id)
         if session_data:
+            _progress_callback = partial(call_progress_callback, progress_callback)
+
             worker = self._get_worker_from_cache(session_data.get("worker_id"))
             if worker:
                 if hasattr(worker, "execute"):
@@ -2542,7 +2562,7 @@ class ServerAppController:
                         session_id, 
                         script=script, 
                         config=config,
-                        progress_callback=progress_callback,
+                        progress_callback=_progress_callback,
                         context=context
                     )
                 else:

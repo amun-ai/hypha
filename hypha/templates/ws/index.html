@@ -357,7 +357,7 @@
                                      return appInfo;
                                  } catch (error) {
                                      console.error("Failed to install app:", error);
-                                     window.addProgressLog(`Installation failed: ${error.message}`, 'error');
+                                     window.addProgressLog(`Installation failed: ${error}`, 'error');
                                      
                                      // Allow user to close after error
                                      window.enableProgressClose();

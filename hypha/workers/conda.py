@@ -81,6 +81,7 @@ def get_available_package_manager() -> str:
 DEFAULT_CACHE_DIR = os.path.expanduser("~/.hypha_conda_cache")
 MAX_CACHE_SIZE = 10  # Maximum number of cached environments
 CACHE_MAX_AGE_DAYS = 30  # Maximum age for cached environments
+READY_MARKER = ".hypha_env_ready"  # Marker file indicating env was fully initialized
 
 
 class EnvironmentCache:
@@ -141,15 +142,24 @@ class EnvironmentCache:
             env_path = Path(cache_entry["path"])
 
             # Check if environment still exists and is valid
-            if env_path.exists() and (env_path / "bin" / "python").exists():
+            if os.name == "nt":
+                python_path = env_path / "python.exe"
+            else:
+                python_path = env_path / "bin" / "python"
+            marker_path = env_path / READY_MARKER
+            if env_path.exists() and python_path.exists() and marker_path.exists():
                 # Update last access time for LRU
                 cache_entry["last_accessed"] = time.time()
                 self._save_index()
                 return env_path
             else:
                 # Remove invalid entry
-                del self.index[env_hash]
-                self._save_index()
+                try:
+                    if env_path.exists():
+                        shutil.rmtree(env_path, ignore_errors=True)
+                finally:
+                    del self.index[env_hash]
+                    self._save_index()
 
         return None
 
@@ -170,6 +180,11 @@ class EnvironmentCache:
             "last_accessed": time.time(),
         }
         self._save_index()
+
+    def invalidate_env(self, dependencies: List[str], channels: List[str]):
+        """Invalidate a cached environment by spec and remove it from disk."""
+        env_hash = self._compute_env_hash(dependencies, channels)
+        self._remove_cache_entry(env_hash)
 
     def _evict_if_needed(self):
         """Evict old entries using LRU policy."""
@@ -352,19 +367,22 @@ class CondaWorker(BaseWorker):
             config = WorkerConfig(**config)
 
         session_id = config.id
-        progress_callback = config.progress_callback
+        async def progress_callback(message: dict):
+            if inspect.iscoroutinefunction(config.progress_callback):
+                await config.progress_callback(message)
+            else:
+                config.progress_callback(message)
 
         if session_id in self._sessions:
             raise WorkerError(f"Session {session_id} already exists")
 
         # Report initial progress
-        if progress_callback:
-            progress_callback(
-                {
-                    "type": "info",
-                    "message": f"Starting conda environment session {session_id}",
-                }
-            )
+        await progress_callback(
+            {
+                "type": "info",
+                "message": f"Starting conda environment session {session_id}",
+            }
+        )
 
         # Create session info
         session_info = SessionInfo(
@@ -383,10 +401,7 @@ class CondaWorker(BaseWorker):
 
         try:
             # Phase 1: Fetch application script
-            if progress_callback:
-                progress_callback(
-                    {"type": "info", "message": "Fetching application script..."}
-                )
+            await progress_callback({"type": "info", "message": "Fetching application script..."})
             script_url = f"{config.app_files_base_url}/{config.manifest['entry_point']}?use_proxy=true"
             async with httpx.AsyncClient() as client:
                 response = await client.get(
@@ -401,22 +416,20 @@ class CondaWorker(BaseWorker):
                 script = re.sub(r'<file[^>]*>(.*?)</file>', r'\1', script, flags=re.DOTALL | re.IGNORECASE)
                 script = script.strip()
 
-            if progress_callback:
-                progress_callback(
-                    {
-                        "type": "success",
-                        "message": "Application script loaded successfully",
-                    }
-                )
+            await progress_callback(
+                {
+                    "type": "success",
+                    "message": "Application script loaded successfully",
+                }
+            )
 
             # Phase 2: Start the conda environment session (this is the long part)
-            if progress_callback:
-                progress_callback(
-                    {
-                        "type": "info",
-                        "message": f"Setting up conda environment using {self.package_manager}...",
-                    }
-                )
+            await progress_callback(
+                {
+                    "type": "info",
+                    "message": f"Setting up conda environment using {self.package_manager}...",
+                }
+            )
 
             session_data = await self._start_conda_session(
                 script, config, progress_callback
@@ -426,13 +439,12 @@ class CondaWorker(BaseWorker):
             # Update session status
             session_info.status = SessionStatus.RUNNING
 
-            if progress_callback:
-                progress_callback(
-                    {
-                        "type": "success",
-                        "message": f"Conda environment session {session_id} started successfully",
-                    }
-                )
+            await progress_callback(
+                {
+                    "type": "success",
+                    "message": f"Conda environment session {session_id} started successfully",
+                }
+            )
 
             logger.info(f"Started conda environment session {session_id}")
             return session_id
@@ -440,14 +452,15 @@ class CondaWorker(BaseWorker):
         except Exception as e:
             session_info.status = SessionStatus.FAILED
             session_info.error = str(e)
+            # remove cached environment
+            
 
-            if progress_callback:
-                progress_callback(
-                    {
-                        "type": "error",
-                        "message": f"Failed to start conda environment session: {str(e)}",
-                    }
-                )
+            await progress_callback(
+                {
+                    "type": "error",
+                    "message": f"Failed to start conda environment session: {str(e)}",
+                }
+            )
 
             logger.error(f"Failed to start conda environment session {session_id}: {e}")
             # Clean up failed session
@@ -468,27 +481,6 @@ class CondaWorker(BaseWorker):
             "error": [],
             "progress": [],  # Store real-time progress messages
         }
-
-        # Create a progress callback wrapper that stores messages in logs for real-time access
-        def progress_callback_wrapper(message):
-            emoji = {
-                "info": "ℹ️",
-                "success": "✅", 
-                "error": "❌",
-                "warning": "⚠️",
-            }.get(message.get("type", ""), "🔸")
-            logger.info(f"{emoji} {message.get('message', '')}")
-            # Store the progress message in logs for real-time retrieval
-            logs["progress"].append(f"{message['type'].upper()}: {message['message']}")
-
-            # Also call the original progress callback if provided
-            if progress_callback:
-                # Handle both sync and async callbacks
-                if inspect.iscoroutinefunction(progress_callback):
-                    asyncio.ensure_future(progress_callback(message))
-                else:
-                    progress_callback(message)
-
         # Extract environment specification from manifest
         dependencies = config.manifest.get(
             "dependencies", config.manifest.get("dependencies", [])
@@ -502,14 +494,15 @@ class CondaWorker(BaseWorker):
             channels = [channels]
 
         # Phase 1: Check for cached environment
-        progress_callback_wrapper(
+        await progress_callback(
             {"type": "info", "message": "Checking for cached conda environment..."}
         )
 
         cached_env_path = self._env_cache.get_cached_env(dependencies, channels)
 
+        is_new_env = False
         if cached_env_path:
-            progress_callback_wrapper(
+            await progress_callback(
                 {
                     "type": "success",
                     "message": f"Found cached environment: {cached_env_path}",
@@ -543,7 +536,7 @@ class CondaWorker(BaseWorker):
                     dep_strings.append(str(dep))
 
             deps_str = ", ".join(dep_strings) + ("..." if len(dependencies) > 3 else "")
-            progress_callback_wrapper(
+            await progress_callback(
                 {
                     "type": "info",
                     "message": f"Creating new conda environment with dependencies: {deps_str}",
@@ -568,9 +561,10 @@ class CondaWorker(BaseWorker):
                 channels=channels,
                 name=f"hypha-session-{sanitized_id}",
             )
+            is_new_env = True
 
             # This is the long-running part - environment creation
-            progress_callback_wrapper(
+            await progress_callback(
                 {
                     "type": "info",
                     "message": f"Installing packages using {self.package_manager}... (this may take several minutes)",
@@ -579,29 +573,33 @@ class CondaWorker(BaseWorker):
 
             # Run environment creation directly (now async)
             try:
-                setup_time = await executor._extract_env(progress_callback_wrapper)
+                setup_time = await executor._extract_env(await progress_callback)
             except Exception as e:
-                progress_callback_wrapper(
+                await progress_callback(
                     {
                         "type": "error",
                         "message": f"Environment creation failed: {str(e)}",
                     }
                 )
+                # Cleanup incomplete environment
+                try:
+                    if executor and executor.env_path and executor.env_path.exists():
+                        shutil.rmtree(executor.env_path, ignore_errors=True)
+                finally:
+                    pass
                 raise
 
-            progress_callback_wrapper(
+            await progress_callback(
                 {
                     "type": "success",
                     "message": f"Environment created successfully in {setup_time:.1f}s",
                 }
             )
 
-            # Cache the environment after creation
-            self._env_cache.add_cached_env(dependencies, channels, executor.env_path)
-            logger.info(f"Cached new conda environment: {executor.env_path}")
+            # Do not cache yet; cache only after full readiness
 
         # Phase 3: Start Jupyter kernel
-        progress_callback_wrapper(
+        await progress_callback(
             {
                 "type": "info",
                 "message": "Starting Jupyter kernel...",
@@ -611,24 +609,33 @@ class CondaWorker(BaseWorker):
         # Create and start the Jupyter kernel
         kernel = CondaKernel(executor.env_path)
         try:
-            await kernel.start(timeout=30.0)
-            progress_callback_wrapper(
+            # Honor provided startup timeout when available
+            await kernel.start(timeout=float(config.timeout) if config.timeout else 30.0)
+            await progress_callback(
                 {
                     "type": "success",
                     "message": "Jupyter kernel started successfully",
                 }
             )
         except Exception as e:
-            progress_callback_wrapper(
+            await progress_callback(
                 {
                     "type": "error",
                     "message": f"Failed to start Jupyter kernel: {str(e)}",
                 }
             )
+            # Cleanup incomplete environment if this was a newly created env
+            if is_new_env:
+                try:
+                    marker_path = executor.env_path / READY_MARKER
+                    if not marker_path.exists() and executor.env_path.exists():
+                        shutil.rmtree(executor.env_path, ignore_errors=True)
+                finally:
+                    pass
             raise
 
         # Phase 4: Run initialization script in the kernel
-        progress_callback_wrapper(
+        await progress_callback(
             {
                 "type": "info",
                 "message": "Running initialization script in kernel...",
@@ -660,7 +667,10 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
 # Execute the user's script
 {script}
 """
-        result = await kernel.execute(init_code, timeout=60.0)
+        # Use provided startup timeout for initialization execution when available
+        result = await kernel.execute(
+            init_code, timeout=float(config.timeout) if config.timeout else 60.0
+        )
         
         # Process kernel outputs into logs
         for output in result.get("outputs", []):
@@ -685,19 +695,48 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
                 logs["error"].extend(error_info["traceback"])
         
         if result["success"]:
-            progress_callback_wrapper(
+            await progress_callback(
                 {
                     "type": "success",
                     "message": "Conda environment session with Jupyter kernel ready",
                 }
             )
+            # Mark environment as ready and cache only now for newly created envs
+            try:
+                if is_new_env:
+                    # Create readiness marker
+                    marker_path = executor.env_path / READY_MARKER
+                    try:
+                        marker_path.write_text("ready")
+                    except Exception:
+                        # If we cannot write the marker, consider env not ready
+                        raise
+                    # Add to cache index now that env is fully ready
+                    self._env_cache.add_cached_env(dependencies, channels, executor.env_path)
+                    logger.info("Cached new conda environment: %s", executor.env_path)
+            except Exception:
+                # If marking/cache fails, clean up to avoid half-baked cache
+                try:
+                    if executor.env_path.exists():
+                        shutil.rmtree(executor.env_path, ignore_errors=True)
+                finally:
+                    pass
+                raise
         else:
-            progress_callback_wrapper(
+            await progress_callback(
                 {
                     "type": "error",
                     "message": "Initialization script failed",
                 }
             )
+            # Cleanup incomplete environment if this was a newly created env
+            if is_new_env:
+                try:
+                    marker_path = executor.env_path / READY_MARKER
+                    if not marker_path.exists() and executor.env_path.exists():
+                        shutil.rmtree(executor.env_path, ignore_errors=True)
+                finally:
+                    pass
             raise Exception("Initialization script failed: " + result.get("error", {}).get("evalue", "Unknown error"))
 
 
@@ -709,6 +748,8 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
             "channels": channels,
             "logs": logs,
             "hypha_config": hypha_config,
+            "env_ready": (executor.env_path / READY_MARKER).exists(),
+            "is_new_env": is_new_env,
         }
 
     async def execute(
@@ -874,8 +915,30 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
                             f"Error shutting down kernel for session {session_id}: {e}"
                         )
 
-                # Note: We don't cleanup the executor environment since it's cached
-                # The cache manager will handle cleanup based on LRU policy
+                # Cleanup incomplete environment (not fully ready)
+                executor = session_data.get("executor")
+                env_path = executor.env_path if executor else None
+                if env_path:
+                    marker_path = env_path / READY_MARKER
+                    # If env is not marked ready, remove it
+                    if not marker_path.exists():
+                        try:
+                            logger.info(
+                                f"Removing incomplete conda environment for session {session_id}: {env_path}"
+                            )
+                            shutil.rmtree(env_path, ignore_errors=True)
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to remove incomplete env at {env_path}: {e}"
+                            )
+                        # Invalidate any existing cache entry that might reference this env
+                        try:
+                            self._env_cache.invalidate_env(
+                                session_data.get("dependencies", []),
+                                session_data.get("channels", []),
+                            )
+                        except Exception as e:
+                            logger.debug(f"Failed to invalidate cache: {e}")
 
             session_info.status = SessionStatus.STOPPED
             logger.info(f"Stopped conda environment session {session_id}")

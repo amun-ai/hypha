@@ -1185,6 +1185,162 @@ def execute(input_data):
                     # Clean up
                     await self.worker.stop(session_id)
 
+    async def test_progress_callback_supports_awaitable(self):
+        """Progress callback can be async and will be scheduled by the worker."""
+        # Arrange
+        callback_ran = {"count": 0}
+
+        async def async_progress_callback(info):
+            # Simulate minimal async work
+            await asyncio.sleep(0)
+            callback_ran["count"] += 1
+
+        script = """
+print('hello from init')
+"""
+
+        config = WorkerConfig(
+            id="awaitable-progress-test",
+            app_id="test-app",
+            workspace="test-workspace",
+            client_id="test-client",
+            server_url="http://test-server",
+            token="test-token",
+            entry_point="main.py",
+            artifact_id="test-artifact",
+            manifest={
+                "type": "conda-jupyter-kernel",
+                "dependencies": ["python=3.11"],
+                "channels": ["conda-forge"],
+                "entry_point": "main.py",
+            },
+            app_files_base_url="http://test-server/files",
+            progress_callback=async_progress_callback,
+        )
+
+        # Mock HTTP client to return script
+        with patch("httpx.AsyncClient") as mock_http_client:
+            mock_response = MagicMock()
+            mock_response.text = script
+            mock_response.raise_for_status = MagicMock()
+            mock_http_client.return_value.__aenter__.return_value.get.return_value = (
+                mock_response
+            )
+
+            # Mock CondaEnvExecutor and kernel minimal flow
+            with patch("hypha.workers.conda.CondaEnvExecutor") as mock_executor_class:
+                mock_executor = MagicMock()
+                mock_executor_class.create_temp_env.return_value = mock_executor
+
+                async def mock_extract_env(progress_callback=None):
+                    if progress_callback:
+                        progress_callback({"type": "info", "message": "env step"})
+                    return 0.1
+
+                mock_executor._extract_env = mock_extract_env
+
+                with patch("hypha.workers.conda.CondaKernel") as mock_kernel_class:
+                    mock_kernel = MagicMock()
+                    mock_kernel_class.return_value = mock_kernel
+
+                    async def mock_start(timeout=30.0):
+                        return None
+
+                    async def mock_execute(code, **kwargs):
+                        return {"success": True, "outputs": [], "error": None}
+
+                    mock_kernel.start = mock_start
+                    mock_kernel.execute = mock_execute
+
+                    # Act
+                    session_id = await self.worker.start(config)
+
+                    # Allow the event loop to run scheduled tasks from callback
+                    await asyncio.sleep(0)
+
+                    # Assert
+                    assert session_id == "awaitable-progress-test"
+                    assert callback_ran["count"] > 0
+
+                    await self.worker.stop(session_id)
+
+
+class TestCondaWorkerTimeoutPropagation:
+    """Ensure timeouts from config are passed to kernel start and execute."""
+
+    async def test_kernel_start_and_execute_receive_config_timeout(self):
+        # Arrange
+        requested_timeout = 123.0
+
+        script = """
+print('init')
+"""
+
+        config = WorkerConfig(
+            id="timeout-prop-test",
+            app_id="test-app",
+            workspace="test-workspace",
+            client_id="test-client",
+            server_url="http://test-server",
+            token="test-token",
+            entry_point="main.py",
+            artifact_id="test-artifact",
+            manifest={
+                "type": "conda-jupyter-kernel",
+                "dependencies": ["python=3.11"],
+                "channels": ["conda-forge"],
+                "entry_point": "main.py",
+            },
+            timeout=requested_timeout,
+            app_files_base_url="http://test-server/files",
+            progress_callback=lambda m: None,
+        )
+
+        # Mock HTTP client
+        with patch("httpx.AsyncClient") as mock_http_client:
+            mock_response = MagicMock()
+            mock_response.text = script
+            mock_response.raise_for_status = MagicMock()
+            mock_http_client.return_value.__aenter__.return_value.get.return_value = (
+                mock_response
+            )
+
+            # Track timeouts passed to kernel
+            seen = {"start": None, "execute": None}
+
+            with patch("hypha.workers.conda.CondaEnvExecutor") as mock_executor_class:
+                mock_executor = MagicMock()
+                mock_executor_class.create_temp_env.return_value = mock_executor
+
+                async def mock_extract_env(progress_callback=None):
+                    return 0.01
+
+                mock_executor._extract_env = mock_extract_env
+
+                with patch("hypha.workers.conda.CondaKernel") as mock_kernel_class:
+                    mock_kernel = MagicMock()
+                    mock_kernel_class.return_value = mock_kernel
+
+                    async def mock_start(timeout=30.0):
+                        seen["start"] = timeout
+                        return None
+
+                    async def mock_execute(code, timeout=60.0, **kwargs):
+                        seen["execute"] = timeout
+                        return {"success": True, "outputs": [], "error": None}
+
+                    mock_kernel.start = mock_start
+                    mock_kernel.execute = mock_execute
+
+                    worker = CondaWorker()
+                    session_id = await worker.start(config)
+
+                    # Assert that both kernel.start and execute saw the configured timeout
+                    assert seen["start"] == requested_timeout
+                    assert seen["execute"] == requested_timeout
+
+                    await worker.stop(session_id)
+
     async def test_progress_callback_error_handling(self):
         """Test progress callback during error scenarios."""
 
