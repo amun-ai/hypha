@@ -629,6 +629,7 @@ class RedisStore:
             self._root_user.get_workspace(),
             client_id=self._server_id,
             silent=False,
+            timeout=20,
         )
         await self._root_workspace_interface.register_service(
             {
