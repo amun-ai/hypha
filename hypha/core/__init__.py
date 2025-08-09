@@ -823,6 +823,10 @@ class RedisEventBus:
         "redis_eventbus_messages_processed_total",
         "Total messages processed by RedisEventBus",
     )
+    _pubsub_latency = Gauge(
+        "redis_pubsub_latency_seconds",
+        "Redis pubsub latency in seconds",
+    )
     _active_pubsub_connections = Gauge(
         "redis_eventbus_active_pubsub_connections",
         "Current active Redis pubsub connections",
@@ -894,6 +898,11 @@ class RedisEventBus:
         self._local_clients = set()  # Set of "workspace/client_id" strings
         self._subscribed_patterns = set()  # Track which patterns we've subscribed to
         self._pubsub = None  # Store the pubsub object for dynamic subscriptions
+        # Ensure latency gauge exists in /metrics even if not updated elsewhere
+        try:
+            RedisEventBus._pubsub_latency.set(0)
+        except Exception:
+            pass
         # Health and circuit breaker state
         self._consecutive_failures = 0
         self._max_failures = int(os.environ.get("HYPHA_EVENTBUS_MAX_FAILURES", "5"))
