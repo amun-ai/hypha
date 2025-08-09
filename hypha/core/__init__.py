@@ -13,15 +13,7 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from pydantic import BaseModel, Field, field_validator
 import msgpack
-from pydantic import (  # pylint: disable=no-name-in-module
-    BaseModel,
-    EmailStr,
-    PrivateAttr,
-    constr,
-    SerializeAsAny,
-    ConfigDict,
-    AnyHttpUrl,
-)
+from pydantic import EmailStr, PrivateAttr, constr, SerializeAsAny, ConfigDict, AnyHttpUrl
 
 from hypha.utils import EventBus
 import jsonschema
@@ -681,8 +673,7 @@ class RedisRPCConnection:
 
         packed_message = msgpack.packb(message) + data[pos:]
         
-        # Use the standard event bus routing (will use Redis for cross-server communication)
-        logger.debug(f"Routing message from {source_id} to {target_id}")
+        # Use Redis event bus routing (local handlers are attached there)
         await self._event_bus.emit(f"{target_id}:msg", packed_message)
             
         RedisRPCConnection._counter.labels(workspace=self._workspace).inc()
@@ -708,57 +699,34 @@ class RedisRPCConnection:
     def _update_load_metric(self):
         """Update the load metric based on message rate (requests per minute)."""
         try:
-            # Get the current request count
-            current_requests = RedisRPCConnection._client_request_counter.labels(
-                workspace=self._workspace, client_id=self._client_id
-            )._value._value
-
-            # Calculate requests per minute based on recent activity
-            # We'll use a simple approach: current timestamp and request count
             current_time = time.time()
-
-            # Store the last update time and request count for this client
             client_key = f"{self._workspace}/{self._client_id}"
+            # Maintain our own per-client request counters
             if not hasattr(RedisRPCConnection, "_client_metrics"):
                 RedisRPCConnection._client_metrics = {}
 
-            if client_key not in RedisRPCConnection._client_metrics:
-                RedisRPCConnection._client_metrics[client_key] = {
+            metrics = RedisRPCConnection._client_metrics.get(client_key)
+            if metrics is None:
+                metrics = {
                     "last_time": current_time,
-                    "last_requests": current_requests,
+                    "last_requests": 0,
                 }
-                load = 0.0
-            else:
-                last_time = RedisRPCConnection._client_metrics[client_key]["last_time"]
-                last_requests = RedisRPCConnection._client_metrics[client_key][
-                    "last_requests"
-                ]
+                RedisRPCConnection._client_metrics[client_key] = metrics
 
-                # Calculate time difference in minutes
-                time_diff = (current_time - last_time) / 60.0
+            # Increment local request counter
+            metrics["last_requests"] += 1
 
-                if time_diff > 0:
-                    # Calculate requests per minute
-                    request_diff = current_requests - last_requests
-                    load = request_diff / time_diff
-                else:
-                    load = 0.0
-
-                # Update stored values
-                RedisRPCConnection._client_metrics[client_key][
-                    "last_time"
-                ] = current_time
-                RedisRPCConnection._client_metrics[client_key][
-                    "last_requests"
-                ] = current_requests
-
-            # Set the load gauge
-            RedisRPCConnection._client_load_gauge.labels(
-                workspace=self._workspace, client_id=self._client_id
-            ).set(load)
-
+            # Compute RPM over a 60s window
+            time_diff = current_time - metrics["last_time"]
+            if time_diff >= 60:
+                rpm = metrics["last_requests"] / (time_diff / 60.0)
+                RedisRPCConnection._client_load_gauge.labels(
+                    workspace=self._workspace, client_id=self._client_id
+                ).set(rpm)
+                metrics["last_time"] = current_time
+                metrics["last_requests"] = 0
         except Exception as e:
-            logger.warning(f"Failed to update load metric: {e}")
+            logger.warning("Failed to update load metric: %s", e)
 
     def update_load(self, load_value: float):
         """Update the current load for this client."""
@@ -926,6 +894,11 @@ class RedisEventBus:
         self._local_clients = set()  # Set of "workspace/client_id" strings
         self._subscribed_patterns = set()  # Track which patterns we've subscribed to
         self._pubsub = None  # Store the pubsub object for dynamic subscriptions
+        # Health and circuit breaker state
+        self._consecutive_failures = 0
+        self._max_failures = int(os.environ.get("HYPHA_EVENTBUS_MAX_FAILURES", "5"))
+        self._circuit_breaker_open = False
+        self._last_successful_connection: Optional[float] = None
 
     async def register_local_client(self, workspace: str, client_id: str):
         """Register a local client for optimized event routing."""
@@ -1203,6 +1176,10 @@ class RedisEventBus:
                 if not self._ready.done():
                     self._ready.set_result(True)
                 self._counter.labels(event="subscription", status="success").inc()
+                # Mark healthy on successful subscription
+                self._last_successful_connection = time.time()
+                self._consecutive_failures = 0
+                self._circuit_breaker_open = False
 
                 while not self._stop:
                     try:
@@ -1221,6 +1198,10 @@ class RedisEventBus:
                         self._counter.labels(
                             event="message_processing", status="failure"
                         ).inc()
+                        # Count consecutive failures and trip breaker if necessary
+                        self._consecutive_failures += 1
+                        if self._consecutive_failures >= self._max_failures:
+                            self._circuit_breaker_open = True
                         await asyncio.sleep(0.1)  # Prevent tight loop on errors
 
             except Exception as exp:
@@ -1231,6 +1212,10 @@ class RedisEventBus:
                 # metrics
                 RedisEventBus._reconnect_attempts_total.inc()
                 RedisEventBus._reconnect_attempts_total_int += 1
+                # Count consecutive failures and trip breaker if necessary
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= self._max_failures:
+                    self._circuit_breaker_open = True
                 await asyncio.sleep(1)  # Prevent tight loop on connection errors
             finally:
                 # Always clean up pubsub connection
@@ -1255,6 +1240,10 @@ class RedisEventBus:
                 RedisEventBus._counter.labels(event="*", status="processed").inc()
                 RedisEventBus._messages_processed_total.inc()
                 RedisEventBus._messages_processed_total_int += 1
+                # Mark healthy upon receiving any message
+                self._last_successful_connection = time.time()
+                self._consecutive_failures = 0
+                self._circuit_breaker_open = False
 
                 # Handle prefix-based system with data type encoded in payload
                 if channel.startswith("broadcast:") or channel.startswith("targeted:"):
@@ -1298,3 +1287,39 @@ class RedisEventBus:
                 RedisEventBus._counter.labels(
                     event="message_processing", status="error"
                 ).inc()
+                # Count consecutive failures and possibly open breaker
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= self._max_failures:
+                    self._circuit_breaker_open = True
+
+    async def _check_pubsub_health(self, timeout: float = 2.0) -> bool:
+        """Verify Redis pubsub round-trip health.
+
+        This publishes a unique healthcheck event through Redis and waits for it
+        to arrive via the Redis-backed event bus (not the local event bus).
+        Returns True if the event is observed within the timeout.
+        """
+        try:
+            if self._pubsub is None or self._circuit_breaker_open:
+                return False
+
+            event_name = f"healthcheck:{uuid.uuid4().hex}"
+            loop = asyncio.get_running_loop()
+            future: asyncio.Future = loop.create_future()
+
+            def handler(_):
+                if not future.done():
+                    future.set_result(True)
+
+            # Listen only on the Redis-backed event bus to avoid local short-circuiting
+            self._redis_event_bus.on(event_name, handler)
+            try:
+                emit_result = self.emit(event_name, {"ts": time.time()})
+                if asyncio.iscoroutine(emit_result):
+                    await emit_result
+                await asyncio.wait_for(future, timeout)
+                return True
+            finally:
+                self._redis_event_bus.off(event_name, handler)
+        except Exception:
+            return False

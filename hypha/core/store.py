@@ -240,6 +240,7 @@ class RedisStore:
                 socket_keepalive_options={},
                 socket_connect_timeout=5,
                 socket_timeout=5,
+                client_name=f"hypha-server:{self._server_id}:cmd",
             )
 
         else:  #  Create a redis server with fakeredis
@@ -1043,6 +1044,14 @@ class RedisStore:
                     pass
 
         await self._event_bus.stop()
+        # Close Redis client gracefully
+        try:
+            if hasattr(self._redis, "close"):
+                await self._redis.close()
+            if hasattr(self._redis, "connection_pool"):
+                await self._redis.connection_pool.disconnect()
+        except Exception:
+            pass
         logger.info("Teardown complete")
 
     @property

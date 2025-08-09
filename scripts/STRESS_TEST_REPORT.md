@@ -165,7 +165,6 @@ self._redis = aioredis.from_url(
 **Fixed 4 Critical Memory Leaks**:
 
 1. **`_subscribe_redis`** - Added proper cleanup in `finally` blocks
-2. **`_check_pubsub_health`** - Added exception handling with connection cleanup
 3. **`_attempt_reconnection`** - Enhanced task cancellation and cleanup
 4. **`stop`** - Improved shutdown procedure with comprehensive cleanup
 
