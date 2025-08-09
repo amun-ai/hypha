@@ -890,25 +890,7 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
             self._sessions.pop(session_id, None)
             self._session_data.pop(session_id, None)
 
-    async def list_sessions(
-        self, workspace: str, context: Optional[Dict[str, Any]] = None
-    ) -> List[SessionInfo]:
-        """List all conda environment sessions for a workspace."""
-        return [
-            session_info
-            for session_info in self._sessions.values()
-            if session_info.workspace == workspace
-        ]
-
-    async def get_session_info(
-        self, session_id: str, context: Optional[Dict[str, Any]] = None
-    ) -> SessionInfo:
-        """Get information about a conda environment session."""
-        if session_id not in self._sessions:
-            raise SessionNotFoundError(
-                f"Conda environment session {session_id} not found"
-            )
-        return self._sessions[session_id]
+    
 
     async def get_logs(
         self,
@@ -960,33 +942,6 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
             "Screenshots not supported for conda environment sessions"
         )
 
-    async def prepare_workspace(
-        self, workspace: str, context: Optional[Dict[str, Any]] = None
-    ) -> None:
-        """Prepare workspace for conda environment operations."""
-        logger.info(f"Preparing workspace {workspace} for conda environment worker")
-        pass
-
-    async def close_workspace(
-        self, workspace: str, context: Optional[Dict[str, Any]] = None
-    ) -> None:
-        """Close all conda environment sessions for a workspace."""
-        logger.info(f"Closing workspace {workspace} for conda environment worker")
-
-        # Stop all sessions for this workspace
-        sessions_to_stop = [
-            session_id
-            for session_id, session_info in self._sessions.items()
-            if session_info.workspace == workspace
-        ]
-
-        for session_id in sessions_to_stop:
-            try:
-                await self.stop(session_id)
-            except Exception as e:
-                logger.warning(
-                    f"Failed to stop conda environment session {session_id}: {e}"
-                )
 
     async def shutdown(self, context: Optional[Dict[str, Any]] = None) -> None:
         """Shutdown the conda environment worker."""

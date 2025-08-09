@@ -17,7 +17,7 @@ hypha-server:
   image:
     repository: ghcr.io/amun-ai/hypha
     pullPolicy: IfNotPresent
-    tag: "0.20.93"
+    tag: "0.20.95"
   
   ingress:
     enabled: true
@@ -73,7 +73,7 @@ hypha-server:
     - name: HYPHA_LOGLEVEL
       value: "INFO"
     - name: MC_CONFIG_DIR
-      value: "/data/.mc"
+      value: "/tmp/.mc"
     - name: HYPHA_JWT_SECRET
       valueFrom:
         secretKeyRef:

@@ -224,23 +224,7 @@ class PythonEvalRunner(BaseWorker):
             self._sessions.pop(session_id, None)
             self._session_data.pop(session_id, None)
 
-    async def list_sessions(
-        self, workspace: str, context: Optional[Dict[str, Any]] = None
-    ) -> List[SessionInfo]:
-        """List all Python eval sessions for a workspace."""
-        return [
-            session_info
-            for session_info in self._sessions.values()
-            if session_info.workspace == workspace
-        ]
-
-    async def get_session_info(
-        self, session_id: str, context: Optional[Dict[str, Any]] = None
-    ) -> SessionInfo:
-        """Get information about a Python eval session."""
-        if session_id not in self._sessions:
-            raise SessionNotFoundError(f"Python eval session {session_id} not found")
-        return self._sessions[session_id]
+    
 
     async def get_logs(
         self,
@@ -290,31 +274,7 @@ class PythonEvalRunner(BaseWorker):
             "Screenshots not supported for Python evaluation sessions"
         )
 
-    async def prepare_workspace(
-        self, workspace: str, context: Optional[Dict[str, Any]] = None
-    ) -> None:
-        """Prepare workspace for Python eval operations."""
-        logger.info(f"Preparing workspace {workspace} for Python eval worker")
-        pass
-
-    async def close_workspace(
-        self, workspace: str, context: Optional[Dict[str, Any]] = None
-    ) -> None:
-        """Close all Python eval sessions for a workspace."""
-        logger.info(f"Closing workspace {workspace} for Python eval worker")
-
-        # Stop all sessions for this workspace
-        sessions_to_stop = [
-            session_id
-            for session_id, session_info in self._sessions.items()
-            if session_info.workspace == workspace
-        ]
-
-        for session_id in sessions_to_stop:
-            try:
-                await self.stop(session_id)
-            except Exception as e:
-                logger.warning(f"Failed to stop Python eval session {session_id}: {e}")
+    
 
     async def shutdown(self, context: Optional[Dict[str, Any]] = None) -> None:
         """Shutdown the Python eval worker."""

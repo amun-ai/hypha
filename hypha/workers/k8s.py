@@ -710,33 +710,6 @@ class KubernetesWorker(BaseWorker):
                 }
             }
 
-    async def prepare_workspace(
-        self, workspace: str, context: Optional[Dict[str, Any]] = None
-    ) -> None:
-        """Prepare workspace for Kubernetes pod operations."""
-        logger.info(f"Preparing workspace {workspace} for Kubernetes pod worker")
-        # No specific preparation needed for Kubernetes pods
-        pass
-
-    async def close_workspace(
-        self, workspace: str, context: Optional[Dict[str, Any]] = None
-    ) -> None:
-        """Close all Kubernetes pod sessions for a workspace."""
-        logger.info(f"Closing workspace {workspace} for Kubernetes pod worker")
-
-        # Stop all sessions for this workspace
-        sessions_to_stop = [
-            session_id
-            for session_id, session_info in self._sessions.items()
-            if session_info.workspace == workspace
-        ]
-
-        for session_id in sessions_to_stop:
-            try:
-                await self.stop(session_id)
-            except Exception as e:
-                logger.warning(f"Failed to stop Kubernetes pod session {session_id}: {e}")
-
     async def shutdown(self, context: Optional[Dict[str, Any]] = None) -> None:
         """Shutdown the Kubernetes worker."""
         logger.info("Shutting down Kubernetes worker...")

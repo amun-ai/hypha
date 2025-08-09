@@ -302,10 +302,6 @@ def execute(input_data):
                 session_id = await worker.start(config)
                 assert session_id == "real-conda-test"
 
-                # Verify session was created
-                session_info = await worker.get_session_info(session_id)
-                assert session_info.status == SessionStatus.RUNNING
-
                 print("⚙️ Executing code in real conda environment...")
                 # Execute code directly
                 test_code = """
@@ -914,10 +910,6 @@ print("=== Script completed successfully ===")
                 session_id = await worker.start(config)
 
                 # For standalone scripts, the code runs during start()
-                # Check that session is running
-                session_info = await worker.get_session_info(session_id)
-                assert session_info.status == SessionStatus.RUNNING
-
                 # Get logs to verify script executed
                 logs = await worker.get_logs(session_id)
 

@@ -514,10 +514,6 @@ async def main():
     with open("screenshot.png", "wb") as f:
         f.write(screenshot)
     
-    # Get session info
-    info = await browser_worker.get_session_info(session_id)
-    print(f"Session info: {info}")
-    
     # Get logs
     logs = await browser_worker.get_logs(session_id)
     print(f"Session logs: {logs}")
@@ -707,12 +703,6 @@ Take a screenshot of a browser session.
 
 #### `get_logs(session_id: str, type: str = None) -> Dict[str, List[str]]`
 Get logs for a browser session.
-
-#### `get_session_info(session_id: str) -> SessionInfo`
-Get information about a browser session.
-
-#### `list_sessions(workspace: str) -> List[SessionInfo]`
-List all browser sessions for a workspace.
 
 #### `clear_app_cache(workspace: str, app_id: str) -> Dict[str, Any]`
 Clear cache for an application.

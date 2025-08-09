@@ -768,7 +768,7 @@ class ArtifactController:
             stage: bool = False,
             token: str = None,
             limit: int = 1000,
-            use_proxy: bool = False,
+            use_proxy: bool = None,
             expires_in: int = 3600,
             use_local_url: bool = False,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
@@ -3363,7 +3363,7 @@ class ArtifactController:
         part_count: int,
         download_weight: float = 0,
         expires_in: int = 3600,
-        use_proxy: bool = False,
+        use_proxy: bool = None,
         use_local_url: bool = False,
         context: dict = None,
     ):
@@ -4541,6 +4541,7 @@ class ArtifactController:
                                 file_path,
                                 version="latest",
                                 use_proxy=False,
+                                use_local_url=True,
                                 context=context,
                             )
                             try:

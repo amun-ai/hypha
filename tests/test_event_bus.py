@@ -197,7 +197,7 @@ async def test_off_combined_handlers(event_bus, fake_redis):
 
     await event_bus.emit("combined_event", {"key": "combined_local_value"})
     await fake_redis.publish(
-        "event:d:combined_event", json.dumps({"key": "combined_redis_value"})
+        "broadcast:combined_event", json.dumps({"key": "combined_redis_value"})
     )
     await asyncio.sleep(0.1)
 

@@ -242,6 +242,106 @@ async def test_redis_event_subscription_lifecycle(redis_store):
     )
 
 
+async def test_redis_metrics_connections_and_patterns(redis_store):
+    """Verify Prometheus-style counters reflect connect/disconnect and subscriptions without leaks."""
+
+    # Create a dedicated workspace
+    await redis_store.register_workspace(
+        dict(
+            name="metrics-ws",
+            description="metrics workspace",
+            owners=[],
+            persistent=True,
+            read_only=False,
+        ),
+        overwrite=True,
+    )
+
+    # Snapshot initial metrics
+    initial = await redis_store.get_metrics()
+    init_rpc_created = initial["rpc"]["rpc_connections"]["created_total"]
+    init_rpc_closed = initial["rpc"]["rpc_connections"]["closed_total"]
+    init_rpc_active = initial["rpc"]["rpc_connections"]["active"]
+    init_patterns_active = initial["eventbus"]["eventbus"]["patterns"]["active"]
+    init_local_clients = initial["eventbus"]["eventbus"]["local_clients"]
+
+    # Connect three clients
+    api1 = await redis_store.connect_to_workspace("metrics-ws", client_id="c1")
+    api2 = await redis_store.connect_to_workspace("metrics-ws", client_id="c2")
+    api3 = await redis_store.connect_to_workspace("metrics-ws", client_id="manager-xyz")
+    await asyncio.sleep(0.3)
+
+    mid = await redis_store.get_metrics()
+    mid_rpc_created = mid["rpc"]["rpc_connections"]["created_total"]
+    mid_rpc_active = mid["rpc"]["rpc_connections"]["active"]
+    mid_patterns_active = mid["eventbus"]["eventbus"]["patterns"]["active"]
+    mid_local_clients = mid["eventbus"]["eventbus"]["local_clients"]
+
+    # Expect +3 created and +3 active compared to initial
+    assert mid_rpc_created - init_rpc_created >= 3
+    assert mid_rpc_active - init_rpc_active >= 3
+    # Each client adds one targeted pattern and one local client
+    assert mid_patterns_active - init_patterns_active >= 3
+    assert mid_local_clients - init_local_clients >= 3
+
+    # Publish a broadcast message and ensure processed counter increases
+    before_processed = mid["eventbus"]["eventbus"]["messages_processed_total"]
+    await redis_store.get_event_bus().emit("metrics-ws/*:msg", {"type": "x", "to": "*", "data": {}})
+    await asyncio.sleep(0.2)
+    after_emit = await redis_store.get_metrics()
+    assert (
+        after_emit["eventbus"]["eventbus"]["messages_processed_total"]
+        >= before_processed
+    )
+
+    # Disconnect clients and verify counters go back to initial levels
+    await api1.disconnect()
+    await api2.disconnect()
+    await api3.disconnect()
+    await asyncio.sleep(0.3)
+
+    final = await redis_store.get_metrics()
+    # Closed should increase by at least 3
+    assert final["rpc"]["rpc_connections"]["closed_total"] - init_rpc_closed >= 3
+    # Active returns to initial
+    assert final["rpc"]["rpc_connections"]["active"] == init_rpc_active
+    # Patterns and local client gauges return to initial
+    assert final["eventbus"]["eventbus"]["patterns"]["active"] == init_patterns_active
+    assert final["eventbus"]["eventbus"]["local_clients"] == init_local_clients
+
+
+async def test_redis_stress_connect_disconnect_counters(redis_store):
+    """Stress: rapid connect/disconnect should not leak subscriptions or connections."""
+    await redis_store.register_workspace(
+        dict(
+            name="stress-ws",
+            description="stress workspace",
+            owners=[],
+            persistent=True,
+            read_only=False,
+        ),
+        overwrite=True,
+    )
+
+    initial = await redis_store.get_metrics()
+    init_rpc_active = initial["rpc"]["rpc_connections"]["active"]
+    init_patterns_active = initial["eventbus"]["eventbus"]["patterns"]["active"]
+    init_local_clients = initial["eventbus"]["eventbus"]["local_clients"]
+
+    sessions = []
+    # Create 20 connect/disconnect cycles
+    for i in range(20):
+        api = await redis_store.connect_to_workspace("stress-ws", client_id=f"s{i}")
+        sessions.append(api)
+        await asyncio.sleep(0.03)
+        await api.disconnect()
+    await asyncio.sleep(0.5)
+
+    final = await redis_store.get_metrics()
+    assert final["rpc"]["rpc_connections"]["active"] == init_rpc_active
+    assert final["eventbus"]["eventbus"]["patterns"]["active"] == init_patterns_active
+    assert final["eventbus"]["eventbus"]["local_clients"] == init_local_clients
+
 async def test_websocket_server(fastapi_server, test_user_token_7):
     """Test the websocket server."""
     wm = await connect_to_server(

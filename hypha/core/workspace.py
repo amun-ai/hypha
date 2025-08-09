@@ -1110,7 +1110,14 @@ class WorkspaceManager:
         cws = context["ws"]
         workspace = workspace or cws
         pattern = f"services:*|*:{workspace}/*:built-in@*"
-        keys = await self._redis.keys(pattern)
+        # Use SCAN to avoid blocking Redis in large deployments
+        keys = []
+        cursor = 0
+        while True:
+            cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=500)
+            keys.extend(batch)
+            if cursor == 0:
+                break
         clients = []
         for key in set(keys):
             service_data = await self._redis.hgetall(key)
@@ -1489,8 +1496,14 @@ class WorkspaceManager:
         ), "Query patterns contain invalid characters."
 
         keys = []
+        # Use SCAN for each pattern
         for pattern in patterns:
-            keys.extend(await self._redis.keys(pattern))
+            cursor = 0
+            while True:
+                cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=500)
+                keys.extend(batch)
+                if cursor == 0:
+                    break
 
         if workspace == "*":
             # add services in the current workspace (but not unlisted unless explicitly requested)
@@ -1499,7 +1512,13 @@ class WorkspaceManager:
                 pass  # Already handled above with error
             else:
                 ws_pattern = f"services:{original_visibility}|{type_filter}:{cws}/{client_id}:{service_id}@{app_id}"
-                keys = keys + await self._redis.keys(ws_pattern)
+                # Scan additional keys in current workspace to avoid blocking Redis
+                cursor = 0
+                while True:
+                    cursor, batch = await self._redis.scan(cursor=cursor, match=ws_pattern, count=500)
+                    keys.extend(batch)
+                    if cursor == 0:
+                        break
 
         services = []
         for key in set(keys):
@@ -2660,7 +2679,13 @@ class WorkspaceManager:
             char in pattern for char in "{}"
         ), "Query pattern contains invalid characters."
 
-        keys = await self._redis.keys(pattern)
+        keys = []
+        cursor = 0
+        while True:
+            cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=500)
+            keys.extend(batch)
+            if cursor == 0:
+                break
         logger.info(f"Removing {len(keys)} services for client {client_id} in {cws}")
         for key in keys:
             await self._redis.delete(key)

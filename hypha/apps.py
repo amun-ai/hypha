@@ -869,6 +869,11 @@ class ServerAppController:
         # Ensure worker manager is started
         await self._ensure_worker_manager_started()
         
+        # Respect disabled workers per workspace
+        workspace = context.get("ws") if context else None
+        if workspace and await self.worker_manager.is_worker_disabled(worker_id, workspace):
+            return None
+
         # Try to get worker with persistent connection from current workspace
         worker = await self.worker_manager.get_worker_ref(
             worker_id, context, from_workspace=None
@@ -886,6 +891,49 @@ class ServerAppController:
                 return worker
             
         return None
+
+    @schema_method
+    async def edit_worker(
+        self,
+        worker_id: str = Field(
+            ..., description="The worker ID to edit/disable/enable."
+        ),
+        disabled: bool = Field(
+            None, description="Set True to disable, False to enable."
+        ),
+        context: Optional[dict] = Field(
+            None,
+            description="Context including user and workspace details.",
+        ),
+    ) -> None:
+        """Enable/disable a worker and cleanup sessions when disabling."""
+        # Ensure worker manager is started
+        await self._ensure_worker_manager_started()
+
+        if context is None:
+            context = {"user": self.store.get_root_user().model_dump(), "ws": "public"}
+        workspace = context.get("ws")
+        user_info = UserInfo.model_validate(context["user"])
+        if not user_info.check_permission(workspace, UserPermission.read_write):
+            raise Exception(
+                f"User {user_info.id} does not have permission to edit worker {worker_id} in workspace {workspace}."
+            )
+
+        if disabled is None:
+            return
+
+        await self.worker_manager.disable_worker(worker_id, workspace, disabled)
+
+        if disabled:
+            # Stop all sessions using this worker
+            all_sessions = await self._get_all_sessions()
+            for session in all_sessions:
+                if session.get("worker_id") == worker_id and session.get("id", "").startswith(f"{workspace}/"):
+                    try:
+                        await self._stop(session["id"], raise_exception=False, context=context)
+                    except Exception:
+                        # Let error bubble if requested; ignore otherwise
+                        pass
 
     @schema_method
     async def list_workers(
@@ -912,6 +960,7 @@ class ServerAppController:
         - name: Worker display name
         - description: Worker description  
         - supported_types: List of app types this worker supports
+        - disabled: Whether the worker is disabled in the current workspace (public workers are always enabled)
         """
         workspace = context.get("ws") if context else None
         workers_info = []
@@ -944,11 +993,17 @@ class ServerAppController:
                         if app_type and app_type not in supported_types:
                             continue
                             
+                        is_disabled = False
+                        try:
+                            is_disabled = await self.worker_manager.is_worker_disabled(svc["id"], workspace)
+                        except Exception:
+                            is_disabled = False
                         worker_info = {
                             "id": svc["id"],
                             "name": full_svc.get("name", svc["id"]),
                             "description": full_svc.get("description", ""),
                             "supported_types": supported_types,
+                            "disabled": is_disabled,
                         }
                         workers_info.append(worker_info)
                 except Exception as e:
@@ -980,6 +1035,7 @@ class ServerAppController:
                         "name": full_svc.get("name", svc["id"]),
                         "description": full_svc.get("description", ""),
                         "supported_types": supported_types,
+                        "disabled": False,
                     }
                     workers_info.append(worker_info)
                 except Exception as e:
@@ -2975,6 +3031,7 @@ class ServerAppController:
         # Shutdown worker manager
         await self.worker_manager.shutdown()
 
+
     async def prepare_workspace(self, workspace_info: WorkspaceInfo):
         """Prepare the workspace."""
         context = {
@@ -2987,28 +3044,13 @@ class ServerAppController:
             if app.get("daemon"):
                 logger.info(f"Starting daemon app: {app['id']}")
                 try:
-                    await self.start(app["id"], context=context)
+                    # Prefer the launch context stored with the app (from installation time)
+                    launch_context = app.get("startup_context") or context
+                    await self.start(app["id"], context=launch_context)
                 except Exception as exp:
                     logger.error(
                         f"Failed to start daemon app: {app['id']}, error: {exp}"
                     )
-
-        if workspace_info.id not in ["ws-user-root", "public", "ws-anonymous"]:
-            context = {
-                "ws": workspace_info.id,
-                "user": self.store.get_root_user().model_dump(),
-            }
-            workers = await self.get_server_app_workers(context=context)
-            for worker in workers:
-                if worker.prepare_workspace:
-                    try:
-                        await worker.prepare_workspace(
-                            workspace_info.id, context=context
-                        )
-                    except Exception as exp:
-                        logger.warning(
-                            f"Worker {worker.id} failed to prepare workspace: {workspace_info.id}, error: {exp}"
-                        )
 
     async def close_workspace(self, workspace_info: WorkspaceInfo):
         """Archive the workspace."""
@@ -3022,18 +3064,6 @@ class ServerAppController:
         for app in all_sessions:
             if app.get("workspace") == workspace_info.id:
                 await self._stop(app["id"], raise_exception=False, context=context)
-        # Send to all workers
-        workers = await self.get_server_app_workers(context=context)
-        if not workers:
-            return
-        for worker in workers:
-            if worker.close_workspace:
-                try:
-                    await worker.close_workspace(workspace_info.id, context=context)
-                except Exception as exp:
-                    logger.warning(
-                        f"Worker failed to close workspace: {workspace_info.id}, error: {exp}"
-                    )
 
     async def launch(self, *args, **kwargs):
         """Launch an application."""
