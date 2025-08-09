@@ -935,13 +935,7 @@ async def stop(session_id):
     else:
         print(f"Session {session_id} not found")
 
-async def list_sessions(workspace):
-    """List all sessions for a workspace."""
-    workspace_sessions = []
-    for session_id, session_data in worker_sessions.items():
-        if session_data["workspace"] == workspace:
-            workspace_sessions.append(session_data)
-    return workspace_sessions
+ 
 
 async def get_logs(session_id, log_type=None, offset=0, limit=None):
     """Get logs for a session."""
@@ -961,28 +955,6 @@ async def get_logs(session_id, log_type=None, offset=0, limit=None):
     else:
         return {"log": logs, "error": []}
 
-async def get_session_info(session_id):
-    """Get information about a session."""
-    if session_id not in worker_sessions:
-        raise Exception(f"Session {session_id} not found")
-    return worker_sessions[session_id]
-
-async def prepare_workspace(workspace):
-    """Prepare workspace for worker operations."""
-    print(f"Preparing workspace {workspace} for custom worker")
-
-async def close_workspace(workspace):
-    """Close workspace and cleanup sessions."""
-    print(f"Closing workspace {workspace} for custom worker")
-    
-    # Stop all sessions for this workspace
-    sessions_to_stop = [
-        session_id for session_id, session_data in worker_sessions.items()
-        if session_data["workspace"] == workspace
-    ]
-    
-    for session_id in sessions_to_stop:
-        await stop(session_id)
 
 async def execute(session_id, script, config=None, progress_callback=None, context=None):
     """Execute a script in a running session (optional method)."""
@@ -1085,11 +1057,7 @@ async def hypha_startup(server):
         "supported_types": ["my-custom-type", "another-type"],
         "start": start,
         "stop": stop,
-        "list_sessions": list_sessions,
         "get_logs": get_logs,
-        "get_session_info": get_session_info,
-        "prepare_workspace": prepare_workspace,
-        "close_workspace": close_workspace,
         "execute": execute,  # Optional: enables interactive code execution
     })
     
@@ -1162,8 +1130,6 @@ class PythonEvalRunner:
             "list": self.list,
             "get_logs": self.get_logs,
             "shutdown": self.shutdown,
-            "close_workspace": self.close_workspace,
-            "prepare_workspace": self.prepare_workspace,
         }
 
 # Register as startup function
@@ -1260,11 +1226,8 @@ All custom workers must implement these core functions:
 
 - `start(config)`: Start an application session
 - `stop(session_id)`: Stop a session  
-- `list_sessions(workspace)`: List sessions in a workspace
-- `get_logs(session_id, ...)`: Get session logs
-- `get_session_info(session_id)`: Get session information
-- `close_workspace(workspace)`: Clean up workspace sessions
-- `prepare_workspace(workspace)`: Prepare workspace for use
+ - `get_logs(session_id, ...)`: Get session logs
+  (Workspace lifecycle is handled by the app controller; workers no longer implement these hooks.)
 
 **Optional functions for enhanced functionality:**
 - `execute(session_id, script, config, progress_callback, context)`: Execute scripts in running sessions (enables interactive code execution)
