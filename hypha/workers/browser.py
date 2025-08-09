@@ -512,8 +512,13 @@ class BrowserWorker(BaseWorker):
         3. Updates manifest with correct entry_point
         4. Returns updated manifest and files
         """
-        # Extract progress_callback from config
-        progress_callback = config.get("progress_callback") if config else lambda x: None
+        # Extract progress_callback from config; default to no-op if not provided
+        def _noop(_msg):
+            return None
+
+        progress_callback = (
+            config.get("progress_callback") if config and config.get("progress_callback") else _noop
+        )
 
         progress_callback(
             {"type": "info", "message": "Starting browser app compilation..."}
