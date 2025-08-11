@@ -4658,6 +4658,297 @@ async def test_secret_edge_cases(minio_server, fastapi_server, test_user_token):
     await artifact_manager.delete(artifact_id=artifact_id)
 
 
+async def test_download_weight_management(
+    minio_server, fastapi_server, test_user_token, test_user_token_2
+):
+    """Test download weight management functions."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create an artifact with admin user
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Test Artifact for Download Weights"},
+    )
+    artifact_id = artifact.id
+
+    # Test set_download_weight with admin user (should work)
+    await artifact_manager.set_download_weight(
+        artifact_id=artifact_id,
+        file_path="data.csv",
+        download_weight=2.5,
+    )
+
+    # Read the artifact to verify download weight was set
+    updated_artifact = await artifact_manager.read(artifact_id=artifact_id)
+    assert "download_weights" in updated_artifact.config
+    assert updated_artifact.config["download_weights"]["data.csv"] == 2.5
+
+    # Test updating existing download weight
+    await artifact_manager.set_download_weight(
+        artifact_id=artifact_id,
+        file_path="data.csv",
+        download_weight=5.0,
+    )
+
+    updated_artifact = await artifact_manager.read(artifact_id=artifact_id)
+    assert updated_artifact.config["download_weights"]["data.csv"] == 5.0
+
+    # Test adding multiple file weights
+    await artifact_manager.set_download_weight(
+        artifact_id=artifact_id,
+        file_path="model.pkl",
+        download_weight=1.0,
+    )
+
+    await artifact_manager.set_download_weight(
+        artifact_id=artifact_id,
+        file_path="results.json",
+        download_weight=0.5,
+    )
+
+    updated_artifact = await artifact_manager.read(artifact_id=artifact_id)
+    download_weights = updated_artifact.config["download_weights"]
+    assert download_weights["data.csv"] == 5.0
+    assert download_weights["model.pkl"] == 1.0
+    assert download_weights["results.json"] == 0.5
+
+    # Test removing download weight by setting to 0
+    await artifact_manager.set_download_weight(
+        artifact_id=artifact_id,
+        file_path="results.json",
+        download_weight=0,
+    )
+
+    updated_artifact = await artifact_manager.read(artifact_id=artifact_id)
+    download_weights = updated_artifact.config["download_weights"]
+    assert "results.json" not in download_weights  # Should be removed
+    assert download_weights["data.csv"] == 5.0  # Others should remain
+    assert download_weights["model.pkl"] == 1.0
+
+    # Test with nested file paths
+    await artifact_manager.set_download_weight(
+        artifact_id=artifact_id,
+        file_path="subfolder/nested_file.txt",
+        download_weight=3.0,
+    )
+
+    updated_artifact = await artifact_manager.read(artifact_id=artifact_id)
+    assert updated_artifact.config["download_weights"]["subfolder/nested_file.txt"] == 3.0
+
+    # Test permission restrictions with second user (non-admin)
+    api2 = await connect_to_server(
+        {"name": "test-client-2", "server_url": SERVER_URL, "token": test_user_token_2}
+    )
+    artifact_manager2 = await api2.get_service("public/artifact-manager")
+
+    # Second user should NOT be able to set_download_weight (no workspace permission)
+    with pytest.raises(Exception) as exc_info:
+        await artifact_manager2.set_download_weight(
+            artifact_id=artifact_id,
+            file_path="unauthorized_file.txt",
+            download_weight=1.0,
+        )
+    assert "permission" in str(exc_info.value).lower()
+
+    # Test with negative download weight (should fail)
+    with pytest.raises(ValueError) as exc_info:
+        await artifact_manager.set_download_weight(
+            artifact_id=artifact_id,
+            file_path="negative_weight.txt",
+            download_weight=-1.0,
+        )
+    assert "non-negative" in str(exc_info.value)
+
+    # Test with non-existent artifact (should fail)
+    with pytest.raises(Exception):
+        await artifact_manager.set_download_weight(
+            artifact_id="nonexistent/artifact",
+            file_path="file.txt",
+            download_weight=1.0,
+        )
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=artifact_id)
+
+
+async def test_download_weight_functionality_integration(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test that download weights work correctly with actual file operations."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create an artifact
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Download Weight Integration Test"},
+    )
+    artifact_id = artifact.id
+
+    # Upload a file
+    put_url = await artifact_manager.put_file(
+        artifact_id=artifact_id,
+        file_path="test_file.txt",
+        download_weight=1.0,  # Initial weight set during upload
+    )
+    
+    # Upload the file content
+    response = requests.put(put_url, data="test file content")
+    assert response.ok, response.text
+
+    # Commit the changes
+    await artifact_manager.commit(artifact_id=artifact_id)
+
+    # Verify the download weight was set during upload
+    artifact_data = await artifact_manager.read(artifact_id=artifact_id)
+    assert "download_weights" in artifact_data.config
+    assert artifact_data.config["download_weights"]["test_file.txt"] == 1.0
+
+    # Now update the download weight using set_download_weight
+    await artifact_manager.set_download_weight(
+        artifact_id=artifact_id,
+        file_path="test_file.txt",
+        download_weight=2.5,
+    )
+
+    # Verify the weight was updated
+    updated_artifact = await artifact_manager.read(artifact_id=artifact_id)
+    assert updated_artifact.config["download_weights"]["test_file.txt"] == 2.5
+
+    # Test that the weight affects download count tracking
+    initial_download_count = updated_artifact.download_count
+
+    # Get the file (this should increment download count by the weight)
+    file_info = await artifact_manager.get_file(
+        artifact_id=artifact_id,
+        file_path="test_file.txt",
+        silent=False,  # Don't suppress download count increment
+    )
+    assert file_info is not None
+
+    # Check that download count was incremented by the weight
+    final_artifact = await artifact_manager.read(artifact_id=artifact_id)
+    expected_download_count = initial_download_count + 2.5
+    assert final_artifact.download_count == expected_download_count
+
+    # Test setting weight to 0 and verify no more increment
+    await artifact_manager.set_download_weight(
+        artifact_id=artifact_id,
+        file_path="test_file.txt",
+        download_weight=0,
+    )
+
+    # Verify that setting weight to 0 removes it from config (saves storage)
+    zero_weight_artifact = await artifact_manager.read(artifact_id=artifact_id)
+    assert "test_file.txt" not in zero_weight_artifact.config.get("download_weights", {})
+
+    # Get the file again (should not increment download count)
+    await artifact_manager.get_file(
+        artifact_id=artifact_id,
+        file_path="test_file.txt",
+        silent=False,
+    )
+
+    # Download count should remain the same
+    final_artifact_2 = await artifact_manager.read(artifact_id=artifact_id)
+    assert final_artifact_2.download_count == expected_download_count
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=artifact_id)
+
+
+async def test_download_weight_storage_optimization(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test that 0 download weights are not stored to save storage space."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create an artifact
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Storage Optimization Test"},
+    )
+    artifact_id = artifact.id
+
+    # Upload a file with 0 weight (should not store weight)
+    put_url = await artifact_manager.put_file(
+        artifact_id=artifact_id,
+        file_path="zero_weight_file.txt",
+        download_weight=0,  # This should not be stored
+    )
+    
+    response = requests.put(put_url, data="file with zero weight")
+    assert response.ok, response.text
+
+    # Upload another file with positive weight (should store weight)
+    put_url2 = await artifact_manager.put_file(
+        artifact_id=artifact_id,
+        file_path="positive_weight_file.txt",
+        download_weight=2.0,  # This should be stored
+    )
+    
+    response2 = requests.put(put_url2, data="file with positive weight")
+    assert response2.ok, response2.text
+
+    # Commit the changes
+    await artifact_manager.commit(artifact_id=artifact_id)
+
+    # Check the artifact config - should only contain the positive weight
+    committed_artifact = await artifact_manager.read(artifact_id=artifact_id)
+    download_weights = committed_artifact.config.get("download_weights", {})
+    
+    # Zero weight file should not be in download_weights
+    assert "zero_weight_file.txt" not in download_weights
+    # Positive weight file should be in download_weights
+    assert "positive_weight_file.txt" in download_weights
+    assert download_weights["positive_weight_file.txt"] == 2.0
+
+    # List files in staging mode to check pending files don't store 0 weights
+    await artifact_manager.edit(artifact_id=artifact_id, stage=True)
+    
+    # Add a file with 0 weight to staging
+    await artifact_manager.put_file(
+        artifact_id=artifact_id,
+        file_path="staging_zero_weight.txt",
+        download_weight=0,
+    )
+    
+    # Add a file with positive weight to staging
+    await artifact_manager.put_file(
+        artifact_id=artifact_id,
+        file_path="staging_positive_weight.txt",
+        download_weight=1.5,
+    )
+
+    # List files to check the response
+    files = await artifact_manager.list_files(artifact_id=artifact_id, version="stage")
+    
+    # Find the files in the response
+    zero_weight_file = next((f for f in files if f["name"] == "staging_zero_weight.txt"), None)
+    positive_weight_file = next((f for f in files if f["name"] == "staging_positive_weight.txt"), None)
+    
+    assert zero_weight_file is not None
+    assert positive_weight_file is not None
+    
+    # Zero weight file should not have download_weight key
+    assert "download_weight" not in zero_weight_file
+    
+    # Positive weight file should have download_weight key
+    assert "download_weight" in positive_weight_file
+    assert positive_weight_file["download_weight"] == 1.5
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=artifact_id)
+
+
 async def test_collection_permission_inheritance(
     minio_server, fastapi_server, test_user_token, test_user_token_2
 ):

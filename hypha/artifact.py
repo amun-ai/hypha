@@ -3340,10 +3340,11 @@ class ArtifactController:
                     
                     # Check if file already exists in staging
                     if not any(f["path"] == file_path for f in staging_files):
-                        staging_files.append({
-                            "path": file_path,
-                            "download_weight": download_weight,
-                        })
+                        file_info = {"path": file_path}
+                        # Only store download_weight if it's greater than 0 to save storage
+                        if download_weight > 0:
+                            file_info["download_weight"] = download_weight
+                        staging_files.append(file_info)
                         staging_dict["files"] = staging_files
                         flag_modified(artifact, "staging")
                         
@@ -3912,9 +3913,9 @@ class ArtifactController:
                                         "last_modified": None,
                                         "etag": None,
                                         "pending": True,  # Mark as pending
-                                        "download_weight": file_info.get(
-                                            "download_weight", 0
-                                        ),
+                                        **({
+                                            "download_weight": file_info["download_weight"]
+                                        } if "download_weight" in file_info else {}),
                                     }
                                 )
 
@@ -4895,6 +4896,68 @@ class ArtifactController:
         finally:
             await session.close()
 
+    async def set_download_weight(
+        self,
+        artifact_id: str,
+        file_path: str,
+        download_weight: float,
+        context: dict = None,
+    ):
+        """Set download weight for a specific file in an artifact. Requires read_write permission."""
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.model_validate(context["user"])
+        
+        if download_weight < 0:
+            raise ValueError(f"Download weight must be non-negative, got: {download_weight}")
+        
+        session = await self._get_session()
+
+        try:
+            async with session.begin():
+                artifact, _ = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "set_download_weight", session
+                )
+
+                # Initialize config dict if it doesn't exist
+                if artifact.config is None:
+                    artifact.config = {}
+                
+                # Initialize download_weights dict if it doesn't exist
+                if "download_weights" not in artifact.config:
+                    artifact.config["download_weights"] = {}
+                
+                # Set or remove the download weight
+                if download_weight <= 0:
+                    # Remove the entry if weight is 0 to keep the config clean
+                    if file_path in artifact.config["download_weights"]:
+                        del artifact.config["download_weights"][file_path]
+                        logger.info(
+                            f"Removed download weight for file '{file_path}' in artifact {artifact_id}"
+                        )
+                else:
+                    artifact.config["download_weights"][file_path] = download_weight
+                    logger.info(
+                        f"Set download weight {download_weight} for file '{file_path}' in artifact {artifact_id}"
+                    )
+
+                artifact.last_modified = int(time.time())
+
+                # Mark the field as modified for SQLAlchemy
+                flag_modified(artifact, "config")
+
+                session.add(artifact)
+                await session.commit()
+
+                logger.info(f"Updated download weight for file '{file_path}' in artifact {artifact_id}")
+
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
+
     def get_artifact_service(self):
         """Return the artifact service definition."""
         return {
@@ -4924,4 +4987,5 @@ class ArtifactController:
             "publish": self.publish,
             "get_secret": self.get_secret,
             "set_secret": self.set_secret,
+            "set_download_weight": self.set_download_weight,
         }
