@@ -2008,13 +2008,13 @@ async def test_multipart_upload_service_functions(
     await artifact_manager.commit(artifact_id=dataset.id)
     
     # Download and verify the file content matches what we uploaded
-    downloaded_file = await artifact_manager.get_file(
+    downloaded_file_url = await artifact_manager.get_file(
         artifact_id=dataset.id, file_path=file_path
     )
     
     # The downloaded file should be a presigned URL, let's fetch it
     async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
-        response = await client.get(downloaded_file["url"])
+        response = await client.get(downloaded_file_url)
         assert response.status_code == 200
         downloaded_content = response.content
         assert downloaded_content == file_content, "Downloaded content doesn't match uploaded content"
