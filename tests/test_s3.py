@@ -512,7 +512,6 @@ async def test_s3_multipart_upload(minio_server, fastapi_server, test_user_token
             assert success_data["success"] is True
             
             # Add a small delay to handle S3 eventual consistency
-            import asyncio
             await asyncio.sleep(0.1)
             
             # Verify the HTTP multipart uploaded file by downloading it
