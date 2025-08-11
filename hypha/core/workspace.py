@@ -1757,17 +1757,6 @@ class WorkspaceManager:
         if ":" not in service_id:
             workspace, service_id = service_id.split("/")
             service_id = f"{workspace}/*:{service_id}"
-        else:
-            # Handle case where client ID is specified but we need to use wildcard for public services
-            # e.g., "client_id:public/s3-storage" should become "public/*:s3-storage"
-            if ":" in service_id and "/" in service_id:
-                parts = service_id.split(":")
-                if len(parts) == 2:
-                    client_part, service_part = parts
-                    if "/" in service_part:
-                        workspace, service_name = service_part.split("/", 1)
-                        if workspace == "public":
-                            service_id = f"public/*:{service_name}"
 
         if "@" in service_id:
             service_id, app_id = service_id.split("@")
