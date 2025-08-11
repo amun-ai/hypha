@@ -419,33 +419,43 @@ async def test_s3_multipart_upload(minio_server, fastapi_server, test_user_token
         assert "url" in part
         assert part["url"].startswith("http")
 
-    # Create fake parts data (simulate successful uploads)
-    parts_data = []
-    for part in part_urls:
-        fake_etag = f'"etag-{part["part_number"]}"'
-        parts_data.append({"part_number": part["part_number"], "etag": fake_etag})
+    # Create real test data and upload each part
+    part_size = 5 * 1024 * 1024  # 5MB minimum per part for S3
+    test_parts_data = [
+        b"A" * part_size,  # Part 1: 5MB of 'A's
+        b"B" * part_size,  # Part 2: 5MB of 'B's  
+        b"C" * (part_size // 2),  # Part 3: 2.5MB of 'C's (last part can be smaller)
+    ]
+    expected_content = b"".join(test_parts_data)
 
-    # Test put_file_complete_multipart
-    # Note: This will fail in the test because we didn't actually upload the parts
-    # but it tests that the service function is properly structured
-    try:
-        result = await s3controller.put_file_complete_multipart(
-            upload_id=upload_id, parts=parts_data
-        )
-        # If this succeeds, verify the response
-        assert result["success"] is True
-        assert "message" in result
-    except Exception as e:
-        # Expected to fail because we didn't actually upload parts
-        # but should be a specific S3 error, not a permission or structure error
-        error_msg = str(e).lower()
-        assert (
-            "invalid" in error_msg
-            or "part" in error_msg
-            or "etag" in error_msg
-            or "not found" in error_msg
-        )
-        print(f"Expected S3 error (parts not actually uploaded): {e}")
+    # Upload each part and collect real ETags
+    uploaded_parts = []
+    async with httpx.AsyncClient(timeout=120) as upload_client:
+        for i, (part_info, part_data) in enumerate(zip(part_urls, test_parts_data)):
+            response = await upload_client.put(part_info["url"], content=part_data)
+            assert response.status_code == 200, f"Failed to upload part {i+1}: {response.text}"
+            
+            # Extract real ETag from response headers
+            etag = response.headers["ETag"].strip('"').strip("'")
+            uploaded_parts.append({
+                "part_number": part_info["part_number"], 
+                "etag": etag
+            })
+
+    # Test put_file_complete_multipart with real uploaded parts
+    result = await s3controller.put_file_complete_multipart(
+        upload_id=upload_id, parts=uploaded_parts
+    )
+    # Should succeed with real uploads
+    assert result["success"] is True
+    assert "message" in result
+    
+    # Verify the file was uploaded correctly by downloading and checking content
+    get_url = await s3controller.get_file(multipart_file_path)
+    async with httpx.AsyncClient(timeout=60) as download_client:
+        response = await download_client.get(get_url)
+        assert response.status_code == 200
+        assert response.content == expected_content, "Multipart upload content verification failed"
 
     # Test create-multipart-upload endpoint
     async with httpx.AsyncClient(timeout=30) as client:
@@ -465,27 +475,49 @@ async def test_s3_multipart_upload(minio_server, fastapi_server, test_user_token
             assert "parts" in upload_data
             assert len(upload_data["parts"]) == 2
 
-            # Test complete-multipart-upload endpoint
-            fake_parts = [
-                {"part_number": 1, "etag": "fake-etag-1"},
-                {"part_number": 2, "etag": "fake-etag-2"},
+            # Test complete-multipart-upload endpoint with real uploads
+            http_part_size = 5 * 1024 * 1024  # 5MB minimum per part
+            http_parts_data = [
+                b"X" * http_part_size,  # Part 1: 5MB of 'X's
+                b"Y" * (http_part_size // 2),  # Part 2: 2.5MB of 'Y's (last part can be smaller)
             ]
+            http_expected_content = b"".join(http_parts_data)
+
+            # Upload each part and collect real ETags
+            http_uploaded_parts = []
+            for i, (part_info, part_data) in enumerate(zip(upload_data["parts"], http_parts_data)):
+                upload_response = await client.put(part_info["url"], content=part_data)
+                assert upload_response.status_code == 200, f"Failed to upload HTTP part {i+1}: {upload_response.text}"
+                
+                # Extract real ETag from response headers
+                etag = upload_response.headers["ETag"].strip('"').strip("'")
+                http_uploaded_parts.append({
+                    "part_number": part_info["part_number"], 
+                    "etag": etag
+                })
 
             complete_response = await client.post(
                 f"{SERVER_URL}/{workspace}/complete-multipart-upload",
-                json={"upload_id": upload_data["upload_id"], "parts": fake_parts},
+                json={"upload_id": upload_data["upload_id"], "parts": http_uploaded_parts},
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Content-Type": "application/json",
                 },
             )
 
-            # This should fail because parts weren't actually uploaded
-            # but should return a proper error response, not a crash
-            assert complete_response.status_code in [400, 500]  # Expected error codes
-            error_data = complete_response.json()
-            assert "success" in error_data
-            assert error_data["success"] is False
+            # Should succeed with real uploads
+            assert complete_response.status_code == 200, f"Complete multipart failed: {complete_response.text}"
+            success_data = complete_response.json()
+            assert "success" in success_data
+            assert success_data["success"] is True
+            
+            # Verify the HTTP multipart uploaded file by downloading it
+            http_get_response = await client.get(
+                f"{SERVER_URL}/{workspace}/files/test_http_multipart.txt",
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            assert http_get_response.status_code == 200
+            assert http_get_response.content == http_expected_content, "HTTP multipart upload content verification failed"
         else:
             print(
                 f"Create multipart upload failed: {response.status_code} - {response.text}"

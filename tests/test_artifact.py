@@ -1967,30 +1967,59 @@ async def test_multipart_upload_service_functions(
         assert "url" in part
         assert part["url"].startswith("http")
 
-    # Simulate uploading parts (we'll create fake ETags)
-    # In a real scenario, you would upload actual data to each URL and get real ETags
+    # Actually upload parts with real data to get real ETags
+    
+    # Create test data for upload
+    file_size = 15 * 1024 * 1024  # 15 MB total
+    file_content = os.urandom(file_size)
+    chunk_size = file_size // part_count  # Split into equal parts
+    
     parts_data = []
-    for part in part_urls:
-        # Simulate an ETag (normally this would come from the S3 upload response)
-        fake_etag = f'"etag-{part["part_number"]}"'
-        parts_data.append({"part_number": part["part_number"], "etag": fake_etag})
+    file_buffer = BytesIO(file_content)
+    
+    async with httpx.AsyncClient(timeout=120) as client:
+        for part in part_urls:
+            part_number = part["part_number"]
+            url = part["url"]
+            
+            # Read the appropriate chunk for this part
+            chunk_data = file_buffer.read(chunk_size)
+            if part_number == part_count:  # Last part gets any remaining data
+                remaining = file_buffer.read()
+                chunk_data += remaining
+            
+            # Upload the chunk to the presigned URL
+            response = await client.put(url, data=chunk_data)
+            assert response.status_code == 200, f"Failed to upload part {part_number}: {response.text}"
+            
+            # Get the real ETag from the response
+            etag = response.headers["ETag"].strip('"').strip("'")
+            parts_data.append({"part_number": part_number, "etag": etag})
 
-    # Test put_file_complete_multipart service function
-    # Note: This will fail in the test because we didn't actually upload the parts
-    # but it tests that the service function is properly structured
-    try:
-        result = await artifact_manager.put_file_complete_multipart(
-            artifact_id=dataset.id, upload_id=upload_id, parts=parts_data
-        )
-        # If this succeeds, verify the response
-        assert result["success"] is True
-        assert "message" in result
-    except Exception as e:
-        # Expected to fail because we didn't actually upload parts
-        # but should be a specific S3 error, not a permission or structure error
-        error_msg = str(e).lower()
-        assert "invalid" in error_msg or "part" in error_msg or "etag" in error_msg
-        print(f"Expected S3 error (parts not actually uploaded): {e}")
+    # Test put_file_complete_multipart service function with real uploaded parts
+    result = await artifact_manager.put_file_complete_multipart(
+        artifact_id=dataset.id, upload_id=upload_id, parts=parts_data
+    )
+    # Verify the response
+    assert result["success"] is True
+    assert "message" in result
+    
+    # Commit the changes and verify the file was uploaded correctly
+    await artifact_manager.commit(artifact_id=dataset.id)
+    
+    # Download and verify the file content matches what we uploaded
+    downloaded_file = await artifact_manager.get_file(
+        artifact_id=dataset.id, file_path=file_path
+    )
+    
+    # The downloaded file should be a presigned URL, let's fetch it
+    async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+        response = await client.get(downloaded_file["url"])
+        assert response.status_code == 200
+        downloaded_content = response.content
+        assert downloaded_content == file_content, "Downloaded content doesn't match uploaded content"
+    
+    print(f"✓ Successfully uploaded and verified {len(file_content)} bytes via multipart upload")
 
     # Test with invalid parameters
     try:
@@ -3505,8 +3534,12 @@ async def test_commit_version_override(minio_server, fastapi_server, test_user_t
     await artifact_manager.delete(artifact_id=legacy_artifact.id)
 
 
-async def test_list_stage_parameter(minio_server, fastapi_server, test_user_token):
-    """Test the stage parameter in list() function."""
+async def test_create_zip_file_download_count(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test download count increment behavior for create-zip-file endpoint."""
+
+    # Connect and get the artifact manager service
     api = await connect_to_server(
         {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
     )
@@ -3516,8 +3549,8 @@ async def test_list_stage_parameter(minio_server, fastapi_server, test_user_toke
     collection = await artifact_manager.create(
         type="collection",
         manifest={
-            "name": "Stage Test Collection",
-            "description": "A collection for testing stage parameter",
+            "name": "Zip Download Count Collection",
+            "description": "A collection for testing zip download count",
         },
         config={"permissions": {"*": "r", "@": "rw+"}},
     )
@@ -3592,26 +3625,89 @@ async def test_list_stage_parameter(minio_server, fastapi_server, test_user_toke
     names = {r["manifest"]["name"] for r in results}
     assert names == {"Staged Artifact", "Another Staged"}
 
+    # Create a dataset with files
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={
+            "name": "Download Count Dataset",
+            "description": "A dataset for testing zip download count",
+        },
+        version="stage",
+    )
+
+    # Upload test files with different download weights
+    test_files = [
+        {"name": "file1.txt", "content": "File 1 content", "weight": 1.0},
+        {"name": "file2.txt", "content": "File 2 content", "weight": 2.0},
+        {"name": "file3.txt", "content": "File 3 content", "weight": 1.0},
+        {"name": "file4.txt", "content": "File 4 content", "weight": 1.5},
+    ]
+
+    for file_info in test_files:
+        put_url = await artifact_manager.put_file(
+            artifact_id=dataset.id,
+            file_path=file_info["name"],
+            download_weight=file_info["weight"],
+        )
+        async with httpx.AsyncClient() as client:
+            response = await client.put(put_url["url"], data=file_info["content"])
+            assert response.status_code == 200
+
+    # Commit the dataset
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    # Get initial download count
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    initial_count = artifact["download_count"]
+
+    # Test create-zip-file endpoint multiple times
+    workspace = api.config.workspace
+    token = await api.generate_token()
+
+    # First request - should increment by sum of weights (5.5)
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/create-zip-file",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+    # Second request - should increment again
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/create-zip-file",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+    # Third request with specific files (should use individual file weights)
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/create-zip-file",
+            params={"file": ["file1.txt", "file4.txt"]},  # weights: 1.0 + 1.5 = 2.5
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+    # Check final download count
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    assert artifact["download_count"] == 5.5  # 1 + 2 + 1 + 1.5 (3 requests * 0.5 each)
+
     # Clean up
-    await artifact_manager.delete(artifact_id=committed.id)
-    await artifact_manager.delete(artifact_id=committed2.id)
-    await artifact_manager.delete(artifact_id=staged.id)
-    await artifact_manager.delete(artifact_id=staged2.id)
+    await artifact_manager.delete(artifact_id=dataset.id)
     await artifact_manager.delete(artifact_id=collection.id)
 
 
-async def test_create_zip_file_download_count(
+async def test_workspace_artifacts_endpoint(
     minio_server, fastapi_server, test_user_token
 ):
-    """Test download count increment behavior for create-zip-file endpoint."""
-
-    # Connect and get the artifact manager service
+    """Test the workspace artifacts endpoint for listing artifacts at the workspace root level."""
     api = await connect_to_server(
         {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
     )
     artifact_manager = await api.get_service("public/artifact-manager")
 
-    # Create a collection and dataset
     collection = await artifact_manager.create(
         type="collection",
         manifest={"name": "Download Count Test Collection"},

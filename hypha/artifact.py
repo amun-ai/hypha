@@ -835,6 +835,10 @@ class ArtifactController:
                                 increment=download_weight,
                             )
                         await session.commit()
+                    # Use proxy based on use_proxy parameter (None means use server config)
+                    if use_proxy is None:
+                        use_proxy = self.s3_controller.enable_s3_proxy
+                    
                     if use_proxy:
                         s3_client = self._create_client_async(s3_config)
                         return FSFileResponse(s3_client, s3_config["bucket"], file_key)
@@ -890,7 +894,7 @@ class ArtifactController:
                 3600,
                 description="The number of seconds for the presigned URLs to expire.",
             ),
-            use_proxy: bool = False,
+            use_proxy: bool = None,
             use_local_url: bool = False,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
@@ -981,7 +985,7 @@ class ArtifactController:
             artifact_alias: str,
             file_path: str,
             download_weight: float = 0,
-            use_proxy: bool = False,
+            use_proxy: bool = None,
             use_local_url: bool = False,
             expires_in: int = 3600,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
@@ -3431,6 +3435,10 @@ class ArtifactController:
                     )
                     upload_id = mpu["UploadId"]
 
+                    # Use proxy based on use_proxy parameter (None means use server config)
+                    if use_proxy is None:
+                        use_proxy = self.s3_controller.enable_s3_proxy
+                        
                     # Generate a presigned URL for each part
                     part_urls = []
                     for i in range(1, part_count + 1):
