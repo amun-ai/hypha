@@ -1625,6 +1625,7 @@ class ArtifactController:
             "remove_vectors": UserPermission.read_write,
             "remove_file": UserPermission.read_write,
             "set_secret": UserPermission.read_write,
+            "set_download_weight": UserPermission.read_write,
             "delete": UserPermission.admin,
             "reset_stats": UserPermission.admin,
             "publish": UserPermission.admin,
@@ -3883,6 +3884,26 @@ class ArtifactController:
                                 item for item in items 
                                 if item["name"] not in removed_names
                             ]
+
+                    # If we're in staging mode, merge download weight info from staging manifest with S3 files
+                    if version == "stage" and artifact.staging is not None:
+                        staging_files_list = staging_dict.get("files", [])
+                        # Create a mapping of file paths to download weights
+                        download_weight_map = {}
+                        for file_info in staging_files_list:
+                            if "path" in file_info and "download_weight" in file_info:
+                                # Adjust path for directory context if needed
+                                file_path = file_info["path"]
+                                if dir_path and file_path.startswith(dir_path + "/"):
+                                    display_path = file_path[len(dir_path) + 1:]
+                                else:
+                                    display_path = file_path
+                                download_weight_map[display_path] = file_info["download_weight"]
+                        
+                        # Merge download weights with S3 file items
+                        for item in items:
+                            if item["name"] in download_weight_map:
+                                item["download_weight"] = download_weight_map[item["name"]]
 
                     # If include_pending is True and we're in staging mode, add pending files from staging manifest
                     if (

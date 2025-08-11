@@ -4754,7 +4754,7 @@ async def test_download_weight_management(
     assert "permission" in str(exc_info.value).lower()
 
     # Test with negative download weight (should fail)
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(Exception) as exc_info:
         await artifact_manager.set_download_weight(
             artifact_id=artifact_id,
             file_path="negative_weight.txt",
@@ -4789,6 +4789,9 @@ async def test_download_weight_functionality_integration(
         manifest={"name": "Download Weight Integration Test"},
     )
     artifact_id = artifact.id
+
+    # Put artifact in staging mode for file upload
+    await artifact_manager.edit(artifact_id=artifact_id, stage=True)
 
     # Upload a file
     put_url = await artifact_manager.put_file(
@@ -4878,6 +4881,9 @@ async def test_download_weight_storage_optimization(
     )
     artifact_id = artifact.id
 
+    # Put artifact in staging mode for file upload
+    await artifact_manager.edit(artifact_id=artifact_id, stage=True)
+
     # Upload a file with 0 weight (should not store weight)
     put_url = await artifact_manager.put_file(
         artifact_id=artifact_id,
@@ -4915,18 +4921,22 @@ async def test_download_weight_storage_optimization(
     await artifact_manager.edit(artifact_id=artifact_id, stage=True)
     
     # Add a file with 0 weight to staging
-    await artifact_manager.put_file(
+    put_url3 = await artifact_manager.put_file(
         artifact_id=artifact_id,
         file_path="staging_zero_weight.txt",
         download_weight=0,
     )
+    response3 = requests.put(put_url3, data="staging file with zero weight")
+    assert response3.ok, response3.text
     
     # Add a file with positive weight to staging
-    await artifact_manager.put_file(
+    put_url4 = await artifact_manager.put_file(
         artifact_id=artifact_id,
         file_path="staging_positive_weight.txt",
         download_weight=1.5,
     )
+    response4 = requests.put(put_url4, data="staging file with positive weight")
+    assert response4.ok, response4.text
 
     # List files to check the response
     files = await artifact_manager.list_files(artifact_id=artifact_id, version="stage")

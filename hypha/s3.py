@@ -315,12 +315,11 @@ class S3Controller:
                     },
                 )
 
-            full_path = safe_join(workspace, path)
             context = {"ws": workspace, "user": user_info.model_dump()}
 
             try:
                 result = await self.put_file_start_multipart(
-                    file_path=full_path,
+                    file_path=path,
                     part_count=part_count,
                     expires_in=expires_in,
                     context=context,
