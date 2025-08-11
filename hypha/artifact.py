@@ -2829,7 +2829,10 @@ class ArtifactController:
                             ]
 
                     if download_weights:
-                        artifact.config["download_weights"] = download_weights
+                        # Merge with existing download weights to preserve special weights like "create-zip-file"
+                        existing_weights = artifact.config.get("download_weights", {})
+                        existing_weights.update(download_weights)
+                        artifact.config["download_weights"] = existing_weights
                         flag_modified(artifact, "config")
 
                     # Count files in the target version based on intent
