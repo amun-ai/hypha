@@ -373,6 +373,7 @@ def fastapi_server_fixture(minio_server, postgres_server):
             f"--workspace-bucket=my-workspaces",
             "--s3-admin-type=minio",
             "--cache-dir=./bin/cache",
+            "--executable-path=./bin",
             f"--triton-servers=http://127.0.0.1:{TRITON_PORT}",
             "--static-mounts=/tests:./tests",
             "--s3-cleanup-period=2",
@@ -600,6 +601,50 @@ def minio_server_fixture():
         print("Minio server did not terminate gracefully, killing...")
         proc.kill()  # Force kill if necessary
     finally:
+        # Clean up any lingering MinIO Docker containers
+        try:
+            print("Cleaning up MinIO Docker containers...")
+            
+            # Stop any running MinIO containers
+            result = subprocess.run([
+                "docker", "ps", "-q", "--filter", "ancestor=minio/minio"
+            ], capture_output=True, text=True, timeout=10)
+            
+            if result.stdout.strip():
+                container_ids = result.stdout.strip().split('\n')
+                print(f"Found {len(container_ids)} running MinIO containers, stopping them...")
+                subprocess.run([
+                    "docker", "stop"
+                ] + container_ids, capture_output=True, text=True, timeout=30)
+                
+                # Remove the stopped containers
+                subprocess.run([
+                    "docker", "rm"
+                ] + container_ids, capture_output=True, text=True, timeout=10)
+            
+            # Also clean up any containers with "minio" in the name
+            result = subprocess.run([
+                "docker", "ps", "-aq", "--filter", "name=minio"
+            ], capture_output=True, text=True, timeout=10)
+            
+            if result.stdout.strip():
+                container_ids = result.stdout.strip().split('\n')
+                print(f"Found {len(container_ids)} MinIO containers by name, cleaning them...")
+                subprocess.run([
+                    "docker", "stop"
+                ] + container_ids, capture_output=True, text=True, timeout=30)
+                subprocess.run([
+                    "docker", "rm"
+                ] + container_ids, capture_output=True, text=True, timeout=10)
+            
+            print("MinIO Docker container cleanup completed.")
+        except subprocess.TimeoutExpired:
+            print("Warning: MinIO container cleanup timed out")
+        except FileNotFoundError:
+            print("Docker not found - skipping MinIO container cleanup")
+        except Exception as e:
+            print(f"Warning: Error during MinIO container cleanup: {e}")
+        
         # Clean up the temporary directory
         if workdir and os.path.exists(workdir):
             print(f"Cleaning up Minio data directory: {workdir}")
