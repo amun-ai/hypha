@@ -511,12 +511,16 @@ async def test_s3_multipart_upload(minio_server, fastapi_server, test_user_token
             assert "success" in success_data
             assert success_data["success"] is True
             
+            # Add a small delay to handle S3 eventual consistency
+            import asyncio
+            await asyncio.sleep(0.1)
+            
             # Verify the HTTP multipart uploaded file by downloading it
             http_get_response = await client.get(
                 f"{SERVER_URL}/{workspace}/files/test_http_multipart.txt",
                 headers={"Authorization": f"Bearer {token}"}
             )
-            assert http_get_response.status_code == 200
+            assert http_get_response.status_code == 200, f"File not found after multipart upload completion. Response: {http_get_response.text}"
             assert http_get_response.content == http_expected_content, "HTTP multipart upload content verification failed"
         else:
             print(
