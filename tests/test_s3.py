@@ -513,7 +513,7 @@ async def test_s3_multipart_upload(minio_server, fastapi_server, test_user_token
             
             # Verify the HTTP multipart uploaded file by downloading it
             http_get_response = await client.get(
-                f"{SERVER_URL}/{workspace}/files/test_http_multipart.txt?stage=true",
+                f"{SERVER_URL}/{workspace}/files/test_http_multipart.txt",
                 headers={"Authorization": f"Bearer {token}"}
             )
             assert http_get_response.status_code == 200

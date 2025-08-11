@@ -3692,7 +3692,7 @@ async def test_create_zip_file_download_count(
 
     # Check final download count
     artifact = await artifact_manager.read(artifact_id=dataset.id)
-    assert artifact["download_count"] == 5.5  # 1 + 2 + 1 + 1.5 (3 requests * 0.5 each)
+    assert artifact["download_count"] == 13.5  # 5.5 + 5.5 + 2.5 (first two requests all files, third request specific files)
 
     # Clean up
     await artifact_manager.delete(artifact_id=dataset.id)
@@ -3804,7 +3804,7 @@ async def test_workspace_artifacts_endpoint(
     await artifact_manager.delete(artifact_id=collection.id)
 
 
-async def test_workspace_artifacts_endpoint(
+async def test_workspace_level_artifacts_listing(
     minio_server, fastapi_server, test_user_token
 ):
     """Test the workspace-level artifacts listing endpoint."""
@@ -7182,3 +7182,112 @@ async def test_remove_file_directory_edge_cases(minio_server, fastapi_server, te
     level3_files = await artifact_manager.list_files(artifact.id, dir_path="level1/level2/level3")
     level3_file_names = {f["name"] for f in level3_files if f.get("type") != "directory"}
     assert len(level3_file_names) == 0  # No files should remain in level3
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=artifact.id)
+
+
+async def test_create_zip_file_special_weight(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test create-zip-file with special 'create-zip-file' download weight configuration."""
+
+    # Connect and get the artifact manager service
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a collection for testing
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest={
+            "name": "Special Weight Collection",
+            "description": "A collection for testing special zip download weight",
+        },
+        config={"permissions": {"*": "r", "@": "rw+"}},
+    )
+
+    # Create a dataset with special "create-zip-file" weight
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={
+            "name": "Special Weight Dataset",
+            "description": "A dataset with special create-zip-file weight",
+        },
+        config={
+            "download_weights": {
+                "create-zip-file": 1.0  # Special weight for zip downloads
+            }
+        },
+        version="stage",
+    )
+
+    # Upload test files with different individual download weights
+    test_files = [
+        {"name": "file1.txt", "content": "File 1 content", "weight": 10.0},
+        {"name": "file2.txt", "content": "File 2 content", "weight": 20.0},
+        {"name": "file3.txt", "content": "File 3 content", "weight": 30.0},
+    ]
+
+    for file_info in test_files:
+        put_url = await artifact_manager.put_file(
+            artifact_id=dataset.id,
+            file_path=file_info["name"],
+            download_weight=file_info["weight"],
+        )
+        async with httpx.AsyncClient() as client:
+            response = await client.put(put_url, data=file_info["content"])
+            assert response.status_code == 200
+
+    # Commit the dataset
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    # Get initial download count
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    initial_count = artifact["download_count"]
+    assert initial_count == 0
+
+    # Test create-zip-file endpoint multiple times
+    workspace = api.config.workspace
+    token = await api.generate_token()
+
+    # First request - should increment by special weight (1.0), NOT sum of individual weights (60.0)
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/create-zip-file",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    assert artifact["download_count"] == 1.0  # Special weight, not sum of individual weights
+
+    # Second request - should increment by special weight again
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/create-zip-file",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    assert artifact["download_count"] == 2.0  # 1.0 + 1.0
+
+    # Third request with specific files - should still use special weight, not individual file weights
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/create-zip-file",
+            params={"file": ["file1.txt", "file2.txt"]},  # These have weights 10.0 + 20.0 = 30.0, but should be ignored
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+    # Check final download count - should be 3.0 (special weight used 3 times)
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    assert artifact["download_count"] == 3.0  # 1.0 + 1.0 + 1.0 (special weight overrides individual weights)
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=dataset.id)
+    await artifact_manager.delete(artifact_id=collection.id)
