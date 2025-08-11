@@ -3651,7 +3651,7 @@ async def test_create_zip_file_download_count(
             download_weight=file_info["weight"],
         )
         async with httpx.AsyncClient() as client:
-            response = await client.put(put_url["url"], data=file_info["content"])
+            response = await client.put(put_url, data=file_info["content"])
             assert response.status_code == 200
 
     # Commit the dataset
