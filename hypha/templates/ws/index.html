@@ -528,7 +528,7 @@
           };          
         
 
-        const AppCard = ({ app, onUninstall, onShowDetails, onStart }) => {
+        const AppCard = ({ app, onUninstall, onShowDetails, onStart, isPublic }) => {
             const [showServices, setShowServices] = React.useState(false);
             const [copiedServiceId, setCopiedServiceId] = React.useState('');
             const [isDisabled, setIsDisabled] = React.useState(app.disabled || false);
@@ -6055,15 +6055,19 @@ license: "MIT"`);
                                 </div>
                             ) : (
                                 <div className="grid grid-cols-1 md:grid-cols-1 lg:grid-cols-2 gap-8">
-                                    {apps.map(app => (
-                                        <AppCard 
-                                            key={app.id} 
-                                            app={app} 
-                                            onUninstall={handleUninstallApp}
-                                            onShowDetails={setSelectedApp}
-                                            onStart={handleStartApp}
-                                        />
-                                    ))}
+                                    {apps.map(app => {
+                                        const isPublic = app.id.startsWith('public/');
+                                        return (
+                                            <AppCard 
+                                                key={app.id} 
+                                                app={app} 
+                                                onUninstall={handleUninstallApp}
+                                                onShowDetails={setSelectedApp}
+                                                onStart={handleStartApp}
+                                                isPublic={isPublic}
+                                            />
+                                        );
+                                    })}
                                 </div>
                             )}
 

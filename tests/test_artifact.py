@@ -1967,30 +1967,59 @@ async def test_multipart_upload_service_functions(
         assert "url" in part
         assert part["url"].startswith("http")
 
-    # Simulate uploading parts (we'll create fake ETags)
-    # In a real scenario, you would upload actual data to each URL and get real ETags
+    # Actually upload parts with real data to get real ETags
+    
+    # Create test data for upload
+    file_size = 15 * 1024 * 1024  # 15 MB total
+    file_content = os.urandom(file_size)
+    chunk_size = file_size // part_count  # Split into equal parts
+    
     parts_data = []
-    for part in part_urls:
-        # Simulate an ETag (normally this would come from the S3 upload response)
-        fake_etag = f'"etag-{part["part_number"]}"'
-        parts_data.append({"part_number": part["part_number"], "etag": fake_etag})
+    file_buffer = BytesIO(file_content)
+    
+    async with httpx.AsyncClient(timeout=120) as client:
+        for part in part_urls:
+            part_number = part["part_number"]
+            url = part["url"]
+            
+            # Read the appropriate chunk for this part
+            chunk_data = file_buffer.read(chunk_size)
+            if part_number == part_count:  # Last part gets any remaining data
+                remaining = file_buffer.read()
+                chunk_data += remaining
+            
+            # Upload the chunk to the presigned URL
+            response = await client.put(url, data=chunk_data)
+            assert response.status_code == 200, f"Failed to upload part {part_number}: {response.text}"
+            
+            # Get the real ETag from the response
+            etag = response.headers["ETag"].strip('"').strip("'")
+            parts_data.append({"part_number": part_number, "etag": etag})
 
-    # Test put_file_complete_multipart service function
-    # Note: This will fail in the test because we didn't actually upload the parts
-    # but it tests that the service function is properly structured
-    try:
-        result = await artifact_manager.put_file_complete_multipart(
-            artifact_id=dataset.id, upload_id=upload_id, parts=parts_data
-        )
-        # If this succeeds, verify the response
-        assert result["success"] is True
-        assert "message" in result
-    except Exception as e:
-        # Expected to fail because we didn't actually upload parts
-        # but should be a specific S3 error, not a permission or structure error
-        error_msg = str(e).lower()
-        assert "invalid" in error_msg or "part" in error_msg or "etag" in error_msg
-        print(f"Expected S3 error (parts not actually uploaded): {e}")
+    # Test put_file_complete_multipart service function with real uploaded parts
+    result = await artifact_manager.put_file_complete_multipart(
+        artifact_id=dataset.id, upload_id=upload_id, parts=parts_data
+    )
+    # Verify the response
+    assert result["success"] is True
+    assert "message" in result
+    
+    # Commit the changes and verify the file was uploaded correctly
+    await artifact_manager.commit(artifact_id=dataset.id)
+    
+    # Download and verify the file content matches what we uploaded
+    downloaded_file_url = await artifact_manager.get_file(
+        artifact_id=dataset.id, file_path=file_path
+    )
+    
+    # The downloaded file should be a presigned URL, let's fetch it
+    async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+        response = await client.get(downloaded_file_url)
+        assert response.status_code == 200
+        downloaded_content = response.content
+        assert downloaded_content == file_content, "Downloaded content doesn't match uploaded content"
+    
+    print(f"✓ Successfully uploaded and verified {len(file_content)} bytes via multipart upload")
 
     # Test with invalid parameters
     try:
@@ -3505,8 +3534,12 @@ async def test_commit_version_override(minio_server, fastapi_server, test_user_t
     await artifact_manager.delete(artifact_id=legacy_artifact.id)
 
 
-async def test_list_stage_parameter(minio_server, fastapi_server, test_user_token):
-    """Test the stage parameter in list() function."""
+async def test_create_zip_file_download_count(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test download count increment behavior for create-zip-file endpoint."""
+
+    # Connect and get the artifact manager service
     api = await connect_to_server(
         {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
     )
@@ -3516,8 +3549,8 @@ async def test_list_stage_parameter(minio_server, fastapi_server, test_user_toke
     collection = await artifact_manager.create(
         type="collection",
         manifest={
-            "name": "Stage Test Collection",
-            "description": "A collection for testing stage parameter",
+            "name": "Zip Download Count Collection",
+            "description": "A collection for testing zip download count",
         },
         config={"permissions": {"*": "r", "@": "rw+"}},
     )
@@ -3592,26 +3625,89 @@ async def test_list_stage_parameter(minio_server, fastapi_server, test_user_toke
     names = {r["manifest"]["name"] for r in results}
     assert names == {"Staged Artifact", "Another Staged"}
 
+    # Create a dataset with files
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={
+            "name": "Download Count Dataset",
+            "description": "A dataset for testing zip download count",
+        },
+        version="stage",
+    )
+
+    # Upload test files with different download weights
+    test_files = [
+        {"name": "file1.txt", "content": "File 1 content", "weight": 1.0},
+        {"name": "file2.txt", "content": "File 2 content", "weight": 2.0},
+        {"name": "file3.txt", "content": "File 3 content", "weight": 1.0},
+        {"name": "file4.txt", "content": "File 4 content", "weight": 1.5},
+    ]
+
+    for file_info in test_files:
+        put_url = await artifact_manager.put_file(
+            artifact_id=dataset.id,
+            file_path=file_info["name"],
+            download_weight=file_info["weight"],
+        )
+        async with httpx.AsyncClient() as client:
+            response = await client.put(put_url, data=file_info["content"])
+            assert response.status_code == 200
+
+    # Commit the dataset
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    # Get initial download count
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    initial_count = artifact["download_count"]
+
+    # Test create-zip-file endpoint multiple times
+    workspace = api.config.workspace
+    token = await api.generate_token()
+
+    # First request - should increment by sum of weights (5.5)
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/create-zip-file",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+    # Second request - should increment again
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/create-zip-file",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+    # Third request with specific files (should use individual file weights)
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/create-zip-file",
+            params={"file": ["file1.txt", "file4.txt"]},  # weights: 1.0 + 1.5 = 2.5
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+    # Check final download count
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    assert artifact["download_count"] == 13.5  # 5.5 + 5.5 + 2.5 (first two requests all files, third request specific files)
+
     # Clean up
-    await artifact_manager.delete(artifact_id=committed.id)
-    await artifact_manager.delete(artifact_id=committed2.id)
-    await artifact_manager.delete(artifact_id=staged.id)
-    await artifact_manager.delete(artifact_id=staged2.id)
+    await artifact_manager.delete(artifact_id=dataset.id)
     await artifact_manager.delete(artifact_id=collection.id)
 
 
-async def test_create_zip_file_download_count(
+async def test_workspace_artifacts_endpoint(
     minio_server, fastapi_server, test_user_token
 ):
-    """Test download count increment behavior for create-zip-file endpoint."""
-
-    # Connect and get the artifact manager service
+    """Test the workspace artifacts endpoint for listing artifacts at the workspace root level."""
     api = await connect_to_server(
         {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
     )
     artifact_manager = await api.get_service("public/artifact-manager")
 
-    # Create a collection and dataset
     collection = await artifact_manager.create(
         type="collection",
         manifest={"name": "Download Count Test Collection"},
@@ -3708,7 +3804,7 @@ async def test_create_zip_file_download_count(
     await artifact_manager.delete(artifact_id=collection.id)
 
 
-async def test_workspace_artifacts_endpoint(
+async def test_workspace_level_artifacts_listing(
     minio_server, fastapi_server, test_user_token
 ):
     """Test the workspace-level artifacts listing endpoint."""
@@ -4557,6 +4653,307 @@ async def test_secret_edge_cases(minio_server, fastapi_server, test_user_token):
             secret_key="key",
             secret_value="value",
         )
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=artifact_id)
+
+
+async def test_download_weight_management(
+    minio_server, fastapi_server, test_user_token, test_user_token_2
+):
+    """Test download weight management functions."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create an artifact with admin user
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Test Artifact for Download Weights"},
+    )
+    artifact_id = artifact.id
+
+    # Test set_download_weight with admin user (should work)
+    await artifact_manager.set_download_weight(
+        artifact_id=artifact_id,
+        file_path="data.csv",
+        download_weight=2.5,
+    )
+
+    # Read the artifact to verify download weight was set
+    updated_artifact = await artifact_manager.read(artifact_id=artifact_id)
+    assert "download_weights" in updated_artifact.config
+    assert updated_artifact.config["download_weights"]["data.csv"] == 2.5
+
+    # Test updating existing download weight
+    await artifact_manager.set_download_weight(
+        artifact_id=artifact_id,
+        file_path="data.csv",
+        download_weight=5.0,
+    )
+
+    updated_artifact = await artifact_manager.read(artifact_id=artifact_id)
+    assert updated_artifact.config["download_weights"]["data.csv"] == 5.0
+
+    # Test adding multiple file weights
+    await artifact_manager.set_download_weight(
+        artifact_id=artifact_id,
+        file_path="model.pkl",
+        download_weight=1.0,
+    )
+
+    await artifact_manager.set_download_weight(
+        artifact_id=artifact_id,
+        file_path="results.json",
+        download_weight=0.5,
+    )
+
+    updated_artifact = await artifact_manager.read(artifact_id=artifact_id)
+    download_weights = updated_artifact.config["download_weights"]
+    assert download_weights["data.csv"] == 5.0
+    assert download_weights["model.pkl"] == 1.0
+    assert download_weights["results.json"] == 0.5
+
+    # Test removing download weight by setting to 0
+    await artifact_manager.set_download_weight(
+        artifact_id=artifact_id,
+        file_path="results.json",
+        download_weight=0,
+    )
+
+    updated_artifact = await artifact_manager.read(artifact_id=artifact_id)
+    download_weights = updated_artifact.config["download_weights"]
+    assert "results.json" not in download_weights  # Should be removed
+    assert download_weights["data.csv"] == 5.0  # Others should remain
+    assert download_weights["model.pkl"] == 1.0
+
+    # Test with nested file paths
+    await artifact_manager.set_download_weight(
+        artifact_id=artifact_id,
+        file_path="subfolder/nested_file.txt",
+        download_weight=3.0,
+    )
+
+    updated_artifact = await artifact_manager.read(artifact_id=artifact_id)
+    assert updated_artifact.config["download_weights"]["subfolder/nested_file.txt"] == 3.0
+
+    # Test permission restrictions with second user (non-admin)
+    api2 = await connect_to_server(
+        {"name": "test-client-2", "server_url": SERVER_URL, "token": test_user_token_2}
+    )
+    artifact_manager2 = await api2.get_service("public/artifact-manager")
+
+    # Second user should NOT be able to set_download_weight (no workspace permission)
+    with pytest.raises(Exception) as exc_info:
+        await artifact_manager2.set_download_weight(
+            artifact_id=artifact_id,
+            file_path="unauthorized_file.txt",
+            download_weight=1.0,
+        )
+    assert "permission" in str(exc_info.value).lower()
+
+    # Test with negative download weight (should fail)
+    with pytest.raises(Exception) as exc_info:
+        await artifact_manager.set_download_weight(
+            artifact_id=artifact_id,
+            file_path="negative_weight.txt",
+            download_weight=-1.0,
+        )
+    assert "non-negative" in str(exc_info.value)
+
+    # Test with non-existent artifact (should fail)
+    with pytest.raises(Exception):
+        await artifact_manager.set_download_weight(
+            artifact_id="nonexistent/artifact",
+            file_path="file.txt",
+            download_weight=1.0,
+        )
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=artifact_id)
+
+
+async def test_download_weight_functionality_integration(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test that download weights work correctly with actual file operations."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create an artifact
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Download Weight Integration Test"},
+    )
+    artifact_id = artifact.id
+
+    # Put artifact in staging mode for file upload
+    await artifact_manager.edit(artifact_id=artifact_id, stage=True)
+
+    # Upload a file
+    put_url = await artifact_manager.put_file(
+        artifact_id=artifact_id,
+        file_path="test_file.txt",
+        download_weight=1.0,  # Initial weight set during upload
+    )
+    
+    # Upload the file content
+    response = requests.put(put_url, data="test file content")
+    assert response.ok, response.text
+
+    # Commit the changes
+    await artifact_manager.commit(artifact_id=artifact_id)
+
+    # Verify the download weight was set during upload
+    artifact_data = await artifact_manager.read(artifact_id=artifact_id)
+    assert "download_weights" in artifact_data.config
+    assert artifact_data.config["download_weights"]["test_file.txt"] == 1.0
+
+    # Now update the download weight using set_download_weight
+    await artifact_manager.set_download_weight(
+        artifact_id=artifact_id,
+        file_path="test_file.txt",
+        download_weight=2.5,
+    )
+
+    # Verify the weight was updated
+    updated_artifact = await artifact_manager.read(artifact_id=artifact_id)
+    assert updated_artifact.config["download_weights"]["test_file.txt"] == 2.5
+
+    # Test that the weight affects download count tracking
+    initial_download_count = updated_artifact.download_count
+
+    # Get the file (this should increment download count by the weight)
+    file_info = await artifact_manager.get_file(
+        artifact_id=artifact_id,
+        file_path="test_file.txt",
+        silent=False,  # Don't suppress download count increment
+    )
+    assert file_info is not None
+
+    # Check that download count was incremented by the weight
+    final_artifact = await artifact_manager.read(artifact_id=artifact_id)
+    expected_download_count = initial_download_count + 2.5
+    assert final_artifact.download_count == expected_download_count
+
+    # Test setting weight to 0 and verify no more increment
+    await artifact_manager.set_download_weight(
+        artifact_id=artifact_id,
+        file_path="test_file.txt",
+        download_weight=0,
+    )
+
+    # Verify that setting weight to 0 removes it from config (saves storage)
+    zero_weight_artifact = await artifact_manager.read(artifact_id=artifact_id)
+    assert "test_file.txt" not in zero_weight_artifact.config.get("download_weights", {})
+
+    # Get the file again (should not increment download count)
+    await artifact_manager.get_file(
+        artifact_id=artifact_id,
+        file_path="test_file.txt",
+        silent=False,
+    )
+
+    # Download count should remain the same
+    final_artifact_2 = await artifact_manager.read(artifact_id=artifact_id)
+    assert final_artifact_2.download_count == expected_download_count
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=artifact_id)
+
+
+async def test_download_weight_storage_optimization(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test that 0 download weights are not stored to save storage space."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create an artifact
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Storage Optimization Test"},
+    )
+    artifact_id = artifact.id
+
+    # Put artifact in staging mode for file upload
+    await artifact_manager.edit(artifact_id=artifact_id, stage=True)
+
+    # Upload a file with 0 weight (should not store weight)
+    put_url = await artifact_manager.put_file(
+        artifact_id=artifact_id,
+        file_path="zero_weight_file.txt",
+        download_weight=0,  # This should not be stored
+    )
+    
+    response = requests.put(put_url, data="file with zero weight")
+    assert response.ok, response.text
+
+    # Upload another file with positive weight (should store weight)
+    put_url2 = await artifact_manager.put_file(
+        artifact_id=artifact_id,
+        file_path="positive_weight_file.txt",
+        download_weight=2.0,  # This should be stored
+    )
+    
+    response2 = requests.put(put_url2, data="file with positive weight")
+    assert response2.ok, response2.text
+
+    # Commit the changes
+    await artifact_manager.commit(artifact_id=artifact_id)
+
+    # Check the artifact config - should only contain the positive weight
+    committed_artifact = await artifact_manager.read(artifact_id=artifact_id)
+    download_weights = committed_artifact.config.get("download_weights", {})
+    
+    # Zero weight file should not be in download_weights
+    assert "zero_weight_file.txt" not in download_weights
+    # Positive weight file should be in download_weights
+    assert "positive_weight_file.txt" in download_weights
+    assert download_weights["positive_weight_file.txt"] == 2.0
+
+    # List files in staging mode to check pending files don't store 0 weights
+    await artifact_manager.edit(artifact_id=artifact_id, stage=True)
+    
+    # Add a file with 0 weight to staging
+    put_url3 = await artifact_manager.put_file(
+        artifact_id=artifact_id,
+        file_path="staging_zero_weight.txt",
+        download_weight=0,
+    )
+    response3 = requests.put(put_url3, data="staging file with zero weight")
+    assert response3.ok, response3.text
+    
+    # Add a file with positive weight to staging
+    put_url4 = await artifact_manager.put_file(
+        artifact_id=artifact_id,
+        file_path="staging_positive_weight.txt",
+        download_weight=1.5,
+    )
+    response4 = requests.put(put_url4, data="staging file with positive weight")
+    assert response4.ok, response4.text
+
+    # List files to check the response
+    files = await artifact_manager.list_files(artifact_id=artifact_id, version="stage")
+    
+    # Find the files in the response
+    zero_weight_file = next((f for f in files if f["name"] == "staging_zero_weight.txt"), None)
+    positive_weight_file = next((f for f in files if f["name"] == "staging_positive_weight.txt"), None)
+    
+    assert zero_weight_file is not None
+    assert positive_weight_file is not None
+    
+    # Zero weight file should not have download_weight key
+    assert "download_weight" not in zero_weight_file
+    
+    # Positive weight file should have download_weight key
+    assert "download_weight" in positive_weight_file
+    assert positive_weight_file["download_weight"] == 1.5
 
     # Clean up
     await artifact_manager.delete(artifact_id=artifact_id)
@@ -7086,3 +7483,112 @@ async def test_remove_file_directory_edge_cases(minio_server, fastapi_server, te
     level3_files = await artifact_manager.list_files(artifact.id, dir_path="level1/level2/level3")
     level3_file_names = {f["name"] for f in level3_files if f.get("type") != "directory"}
     assert len(level3_file_names) == 0  # No files should remain in level3
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=artifact.id)
+
+
+async def test_create_zip_file_special_weight(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test create-zip-file with special 'create-zip-file' download weight configuration."""
+
+    # Connect and get the artifact manager service
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a collection for testing
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest={
+            "name": "Special Weight Collection",
+            "description": "A collection for testing special zip download weight",
+        },
+        config={"permissions": {"*": "r", "@": "rw+"}},
+    )
+
+    # Create a dataset with special "create-zip-file" weight
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={
+            "name": "Special Weight Dataset",
+            "description": "A dataset with special create-zip-file weight",
+        },
+        config={
+            "download_weights": {
+                "create-zip-file": 1.0  # Special weight for zip downloads
+            }
+        },
+        version="stage",
+    )
+
+    # Upload test files with different individual download weights
+    test_files = [
+        {"name": "file1.txt", "content": "File 1 content", "weight": 10.0},
+        {"name": "file2.txt", "content": "File 2 content", "weight": 20.0},
+        {"name": "file3.txt", "content": "File 3 content", "weight": 30.0},
+    ]
+
+    for file_info in test_files:
+        put_url = await artifact_manager.put_file(
+            artifact_id=dataset.id,
+            file_path=file_info["name"],
+            download_weight=file_info["weight"],
+        )
+        async with httpx.AsyncClient() as client:
+            response = await client.put(put_url, data=file_info["content"])
+            assert response.status_code == 200
+
+    # Commit the dataset
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    # Get initial download count
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    initial_count = artifact["download_count"]
+    assert initial_count == 0
+
+    # Test create-zip-file endpoint multiple times
+    workspace = api.config.workspace
+    token = await api.generate_token()
+
+    # First request - should increment by special weight (1.0), NOT sum of individual weights (60.0)
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/create-zip-file",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    assert artifact["download_count"] == 1.0  # Special weight, not sum of individual weights
+
+    # Second request - should increment by special weight again
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/create-zip-file",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    assert artifact["download_count"] == 2.0  # 1.0 + 1.0
+
+    # Third request with specific files - should still use special weight, not individual file weights
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/create-zip-file",
+            params={"file": ["file1.txt", "file2.txt"]},  # These have weights 10.0 + 20.0 = 30.0, but should be ignored
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+    # Check final download count - should be 3.0 (special weight used 3 times)
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    assert artifact["download_count"] == 3.0  # 1.0 + 1.0 + 1.0 (special weight overrides individual weights)
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=dataset.id)
+    await artifact_manager.delete(artifact_id=collection.id)
