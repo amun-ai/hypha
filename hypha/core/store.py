@@ -627,7 +627,7 @@ class RedisStore:
         # check if the login service is registered after startup functions
         # this allows startup functions to register custom login services
         try:
-            await api.get_service_info("public/hypha-login")
+            await api.get_service_info("hypha-login")
             logger.info("Login service already registered (likely from startup function)")
         except KeyError:
             logger.info("No custom login service found, registering default login service")
@@ -635,7 +635,7 @@ class RedisStore:
         
         # check if the queue service is registered
         try:
-            await api.get_service_info("public/queue")
+            await api.get_service_info("queue")
         except KeyError:
             logger.warning("Queue service is not registered, registering it now")
             # Import dynamically to avoid circular import
