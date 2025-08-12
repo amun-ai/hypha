@@ -13,7 +13,7 @@ from hypha import __version__
 from hypha.core import UserInfo, UserPermission
 from hypha.core.store import RedisRPCConnection, RedisStore
 from hypha.core.auth import (
-    generate_reconnection_token,
+    generate_auth_token,
     generate_anonymous_user,
     create_scope,
     update_user_scope,
@@ -310,7 +310,7 @@ class WebsocketServer:
                     logger.error("Failed to send message via websocket: %s", str(e))
 
             conn.on_message(send_bytes)
-            reconnection_token = generate_reconnection_token(
+            reconnection_token = await generate_auth_token(
                 user_info, expires_in=self.store.reconnection_token_life_time
             )
             conn_info = {
@@ -343,7 +343,7 @@ class WebsocketServer:
                         if data.get("type") == "ping":
                             await websocket.send_text(json.dumps({"type": "pong"}))
                         elif data.get("type") == "refresh_token":
-                            reconnection_token = generate_reconnection_token(
+                            reconnection_token = await generate_auth_token(
                                 user_info,
                                 expires_in=self.store.reconnection_token_life_time,
                             )

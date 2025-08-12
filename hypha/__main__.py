@@ -3,16 +3,13 @@
 import asyncio
 import argparse
 import sys
-import os
-from typing import Optional
 from hypha.server import get_argparser, create_application
 from hypha.interactive import start_interactive_shell
 from hypha.core.auth import (
-    generate_presigned_token,
+    generate_auth_token,
     create_scope,
-    generate_anonymous_user,
 )
-from hypha.core import UserInfo, TokenConfig, UserPermission
+from hypha.core import UserInfo, UserPermission
 from hypha.utils import random_id
 import uvicorn
 
@@ -116,7 +113,7 @@ def create_cli_parser():
     return parser
 
 
-def generate_token_command(args):
+async def generate_token_command(args):
     """Handle the generate-token command."""
     # Map user-friendly permission names to enum values
     permission_map = {"read": "r", "read_write": "rw", "admin": "a"}
@@ -176,7 +173,7 @@ def generate_token_command(args):
     )
 
     # Generate token
-    token = generate_presigned_token(user_info, args.expires_in)
+    token = await generate_auth_token(user_info, args.expires_in)
 
     print(f"Generated token for user '{user_id}':")
     print(f"  Workspace: {workspace}")
@@ -206,7 +203,7 @@ def main():
         args = parser.parse_args()
 
         if args.command == "generate-token":
-            generate_token_command(args)
+            asyncio.run(generate_token_command(args))
             return
 
     # Handle server command or legacy mode (no subcommand)
