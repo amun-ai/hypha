@@ -97,7 +97,7 @@ Choose one of these approaches:
 #### Option B: Manual configuration
 ```bash
 # Copy the example environment file
-cp env.example .env
+cp .env.example .env
 
 # Edit the .env file and update all passwords and secrets
 # IMPORTANT: This file contains ONLY secrets - all other config is in values.yaml

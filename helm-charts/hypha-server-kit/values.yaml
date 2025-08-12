@@ -90,11 +90,12 @@ hypha-server:
         secretKeyRef:
           name: hypha-secrets
           key: HYPHA_DATABASE_URI
-    - name: HYPHA_REDIS_URI
-      valueFrom:
-        secretKeyRef:
-          name: hypha-secrets
-          key: HYPHA_REDIS_URI
+    # Disable Redis for now since we don't need it for single hypha server
+    # - name: HYPHA_REDIS_URI
+    #   valueFrom:
+    #     secretKeyRef:
+    #       name: hypha-secrets
+    #       key: HYPHA_REDIS_URI
     - name: HYPHA_ENABLE_SERVER_APPS
       value: "true"
     - name: HYPHA_EXECUTABLE_PATH
@@ -210,7 +211,7 @@ postgresql:
 
 # Redis configuration
 redis:
-  enabled: true
+  enabled: false
   
   architecture: standalone
   
