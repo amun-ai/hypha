@@ -41,7 +41,7 @@ from hypha.core import (
     VisibilityEnum,
 )
 from hypha.vectors import VectorSearchEngine
-from hypha.core.auth import generate_presigned_token, create_scope, parse_token
+from hypha.core.auth import generate_auth_token, create_scope, parse_auth_token
 from hypha.utils import EventBus, random_id
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
@@ -990,7 +990,7 @@ class WorkspaceManager:
         """Revoke a token by storing it in Redis with a prefix and expiration time."""
         self.validate_context(context, UserPermission.admin)
         try:
-            user_info = parse_token(token)
+            user_info = await parse_auth_token(token)
         except Exception as e:
             raise ValueError(f"Invalid token: {e}")
         expiration = int(user_info.expires_at - time.time())
@@ -998,6 +998,17 @@ class WorkspaceManager:
             await self._redis.setex("revoked_token:" + token, expiration, "revoked")
         else:
             raise ValueError("Token has already expired")
+
+    @schema_method
+    async def parse_token(
+        self,
+        token: str = Field(..., description="token to be parsed"),
+        context: dict = None,
+    ):
+        """Parse a token."""
+        assert context is not None
+        user_info = await parse_auth_token(token)
+        return user_info.model_dump(mode="json")
 
     @schema_method
     async def get_service_type(
@@ -1096,7 +1107,7 @@ class WorkspaceManager:
             extra_scopes=extra_scopes,
         )
         config.expires_in = config.expires_in or 3600
-        token = generate_presigned_token(user_info, config.expires_in)
+        token = await generate_auth_token(user_info, config.expires_in)
         return token
 
     @schema_method
@@ -2703,6 +2714,7 @@ class WorkspaceManager:
             "get_service": self.get_service,
             "generate_token": self.generate_token,
             "revoke_token": self.revoke_token,
+            "parse_token": self.parse_token,
             "create_workspace": self.create_workspace,
             "delete_workspace": self.delete_workspace,
             "bookmark": self.bookmark,

@@ -11,6 +11,7 @@ logger.setLevel(LOGLEVEL)
 
 import importlib.util
 from importlib import import_module
+from hypha.core.auth import set_parse_token_function, set_generate_token_function
 
 
 def _load_function(module_path, entrypoint):
@@ -42,5 +43,7 @@ async def run_startup_function(store: any, startup_function_uri: str):
         load_func
     ), f"Entrypoint {entrypoint} is not a coroutine"
     server = await store.get_public_api()
+    server["set_parse_token_function"] = set_parse_token_function
+    server["set_generate_token_function"] = set_generate_token_function
     await load_func(server)
     logger.info(f"Successfully executed the startup function: {startup_function_uri}")

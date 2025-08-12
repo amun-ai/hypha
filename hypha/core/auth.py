@@ -4,12 +4,13 @@ import asyncio
 import json
 import logging
 import ssl
+import inspect
 import os
 import sys
 from calendar import timegm
 import datetime
 from os import environ as env
-from typing import List, Union, Dict
+from typing import List, Union, Dict, Callable
 from urllib.request import urlopen
 
 import shortuuid
@@ -168,7 +169,7 @@ def generate_anonymous_user(scope=None) -> UserInfo:
     )
 
 
-def parse_token(authorization: str):
+def _parse_token(authorization: str):
     """Parse the token."""
     assert authorization, "Authorization is required"
     if authorization.startswith("Bearer ") or authorization.startswith("bearer "):
@@ -192,7 +193,26 @@ def parse_token(authorization: str):
     return get_user_info(payload)
 
 
-def generate_presigned_token(
+_current_auth_function = None
+
+
+async def set_parse_token_function(auth_function: Callable):
+    """Set the auth provider."""
+    global _current_auth_function
+    _current_auth_function = auth_function
+
+async def parse_auth_token(token: str):
+    """Get the auth provider."""
+    if _current_auth_function is None:
+        auth_function = _parse_token
+    else:
+        auth_function = _current_auth_function
+    user_info = auth_function(token)
+    if inspect.isawaitable(user_info):
+        user_info = await user_info
+    return user_info
+
+def _generate_presigned_token(
     user_info: UserInfo,
     expires_in: int,
 ):
@@ -226,29 +246,25 @@ def generate_presigned_token(
     )
     return token
 
+_generate_token_function = _generate_presigned_token
 
-def generate_reconnection_token(user_info: UserInfo, expires_in: int = 60):
-    """Generate a token for reconnection."""
-    current_time = datetime.datetime.now(datetime.timezone.utc)
-    expires_at = current_time + datetime.timedelta(seconds=expires_in)
+async def set_generate_token_function(generate_token_function: Callable):
+    """Set the generate token function."""
+    global _generate_token_function
+    _generate_token_function = generate_token_function
 
-    ret = jwt.encode(
-        {
-            "iss": AUTH0_ISSUER,
-            "sub": user_info.id,
-            "aud": AUTH0_AUDIENCE,
-            "iat": current_time,
-            "exp": expires_at,
-            "gty": "client-credentials",
-            AUTH0_NAMESPACE + "email": user_info.email,
-            AUTH0_NAMESPACE + "roles": user_info.roles,
-            "scope": generate_jwt_scope(user_info.scope),
-        },
-        JWT_SECRET,
-        algorithm="HS256",
-    )
-    return ret
-
+async def generate_auth_token(user_info: UserInfo, expires_in: int):
+    """Generate a presigned token."""
+    if _generate_token_function is None:
+        generate = _generate_presigned_token
+    else:
+        generate = _generate_token_function
+    
+    result = generate(user_info, expires_in)
+    if inspect.isawaitable(result):
+        return await result
+    else:
+        return result
 
 def parse_scope(scope: str) -> ScopeInfo:
     """Parse the scope."""
@@ -459,7 +475,7 @@ def create_login_service(store):
 
         user_token_info = UserTokenInfo.model_validate(kwargs)
         if workspace:
-            user_info = parse_token(token)
+            user_info = await parse_auth_token(token)
             # based on the user token, create a scoped token
             workspace = workspace or user_info.get_workspace()
             # generate scoped token
@@ -468,7 +484,7 @@ def create_login_service(store):
             if not user_info.check_permission(workspace, UserPermission.read):
                 raise Exception(f"Invalid permission for the workspace {workspace}")
 
-            token = generate_presigned_token(user_info, int(expires_in or 3600))
+            token = await generate_auth_token(user_info, int(expires_in or 3600))
             # replace the token
             user_token_info.token = token
         await redis.setex(

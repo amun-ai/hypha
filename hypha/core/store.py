@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import (
 
 from hypha.core.auth import (
     create_scope,
-    parse_token,
+    parse_auth_token,
     generate_anonymous_user,
     UserPermission,
     AUTH0_CLIENT_ID,
@@ -751,7 +751,7 @@ class RedisStore:
 
     async def parse_user_token(self, token):
         """Parse a client token."""
-        user_info = parse_token(token)
+        user_info = await parse_auth_token(token)
         key = "revoked_token:" + token
         if await self._redis.exists(key):
             raise Exception("Token has been revoked")
