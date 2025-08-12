@@ -1043,7 +1043,7 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
 
 async def hypha_startup(server):
     """Hypha startup function to initialize conda environment worker."""
-    worker = CondaWorker(use_local_url=True)  # Built-in worker should use local URLs
+    worker = CondaWorker(server_url=server.config.local_base_url, use_local_url=True)  # Built-in worker should use local URLs
     await worker.register_worker_service(server)
     logger.info("Conda environment worker initialized and registered")
 
