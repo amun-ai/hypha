@@ -835,6 +835,10 @@ class ArtifactController:
                                 increment=download_weight,
                             )
                         await session.commit()
+                    # Use proxy based on use_proxy parameter (None means use server config)
+                    if use_proxy is None:
+                        use_proxy = self.s3_controller.enable_s3_proxy
+                    
                     if use_proxy:
                         s3_client = self._create_client_async(s3_config)
                         return FSFileResponse(s3_client, s3_config["bucket"], file_key)
@@ -890,7 +894,7 @@ class ArtifactController:
                 3600,
                 description="The number of seconds for the presigned URLs to expire.",
             ),
-            use_proxy: bool = False,
+            use_proxy: bool = None,
             use_local_url: bool = False,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
@@ -981,7 +985,7 @@ class ArtifactController:
             artifact_alias: str,
             file_path: str,
             download_weight: float = 0,
-            use_proxy: bool = False,
+            use_proxy: bool = None,
             use_local_url: bool = False,
             expires_in: int = 3600,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
@@ -1621,6 +1625,7 @@ class ArtifactController:
             "remove_vectors": UserPermission.read_write,
             "remove_file": UserPermission.read_write,
             "set_secret": UserPermission.read_write,
+            "set_download_weight": UserPermission.read_write,
             "delete": UserPermission.admin,
             "reset_stats": UserPermission.admin,
             "publish": UserPermission.admin,
@@ -2825,7 +2830,10 @@ class ArtifactController:
                             ]
 
                     if download_weights:
-                        artifact.config["download_weights"] = download_weights
+                        # Merge with existing download weights to preserve special weights like "create-zip-file"
+                        existing_weights = artifact.config.get("download_weights", {})
+                        existing_weights.update(download_weights)
+                        artifact.config["download_weights"] = existing_weights
                         flag_modified(artifact, "config")
 
                     # Count files in the target version based on intent
@@ -3336,10 +3344,11 @@ class ArtifactController:
                     
                     # Check if file already exists in staging
                     if not any(f["path"] == file_path for f in staging_files):
-                        staging_files.append({
-                            "path": file_path,
-                            "download_weight": download_weight,
-                        })
+                        file_info = {"path": file_path}
+                        # Only store download_weight if it's greater than 0 to save storage
+                        if download_weight > 0:
+                            file_info["download_weight"] = download_weight
+                        staging_files.append(file_info)
                         staging_dict["files"] = staging_files
                         flag_modified(artifact, "staging")
                         
@@ -3431,6 +3440,10 @@ class ArtifactController:
                     )
                     upload_id = mpu["UploadId"]
 
+                    # Use proxy based on use_proxy parameter (None means use server config)
+                    if use_proxy is None:
+                        use_proxy = self.s3_controller.enable_s3_proxy
+                        
                     # Generate a presigned URL for each part
                     part_urls = []
                     for i in range(1, part_count + 1):
@@ -3872,6 +3885,26 @@ class ArtifactController:
                                 if item["name"] not in removed_names
                             ]
 
+                    # If we're in staging mode, merge download weight info from staging manifest with S3 files
+                    if version == "stage" and artifact.staging is not None:
+                        staging_files_list = staging_dict.get("files", [])
+                        # Create a mapping of file paths to download weights
+                        download_weight_map = {}
+                        for file_info in staging_files_list:
+                            if "path" in file_info and "download_weight" in file_info:
+                                # Adjust path for directory context if needed
+                                file_path = file_info["path"]
+                                if dir_path and file_path.startswith(dir_path + "/"):
+                                    display_path = file_path[len(dir_path) + 1:]
+                                else:
+                                    display_path = file_path
+                                download_weight_map[display_path] = file_info["download_weight"]
+                        
+                        # Merge download weights with S3 file items
+                        for item in items:
+                            if item["name"] in download_weight_map:
+                                item["download_weight"] = download_weight_map[item["name"]]
+
                     # If include_pending is True and we're in staging mode, add pending files from staging manifest
                     if (
                         include_pending
@@ -3904,9 +3937,9 @@ class ArtifactController:
                                         "last_modified": None,
                                         "etag": None,
                                         "pending": True,  # Mark as pending
-                                        "download_weight": file_info.get(
-                                            "download_weight", 0
-                                        ),
+                                        **({
+                                            "download_weight": file_info["download_weight"]
+                                        } if "download_weight" in file_info else {}),
                                     }
                                 )
 
@@ -4887,6 +4920,68 @@ class ArtifactController:
         finally:
             await session.close()
 
+    async def set_download_weight(
+        self,
+        artifact_id: str,
+        file_path: str,
+        download_weight: float,
+        context: dict = None,
+    ):
+        """Set download weight for a specific file in an artifact. Requires read_write permission."""
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.model_validate(context["user"])
+        
+        if download_weight < 0:
+            raise ValueError(f"Download weight must be non-negative, got: {download_weight}")
+        
+        session = await self._get_session()
+
+        try:
+            async with session.begin():
+                artifact, _ = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "set_download_weight", session
+                )
+
+                # Initialize config dict if it doesn't exist
+                if artifact.config is None:
+                    artifact.config = {}
+                
+                # Initialize download_weights dict if it doesn't exist
+                if "download_weights" not in artifact.config:
+                    artifact.config["download_weights"] = {}
+                
+                # Set or remove the download weight
+                if download_weight <= 0:
+                    # Remove the entry if weight is 0 to keep the config clean
+                    if file_path in artifact.config["download_weights"]:
+                        del artifact.config["download_weights"][file_path]
+                        logger.info(
+                            f"Removed download weight for file '{file_path}' in artifact {artifact_id}"
+                        )
+                else:
+                    artifact.config["download_weights"][file_path] = download_weight
+                    logger.info(
+                        f"Set download weight {download_weight} for file '{file_path}' in artifact {artifact_id}"
+                    )
+
+                artifact.last_modified = int(time.time())
+
+                # Mark the field as modified for SQLAlchemy
+                flag_modified(artifact, "config")
+
+                session.add(artifact)
+                await session.commit()
+
+                logger.info(f"Updated download weight for file '{file_path}' in artifact {artifact_id}")
+
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
+
     def get_artifact_service(self):
         """Return the artifact service definition."""
         return {
@@ -4916,4 +5011,5 @@ class ArtifactController:
             "publish": self.publish,
             "get_secret": self.get_secret,
             "set_secret": self.set_secret,
+            "set_download_weight": self.set_download_weight,
         }
