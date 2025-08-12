@@ -27,7 +27,6 @@ from hypha.core import (
     WorkspaceInfo,
 )
 from hypha.core.activity import ActivityTracker
-from hypha.queue import create_queue_service
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
@@ -622,6 +621,8 @@ class RedisStore:
             await api.get_service_info("public/queue")
         except KeyError:
             logger.warning("Queue service is not registered, registering it now")
+            # Import dynamically to avoid circular import
+            from hypha.queue import create_queue_service
             await api.register_service(create_queue_service(self))
         
         self._ready = True
