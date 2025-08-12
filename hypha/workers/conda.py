@@ -243,13 +243,15 @@ class CondaWorker(BaseWorker):
 
     instance_counter: int = 0
 
-    def __init__(self, use_local_url: bool = False):
+    def __init__(self, server_url: str = None, use_local_url: bool = False, disable_ssl: bool = False):
         """Initialize the conda environment worker."""
         super().__init__()
         self.instance_id = f"conda-jupyter-kernel-{shortuuid.uuid()}"
         self.controller_id = str(CondaWorker.instance_counter)
         CondaWorker.instance_counter += 1
         self._use_local_url = use_local_url
+        self._server_url = server_url
+        self._disable_ssl = disable_ssl
 
         # Detect available package manager (mamba preferred over conda)
         try:
@@ -411,8 +413,8 @@ class CondaWorker(BaseWorker):
         try:
             # Phase 1: Fetch application script
             await progress_callback({"type": "info", "message": "Fetching application script..."})
-            script_url = f"{config.app_files_base_url}/{config.manifest['entry_point']}?use_proxy=true"
-            async with httpx.AsyncClient() as client:
+            script_url = f"{self._server_url}/{config.workspace}/artifacts/{config.app_id}/files/{config.manifest['entry_point']}?use_proxy=true"
+            async with httpx.AsyncClient(verify=not self._disable_ssl) as client:
                 response = await client.get(
                     script_url, headers={"Authorization": f"Bearer {config.token}"}
                 )
@@ -1204,7 +1206,7 @@ Examples:
             )
 
             # Create and register worker
-            worker = CondaWorker(use_local_url=args.use_local_url)
+            worker = CondaWorker(server_url=args.server_url, use_local_url=args.use_local_url, disable_ssl=args.disable_ssl)
             if args.cache_dir:
                 worker._env_cache = EnvironmentCache(cache_dir=args.cache_dir)
 
@@ -1333,7 +1335,7 @@ async def run_from_env():
         )
 
         # Create and register worker
-        worker = CondaWorker()
+        worker = CondaWorker(server_url=server_url, disable_ssl=disable_ssl)
         if cache_dir:
             worker._env_cache = EnvironmentCache(cache_dir=cache_dir)
 
