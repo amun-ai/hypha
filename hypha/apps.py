@@ -3226,6 +3226,7 @@ class ServerAppController:
             "list_apps": self.list_apps,
             "list_running": self.list_running,
             "list_workers": self.list_workers,
+            "edit_worker": self.edit_worker,
             "get_logs": self.get_logs,
             "take_screenshot": self.take_screenshot,
             "execute": self.execute,
