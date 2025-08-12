@@ -15,9 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from hypha import __version__
-from hypha.core.auth import create_login_service
 from hypha.core.store import RedisStore
-from hypha.queue import create_queue_service
 from hypha.http import HTTPProxy
 from hypha.triton import TritonProxy
 from hypha.utils import GZipMiddleware, GzipRoute, PatchedCORSMiddleware
@@ -88,8 +86,9 @@ def start_builtin_services(
             allow_origins=args.allow_origins,
         )
 
-    store.register_public_service(create_queue_service(store))
-    store.register_public_service(create_login_service(store))
+    # Initialize variables to None first
+    s3_controller = None
+    artifact_manager = None
 
     if args.enable_s3:
         # pylint: disable=import-outside-toplevel
