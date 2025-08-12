@@ -174,7 +174,7 @@ class KubernetesWorker(BaseWorker):
         self._sessions[session_id] = session_info
 
         try:
-            session_data = await self._start_k8s_pod(config, progress_callback)
+            session_data = await self._start_k8s_pod(config, session_id, progress_callback)
             self._session_data[session_id] = session_data
 
             # Update session status
@@ -209,7 +209,7 @@ class KubernetesWorker(BaseWorker):
             raise
 
     async def _start_k8s_pod(
-        self, config: WorkerConfig, progress_callback=None
+        self, config: WorkerConfig, session_id: str, progress_callback=None
     ) -> Dict[str, Any]:
         """Start a Kubernetes pod session."""
         # Initialize logs
@@ -241,7 +241,7 @@ class KubernetesWorker(BaseWorker):
         )
 
         # Generate pod name
-        pod_name = f"hypha-pod-{config.workspace}-{config.id}-{uuid.uuid4().hex[:8]}"
+        pod_name = f"hypha-pod-{session_id}"
 
         # Build environment variables - include Hypha configuration automatically
         env_vars = []
@@ -294,9 +294,9 @@ class KubernetesWorker(BaseWorker):
             name=pod_name,
             labels={
                 "hypha-worker": "k8s",
-                "hypha-session-id": session_id[:8],
-                "hypha-app-id": config.app_id[:8] if config.app_id else "unknown",
-                "hypha-workspace": config.workspace[:8] if config.workspace else "unknown",
+                "hypha-session-id": session_id,
+                "hypha-app-id": config.app_id if config.app_id else "unknown",
+                "hypha-workspace": config.workspace if config.workspace else "unknown",
                 "created-by": "hypha-k8s-worker",
             },
         )
