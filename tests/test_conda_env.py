@@ -1268,6 +1268,15 @@ print('hello from init')
 class TestCondaWorkerTimeoutPropagation:
     """Ensure timeouts from config are passed to kernel start and execute."""
 
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.progress_messages = []
+
+        def mock_progress_callback(info):
+            self.progress_messages.append(info)
+
+        self.progress_callback = mock_progress_callback
+
     async def test_kernel_start_and_execute_receive_config_timeout(self):
         # Arrange
         requested_timeout = 123.0
@@ -1343,6 +1352,9 @@ print('init')
 
     async def test_progress_callback_error_handling(self):
         """Test progress callback during error scenarios."""
+        
+        # Initialize worker
+        self.worker = CondaWorker()
 
         config = WorkerConfig(
             id="error-progress-test",

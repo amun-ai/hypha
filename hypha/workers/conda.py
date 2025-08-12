@@ -173,8 +173,10 @@ class EnvironmentCache:
         self._evict_if_needed()
 
         # Ensure the ready marker exists to indicate a fully initialized environment
-        marker_path = env_path / READY_MARKER
-        marker_path.touch(exist_ok=True)
+        # Only create the marker if the environment path exists
+        if env_path.exists():
+            marker_path = env_path / READY_MARKER
+            marker_path.touch(exist_ok=True)
         self.index[env_hash] = {
             "path": str(env_path),
             "dependencies": dependencies,

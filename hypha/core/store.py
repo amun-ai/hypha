@@ -354,11 +354,12 @@ class RedisStore:
                         and not self._enable_s3_for_anonymous_users,
                     }
                 )
-        else:
-            if not workspace_info:
+            else:
+                # Workspace doesn't exist and can't be auto-created
                 raise KeyError(
                     f"Workspace {workspace} does not exist or is not accessible"
                 )
+        else:
             logger.debug(f"Workspace {workspace} already exists, skipping creation")
         return workspace_info
 
