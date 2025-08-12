@@ -241,8 +241,7 @@ class KubernetesWorker(BaseWorker):
         )
 
         # Generate pod name
-        session_id = config.id
-        pod_name = f"hypha-pod-{session_id[:8]}"
+        pod_name = f"hypha-pod-{config.workspace}-{config.id}-{uuid.uuid4().hex[:8]}"
 
         # Build environment variables - include Hypha configuration automatically
         env_vars = []
@@ -815,6 +814,17 @@ Examples:
         help="Service visibility (default: protected, from HYPHA_VISIBILITY env var)",
     )
     parser.add_argument(
+        "--client-id",
+        type=str,
+        default=get_env_var("CLIENT_ID"),
+        help="Client ID for the worker (default: from HYPHA_CLIENT_ID env var or auto-generated)",
+    )
+    parser.add_argument(
+        "--disable-ssl",
+        action="store_true",
+        help="Disable SSL verification (default: false)",
+    )
+    parser.add_argument(
         "--namespace",
         type=str,
         default=get_env_var("K8S_NAMESPACE", "default"),
@@ -870,7 +880,9 @@ Examples:
     print(f"Starting Hypha Kubernetes Worker...")
     print(f"  Server URL: {args.server_url}")
     print(f"  Workspace: {args.workspace}")
-    print(f"  Service ID: {args.service_id or 'auto-generated'}")
+    print(f"  Service ID: {args.service_id}")
+    print(f"  Client ID: {args.client_id}")
+    print(f"  Disable SSL: {args.disable_ssl}")
     print(f"  Visibility: {args.visibility}")
     print(f"  Namespace: {args.namespace}")
     print(f"  Default Timeout: {args.default_timeout}s")
@@ -886,6 +898,8 @@ Examples:
                 server_url=args.server_url,
                 workspace=args.workspace,
                 token=args.token,
+                client_id=args.client_id,
+                ssl=False if args.disable_ssl else None,
             )
 
             # Create and register worker

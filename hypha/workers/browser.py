@@ -1184,6 +1184,11 @@ Examples:
         help="Use local URLs for server communication (default: false for CLI workers)",
     )
     parser.add_argument(
+        "--disable-ssl",
+        action="store_true",
+        help="Disable SSL verification (default: false)",
+    )
+    parser.add_argument(
         "--verbose", "-v", action="store_true", help="Enable verbose logging"
     )
 
@@ -1220,7 +1225,8 @@ Examples:
     print(f"Starting Hypha Browser Worker...")
     print(f"  Server URL: {args.server_url}")
     print(f"  Workspace: {args.workspace}")
-    print(f"  Service ID: {args.service_id or 'auto-generated'}")
+    print(f"  Service ID: {args.service_id}")
+    print(f"  Disable SSL: {args.disable_ssl}")
     print(f"  Visibility: {args.visibility}")
     print(f"  Use Local URL: {args.use_local_url}")
     print(f"  In Docker: {args.in_docker}")
@@ -1232,7 +1238,7 @@ Examples:
 
             # Connect to server
             server = await connect_to_server(
-                server_url=args.server_url, workspace=args.workspace, token=args.token
+                server_url=args.server_url, workspace=args.workspace, token=args.token, ssl=False if args.disable_ssl else None
             )
 
             # Create and register worker - use BrowserWorker directly
