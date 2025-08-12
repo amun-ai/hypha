@@ -38,15 +38,30 @@ AUTH0_DOMAIN = env.get("AUTH0_DOMAIN", "amun-ai.eu.auth0.com")
 AUTH0_AUDIENCE = env.get("AUTH0_AUDIENCE", "https://amun-ai.eu.auth0.com/api/v2/")
 AUTH0_ISSUER = env.get("AUTH0_ISSUER", "https://amun.ai/")
 AUTH0_NAMESPACE = env.get("AUTH0_NAMESPACE", "https://amun.ai/")
-JWT_SECRET = env.get("HYPHA_JWT_SECRET") or env.get("JWT_SECRET")
+def _get_jwt_secret():
+    """Get JWT secret, ensuring consistency during testing and runtime."""
+    # Always check environment variables first (important for testing)
+    secret = env.get("HYPHA_JWT_SECRET") or env.get("JWT_SECRET")
+    if not secret:
+        logger.info(
+            "Neither HYPHA_JWT_SECRET nor JWT_SECRET is defined, using a random JWT_SECRET"
+        )
+        secret = shortuuid.ShortUUID().random(length=22)
+        # Set the environment variable to ensure consistency across module reloads
+        env["JWT_SECRET"] = secret
+        env["HYPHA_JWT_SECRET"] = secret
+    return secret
+
+JWT_SECRET = _get_jwt_secret()
+
+def set_jwt_secret(secret: str):
+    """Set JWT secret explicitly (mainly for testing)."""
+    global JWT_SECRET
+    env["JWT_SECRET"] = secret
+    env["HYPHA_JWT_SECRET"] = secret
+    JWT_SECRET = secret
 LOGIN_SERVICE_URL = "/public/services/hypha-login"
 LOGIN_KEY_PREFIX = "login_key:"
-
-if not JWT_SECRET:
-    logger.info(
-        "Neither HYPHA_JWT_SECRET nor JWT_SECRET is defined, using a random JWT_SECRET"
-    )
-    JWT_SECRET = shortuuid.ShortUUID().random(length=22)
 
 
 def get_user_email(token):
@@ -507,3 +522,25 @@ def create_login_service(store):
         "check": check_login,
         "report": report_login,
     }
+
+_login_service = None
+
+async def set_login_service(login_service: dict):
+    """Set the login service."""
+    global _login_service
+    
+    assert "name" in login_service and "id" in login_service, "Login service should at least contain `name` and `id`"
+    assert "index" in login_service and "start" in login_service and "check" in login_service and "report" in login_service, "Login service should at least contain `index`, `start`, `check`, and `report`"
+    _login_service = login_service
+    if "parse_token" in login_service:
+        set_parse_token_function(login_service["parse_token"])
+    if "generate_token" in login_service:
+        set_generate_token_function(login_service["generate_token"])
+
+def register_login_service(store):
+    """Register the login service."""
+    global _login_service
+    if _login_service is None:
+        _login_service = create_login_service(store)
+
+    store.register_public_service(_login_service)
