@@ -6,7 +6,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Hypha Workspace Management</title>
     <!-- External Scripts -->
-    <script src="../assets/hypha-rpc-websocket.js"></script>
+    <script src="./assets/hypha-rpc-websocket.js"></script>
+    <script>
+        // Extract base path from current URL
+        const pathSegments = window.location.pathname.split('/');
+        // Remove the workspace segment and any trailing empty segments
+        const basePath = pathSegments.slice(0, pathSegments.length - 1).join('/') || '';
+        window.HYPHA_BASE_PATH = basePath;
+    </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/react/17.0.2/umd/react.production.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/17.0.2/umd/react-dom.production.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
@@ -16,9 +23,31 @@
     <script src="https://rawcdn.githack.com/nextapps-de/winbox/0.2.82/dist/winbox.bundle.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.7.7/axios.min.js"></script>
     <!-- Favicon and Icons -->
-    <link rel="apple-touch-icon" sizes="180x180" href="./static/img/apple-touch-icon.png">
-    <link rel="icon" type="image/png" sizes="32x32" href="./static/img/favicon-32x32.png">
-    <link rel="icon" type="image/png" sizes="16x16" href="./static/img/favicon-16x16.png">
+    <script>
+        // Set favicon paths dynamically based on base path
+        (function() {
+            const basePath = window.HYPHA_BASE_PATH || '';
+            const appleIcon = document.createElement('link');
+            appleIcon.rel = 'apple-touch-icon';
+            appleIcon.sizes = '180x180';
+            appleIcon.href = `${basePath}/static/img/apple-touch-icon.png`;
+            document.head.appendChild(appleIcon);
+            
+            const favicon32 = document.createElement('link');
+            favicon32.rel = 'icon';
+            favicon32.type = 'image/png';
+            favicon32.sizes = '32x32';
+            favicon32.href = `${basePath}/static/img/favicon-32x32.png`;
+            document.head.appendChild(favicon32);
+            
+            const favicon16 = document.createElement('link');
+            favicon16.rel = 'icon';
+            favicon16.type = 'image/png';
+            favicon16.sizes = '16x16';
+            favicon16.href = `${basePath}/static/img/favicon-16x16.png`;
+            document.head.appendChild(favicon16);
+        })();
+    </script>
     <!-- Stylesheets -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.3.0/github-markdown-light.css">
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800&display=swap">
@@ -217,9 +246,13 @@
                 }
                 // extract workspace from url
                 // for example: http://127.0.0.1:9527/ws-user-github%7C478667#services => ws-user-github|478667
-                const workspace = decodeURIComponent(window.location.href.split(window.location.origin)[1].split('/')[1].split("#")[0].split('?')[0]);
+                // Extract workspace from URL, accounting for base path
+                const pathSegments = window.location.pathname.split('/').filter(s => s);
+                // The workspace is the last segment that contains a dash (e.g., ws-user-github|478667)
+                const workspace = decodeURIComponent(pathSegments[pathSegments.length - 1] || pathSegments[pathSegments.length - 2] || '');
+                const basePath = window.HYPHA_BASE_PATH || '';
                 return {
-                    server_url: window.location.origin,
+                    server_url: window.location.origin + basePath,
                     workspace,
                     token,
                     method_timeout: 120,
@@ -227,7 +260,7 @@
             }
         }
         window.defaultService = defaultService;
-        const hyphaCore = new HyphaCore({base_url: "/hypha-core-app/", default_service: defaultService});
+        const hyphaCore = new HyphaCore({base_url: `${window.HYPHA_BASE_PATH || ''}/hypha-core-app/`, default_service: defaultService});
         hyphaCore.on("add_window", (config) => {
             const root = document.getElementById("hypha-window-container");
             // get the left and top position of the root element
@@ -258,7 +291,8 @@
                  return;
              }
              
-             const response = await fetch("/ws/code_template.hypha.html");
+             const basePath = window.HYPHA_BASE_PATH || '';
+             const response = await fetch(`${basePath}/ws/code_template.hypha.html`);
              const pythonPluginCode = await response.text();
              await api.createWindow({ 
                  name: "Code Editor",
@@ -268,42 +302,42 @@
                     templates: [
                         {
                             name: "Basic JavaScript App",
-                            url: window.location.origin + "/ws/code_template.hypha.html",
+                            url: window.location.origin + (window.HYPHA_BASE_PATH || '') + "/ws/code_template.hypha.html",
                             lang: 'javascript',
                         },
                         {
                             name: "JavaScript Test App", 
-                            url: window.location.origin + "/ws/javascript_app_template.hypha.html",
+                            url: window.location.origin + (window.HYPHA_BASE_PATH || '') + "/ws/javascript_app_template.hypha.html",
                             lang: 'javascript',
                         },
                         {
                             name: "Python Test App",
-                            url: window.location.origin + "/ws/python_app_template.hypha.html", 
+                            url: window.location.origin + (window.HYPHA_BASE_PATH || '') + "/ws/python_app_template.hypha.html", 
                             lang: 'python',
                         },
                         {
                             name: "FastAPI Web App",
-                            url: window.location.origin + "/ws/fastapi_app_template.hypha.html",
+                            url: window.location.origin + (window.HYPHA_BASE_PATH || '') + "/ws/fastapi_app_template.hypha.html",
                             lang: 'python',
                         },
                         {
                             name: "Conda Jupyter Kernel App",
-                            url: window.location.origin + "/ws/conda_jupyter_kernel_template.hypha.html",
+                            url: window.location.origin + (window.HYPHA_BASE_PATH || '') + "/ws/conda_jupyter_kernel_template.hypha.html",
                             lang: 'python',
                         },
                         {
                             name: "MCP Server",
-                            url: window.location.origin + "/ws/mcp_server_template.hypha.html",
+                            url: window.location.origin + (window.HYPHA_BASE_PATH || '') + "/ws/mcp_server_template.hypha.html",
                             lang: 'json',
                         },
                         {
                             name: "A2A Agent",
-                            url: window.location.origin + "/ws/a2a_agent_template.hypha.html",
+                            url: window.location.origin + (window.HYPHA_BASE_PATH || '') + "/ws/a2a_agent_template.hypha.html",
                             lang: 'json',
                         },
                         {
                             name: "ImageJ.JS Web App",
-                            url: window.location.origin + "/ws/web_app_template.hypha.html",
+                            url: window.location.origin + (window.HYPHA_BASE_PATH || '') + "/ws/web_app_template.hypha.html",
                             lang: 'json',
                         },
                     ],
@@ -417,7 +451,7 @@
             return (
                 <div className={`sidebar ${isCollapsed ? 'collapsed' : ''}`}>
                     <div className="logo">
-                        <a href="/"><img src="/static/img/hypha-logo-black.svg" className={`h-10 invert ${isCollapsed ? 'hidden' : 'block'}`} alt="Hypha Logo" /></a>
+                        <a href={`${window.HYPHA_BASE_PATH || ''}/`}><img src={`${window.HYPHA_BASE_PATH || ''}/static/img/hypha-logo-black.svg`} className={`h-10 invert ${isCollapsed ? 'hidden' : 'block'}`} alt="Hypha Logo" /></a>
                     </div>
                     <div className="menu-item" onClick={() => onToggle()}>
                         <i className="fas fa-bars"></i>
@@ -535,7 +569,7 @@
             const [isToggling, setIsToggling] = React.useState(false);
             
             const services = app.services || [];
-            const serverUrl = window.location.origin;
+            const serverUrl = window.location.origin + (window.HYPHA_BASE_PATH || '');
             // For installed apps, we need to get the workspace from the current config
             const workspace = window.defaultService.getServerConfig().workspace;
             
@@ -913,7 +947,7 @@
             const [copiedServiceId, setCopiedServiceId] = React.useState('');
             
             const services = app.services || [];
-            const serverUrl = window.location.origin;
+            const serverUrl = window.location.origin + (window.HYPHA_BASE_PATH || '');
             const workspace = app.workspace;
             
             const copyServiceId = async (serviceId) => {
@@ -4057,7 +4091,7 @@ license: "MIT"`);
                                 <i className="fas fa-info-circle mr-2"></i> Info
                             </button>
                             <a
-                                href={`/${workspace.id}`}
+                                href={`${window.HYPHA_BASE_PATH || ''}/${workspace.id}`}
                                 className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-full transition duration-300 flex items-center"
                             >
                                 <i className="fas fa-arrow-right mr-2"></i> Open
@@ -5900,7 +5934,7 @@ license: "MIT"`);
                                         {/* Button to go to the workspace (only for workspace type) */}
                                         {item.bookmark_type === "workspace" && (
                                           <a
-                                            href={`/${item.id}`}
+                                            href={`${window.HYPHA_BASE_PATH || ''}/${item.id}`}
                                             className="absolute bottom-4 right-4 bg-blue-500 hover:bg-blue-400 text-white font-bold py-2 px-4 rounded-full transition duration-300 flex items-center"
                                           >
                                             <i className="fas fa-arrow-right mr-2"></i> Go to Workspace
@@ -6922,7 +6956,8 @@ license: "MIT"`);
                         setIsLoadingSpinnerVisible(false);
                         // clear access token
                         document.cookie = 'access_token=; path=/; max-age=0; samesite=lax';
-                        const redirectUrl = '/public/apps/hypha-login/?redirect=' + window.location.href;
+                        const basePath = window.HYPHA_BASE_PATH || '';
+                const redirectUrl = `${basePath}/public/apps/hypha-login/?redirect=` + window.location.href;
                         alert(`Failed to connect to the server: ${e}, redirecting to login: ${redirectUrl}`);
                         window.location.href = redirectUrl;
                     }
@@ -7004,7 +7039,7 @@ license: "MIT"`);
                 
                 const url = prompt(
                     'Enter the URL of the app to install (*.hypha.html)',
-                    window.location.origin + '/ws/code_template.hypha.html'
+                    window.location.origin + (window.HYPHA_BASE_PATH || '') + '/ws/code_template.hypha.html'
                 );
                 if (!url) return;
                 
