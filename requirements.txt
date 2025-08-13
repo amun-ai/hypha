@@ -28,7 +28,7 @@ aiocache==0.12.2
 jsonschema==4.24.0
 sqlalchemy==2.0.35
 aiosqlite==0.20.0
-prometheus-client==0.21.0
+prometheus-client==0.21.1
 uuid-utils==0.9.0
 psycopg2-binary==2.9.10
 asyncpg>=0.30.0
