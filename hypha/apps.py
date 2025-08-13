@@ -12,7 +12,6 @@ import time
 from pathlib import Path
 import base64
 from functools import partial
-import shortuuid
 
 from hypha import hypha_rpc_version
 from jinja2 import Environment, PackageLoader, select_autoescape
@@ -1855,7 +1854,7 @@ class ServerAppController:
         additional_kwargs = additional_kwargs or {}
         session_id = await worker.start(
             {
-                "id": shortuuid.uuid(),
+                "id": full_client_id,
                 "app_id": app_id,
                 "workspace": workspace,
                 "client_id": client_id,

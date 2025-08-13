@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import re
 import httpx
 import json
 import logging
@@ -390,6 +391,194 @@ class CondaWorker(BaseWorker):
 
         return manifest, files
 
+    async def _prepare_staged_files(
+        self,
+        files_to_stage: List[str],
+        working_dir: Path,
+        config: WorkerConfig,
+        progress_callback=None,
+    ) -> None:
+        """Prepare and download files from artifact manager to the working directory.
+        
+        Args:
+            files_to_stage: List of file paths from artifact manager. Can include:
+                - Simple file paths: "data.csv"
+                - Folder paths (ending with /): "models/"
+                - Renamed files: "source.txt:target.txt"
+                - Renamed folders: "source/:target/"
+            working_dir: Directory where files should be placed
+            config: Worker configuration with server/auth details
+            progress_callback: Optional callback for progress updates
+            
+        Raises:
+            WorkerError: If any file or directory cannot be downloaded
+        """
+        if not files_to_stage:
+            return
+        
+        # Validate files_to_stage format
+        if not isinstance(files_to_stage, list):
+            raise WorkerError(f"files_to_stage must be a list, got {type(files_to_stage).__name__}")
+        
+        for item in files_to_stage:
+            if not isinstance(item, str):
+                raise WorkerError(f"Each item in files_to_stage must be a string, got {type(item).__name__}: {item}")
+            if not item or item.strip() == "":
+                raise WorkerError("Empty or whitespace-only path in files_to_stage")
+            
+        await progress_callback(
+            {"type": "info", "message": f"Preparing {len(files_to_stage)} files/folders from artifact manager..."}
+        )
+        
+        async def download_directory_recursive(client, source_dir, target_dir, processed_dirs=None):
+            """Recursively download all files from a directory."""
+            if processed_dirs is None:
+                processed_dirs = set()
+            
+            # Avoid infinite recursion
+            if source_dir in processed_dirs:
+                return
+            processed_dirs.add(source_dir)
+            
+            # Get directory listing - use the files endpoint with trailing slash
+            dir_url = f"{self._server_url}/{config.workspace}/artifacts/{config.app_id}/files/{source_dir}/?use_proxy=true"
+            
+            try:
+                response = await client.get(
+                    dir_url,
+                    headers={"Authorization": f"Bearer {config.token}"}
+                )
+                response.raise_for_status()
+                items = response.json()
+                
+                # Process each item in the directory
+                for item in items:
+                    item_name = item.get("name", "")
+                    item_type = item.get("type", "file")
+                    
+                    if item_type == "directory":
+                        # Recursively download subdirectory
+                        sub_source = f"{source_dir}/{item_name}".strip("/")
+                        sub_target = target_dir / item_name
+                        sub_target.mkdir(parents=True, exist_ok=True)
+                        await download_directory_recursive(client, sub_source, sub_target, processed_dirs)
+                    else:
+                        # Download file
+                        source_file = f"{source_dir}/{item_name}".strip("/")
+                        target_file = target_dir / item_name
+                        
+                        file_url = f"{self._server_url}/{config.workspace}/artifacts/{config.app_id}/files/{source_file}?use_proxy=true"
+                        file_response = await client.get(
+                            file_url,
+                            headers={"Authorization": f"Bearer {config.token}"}
+                        )
+                        file_response.raise_for_status()
+                        
+                        # Ensure parent directory exists
+                        try:
+                            target_file.parent.mkdir(parents=True, exist_ok=True)
+                            # Write file to working directory
+                            target_file.write_bytes(file_response.content)
+                            logger.debug(f"Downloaded {source_file} to {target_file}")
+                        except OSError as write_error:
+                            error_msg = f"Failed to write file {target_file}: {write_error}"
+                            logger.error(error_msg)
+                            raise WorkerError(error_msg) from write_error
+                
+                return len(items)
+                
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    error_msg = f"Directory not found in artifact manager: {source_dir}"
+                    logger.error(error_msg)
+                    raise WorkerError(error_msg) from e
+                else:
+                    raise
+        
+        async with httpx.AsyncClient(verify=not config.disable_ssl, timeout=30.0) as client:
+            for item in files_to_stage:
+                # Parse source and target from the item
+                if ":" in item:
+                    source, target = item.split(":", 1)
+                else:
+                    source = target = item
+                
+                # Check if it's a folder (ends with /)
+                is_folder = source.endswith("/")
+                
+                if is_folder:
+                    # Handle folder download recursively
+                    source = source.rstrip("/")
+                    target = target.rstrip("/")
+                    
+                    await progress_callback(
+                        {"type": "info", "message": f"Downloading folder recursively: {source} -> {target}"}
+                    )
+                    
+                    # Create target folder
+                    target_folder = working_dir / target
+                    try:
+                        target_folder.mkdir(parents=True, exist_ok=True)
+                    except OSError as mkdir_error:
+                        error_msg = f"Failed to create directory {target_folder}: {mkdir_error}"
+                        logger.error(error_msg)
+                        await progress_callback(
+                            {"type": "error", "message": error_msg}
+                        )
+                        raise WorkerError(error_msg) from mkdir_error
+                    
+                    # Recursively download all files
+                    file_count = await download_directory_recursive(client, source, target_folder)
+                    
+                    await progress_callback(
+                        {"type": "success", "message": f"Downloaded folder {source} ({file_count} items)"}
+                    )
+                else:
+                    # Handle single file download
+                    await progress_callback(
+                        {"type": "info", "message": f"Downloading file: {source} -> {target}"}
+                    )
+                    
+                    file_url = f"{self._server_url}/{config.workspace}/artifacts/{config.app_id}/files/{source}?use_proxy=true"
+                    
+                    try:
+                        response = await client.get(
+                            file_url,
+                            headers={"Authorization": f"Bearer {config.token}"}
+                        )
+                        response.raise_for_status()
+                        
+                        # Create target file path
+                        target_file = working_dir / target
+                        
+                        try:
+                            target_file.parent.mkdir(parents=True, exist_ok=True)
+                            # Write file to working directory
+                            target_file.write_bytes(response.content)
+                            
+                            logger.info(f"Downloaded {source} to {target_file}")
+                            await progress_callback(
+                                {"type": "success", "message": f"Downloaded {source}"}
+                            )
+                        except OSError as write_error:
+                            error_msg = f"Failed to write file {target_file}: {write_error}"
+                            logger.error(error_msg)
+                            await progress_callback(
+                                {"type": "error", "message": error_msg}
+                            )
+                            raise WorkerError(error_msg) from write_error
+                        
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code == 404:
+                            error_msg = f"File not found in artifact manager: {source}"
+                            logger.error(error_msg)
+                            await progress_callback(
+                                {"type": "error", "message": error_msg}
+                            )
+                            raise WorkerError(error_msg) from e
+                        else:
+                            raise
+
     async def start(
         self,
         config: Union[WorkerConfig, Dict[str, Any]],
@@ -450,7 +639,6 @@ class CondaWorker(BaseWorker):
                 script = response.text
                 
                 # TEMPORARY PATCH: Remove any remaining <script> or <file> tags from script content
-                import re
                 script = re.sub(r'<script[^>]*>(.*?)</script>', r'\1', script, flags=re.DOTALL | re.IGNORECASE)
                 script = re.sub(r'<file[^>]*>(.*?)</file>', r'\1', script, flags=re.DOTALL | re.IGNORECASE)
                 script = script.strip()
@@ -650,6 +838,32 @@ class CondaWorker(BaseWorker):
         session_working_dir.mkdir(parents=True, exist_ok=True)
         self._session_working_dirs[config.id] = session_working_dir
         logger.info(f"Created session working directory: {session_working_dir}")
+        
+        # Phase 3.5: Prepare staged files if specified
+        files_to_stage = config.manifest.get("files_to_stage", [])
+        if files_to_stage:
+            try:
+                await self._prepare_staged_files(
+                    files_to_stage,
+                    session_working_dir,
+                    config,
+                    progress_callback
+                )
+            except Exception as e:
+                error_msg = f"Failed to prepare staged files: {str(e)}"
+                logger.error(error_msg)
+                await progress_callback(
+                    {"type": "error", "message": error_msg}
+                )
+                # Cleanup incomplete environment if this was a newly created env
+                if is_new_env:
+                    try:
+                        marker_path = executor.env_path / READY_MARKER
+                        if not marker_path.exists() and executor.env_path.exists():
+                            shutil.rmtree(executor.env_path, ignore_errors=True)
+                    except Exception:
+                        pass
+                raise WorkerError(error_msg) from e
 
         # Create and start the Jupyter kernel with working directory
         kernel = CondaKernel(executor.env_path, working_dir=str(session_working_dir))
