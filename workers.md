@@ -37,7 +37,7 @@ All workers must define these properties:
 - `visibility` - Worker visibility ("public", "protected", or "private", defaults to "protected")
 - `run_in_executor` - Whether worker should run in executor (defaults to False)
 - `require_context` - Whether worker requires context parameter (defaults to True)
-- `use_local_url` - Whether worker should use local URLs (defaults to False)
+- `use_local_url` - Whether worker should use local URLs (bool or str, defaults to False), if needed you can also specify the local url if different from the server's localhost url.
 - `service_id` - Unique service identifier (auto-generated from name and instance)
 
 ### Context Parameter
@@ -54,10 +54,12 @@ The `use_local_url` property determines which base URL the worker receives for s
 
 - **`use_local_url = False`** (default): Worker receives `public_base_url` for external access. This is used for external workers started via CLI or running on different hosts.
 
+- **`use_local_url = <url>`** : Worker receives the specified custom url for external access.
+
 **Examples:**
 - Built-in workers (BrowserWorker, PythonEvalRunner, A2AClientRunner, MCPClientRunner): `use_local_url = True`
 - CLI-started workers (CondaWorker started via command line): `use_local_url = False`
-- Custom startup function workers: Should set `use_local_url = True` if running locally
+- Custom startup function workers: Should set `use_local_url = True` if running locally; For proxy etc. you can set use_local_url to your actual url.
 
 ## Hypha Worker Configuration
 
