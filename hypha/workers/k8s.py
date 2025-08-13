@@ -303,9 +303,8 @@ class KubernetesWorker(BaseWorker):
             name=pod_name,
             labels={
                 "hypha-worker": "k8s",
-                "hypha-session-id": session_id,
-                "hypha-app-id": config.app_id if config.app_id else "unknown",
-                "hypha-workspace": config.workspace if config.workspace else "unknown",
+                "hypha-app-id": config.app_id.split("/")[-1],
+                "hypha-workspace": config.workspace,
                 "created-by": "hypha-k8s-worker",
             },
         )

@@ -2,6 +2,7 @@ import httpx
 import json
 import logging
 import os
+import re
 import sys
 import multihash
 import asyncio
@@ -49,6 +50,8 @@ logging_emoji = {
     "error": "❌",
     "warning": "⚠️",
 }
+
+_allowed_characters = re.compile(r"^[a-zA-Z0-9-_]*$")
 
 def call_progress_callback(progress_callback: Any, message: dict):
     logger.info("%s %s", logging_emoji.get(message.get("type", "info"), "🔸"), message.get("message", ""))
@@ -1202,6 +1205,11 @@ class ServerAppController:
             )
         if config is not None:
             manifest = config
+        
+        # If app_id is provided, make sure it's a valid [a-zA-Z0-9-_]
+        if app_id:
+            if not _allowed_characters.match(app_id):
+                raise ValueError(f"App id {app_id} is not a valid string, only alphanumeric characters, -, and _ are allowed")
 
         # Simplified installation: Convert source to files and use worker compilation
 
