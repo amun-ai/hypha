@@ -858,7 +858,12 @@ class ArtifactController:
                             if use_local_url:
                                 # Use local URL (endpoint_url is already local for S3)
                                 # No replacement needed for direct S3 access
-                                pass
+                                if use_local_url is True:
+                                    pass
+                                else:
+                                    presigned_url = presigned_url.replace(
+                                        s3_config["endpoint_url"], use_local_url
+                                    )
                             elif s3_config["public_endpoint_url"]:
                                 # replace the endpoint with the proxy base URL
                                 presigned_url = presigned_url.replace(
@@ -895,7 +900,7 @@ class ArtifactController:
                 description="The number of seconds for the presigned URLs to expire.",
             ),
             use_proxy: bool = None,
-            use_local_url: bool = False,
+            use_local_url: Union[bool, str] = False,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
             """
@@ -986,7 +991,7 @@ class ArtifactController:
             file_path: str,
             download_weight: float = 0,
             use_proxy: bool = None,
-            use_local_url: bool = False,
+            use_local_url: Union[bool, str] = False,
             expires_in: int = 3600,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
@@ -3325,7 +3330,7 @@ class ArtifactController:
                     if use_proxy:
                         if use_local_url:
                             # Use local URL for proxy within cluster
-                            local_proxy_url = f"{self.store.local_base_url}/s3"
+                            local_proxy_url = f"{self.store.local_base_url}/s3" if use_local_url is True else f"{use_local_url}/s3"
                             presigned_url = presigned_url.replace(
                                 s3_config["endpoint_url"], local_proxy_url
                             )
@@ -3338,7 +3343,12 @@ class ArtifactController:
                     elif use_local_url and not use_proxy:
                         # For S3 direct access with local URL, use the endpoint_url as-is
                         # (no replacement needed since endpoint_url is already the local/internal endpoint)
-                        pass
+                        if use_local_url is True:
+                            pass
+                        else:
+                            presigned_url = presigned_url.replace(
+                                s3_config["endpoint_url"], use_local_url
+                            )
                     # Add file to staging dict
                     staging_files = staging_dict.get("files", [])
                     
@@ -3373,7 +3383,7 @@ class ArtifactController:
         download_weight: float = 0,
         expires_in: int = 3600,
         use_proxy: bool = None,
-        use_local_url: bool = False,
+        use_local_url: Union[bool, str] = False,
         context: dict = None,
     ):
         """
@@ -3462,7 +3472,7 @@ class ArtifactController:
                         if use_proxy:
                             if use_local_url:
                                 # Use local URL for proxy within cluster
-                                local_proxy_url = f"{self.store.local_base_url}/s3"
+                                local_proxy_url = f"{self.store.local_base_url}/s3" if use_local_url is True else f"{use_local_url}/s3"
                                 url = url.replace(s3_config["endpoint_url"], local_proxy_url)
                             elif s3_config["public_endpoint_url"]:
                                 # Use public proxy URL
@@ -3473,7 +3483,12 @@ class ArtifactController:
                         elif use_local_url and not use_proxy:
                             # For S3 direct access with local URL, use the endpoint_url as-is
                             # (no replacement needed since endpoint_url is already the local/internal endpoint)
-                            pass
+                            if use_local_url is True:
+                                pass
+                            else:
+                                url = url.replace(
+                                    s3_config["endpoint_url"], use_local_url
+                                )
                         
                         part_urls.append({"part_number": i, "url": url})
 
@@ -3693,7 +3708,7 @@ class ArtifactController:
         version=None,
         stage: bool = False,
         use_proxy=None,
-        use_local_url=False,
+        use_local_url: Union[bool, str] = False,
         expires_in: int = 3600,
         context: dict = None,
     ):
@@ -3745,7 +3760,7 @@ class ArtifactController:
                     if use_proxy:
                         if use_local_url:
                             # Use local URL for proxy within cluster
-                            local_proxy_url = f"{self.store.local_base_url}/s3"
+                            local_proxy_url = f"{self.store.local_base_url}/s3" if use_local_url is True else f"{use_local_url}/s3"
                             presigned_url = presigned_url.replace(
                                 s3_config["endpoint_url"], local_proxy_url
                             )
@@ -3758,7 +3773,12 @@ class ArtifactController:
                     elif use_local_url and not use_proxy:
                         # For S3 direct access with local URL, use the endpoint_url as-is
                         # (no replacement needed since endpoint_url is already the local/internal endpoint)
-                        pass
+                        if use_local_url is True:
+                            pass
+                        else:
+                            presigned_url = presigned_url.replace(
+                                s3_config["endpoint_url"], use_local_url
+                            )
                 # Increment download count unless silent
                 if not silent:
                     if artifact.config and "download_weights" in artifact.config:

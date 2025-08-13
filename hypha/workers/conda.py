@@ -244,22 +244,29 @@ class CondaWorker(BaseWorker):
 
     instance_counter: int = 0
 
-    def __init__(self, server_url: str = None, use_local_url: bool = False, disable_ssl: bool = False, working_dir: str = None):
+    def __init__(self, server_url: str = None, use_local_url: Union[bool, str] = False, working_dir: str = None):
         """Initialize the conda environment worker.
         
         Args:
             server_url: The Hypha server URL
             use_local_url: Whether to use local URLs for server communication
-            disable_ssl: Whether to disable SSL verification
             working_dir: Base directory for session working directories (defaults to /tmp/hypha_sessions)
         """
         super().__init__()
         self.instance_id = f"conda-jupyter-kernel-{shortuuid.uuid()}"
         self.controller_id = str(CondaWorker.instance_counter)
         CondaWorker.instance_counter += 1
-        self._use_local_url = use_local_url
+        # convert true/false string to bool, and keep the string if it's not a bool
+        if isinstance(use_local_url, str):
+            if use_local_url.lower() == "true":
+                self._use_local_url = True
+            elif use_local_url.lower() == "false":
+                self._use_local_url = False
+            else:
+                self._use_local_url = use_local_url
+        else:
+            self._use_local_url = use_local_url
         self._server_url = server_url
-        self._disable_ssl = disable_ssl
         
         # Set up working directory base path
         if working_dir:
@@ -308,7 +315,7 @@ class CondaWorker(BaseWorker):
         return True
 
     @property
-    def use_local_url(self) -> bool:
+    def use_local_url(self) -> Union[bool, str]:
         """Return whether the worker should use local URLs."""
         return self._use_local_url
 
@@ -394,6 +401,7 @@ class CondaWorker(BaseWorker):
             config = WorkerConfig(**config)
 
         session_id = config.id
+        logger.info(f"Starting conda environment session {session_id} for {config.id}")
         async def progress_callback(message: dict):
             """Invoke optional progress callback if provided, supporting sync or async callables."""
             callback = getattr(config, "progress_callback", None)
@@ -434,7 +442,7 @@ class CondaWorker(BaseWorker):
             # Phase 1: Fetch application script
             await progress_callback({"type": "info", "message": "Fetching application script..."})
             script_url = f"{self._server_url}/{config.workspace}/artifacts/{config.app_id}/files/{config.manifest['entry_point']}?use_proxy=true"
-            async with httpx.AsyncClient(verify=not self._disable_ssl) as client:
+            async with httpx.AsyncClient(verify=not config.disable_ssl) as client:
                 response = await client.get(
                     script_url, headers={"Authorization": f"Bearer {config.token}"}
                 )
@@ -686,6 +694,7 @@ class CondaWorker(BaseWorker):
             "client_id": config.client_id,
             "token": config.token,
             "app_id": config.app_id,
+            "disable_ssl": config.disable_ssl,
         }
 
         # Execute initialization script in the kernel
@@ -706,7 +715,7 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
 """
         # Use provided startup timeout for initialization execution when available
         result = await kernel.execute(
-            init_code, timeout=float(config.timeout) if config.timeout else 60.0
+            init_code, timeout=float(config.timeout) if config.timeout else 60.0,
         )
         
         # Process kernel outputs into logs
@@ -795,6 +804,7 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
         script: str,
         config: Optional[Dict[str, Any]] = None,
         progress_callback: Optional[Any] = None,
+        output_callback: Optional[Any] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Execute a script in the running Jupyter kernel session.
@@ -837,7 +847,8 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
             # Execute the code in the kernel
             result = await kernel.execute(
                 script,
-                timeout=timeout
+                timeout=timeout,
+                output_callback=output_callback
             )
 
             # Update session logs
@@ -1179,8 +1190,8 @@ Examples:
     )
     parser.add_argument(
         "--use-local-url",
-        action="store_true",
-        help="Use local URLs for server communication (default: false for CLI workers)",
+        default="false",
+        help="Use local URLs for server communication (default: false for CLI workers, true for built-in workers, or specify the url for proxy etc.)",
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Enable verbose logging"
@@ -1253,8 +1264,7 @@ Examples:
             # Create and register worker
             worker = CondaWorker(
                 server_url=args.server_url, 
-                use_local_url=args.use_local_url, 
-                disable_ssl=args.disable_ssl,
+                use_local_url=args.use_local_url,
                 working_dir=args.working_dir
             )
             if args.cache_dir:
@@ -1386,7 +1396,7 @@ async def run_from_env():
         )
 
         # Create and register worker
-        worker = CondaWorker(server_url=server_url, disable_ssl=disable_ssl, working_dir=working_dir)
+        worker = CondaWorker(server_url=server_url, working_dir=working_dir)
         if cache_dir:
             worker._env_cache = EnvironmentCache(cache_dir=cache_dir)
 

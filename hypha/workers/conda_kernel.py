@@ -100,14 +100,14 @@ class CondaKernel:
         self,
         code: str,
         timeout: float = 30.0,
-        progress_callback: Optional[Callable] = None
+        output_callback: Optional[Callable] = None
     ) -> Dict[str, Any]:
         """Execute code in the kernel.
         
         Args:
             code: Python code to execute
             timeout: Maximum time to wait for execution
-            progress_callback: Optional callback for progress updates
+            output_callback: Optional callback for progress updates
             
         Returns:
             Dict with execution results: {"success": bool, "outputs": list, "error": dict|None}
@@ -136,12 +136,6 @@ os.chdir({repr(self.working_dir)})
         # Helper function to process any message type
         def process_message(msg_type: str, content: dict):
             nonlocal error, success
-            
-            if progress_callback:
-                progress_callback({
-                    "type": "message", 
-                    "message": f"Received {msg_type} message"
-                })
             
             # Collect all output messages
             if msg_type == 'stream':
@@ -186,6 +180,8 @@ os.chdir({repr(self.working_dir)})
                     
                     if iopub_msg['parent_header'].get('msg_id') == msg_id:
                         process_message(iopub_msg['msg_type'], iopub_msg['content'])
+                        if output_callback:
+                            await output_callback(iopub_msg)
                         
                 except asyncio.TimeoutError:
                     pass  # No iopub message available
@@ -224,6 +220,8 @@ os.chdir({repr(self.working_dir)})
                                 )
                                 if iopub_msg['parent_header'].get('msg_id') == msg_id:
                                     process_message(iopub_msg['msg_type'], iopub_msg['content'])
+                                    if output_callback:
+                                        await output_callback(iopub_msg)
                         except asyncio.TimeoutError:
                             pass  # No more messages
                             

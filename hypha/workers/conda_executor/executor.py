@@ -306,14 +306,14 @@ class CondaEnvExecutor:
         # If source is a conda-pack file, extract it
         if str(self.env_source).endswith((".tar.gz", ".tgz")):
             if progress_callback:
-                progress_callback(
+                await progress_callback(
                     {"type": "info", "message": "Extracting conda-pack file..."}
                 )
             try:
                 with tarfile.open(self.env_source, "r:gz") as tar:
                     tar.extractall(path=self.env_path)
                 if progress_callback:
-                    progress_callback(
+                    await progress_callback(
                         {
                             "type": "success",
                             "message": "Conda-pack file extracted successfully",
@@ -322,7 +322,7 @@ class CondaEnvExecutor:
                 return time.time() - start_time
             except Exception as e:
                 if progress_callback:
-                    progress_callback(
+                    await progress_callback(
                         {
                             "type": "error",
                             "message": f"Failed to extract conda-pack file: {e}",
@@ -332,7 +332,7 @@ class CondaEnvExecutor:
 
         # Create environment from specification
         if progress_callback:
-            progress_callback(
+            await progress_callback(
                 {"type": "info", "message": "Preparing environment specification..."}
             )
 
@@ -345,7 +345,7 @@ class CondaEnvExecutor:
             yaml.safe_dump(spec.to_dict(), f)
 
         if progress_callback:
-            progress_callback(
+            await progress_callback(
                 {
                     "type": "info",
                     "message": f"Running {self.package_manager} env create (this may take several minutes)...",
@@ -363,7 +363,7 @@ class CondaEnvExecutor:
 
             if return_code == 0:
                 if progress_callback:
-                    progress_callback(
+                    await progress_callback(
                         {
                             "type": "success",
                             "message": f"Environment created successfully using {self.package_manager}",
@@ -377,7 +377,7 @@ class CondaEnvExecutor:
             else:
                 error_msg = f"Failed to create environment using {self.package_manager}: {stderr}"
                 if progress_callback:
-                    progress_callback({"type": "error", "message": error_msg})
+                    await progress_callback({"type": "error", "message": error_msg})
                 raise RuntimeError(error_msg)
 
         except Exception as e:
@@ -385,7 +385,7 @@ class CondaEnvExecutor:
                 f"Failed to create environment using {self.package_manager}: {str(e)}"
             )
             if progress_callback:
-                progress_callback({"type": "error", "message": error_msg})
+                await progress_callback({"type": "error", "message": error_msg})
             raise RuntimeError(error_msg)
 
     def _build_create_command(self, env_file):
@@ -521,7 +521,7 @@ class CondaEnvExecutor:
                             if progress_callback:
                                 try:
                                     msg_type = self._classify_message_type(line_str)
-                                    progress_callback(
+                                    await progress_callback(
                                         {
                                             "type": msg_type,
                                             "message": f"{self.package_manager}: {line_str}",
@@ -552,7 +552,7 @@ class CondaEnvExecutor:
                             if progress_callback:
                                 try:
                                     msg_type = self._classify_message_type(line_str)
-                                    progress_callback(
+                                    await progress_callback(
                                         {
                                             "type": msg_type,
                                             "message": f"{self.package_manager}: {line_str}",
@@ -598,7 +598,7 @@ class CondaEnvExecutor:
 
                 if progress_callback:
                     try:
-                        progress_callback(
+                        await progress_callback(
                             {
                                 "type": "error",
                                 "message": f"{self.package_manager}: Process timed out",
@@ -613,7 +613,7 @@ class CondaEnvExecutor:
             log.error(f"Failed to start subprocess: {e}")
             if progress_callback:
                 try:
-                    progress_callback(
+                    await progress_callback(
                         {"type": "error", "message": f"Failed to start subprocess: {e}"}
                     )
                 except Exception as pe:
@@ -675,7 +675,7 @@ class CondaEnvExecutor:
 
         if os.path.exists(python_path):
             if progress_callback:
-                progress_callback(
+                await progress_callback(
                     {"type": "info", "message": "Validating existing environment..."}
                 )
             try:
@@ -687,7 +687,7 @@ class CondaEnvExecutor:
                 )
                 if result.stdout.strip():
                     if progress_callback:
-                        progress_callback(
+                        await progress_callback(
                             {
                                 "type": "success",
                                 "message": "Existing environment is valid and ready",
@@ -697,7 +697,7 @@ class CondaEnvExecutor:
                     return 0.0  # Environment is valid and ready
             except subprocess.CalledProcessError:
                 if progress_callback:
-                    progress_callback(
+                    await progress_callback(
                         {
                             "type": "warning",
                             "message": "Existing environment is invalid, recreating...",
