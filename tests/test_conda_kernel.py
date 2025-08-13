@@ -19,11 +19,11 @@ async def test_env_path():
         # Get the environment path from the current Python executable
         import sys
         current_python = Path(sys.executable)
-        if current_python.name == "python":
-            # Python is in {env}/bin/python, so env path is parent of bin
+        # If python lives in {env}/bin/python* then env root is parent of bin
+        if current_python.parent.name == "bin":
             env_path = current_python.parent.parent
-        else:  
-            # Fallback: assume it's in the bin directory
+        else:
+            # Otherwise treat the parent directory as the environment path
             env_path = current_python.parent
         yield env_path
     else:
@@ -32,7 +32,8 @@ async def test_env_path():
             # Try to use current Python environment as fallback
             import sys
             current_python = Path(sys.executable)
-            if current_python.name == "python":
+            # If python lives in {env}/bin/python* then env root is parent of bin
+            if current_python.parent.name == "bin":
                 env_path = current_python.parent.parent
             else:
                 env_path = current_python.parent

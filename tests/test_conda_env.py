@@ -1185,8 +1185,176 @@ def execute(input_data):
                     # Clean up
                     await self.worker.stop(session_id)
 
+    async def test_progress_callback_supports_awaitable(self):
+        """Progress callback can be async and will be scheduled by the worker."""
+        # Arrange
+        callback_ran = {"count": 0}
+
+        async def async_progress_callback(info):
+            # Simulate minimal async work
+            await asyncio.sleep(0)
+            callback_ran["count"] += 1
+
+        script = """
+print('hello from init')
+"""
+
+        config = WorkerConfig(
+            id="awaitable-progress-test",
+            app_id="test-app",
+            workspace="test-workspace",
+            client_id="test-client",
+            server_url="http://test-server",
+            token="test-token",
+            entry_point="main.py",
+            artifact_id="test-artifact",
+            manifest={
+                "type": "conda-jupyter-kernel",
+                "dependencies": ["python=3.11"],
+                "channels": ["conda-forge"],
+                "entry_point": "main.py",
+            },
+            app_files_base_url="http://test-server/files",
+            progress_callback=async_progress_callback,
+        )
+
+        # Mock HTTP client to return script
+        with patch("httpx.AsyncClient") as mock_http_client:
+            mock_response = MagicMock()
+            mock_response.text = script
+            mock_response.raise_for_status = MagicMock()
+            mock_http_client.return_value.__aenter__.return_value.get.return_value = (
+                mock_response
+            )
+
+            # Mock CondaEnvExecutor and kernel minimal flow
+            with patch("hypha.workers.conda.CondaEnvExecutor") as mock_executor_class:
+                mock_executor = MagicMock()
+                mock_executor_class.create_temp_env.return_value = mock_executor
+
+                async def mock_extract_env(progress_callback=None):
+                    if progress_callback:
+                        progress_callback({"type": "info", "message": "env step"})
+                    return 0.1
+
+                mock_executor._extract_env = mock_extract_env
+
+                with patch("hypha.workers.conda.CondaKernel") as mock_kernel_class:
+                    mock_kernel = MagicMock()
+                    mock_kernel_class.return_value = mock_kernel
+
+                    async def mock_start(timeout=30.0):
+                        return None
+
+                    async def mock_execute(code, **kwargs):
+                        return {"success": True, "outputs": [], "error": None}
+
+                    mock_kernel.start = mock_start
+                    mock_kernel.execute = mock_execute
+
+                    # Act
+                    session_id = await self.worker.start(config)
+
+                    # Allow the event loop to run scheduled tasks from callback
+                    await asyncio.sleep(0)
+
+                    # Assert
+                    assert session_id == "awaitable-progress-test"
+                    assert callback_ran["count"] > 0
+
+                    await self.worker.stop(session_id)
+
+
+class TestCondaWorkerTimeoutPropagation:
+    """Ensure timeouts from config are passed to kernel start and execute."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.progress_messages = []
+
+        def mock_progress_callback(info):
+            self.progress_messages.append(info)
+
+        self.progress_callback = mock_progress_callback
+
+    async def test_kernel_start_and_execute_receive_config_timeout(self):
+        # Arrange
+        requested_timeout = 123.0
+
+        script = """
+print('init')
+"""
+
+        config = WorkerConfig(
+            id="timeout-prop-test",
+            app_id="test-app",
+            workspace="test-workspace",
+            client_id="test-client",
+            server_url="http://test-server",
+            token="test-token",
+            entry_point="main.py",
+            artifact_id="test-artifact",
+            manifest={
+                "type": "conda-jupyter-kernel",
+                "dependencies": ["python=3.11"],
+                "channels": ["conda-forge"],
+                "entry_point": "main.py",
+            },
+            timeout=requested_timeout,
+            app_files_base_url="http://test-server/files",
+            progress_callback=lambda m: None,
+        )
+
+        # Mock HTTP client
+        with patch("httpx.AsyncClient") as mock_http_client:
+            mock_response = MagicMock()
+            mock_response.text = script
+            mock_response.raise_for_status = MagicMock()
+            mock_http_client.return_value.__aenter__.return_value.get.return_value = (
+                mock_response
+            )
+
+            # Track timeouts passed to kernel
+            seen = {"start": None, "execute": None}
+
+            with patch("hypha.workers.conda.CondaEnvExecutor") as mock_executor_class:
+                mock_executor = MagicMock()
+                mock_executor_class.create_temp_env.return_value = mock_executor
+
+                async def mock_extract_env(progress_callback=None):
+                    return 0.01
+
+                mock_executor._extract_env = mock_extract_env
+
+                with patch("hypha.workers.conda.CondaKernel") as mock_kernel_class:
+                    mock_kernel = MagicMock()
+                    mock_kernel_class.return_value = mock_kernel
+
+                    async def mock_start(timeout=30.0):
+                        seen["start"] = timeout
+                        return None
+
+                    async def mock_execute(code, timeout=60.0, **kwargs):
+                        seen["execute"] = timeout
+                        return {"success": True, "outputs": [], "error": None}
+
+                    mock_kernel.start = mock_start
+                    mock_kernel.execute = mock_execute
+
+                    worker = CondaWorker()
+                    session_id = await worker.start(config)
+
+                    # Assert that both kernel.start and execute saw the configured timeout
+                    assert seen["start"] == requested_timeout
+                    assert seen["execute"] == requested_timeout
+
+                    await worker.stop(session_id)
+
     async def test_progress_callback_error_handling(self):
         """Test progress callback during error scenarios."""
+        
+        # Initialize worker
+        self.worker = CondaWorker()
 
         config = WorkerConfig(
             id="error-progress-test",
@@ -1362,6 +1530,413 @@ class TestCondaWorkerSubprocess:
         except Exception as e:
             print(f"❌ CLI validation test failed: {e}")
             raise
+
+
+class TestCondaWorkerWorkingDirectory:
+    """Test working directory functionality for conda environment worker with real conda environments."""
+
+    async def test_working_directory_creation_and_cleanup(self, conda_integration_server, conda_test_workspace):
+        """Test that session-specific working directories are created and cleaned up properly."""
+        from hypha.workers.conda import CondaWorker, EnvironmentCache
+        import tempfile
+        from pathlib import Path
+        
+        # Create a temporary base directory for testing working directories
+        with tempfile.TemporaryDirectory() as temp_base:
+            working_dir_base = Path(temp_base) / "session_workdirs"
+            working_dir_base.mkdir(parents=True, exist_ok=True)
+            
+            worker = CondaWorker(working_dir=str(working_dir_base))
+            worker._env_cache = EnvironmentCache(
+                cache_dir=conda_test_workspace["cache_dir"], max_size=5
+            )
+            
+            # Check that base directory was created
+            assert worker._working_dir_base.exists()
+            assert str(worker._working_dir_base) == str(working_dir_base)
+            
+            # Simple script that reports working directory
+            script = """
+import os
+import sys
+
+# Get and print the current working directory
+cwd = os.getcwd()
+print(f"Session working directory: {cwd}")
+print(f"Python executable: {sys.executable}")
+
+# Create a test file to verify we're in the right directory
+test_file = "session_marker.txt"
+with open(test_file, "w") as f:
+    f.write(f"Session working in: {cwd}")
+
+# Verify the file was created
+if os.path.exists(test_file):
+    print(f"Successfully created {test_file}")
+else:
+    print(f"Failed to create {test_file}")
+"""
+            
+            config = WorkerConfig(
+                id="workdir-creation-test",
+                app_id="test-app",
+                workspace="test-workspace",
+                client_id="test-client",
+                server_url="http://test-server",
+                token="test-token",
+                entry_point="main.py",
+                artifact_id="test-artifact",
+                manifest={
+                    "type": "conda-jupyter-kernel",
+                    "dependencies": ["python=3.11"],
+                    "channels": ["conda-forge"],
+                    "entry_point": "main.py",
+                },
+                app_files_base_url="http://test-server/files",
+            )
+            
+            # Mock HTTP client for script fetching
+            with patch("httpx.AsyncClient") as mock_http_client:
+                mock_response = MagicMock()
+                mock_response.text = script
+                mock_response.raise_for_status = MagicMock()
+                mock_http_client.return_value.__aenter__.return_value.get.return_value = mock_response
+                
+                try:
+                    print("🚀 Starting real conda session to test working directory...")
+                    # Compile manifest
+                    compiled_manifest, _ = await worker.compile(config.manifest, [])
+                    config.manifest = compiled_manifest
+                    
+                    # Start session
+                    session_id = await worker.start(config)
+                    assert session_id == "workdir-creation-test"
+                    
+                    # Check that session working directory was created
+                    expected_dir = worker._working_dir_base / "workdir-creation-test"
+                    assert expected_dir.exists(), f"Working directory {expected_dir} was not created"
+                    assert expected_dir in worker._session_working_dirs.values()
+                    
+                    print(f"✅ Session working directory created: {expected_dir}")
+                    
+                    # Execute code to verify working directory
+                    test_code = """
+import os
+cwd = os.getcwd()
+print(f"Current working directory in execution: {cwd}")
+
+# List files to verify our marker file
+files = os.listdir(".")
+print(f"Files in working directory: {sorted(files)}")
+"""
+                    result = await worker.execute(session_id, test_code)
+                    assert result["status"] == "ok", f"Execution failed: {result.get('error', {})}"
+                    
+                    # Extract stdout
+                    stdout_text = "".join(
+                        output.get("text", "") for output in result.get("outputs", [])
+                        if output.get("type") == "stream" and output.get("name") == "stdout"
+                    )
+                    
+                    # Verify correct working directory
+                    assert str(expected_dir) in stdout_text, f"Expected working directory not in output: {stdout_text}"
+                    assert "session_marker.txt" in stdout_text, f"Marker file not found in output: {stdout_text}"
+                    
+                    print(f"✅ Working directory verified in execution")
+                    
+                    # Stop session (should clean up working directory)
+                    await worker.stop(session_id)
+                    
+                    # Verify working directory was cleaned up
+                    assert not expected_dir.exists(), f"Working directory {expected_dir} was not cleaned up"
+                    assert session_id not in worker._session_working_dirs
+                    
+                    print(f"✅ Working directory properly cleaned up after stop")
+                    
+                except Exception as e:
+                    print(f"❌ Test failed: {e}")
+                    try:
+                        await worker.stop("workdir-creation-test")
+                    except:
+                        pass
+                    raise
+
+    async def test_working_directory_in_execution(self, conda_integration_server, conda_test_workspace):
+        """Test that code executes in the correct working directory."""
+        from hypha.workers.conda import CondaWorker, EnvironmentCache
+        
+        # Create a specific working directory for testing
+        test_working_base = Path(conda_test_workspace["workspace_dir"]) / "working_dirs"
+        test_working_base.mkdir(parents=True, exist_ok=True)
+        
+        worker = CondaWorker(working_dir=str(test_working_base))
+        worker._env_cache = EnvironmentCache(
+            cache_dir=conda_test_workspace["cache_dir"], max_size=5
+        )
+        
+        script = """
+import os
+import sys
+
+# Get the current working directory
+cwd = os.getcwd()
+print(f"Current working directory: {cwd}")
+
+# Create a test file in the working directory
+test_file = "test_workdir.txt"
+with open(test_file, "w") as f:
+    f.write("Test content from session")
+
+# Verify the file was created
+if os.path.exists(test_file):
+    print(f"Successfully created {test_file} in {cwd}")
+else:
+    print(f"Failed to create {test_file}")
+"""
+        
+        config = WorkerConfig(
+            id="workdir-execution-test",
+            app_id="workdir-test-app",
+            workspace="test-workspace",
+            client_id="test-client",
+            server_url="http://test-server",
+            token="test-token",
+            entry_point="main.py",
+            artifact_id="test-artifact",
+            manifest={
+                "type": "conda-jupyter-kernel",
+                "dependencies": ["python=3.11"],
+                "channels": ["conda-forge"],
+                "entry_point": "main.py",
+            },
+            app_files_base_url="http://test-server/files",
+        )
+        
+        with patch("httpx.AsyncClient") as mock_http_client:
+            mock_response = MagicMock()
+            mock_response.text = script
+            mock_response.raise_for_status = MagicMock()
+            mock_http_client.return_value.__aenter__.return_value.get.return_value = mock_response
+            
+            try:
+                print("🚀 Testing working directory in real conda environment...")
+                # Compile manifest
+                compiled_manifest, _ = await worker.compile(config.manifest, [])
+                config.manifest = compiled_manifest
+                
+                # Start session
+                session_id = await worker.start(config)
+                
+                # Execute code to test working directory
+                test_code = """
+import os
+print(f"Session working directory: {os.getcwd()}")
+
+# Create a test file
+with open("session_test.txt", "w") as f:
+    f.write("Hello from session")
+    
+# List files in current directory
+files = os.listdir(".")
+print(f"Files in working directory: {files}")
+"""
+                result = await worker.execute(session_id, test_code)
+                
+                assert result["status"] == "ok", f"Execution failed: {result.get('error', {})}"
+                
+                # Extract stdout
+                stdout_text = "".join(
+                    output.get("text", "") for output in result.get("outputs", [])
+                    if output.get("type") == "stream" and output.get("name") == "stdout"
+                )
+                
+                # Verify working directory is correct
+                expected_session_dir = str(test_working_base / "workdir-execution-test")
+                assert expected_session_dir in stdout_text, f"Expected working directory {expected_session_dir} not found in output: {stdout_text}"
+                
+                # Verify file was created in session directory
+                assert "session_test.txt" in stdout_text, f"Test file not found in working directory output: {stdout_text}"
+                
+                print(f"✅ Working directory test successful")
+                print(f"   Output: {stdout_text.strip()}")
+                
+                # Stop session (should clean up working directory)
+                await worker.stop(session_id)
+                
+                # Verify working directory was cleaned up
+                session_dir = test_working_base / "workdir-execution-test"
+                assert not session_dir.exists(), f"Working directory {session_dir} was not cleaned up"
+                
+            except Exception as e:
+                print(f"❌ Working directory test failed: {e}")
+                try:
+                    await worker.stop("workdir-execution-test")
+                except:
+                    pass
+                raise
+
+    async def test_working_directory_isolation(self, conda_integration_server, conda_test_workspace):
+        """Test that multiple sessions have isolated working directories."""
+        from hypha.workers.conda import CondaWorker, EnvironmentCache
+        import tempfile
+        from pathlib import Path
+        
+        # Create a temporary base directory for testing
+        with tempfile.TemporaryDirectory() as temp_base:
+            working_dir_base = Path(temp_base) / "isolated_sessions"
+            working_dir_base.mkdir(parents=True, exist_ok=True)
+            
+            worker = CondaWorker(working_dir=str(working_dir_base))
+            worker._env_cache = EnvironmentCache(
+                cache_dir=conda_test_workspace["cache_dir"], max_size=5
+            )
+            
+            # Script that creates a unique file in each session
+            script = """
+import os
+import sys
+
+session_id = os.environ.get('HYPHA_CLIENT_ID', 'unknown')
+cwd = os.getcwd()
+print(f"Session {session_id} working dir: {cwd}")
+
+# Create a unique file for this session
+unique_file = f"session_{session_id}_marker.txt"
+with open(unique_file, "w") as f:
+    f.write(f"This file belongs to session {session_id} in {cwd}")
+
+print(f"Created {unique_file} in {cwd}")
+"""
+            
+            # Create two session configs
+            config1 = WorkerConfig(
+                id="isolation-test-1",
+                app_id="test-app-1",
+                workspace="test-workspace",
+                client_id="isolation-1",
+                server_url="http://test-server",
+                token="test-token",
+                entry_point="main.py",
+                artifact_id="test-artifact",
+                manifest={
+                    "type": "conda-jupyter-kernel",
+                    "dependencies": ["python=3.11"],
+                    "channels": ["conda-forge"],
+                    "entry_point": "main.py",
+                },
+                app_files_base_url="http://test-server/files",
+            )
+            
+            config2 = WorkerConfig(
+                id="isolation-test-2",
+                app_id="test-app-2",
+                workspace="test-workspace",
+                client_id="isolation-2",
+                server_url="http://test-server",
+                token="test-token",
+                entry_point="main.py",
+                artifact_id="test-artifact",
+                manifest={
+                    "type": "conda-jupyter-kernel",
+                    "dependencies": ["python=3.11"],
+                    "channels": ["conda-forge"],
+                    "entry_point": "main.py",
+                },
+                app_files_base_url="http://test-server/files",
+            )
+            
+            # Mock HTTP client
+            with patch("httpx.AsyncClient") as mock_http_client:
+                mock_response = MagicMock()
+                mock_response.text = script
+                mock_response.raise_for_status = MagicMock()
+                mock_http_client.return_value.__aenter__.return_value.get.return_value = mock_response
+                
+                try:
+                    print("🚀 Starting two isolated conda sessions...")
+                    
+                    # Compile manifests
+                    compiled_manifest1, _ = await worker.compile(config1.manifest, [])
+                    config1.manifest = compiled_manifest1
+                    compiled_manifest2, _ = await worker.compile(config2.manifest, [])
+                    config2.manifest = compiled_manifest2
+                    
+                    # Start both sessions
+                    session_id1 = await worker.start(config1)
+                    session_id2 = await worker.start(config2)
+                    
+                    # Verify different working directories were created
+                    dir1 = worker._working_dir_base / "isolation-test-1"
+                    dir2 = worker._working_dir_base / "isolation-test-2"
+                    
+                    assert dir1.exists(), f"Working directory for session 1 not created: {dir1}"
+                    assert dir2.exists(), f"Working directory for session 2 not created: {dir2}"
+                    assert dir1 != dir2, "Sessions should have different working directories"
+                    
+                    print(f"✅ Created isolated directories: {dir1} and {dir2}")
+                    
+                    # Execute code in both sessions to verify isolation
+                    test_code = """
+import os
+cwd = os.getcwd()
+files = sorted(os.listdir("."))
+print(f"Working in: {cwd}")
+print(f"Files here: {files}")
+"""
+                    
+                    # Execute in session 1
+                    result1 = await worker.execute(session_id1, test_code)
+                    assert result1["status"] == "ok"
+                    stdout1 = "".join(
+                        output.get("text", "") for output in result1.get("outputs", [])
+                        if output.get("type") == "stream" and output.get("name") == "stdout"
+                    )
+                    
+                    # Execute in session 2
+                    result2 = await worker.execute(session_id2, test_code)
+                    assert result2["status"] == "ok"
+                    stdout2 = "".join(
+                        output.get("text", "") for output in result2.get("outputs", [])
+                        if output.get("type") == "stream" and output.get("name") == "stdout"
+                    )
+                    
+                    # Verify isolation - each session should be in its own directory
+                    assert str(dir1) in stdout1, f"Session 1 not in correct directory: {stdout1}"
+                    assert str(dir2) in stdout2, f"Session 2 not in correct directory: {stdout2}"
+                    assert str(dir1) not in stdout2, "Session 2 should not see session 1's directory"
+                    assert str(dir2) not in stdout1, "Session 1 should not see session 2's directory"
+                    
+                    # Verify each session created its unique file
+                    assert "session_isolation-1_marker.txt" in stdout1 or "session_marker.txt" in stdout1
+                    assert "session_isolation-2_marker.txt" in stdout2 or "session_marker.txt" in stdout2
+                    
+                    print("✅ Sessions are properly isolated")
+                    
+                    # Check internal tracking
+                    assert len(worker._session_working_dirs) == 2
+                    assert session_id1 in worker._session_working_dirs
+                    assert session_id2 in worker._session_working_dirs
+                    assert worker._session_working_dirs[session_id1] != worker._session_working_dirs[session_id2]
+                    
+                    # Stop both sessions
+                    await worker.stop(session_id1)
+                    await worker.stop(session_id2)
+                    
+                    # Verify cleanup
+                    assert not dir1.exists(), f"Session 1 directory not cleaned up: {dir1}"
+                    assert not dir2.exists(), f"Session 2 directory not cleaned up: {dir2}"
+                    assert len(worker._session_working_dirs) == 0
+                    
+                    print("✅ Working directories properly cleaned up")
+                    
+                except Exception as e:
+                    print(f"❌ Isolation test failed: {e}")
+                    try:
+                        await worker.stop("isolation-test-1")
+                        await worker.stop("isolation-test-2")
+                    except:
+                        pass
+                    raise
 
 
 if __name__ == "__main__":

@@ -262,6 +262,8 @@ class ASGIRoutingMiddleware:
                         authorization=authorization, access_token=access_token
                     )
 
+                    # Here we must always use the user's current workspace for the interface
+                    # This is a security measure to prevent unauthorized access to private workspaces
                     async with self.store.get_workspace_interface(
                         user_info, user_info.scope.current_workspace
                     ) as api:

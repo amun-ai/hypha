@@ -144,7 +144,7 @@ def start_builtin_services(
     )
 
 
-def mount_static_files(app, new_route, directory, name="static"):
+def mount_static_files(app, base_path, new_route, directory, name="static"):
     # Get top level route paths
     top_level_route_paths = [
         route.path.split("/")[1] for route in app.routes if route.path.count("/") == 1
@@ -164,11 +164,11 @@ def mount_static_files(app, new_route, directory, name="static"):
         raise FileNotFoundError(f"The directory '{directory}' does not exist.")
 
     # If no collision, mount static files
-    app.mount(new_route, StaticFiles(directory=directory), name=name)
+    app.mount(norm_url(base_path, new_route), StaticFiles(directory=directory), name=name)
 
     if Path(f"{directory}/index.html").exists():
         # Add a new route that serves index.html directly
-        @app.get(new_route)
+        @app.get(norm_url(base_path, new_route))
         async def root():
             return FileResponse(f"{directory}/index.html")
 
@@ -331,13 +331,13 @@ def create_application(args):
     websocket_server = WebsocketServer(store, path=norm_url(args.base_path, "/ws"))
 
     static_folder = str(Path(__file__).parent / "static_files")
-    mount_static_files(application, "/static", directory=static_folder, name="static")
+    mount_static_files(application, args.base_path, "/static", directory=static_folder, name="static")
 
     if args.static_mounts:
         for index, mount in enumerate(args.static_mounts):
             mountpath, localdir = mount.split(":")
             mount_static_files(
-                application, mountpath, localdir, name=f"static-mount-{index}"
+                application, args.base_path,mountpath, localdir, name=f"static-mount-{index}"
             )
 
     start_builtin_services(application, store, args)
