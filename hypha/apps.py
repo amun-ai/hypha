@@ -1852,7 +1852,7 @@ class ServerAppController:
         # Start the app using the worker with reorganized config
         full_client_id = workspace + "/" + client_id
         additional_kwargs = additional_kwargs or {}
-        session_id = await worker.start(
+        await worker.start(
             {
                 "id": full_client_id,
                 "app_id": app_id,
@@ -1896,7 +1896,7 @@ class ServerAppController:
         if worker_id:
             self._worker_cache[worker_id] = worker
 
-        return session_id
+        return full_client_id
 
     def _extract_core_error(self, error, logs=None):
         """Extract the core error message from worker logs or exception."""
