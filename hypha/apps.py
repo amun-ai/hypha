@@ -1866,6 +1866,7 @@ class ServerAppController:
                 "timeout": timeout,
                 "manifest": manifest,
                 "progress_callback": progress_callback,
+                "disable_ssl": self.disable_ssl,
                 **additional_kwargs,
             },
             context=context,
