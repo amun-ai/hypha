@@ -1305,9 +1305,13 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
 async def hypha_startup(server):
     """Hypha startup function to initialize conda environment worker."""
     # Built-in worker should use local URLs and a specific working directory
-    working_dir = os.environ.get("HYPHA_WORKING_DIR")
+    working_dir = os.environ.get("CONDA_WORKING_DIR")
+    authorized_workspaces = [w.strip() for w in os.environ.get("CONDA_AUTHORIZED_WORKSPACES", "").strip().split(",") if w.strip()]
     worker = CondaWorker(server_url=server.config.local_base_url, use_local_url=True, working_dir=working_dir)
-    await worker.register_worker_service(server)
+    service = worker.get_worker_service()
+    if authorized_workspaces:
+        service["config"]["authorized_workspaces"] = authorized_workspaces
+    await server.register_service(service)
     logger.info("Conda environment worker initialized and registered")
 
 
@@ -1330,8 +1334,10 @@ Environment Variables (with HYPHA_ prefix):
   HYPHA_TOKEN          Authentication token
   HYPHA_SERVICE_ID     Service ID for the worker (optional)
   HYPHA_VISIBILITY     Service visibility: public or protected (default: protected)
-  HYPHA_CACHE_DIR      Directory for caching conda environments (optional)
-
+  CONDA_CACHE_DIR      Directory for caching conda environments (optional)
+  CONDA_WORKING_DIR    Base directory for session working directories (optional)
+  CONDA_AUTHORIZED_WORKSPACES  Comma-separated list of authorized workspaces (optional)
+  
 Examples:
   # Using command line arguments
   python -m hypha.workers.conda --server-url https://hypha.aicell.io --workspace my-workspace --token TOKEN
@@ -1393,14 +1399,20 @@ Examples:
     parser.add_argument(
         "--cache-dir",
         type=str,
-        default=get_env_var("CACHE_DIR"),
-        help="Directory for caching conda environments (default: from HYPHA_CACHE_DIR env var or ~/.hypha_conda_cache)",
+        default=get_env_var("CONDA_CACHE_DIR"),
+        help="Directory for caching conda environments (default: from CONDA_CACHE_DIR env var or ~/.hypha_conda_cache)",
     )
     parser.add_argument(
         "--working-dir",
         type=str,
-        default=get_env_var("WORKING_DIR"),
-        help="Base directory for session working directories (default: from HYPHA_WORKING_DIR env var or /tmp/hypha_sessions_<uuid>)",
+        default=get_env_var("CONDA_WORKING_DIR"),
+        help="Base directory for session working directories (default: from CONDA_WORKING_DIR env var or /tmp/hypha_sessions_<uuid>)",
+    )
+    parser.add_argument(
+        "--authorized-workspaces",
+        type=str,
+        default=get_env_var("CONDA_AUTHORIZED_WORKSPACES"),
+        help="Comma-separated list of authorized workspaces (default: from CONDA_AUTHORIZED_WORKSPACES env var)",
     )
     parser.add_argument(
         "--use-local-url",
@@ -1459,6 +1471,7 @@ Examples:
     print(f"  Use Local URL: {args.use_local_url}")
     print(f"  Cache Dir: {args.cache_dir or DEFAULT_CACHE_DIR}")
     print(f"  Working Dir: {args.working_dir or 'Auto-generated in /tmp'}")
+    print(f"  Authorized Workspaces: {args.authorized_workspaces}")
 
     async def run_worker():
         """Run the conda environment worker."""
@@ -1490,6 +1503,8 @@ Examples:
                 service_config["id"] = args.service_id
             # Set visibility in the correct location (inside config)
             service_config["config"]["visibility"] = args.visibility
+            if args.authorized_workspaces:
+                service_config["config"]["authorized_workspaces"] = args.authorized_workspaces
 
             # Register the service
             print(f"🔄 Registering conda worker with config:")
