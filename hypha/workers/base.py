@@ -37,7 +37,7 @@ class WorkerConfig(BaseModel):
     timeout: Optional[int] = None
     app_files_base_url: Optional[str] = None
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
-
+    disable_ssl: bool = False
     class Config:
         arbitrary_types_allowed = True
 

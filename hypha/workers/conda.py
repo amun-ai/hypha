@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import re
 import httpx
 import json
 import logging
@@ -244,22 +245,29 @@ class CondaWorker(BaseWorker):
 
     instance_counter: int = 0
 
-    def __init__(self, server_url: str = None, use_local_url: bool = False, disable_ssl: bool = False, working_dir: str = None):
+    def __init__(self, server_url: str = None, use_local_url: Union[bool, str] = False, working_dir: str = None):
         """Initialize the conda environment worker.
         
         Args:
             server_url: The Hypha server URL
             use_local_url: Whether to use local URLs for server communication
-            disable_ssl: Whether to disable SSL verification
             working_dir: Base directory for session working directories (defaults to /tmp/hypha_sessions)
         """
         super().__init__()
         self.instance_id = f"conda-jupyter-kernel-{shortuuid.uuid()}"
         self.controller_id = str(CondaWorker.instance_counter)
         CondaWorker.instance_counter += 1
-        self._use_local_url = use_local_url
+        # convert true/false string to bool, and keep the string if it's not a bool
+        if isinstance(use_local_url, str):
+            if use_local_url.lower() == "true":
+                self._use_local_url = True
+            elif use_local_url.lower() == "false":
+                self._use_local_url = False
+            else:
+                self._use_local_url = use_local_url
+        else:
+            self._use_local_url = use_local_url
         self._server_url = server_url
-        self._disable_ssl = disable_ssl
         
         # Set up working directory base path
         if working_dir:
@@ -308,7 +316,7 @@ class CondaWorker(BaseWorker):
         return True
 
     @property
-    def use_local_url(self) -> bool:
+    def use_local_url(self) -> Union[bool, str]:
         """Return whether the worker should use local URLs."""
         return self._use_local_url
 
@@ -383,6 +391,194 @@ class CondaWorker(BaseWorker):
 
         return manifest, files
 
+    async def _prepare_staged_files(
+        self,
+        files_to_stage: List[str],
+        working_dir: Path,
+        config: WorkerConfig,
+        progress_callback=None,
+    ) -> None:
+        """Prepare and download files from artifact manager to the working directory.
+        
+        Args:
+            files_to_stage: List of file paths from artifact manager. Can include:
+                - Simple file paths: "data.csv"
+                - Folder paths (ending with /): "models/"
+                - Renamed files: "source.txt:target.txt"
+                - Renamed folders: "source/:target/"
+            working_dir: Directory where files should be placed
+            config: Worker configuration with server/auth details
+            progress_callback: Optional callback for progress updates
+            
+        Raises:
+            WorkerError: If any file or directory cannot be downloaded
+        """
+        if not files_to_stage:
+            return
+        
+        # Validate files_to_stage format
+        if not isinstance(files_to_stage, list):
+            raise WorkerError(f"files_to_stage must be a list, got {type(files_to_stage).__name__}")
+        
+        for item in files_to_stage:
+            if not isinstance(item, str):
+                raise WorkerError(f"Each item in files_to_stage must be a string, got {type(item).__name__}: {item}")
+            if not item or item.strip() == "":
+                raise WorkerError("Empty or whitespace-only path in files_to_stage")
+            
+        await progress_callback(
+            {"type": "info", "message": f"Preparing {len(files_to_stage)} files/folders from artifact manager..."}
+        )
+        
+        async def download_directory_recursive(client, source_dir, target_dir, processed_dirs=None):
+            """Recursively download all files from a directory."""
+            if processed_dirs is None:
+                processed_dirs = set()
+            
+            # Avoid infinite recursion
+            if source_dir in processed_dirs:
+                return
+            processed_dirs.add(source_dir)
+            
+            # Get directory listing - use the files endpoint with trailing slash
+            dir_url = f"{self._server_url}/{config.workspace}/artifacts/{config.app_id}/files/{source_dir}/?use_proxy=true"
+            
+            try:
+                response = await client.get(
+                    dir_url,
+                    headers={"Authorization": f"Bearer {config.token}"}
+                )
+                response.raise_for_status()
+                items = response.json()
+                
+                # Process each item in the directory
+                for item in items:
+                    item_name = item.get("name", "")
+                    item_type = item.get("type", "file")
+                    
+                    if item_type == "directory":
+                        # Recursively download subdirectory
+                        sub_source = f"{source_dir}/{item_name}".strip("/")
+                        sub_target = target_dir / item_name
+                        sub_target.mkdir(parents=True, exist_ok=True)
+                        await download_directory_recursive(client, sub_source, sub_target, processed_dirs)
+                    else:
+                        # Download file
+                        source_file = f"{source_dir}/{item_name}".strip("/")
+                        target_file = target_dir / item_name
+                        
+                        file_url = f"{self._server_url}/{config.workspace}/artifacts/{config.app_id}/files/{source_file}?use_proxy=true"
+                        file_response = await client.get(
+                            file_url,
+                            headers={"Authorization": f"Bearer {config.token}"}
+                        )
+                        file_response.raise_for_status()
+                        
+                        # Ensure parent directory exists
+                        try:
+                            target_file.parent.mkdir(parents=True, exist_ok=True)
+                            # Write file to working directory
+                            target_file.write_bytes(file_response.content)
+                            logger.debug(f"Downloaded {source_file} to {target_file}")
+                        except OSError as write_error:
+                            error_msg = f"Failed to write file {target_file}: {write_error}"
+                            logger.error(error_msg)
+                            raise WorkerError(error_msg) from write_error
+                
+                return len(items)
+                
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    error_msg = f"Directory not found in artifact manager: {source_dir}"
+                    logger.error(error_msg)
+                    raise WorkerError(error_msg) from e
+                else:
+                    raise
+        
+        async with httpx.AsyncClient(verify=not config.disable_ssl, timeout=30.0) as client:
+            for item in files_to_stage:
+                # Parse source and target from the item
+                if ":" in item:
+                    source, target = item.split(":", 1)
+                else:
+                    source = target = item
+                
+                # Check if it's a folder (ends with /)
+                is_folder = source.endswith("/")
+                
+                if is_folder:
+                    # Handle folder download recursively
+                    source = source.rstrip("/")
+                    target = target.rstrip("/")
+                    
+                    await progress_callback(
+                        {"type": "info", "message": f"Downloading folder recursively: {source} -> {target}"}
+                    )
+                    
+                    # Create target folder
+                    target_folder = working_dir / target
+                    try:
+                        target_folder.mkdir(parents=True, exist_ok=True)
+                    except OSError as mkdir_error:
+                        error_msg = f"Failed to create directory {target_folder}: {mkdir_error}"
+                        logger.error(error_msg)
+                        await progress_callback(
+                            {"type": "error", "message": error_msg}
+                        )
+                        raise WorkerError(error_msg) from mkdir_error
+                    
+                    # Recursively download all files
+                    file_count = await download_directory_recursive(client, source, target_folder)
+                    
+                    await progress_callback(
+                        {"type": "success", "message": f"Downloaded folder {source} ({file_count} items)"}
+                    )
+                else:
+                    # Handle single file download
+                    await progress_callback(
+                        {"type": "info", "message": f"Downloading file: {source} -> {target}"}
+                    )
+                    
+                    file_url = f"{self._server_url}/{config.workspace}/artifacts/{config.app_id}/files/{source}?use_proxy=true"
+                    
+                    try:
+                        response = await client.get(
+                            file_url,
+                            headers={"Authorization": f"Bearer {config.token}"}
+                        )
+                        response.raise_for_status()
+                        
+                        # Create target file path
+                        target_file = working_dir / target
+                        
+                        try:
+                            target_file.parent.mkdir(parents=True, exist_ok=True)
+                            # Write file to working directory
+                            target_file.write_bytes(response.content)
+                            
+                            logger.info(f"Downloaded {source} to {target_file}")
+                            await progress_callback(
+                                {"type": "success", "message": f"Downloaded {source}"}
+                            )
+                        except OSError as write_error:
+                            error_msg = f"Failed to write file {target_file}: {write_error}"
+                            logger.error(error_msg)
+                            await progress_callback(
+                                {"type": "error", "message": error_msg}
+                            )
+                            raise WorkerError(error_msg) from write_error
+                        
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code == 404:
+                            error_msg = f"File not found in artifact manager: {source}"
+                            logger.error(error_msg)
+                            await progress_callback(
+                                {"type": "error", "message": error_msg}
+                            )
+                            raise WorkerError(error_msg) from e
+                        else:
+                            raise
+
     async def start(
         self,
         config: Union[WorkerConfig, Dict[str, Any]],
@@ -394,6 +590,7 @@ class CondaWorker(BaseWorker):
             config = WorkerConfig(**config)
 
         session_id = config.id
+        logger.info(f"Starting conda environment session {session_id} for {config.id}")
         async def progress_callback(message: dict):
             """Invoke optional progress callback if provided, supporting sync or async callables."""
             callback = getattr(config, "progress_callback", None)
@@ -434,7 +631,7 @@ class CondaWorker(BaseWorker):
             # Phase 1: Fetch application script
             await progress_callback({"type": "info", "message": "Fetching application script..."})
             script_url = f"{self._server_url}/{config.workspace}/artifacts/{config.app_id}/files/{config.manifest['entry_point']}?use_proxy=true"
-            async with httpx.AsyncClient(verify=not self._disable_ssl) as client:
+            async with httpx.AsyncClient(verify=not config.disable_ssl) as client:
                 response = await client.get(
                     script_url, headers={"Authorization": f"Bearer {config.token}"}
                 )
@@ -442,7 +639,6 @@ class CondaWorker(BaseWorker):
                 script = response.text
                 
                 # TEMPORARY PATCH: Remove any remaining <script> or <file> tags from script content
-                import re
                 script = re.sub(r'<script[^>]*>(.*?)</script>', r'\1', script, flags=re.DOTALL | re.IGNORECASE)
                 script = re.sub(r'<file[^>]*>(.*?)</file>', r'\1', script, flags=re.DOTALL | re.IGNORECASE)
                 script = script.strip()
@@ -642,6 +838,32 @@ class CondaWorker(BaseWorker):
         session_working_dir.mkdir(parents=True, exist_ok=True)
         self._session_working_dirs[config.id] = session_working_dir
         logger.info(f"Created session working directory: {session_working_dir}")
+        
+        # Phase 3.5: Prepare staged files if specified
+        files_to_stage = config.manifest.get("files_to_stage", [])
+        if files_to_stage:
+            try:
+                await self._prepare_staged_files(
+                    files_to_stage,
+                    session_working_dir,
+                    config,
+                    progress_callback
+                )
+            except Exception as e:
+                error_msg = f"Failed to prepare staged files: {str(e)}"
+                logger.error(error_msg)
+                await progress_callback(
+                    {"type": "error", "message": error_msg}
+                )
+                # Cleanup incomplete environment if this was a newly created env
+                if is_new_env:
+                    try:
+                        marker_path = executor.env_path / READY_MARKER
+                        if not marker_path.exists() and executor.env_path.exists():
+                            shutil.rmtree(executor.env_path, ignore_errors=True)
+                    except Exception:
+                        pass
+                raise WorkerError(error_msg) from e
 
         # Create and start the Jupyter kernel with working directory
         kernel = CondaKernel(executor.env_path, working_dir=str(session_working_dir))
@@ -686,6 +908,7 @@ class CondaWorker(BaseWorker):
             "client_id": config.client_id,
             "token": config.token,
             "app_id": config.app_id,
+            "disable_ssl": config.disable_ssl,
         }
 
         # Execute initialization script in the kernel
@@ -706,7 +929,7 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
 """
         # Use provided startup timeout for initialization execution when available
         result = await kernel.execute(
-            init_code, timeout=float(config.timeout) if config.timeout else 60.0
+            init_code, timeout=float(config.timeout) if config.timeout else 60.0,
         )
         
         # Process kernel outputs into logs
@@ -795,6 +1018,7 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
         script: str,
         config: Optional[Dict[str, Any]] = None,
         progress_callback: Optional[Any] = None,
+        output_callback: Optional[Any] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Execute a script in the running Jupyter kernel session.
@@ -837,7 +1061,8 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
             # Execute the code in the kernel
             result = await kernel.execute(
                 script,
-                timeout=timeout
+                timeout=timeout,
+                output_callback=output_callback
             )
 
             # Update session logs
@@ -1179,8 +1404,8 @@ Examples:
     )
     parser.add_argument(
         "--use-local-url",
-        action="store_true",
-        help="Use local URLs for server communication (default: false for CLI workers)",
+        default="false",
+        help="Use local URLs for server communication (default: false for CLI workers, true for built-in workers, or specify the url for proxy etc.)",
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Enable verbose logging"
@@ -1253,8 +1478,7 @@ Examples:
             # Create and register worker
             worker = CondaWorker(
                 server_url=args.server_url, 
-                use_local_url=args.use_local_url, 
-                disable_ssl=args.disable_ssl,
+                use_local_url=args.use_local_url,
                 working_dir=args.working_dir
             )
             if args.cache_dir:
@@ -1386,7 +1610,7 @@ async def run_from_env():
         )
 
         # Create and register worker
-        worker = CondaWorker(server_url=server_url, disable_ssl=disable_ssl, working_dir=working_dir)
+        worker = CondaWorker(server_url=server_url, working_dir=working_dir)
         if cache_dir:
             worker._env_cache = EnvironmentCache(cache_dir=cache_dir)
 

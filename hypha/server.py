@@ -128,6 +128,7 @@ def start_builtin_services(
             port=args.port,
             in_docker=args.in_docker,
             artifact_manager=artifact_manager,
+            disable_ssl=args.disable_ssl,
         )
 
     HTTPProxy(
@@ -663,6 +664,11 @@ def get_argparser(add_help=True):
         "--enable-s3-for-anonymous-users",
         action="store_true",
         help="allow anonymous users to use S3 and artifact functionality (removes read-only restriction)",
+    )
+    parser.add_argument(
+        "--disable-ssl",
+        action="store_true",
+        help="disable SSL verification",
     )
     return parser
 

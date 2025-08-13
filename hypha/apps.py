@@ -400,6 +400,7 @@ class ServerAppController:
         in_docker,
         port: int,
         artifact_manager,
+        disable_ssl,
     ):
         """Initialize the controller."""
         self.port = int(port)
@@ -413,6 +414,7 @@ class ServerAppController:
         self.event_bus = store.get_event_bus()
         self.local_base_url = store.local_base_url
         self.public_base_url = store.public_base_url
+        self.disable_ssl = disable_ssl
         store.register_public_service(self.get_service_api())
         self.jinja_env = Environment(
             loader=PackageLoader("hypha"), autoescape=select_autoescape()
@@ -1840,7 +1842,7 @@ class ServerAppController:
         worker_use_local_url = getattr(worker, 'use_local_url', False)
         if worker_use_local_url:
             # Worker prefers local URLs - use local_base_url
-            effective_server_url = self.local_base_url or server_url
+            effective_server_url = worker_use_local_url if isinstance(worker_use_local_url, str) else (self.local_base_url or server_url)
             effective_app_files_base_url = f"{effective_server_url}/{workspace}/artifacts/{app_id}/files"
         else:
             # Worker uses public URLs - use public_base_url

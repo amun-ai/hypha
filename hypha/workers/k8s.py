@@ -240,8 +240,14 @@ class KubernetesWorker(BaseWorker):
             {"type": "info", "message": f"Creating Kubernetes pod with image: {image}"}
         )
 
+        sanitized_id = (
+            session_id.replace("/", "-")
+            .replace("\\", "-")
+            .replace(":", "-")
+            .replace(" ", "-")
+        )
         # Generate pod name
-        pod_name = f"hypha-pod-{session_id}"
+        pod_name = f"hypha-pod-{sanitized_id}"
 
         # Build environment variables - include Hypha configuration automatically
         env_vars = []

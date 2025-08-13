@@ -282,7 +282,24 @@ dependencies:
   - pandas
 channels:
   - conda-forge
+files_to_stage:  # Optional: files/folders to download from artifact manager
+  - data.csv                    # Download single file
+  - models/                      # Download entire folder recursively
+  - source.txt:renamed.txt      # Download and rename file
+  - raw_data/:processed_data/   # Download and rename folder
 ```
+
+#### Files to Stage Feature
+
+The `files_to_stage` option in the manifest allows you to automatically download files and folders from the Hypha artifact manager into the session's working directory before your application starts. This is useful for staging data files, models, configuration files, or any other resources your application needs.
+
+**Supported formats:**
+- **Single file**: `"data.csv"` - Downloads the file to the working directory
+- **Folder (recursive)**: `"models/"` - Downloads all files and subfolders within the specified directory
+- **Renamed file**: `"source.txt:target.txt"` - Downloads `source.txt` and saves it as `target.txt`
+- **Renamed folder**: `"raw_data/:processed_data/"` - Downloads the `raw_data` folder and saves it as `processed_data`
+
+Files are downloaded to the session's working directory, which is isolated per session and automatically cleaned up when the session ends. The download happens after environment creation but before the initialization script runs, ensuring your code has access to all staged files.
 
 ### 3. Deploy and Execute Code
 

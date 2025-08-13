@@ -2211,6 +2211,196 @@ print("This won't be reached")
     await api.disconnect()
 
 
+async def test_conda_apps_with_files_to_stage(fastapi_server, test_user_token, conda_available):
+    """Test conda-jupyter-kernel app with files_to_stage functionality."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 20,
+            "token": test_user_token,
+        }
+    )
+
+    controller = await api.get_service("public/server-apps")
+
+    print("=== Test: Conda app with files_to_stage ===")
+
+    # Create simpler test Python code that will use staged files
+    test_code = """
+import os
+import sys
+import json
+
+# Ensure stdout is flushed immediately
+os.environ['PYTHONUNBUFFERED'] = '1'
+
+print("Starting conda app with staged files!", flush=True)
+print(f"Working directory: {os.getcwd()}", flush=True)
+
+# List all files in working directory
+print("Files in working directory:", flush=True)
+for root, dirs, files in os.walk('.'):
+    for file in files:
+        file_path = os.path.join(root, file)
+        rel_path = os.path.relpath(file_path, '.')
+        print(f"  - {rel_path}", flush=True)
+
+# Test reading the staged text file
+print("\\nReading staged data file:", flush=True)
+with open('data.txt', 'r') as f:
+    data_content = f.read()
+print(f"Data file content: {data_content}", flush=True)
+
+# Test reading the staged JSON config
+print("\\nReading staged JSON config:", flush=True)
+with open('config.json', 'r') as f:
+    config = json.load(f)
+print(f"Config: {config}", flush=True)
+
+# Test reading renamed file
+print("\\nReading renamed file:", flush=True)
+if os.path.exists('renamed_settings.json'):
+    with open('renamed_settings.json', 'r') as f:
+        settings = json.load(f)
+    print(f"Renamed settings: {settings}", flush=True)
+else:
+    print("Renamed file not found!", flush=True)
+
+# Test accessing files in staged directory
+print("\\nChecking staged models directory:", flush=True)
+if os.path.exists('models'):
+    model_files = os.listdir('models')
+    print(f"Model files: {model_files}", flush=True)
+    # Read model info
+    with open('models/info.txt', 'r') as f:
+        info = f.read()
+    print(f"Model info: {info}", flush=True)
+else:
+    print("Models directory not found!", flush=True)
+
+# Test renamed folder
+print("\\nChecking renamed folder:", flush=True)
+if os.path.exists('analysis_results'):
+    result_files = []
+    for root, dirs, files in os.walk('analysis_results'):
+        for file in files:
+            rel_path = os.path.relpath(os.path.join(root, file), 'analysis_results')
+            result_files.append(rel_path)
+    print(f"Analysis result files: {result_files}", flush=True)
+    
+    # Read a file from the renamed folder
+    with open('analysis_results/summary.txt', 'r') as f:
+        summary = f.read()
+    print(f"Summary content: {summary}", flush=True)
+else:
+    print("Analysis results directory not found!", flush=True)
+
+print("\\nSUCCESS: All staged files are accessible!", flush=True)
+"""
+
+    # First, we need to create the artifact files that will be staged
+    # We'll use the artifact manager to upload test files
+    artifact_manager = await api.get_service("public/artifact-manager")
+    workspace = api.config["workspace"]
+    
+    # Create test files content (simpler files without pandas requirement)
+    test_files = [
+        {"path": "main.py", "content": test_code, "format": "text"},
+        {"path": "data.txt", "content": "Sample test data\nLine 2\nLine 3", "format": "text"},
+        {"path": "config.json", "content": '{"mode": "production", "debug": false}', "format": "text"},
+        {"path": "settings.json", "content": '{"theme": "dark", "language": "en"}', "format": "text"},
+        {"path": "models/info.txt", "content": "Model version 1.0", "format": "text"},
+        {"path": "models/model1.pkl", "content": "mock_model_data_1", "format": "text"},
+        {"path": "results/summary.txt", "content": "Analysis completed successfully", "format": "text"},
+        {"path": "results/data/output.json", "content": '{"result": "success"}', "format": "text"},
+    ]
+    
+    # Install the app with files first
+    print("Installing conda app with artifact files...")
+    app_info = await controller.install(
+        files=test_files,
+        manifest={
+            "name": "Conda App with Staged Files",
+            "type": "conda-jupyter-kernel",
+            "version": "1.0.0",
+            "entry_point": "main.py",
+            "description": "Test conda app with files_to_stage",
+            "dependencies": ["python=3.11"],  # Simpler dependencies
+            "channels": ["conda-forge"],
+            "files_to_stage": [
+                "data.txt",                       # Stage data.txt as-is
+                "config.json",                     # Stage config.json as-is
+                "settings.json:renamed_settings.json",  # Rename settings.json to renamed_settings.json
+                "models/",                         # Stage entire models directory
+                "results/:analysis_results/"      # Rename results folder to analysis_results
+            ],
+            "startup_config": {
+                "wait_for_service": False  # Don't wait for service registration
+            }
+        },
+        timeout=30,
+        overwrite=True,
+    )
+
+    assert app_info["name"] == "Conda App with Staged Files"
+    print(f"✅ App installed: {app_info['id']}")
+
+    # Start the app - files should be staged in working directory
+    print("Starting app with staged files...")
+    started_app = await controller.start(
+        app_info["id"],
+        timeout=30,
+        wait_for_service=None,  # Don't wait for service
+    )
+
+    assert "id" in started_app
+    print(f"✅ App started: {started_app['id']}")
+
+    # Give time for execution
+    await asyncio.sleep(3)
+
+    # Check logs to verify files were staged and accessible
+    logs = await controller.get_logs(started_app["id"])
+    log_text = " ".join(logs.get("stdout", []))
+    
+    print("Verifying staged files in logs...")
+    print(f"Log output (first 500 chars): {log_text[:500]}...")
+    
+    # Verify all expected files were staged
+    assert "Starting conda app with staged files!" in log_text
+    assert "Files in working directory:" in log_text
+    
+    # Verify specific files
+    assert "data.txt" in log_text, "data.txt should be staged"
+    assert "config.json" in log_text, "config.json should be staged"
+    assert "renamed_settings.json" in log_text, "settings.json should be renamed to renamed_settings.json"
+    
+    # Verify directories
+    assert "models" in log_text, "models directory should be staged"
+    assert "analysis_results" in log_text, "results should be renamed to analysis_results"
+    
+    # Verify file contents were read correctly
+    assert "Sample test data" in log_text, "Data file content should be readable"
+    assert '"mode": "production"' in log_text or "production" in log_text, "Config should contain production mode"
+    assert '"theme": "dark"' in log_text or "dark" in log_text, "Renamed settings should contain dark theme"
+    assert "Model version 1.0" in log_text, "Model info should be accessible"
+    assert "Analysis completed successfully" in log_text, "Summary from renamed folder should be readable"
+    
+    # Verify success message
+    assert "SUCCESS: All staged files are accessible!" in log_text
+    
+    print("✅ All staged files verified successfully!")
+
+    # Clean up
+    await controller.stop(started_app["id"])
+    await controller.uninstall(app_info["id"])
+    
+    print("🎉 Conda app with files_to_stage test completed successfully!")
+    
+    await api.disconnect()
+
+
 @pytest.mark.asyncio
 async def test_conda_worker_registration_and_discovery(fastapi_server_sqlite, test_user_token, conda_available):
     """Test that a conda worker can be registered and discovered during app installation.

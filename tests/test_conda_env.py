@@ -5,6 +5,7 @@ import os
 import pytest
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -14,6 +15,7 @@ from hypha.workers.base import (
     SessionStatus,
 )
 from hypha.workers.conda_executor import TimingInfo
+from . import SIO_PORT
 
 # Mark all async functions in this module as asyncio tests
 pytestmark = pytest.mark.asyncio
@@ -1937,6 +1939,273 @@ print(f"Files here: {files}")
                     except:
                         pass
                     raise
+
+
+    async def test_files_to_stage(self, conda_test_workspace):
+        """Test that files_to_stage downloads files from artifact manager to working directory."""
+        from hypha.workers.conda import CondaWorker, EnvironmentCache
+        import tempfile
+        from pathlib import Path
+        import aiohttp
+        from aiohttp import web
+        import asyncio
+        import json
+        
+        # Create test files in a temporary directory to serve
+        test_files_dir = Path(tempfile.mkdtemp())
+        
+        # Create test files structure
+        (test_files_dir / "data.csv").write_text("id,name,value\n1,test1,100\n2,test2,200")
+        (test_files_dir / "config.json").write_text('{"setting1": "value1", "setting2": 42}')
+        (test_files_dir / "models").mkdir()
+        (test_files_dir / "models" / "model1.pkl").write_bytes(b"model1_binary_data")
+        (test_files_dir / "models" / "model2.pkl").write_bytes(b"model2_binary_data")
+        (test_files_dir / "source_folder").mkdir()
+        (test_files_dir / "source_folder" / "file1.txt").write_text("This is file 1 content")
+        (test_files_dir / "source_folder" / "subdir").mkdir(parents=True)
+        (test_files_dir / "source_folder" / "subdir" / "file2.txt").write_text("This is file 2 in subdirectory")
+        
+        # Create main.py script
+        main_script = """
+import os
+print(f"Working directory: {os.getcwd()}")
+files = []
+for root, dirs, filenames in os.walk('.'):
+    for fname in filenames:
+        if not fname.startswith('.'):  # Skip hidden files
+            rel_path = os.path.relpath(os.path.join(root, fname), '.')
+            files.append(rel_path)
+print(f"Files found: {sorted(files)}")
+"""
+        (test_files_dir / "main.py").write_text(main_script)
+        
+        # Create a simple test server to serve files
+        async def handle_file_request(request):
+            """Handle file requests."""
+            path = request.match_info.get('path', '')
+            
+            # Handle directory listing (path ends with /)
+            if path.endswith('/'):
+                dir_path = path.rstrip('/')
+                full_dir = test_files_dir / dir_path if dir_path else test_files_dir
+                
+                if full_dir.exists() and full_dir.is_dir():
+                    items = []
+                    for item in full_dir.iterdir():
+                        items.append({
+                            "name": item.name,
+                            "type": "directory" if item.is_dir() else "file",
+                            "size": item.stat().st_size if item.is_file() else 0
+                        })
+                    return web.json_response(items)
+                else:
+                    return web.Response(status=404)
+            
+            # Handle file download
+            file_path = test_files_dir / path
+            if file_path.exists() and file_path.is_file():
+                if path == "main.py":
+                    return web.Response(text=file_path.read_text())
+                else:
+                    return web.Response(body=file_path.read_bytes())
+            else:
+                return web.Response(status=404)
+        
+        # Start test server
+        app = web.Application()
+        app.router.add_route('GET', '/{workspace}/artifacts/{app_id}/files/{path:.*}', handle_file_request)
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, 'localhost', 0)  # Use random port
+        await site.start()
+        
+        # Get the actual port
+        test_port = site._server.sockets[0].getsockname()[1]
+        test_server_url = f"http://localhost:{test_port}"
+        
+        try:
+            # Create a temporary base directory for testing
+            with tempfile.TemporaryDirectory() as temp_base:
+                working_dir_base = Path(temp_base) / "stage_test"
+                working_dir_base.mkdir(parents=True, exist_ok=True)
+                
+                # Initialize worker with test server URL
+                worker = CondaWorker(
+                    server_url=test_server_url,
+                    working_dir=str(working_dir_base)
+                )
+                worker._env_cache = EnvironmentCache(
+                    cache_dir=conda_test_workspace["cache_dir"], max_size=5
+                )
+                
+                # Create config with files_to_stage
+                config = WorkerConfig(
+                    id="stage-files-test",
+                    app_id="test-app",
+                    workspace="test-workspace",
+                    client_id="test-client",
+                    server_url=test_server_url,
+                    token="test-token",
+                    entry_point="main.py",
+                    artifact_id="test-artifact",
+                    manifest={
+                        "type": "conda-jupyter-kernel",
+                        "dependencies": ["python=3.11"],
+                        "channels": ["conda-forge"],
+                        "entry_point": "main.py",
+                        "files_to_stage": [
+                            "data.csv",                           # Simple file
+                            "config.json:renamed_config.json",    # Renamed file
+                            "models/",                             # Folder with files (recursive)
+                            "source_folder/:renamed_folder/",     # Renamed folder (recursive)
+                        ]
+                    },
+                    app_files_base_url=test_server_url + "/files",
+                )
+            
+            try:
+                print("🚀 Starting conda session with real artifact files...")
+                
+                # Compile manifest to add dependencies
+                compiled_manifest, _ = await worker.compile(config.manifest, [])
+                config.manifest = compiled_manifest
+                
+                # Start session (which should download and stage files)
+                session_id = await worker.start(config)
+                assert session_id == "stage-files-test"
+                
+                # Check that session is running
+                assert session_id in worker._sessions
+                assert worker._sessions[session_id].status == SessionStatus.RUNNING
+                
+                # Verify working directory was created
+                session_dir = worker._session_working_dirs[session_id]
+                assert session_dir.exists()
+                print(f"✅ Session working directory created: {session_dir}")
+                
+                # List actual files in working directory
+                actual_files = []
+                for root, dirs, filenames in os.walk(session_dir):
+                    for fname in filenames:
+                        if not fname.startswith('.'):  # Skip hidden files
+                            rel_path = os.path.relpath(os.path.join(root, fname), session_dir)
+                            actual_files.append(rel_path)
+                
+                print(f"📁 Files staged in working directory: {sorted(actual_files)}")
+                
+                # Verify specific files were staged correctly
+                assert (session_dir / "data.csv").exists(), "data.csv should be staged"
+                assert (session_dir / "renamed_config.json").exists(), "config.json should be renamed to renamed_config.json"
+                assert (session_dir / "models").exists(), "models directory should exist"
+                assert (session_dir / "models" / "model1.pkl").exists(), "model1.pkl should be in models/"
+                assert (session_dir / "models" / "model2.pkl").exists(), "model2.pkl should be in models/"
+                assert (session_dir / "renamed_folder").exists(), "source_folder should be renamed to renamed_folder"
+                assert (session_dir / "renamed_folder" / "file1.txt").exists(), "file1.txt should be in renamed_folder/"
+                assert (session_dir / "renamed_folder" / "subdir" / "file2.txt").exists(), "Subdirectory files should be preserved"
+                
+                # Verify file contents
+                with open(session_dir / "data.csv", "r") as f:
+                    csv_content = f.read()
+                    assert "test1,100" in csv_content, "CSV content should be preserved"
+                
+                with open(session_dir / "renamed_config.json", "r") as f:
+                    json_content = f.read()
+                    assert "setting1" in json_content, "JSON content should be preserved"
+                
+                # Execute code to verify files are accessible in the kernel
+                test_code = """
+import os
+import json
+
+# Check working directory
+print(f"Working directory: {os.getcwd()}")
+
+# List all files
+files = []
+for root, dirs, filenames in os.walk('.'):
+    for fname in filenames:
+        if not fname.startswith('.'):
+            rel_path = os.path.relpath(os.path.join(root, fname), '.')
+            files.append(rel_path)
+
+print(f"Files accessible in kernel: {sorted(files)}")
+
+# Try to read CSV
+try:
+    with open('data.csv', 'r') as f:
+        csv_lines = f.readlines()
+        print(f"CSV file has {len(csv_lines)} lines")
+except Exception as e:
+    print(f"Error reading CSV: {e}")
+
+# Try to read renamed JSON
+try:
+    with open('renamed_config.json', 'r') as f:
+        config = json.load(f)
+        print(f"Config loaded: setting1={config.get('setting1')}")
+except Exception as e:
+    print(f"Error reading JSON: {e}")
+
+# Check models directory
+if os.path.exists('models'):
+    model_files = os.listdir('models')
+    print(f"Model files: {sorted(model_files)}")
+
+# Check renamed folder
+if os.path.exists('renamed_folder'):
+    renamed_files = []
+    for root, dirs, files in os.walk('renamed_folder'):
+        for f in files:
+            rel = os.path.relpath(os.path.join(root, f), 'renamed_folder')
+            renamed_files.append(rel)
+    print(f"Renamed folder files: {sorted(renamed_files)}")
+"""
+                
+                result = await worker.execute(session_id, test_code, config={"timeout": 30.0})
+                assert result["status"] == "ok", f"Execution failed: {result.get('error')}"
+                
+                # Extract stdout
+                stdout_text = "".join(
+                    output.get("text", "")
+                    for output in result.get("outputs", [])
+                    if output.get("type") == "stream" and output.get("name") == "stdout"
+                )
+                
+                print(f"📝 Kernel output:\n{stdout_text}")
+                
+                # Verify kernel can see the files
+                assert "data.csv" in stdout_text, "Kernel should see data.csv"
+                assert "renamed_config.json" in stdout_text, "Kernel should see renamed_config.json"
+                assert "model1.pkl" in stdout_text, "Kernel should see model1.pkl"
+                assert "model2.pkl" in stdout_text, "Kernel should see model2.pkl"
+                assert "file1.txt" in stdout_text, "Kernel should see file1.txt"
+                assert "CSV file has 3 lines" in stdout_text, "CSV should be readable"
+                assert "setting1=value1" in stdout_text, "JSON config should be readable"
+                
+                print("✅ Files staged and accessible successfully!")
+                
+                # Stop session
+                await worker.stop(session_id)
+                
+                # Verify cleanup
+                assert not session_dir.exists(), "Working directory should be cleaned up"
+                print("✅ Working directory cleaned up successfully")
+                
+            except Exception as e:
+                print(f"❌ Test failed: {e}")
+                try:
+                    await worker.stop("stage-files-test")
+                except:
+                    pass
+                raise
+        finally:
+            # Clean up test server
+            await runner.cleanup()
+            
+            # Clean up test files
+            import shutil
+            shutil.rmtree(test_files_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
