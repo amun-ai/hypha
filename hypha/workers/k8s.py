@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import re
 import sys
 import time
 import uuid
@@ -28,7 +29,18 @@ logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("k8s")
 logger.setLevel(LOGLEVEL)
 
-
+def to_k8s_pod_name(session_id: str) -> str:
+    sanitized_id = re.sub(r'[^a-zA-Z0-9-]', '-', session_id)
+    sanitized_id = re.sub(r'-+', '-', sanitized_id)
+    sanitized_id = sanitized_id.strip('-')
+    if sanitized_id and not sanitized_id[0].isalnum():
+        sanitized_id = f"s{sanitized_id}"
+    if not sanitized_id:
+        sanitized_id = str(uuid.uuid4())
+    if len(sanitized_id) > 50:
+        sanitized_id = sanitized_id[:50].rstrip('-')
+    pod_name = f"hypha-pod-{sanitized_id}".lower()
+    return pod_name
 class KubernetesWorker(BaseWorker):
     """Kubernetes worker for launching pods in Kubernetes clusters."""
 
@@ -239,16 +251,7 @@ class KubernetesWorker(BaseWorker):
         progress_callback_wrapper(
             {"type": "info", "message": f"Creating Kubernetes pod with image: {image}"}
         )
-
-        sanitized_id = (
-            session_id.replace("/", "-")
-            .replace("\\", "-")
-            .replace(":", "-")
-            .replace(" ", "-")
-        )
-        # Generate pod name
-        pod_name = f"hypha-pod-{sanitized_id}"
-
+        pod_name = to_k8s_pod_name(session_id)
         # Build environment variables - include Hypha configuration automatically
         env_vars = []
         

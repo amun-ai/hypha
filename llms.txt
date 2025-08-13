@@ -6,7 +6,7 @@ Hypha enables building distributed applications with Python and JavaScript. It f
 
 ## Core Documentation
 - [Getting Started](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/getting-started.md): Installation, server setup, and basic client-server communication
-- [Migration Guide](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/migration-guide.md): Guide for migrating between different versions of Hypha
+- [Configuration Guide](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/configurations.md): Guide for configurations in Hypha
 - [Service Type Annotation](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/service-type-annotation.md): How to add type annotations to Hypha services
 - [Serverless Functions](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/serverless-functions.md): How to define and use serverless functions in Hypha
 - [ASGI Web Apps](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/asgi-apps.md): Using Hypha to serve ASGI web applications
@@ -18,6 +18,6 @@ Hypha enables building distributed applications with Python and JavaScript. It f
 - [Vector Search](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/vector-search.md): Using vector search capabilities in Hypha
 
 ## Optional
-- [Development](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/development.md): Guide for developing Hypha
+- [Migration Guide](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/migration-guide.md): Guide for migrating between different versions of Hypha
 - [Setup Authentication](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/setup-authentication.md): How to set up authentication in Hypha
 - [Hypha in Pyodide](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/hypha-in-pyodide.md): Using Hypha with Pyodide for browser-based Python 

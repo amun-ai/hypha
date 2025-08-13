@@ -33,7 +33,7 @@ python3 -m hypha.server --host=0.0.0.0 --port=9527
 
 You should see output indicating the server is running. Visit [http://localhost:9527](http://localhost:9527) to confirm it's working - you'll see the Hypha server interface.
 
-> **Need more advanced server configuration?** Check out the [Development Guide](development.md) for options like built-in S3 storage, server apps, static file serving, and production deployment.
+> **Need more advanced server configuration?** Check out the [Configuration Guide](configurations.md) for options like built-in S3 storage, server apps, static file serving, and production deployment.
 
 ## Your First Service
 
@@ -351,7 +351,7 @@ Congratulations! You've learned the basics of Hypha:
 
 Now that you understand the basics, you can explore more advanced features:
 
-- **[Development Guide](development.md)** - Advanced server configuration, storage options, custom workers, and production deployment
+- **[Configuration Guide](configurations.md)** - Advanced server configuration, storage options, custom workers, and production deployment
 - **[Server Apps](apps.md)** - Build web applications that run on the server
 - **[Artifact Management](artifact-manager.md)** - Store and version your data and models
 - **[Vector Search](vector-search.md)** - Add semantic search capabilities to your applications
