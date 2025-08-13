@@ -11,6 +11,7 @@ import shutil
 import shortuuid
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -243,8 +244,15 @@ class CondaWorker(BaseWorker):
 
     instance_counter: int = 0
 
-    def __init__(self, server_url: str = None, use_local_url: bool = False, disable_ssl: bool = False):
-        """Initialize the conda environment worker."""
+    def __init__(self, server_url: str = None, use_local_url: bool = False, disable_ssl: bool = False, working_dir: str = None):
+        """Initialize the conda environment worker.
+        
+        Args:
+            server_url: The Hypha server URL
+            use_local_url: Whether to use local URLs for server communication
+            disable_ssl: Whether to disable SSL verification
+            working_dir: Base directory for session working directories (defaults to /tmp/hypha_sessions)
+        """
         super().__init__()
         self.instance_id = f"conda-jupyter-kernel-{shortuuid.uuid()}"
         self.controller_id = str(CondaWorker.instance_counter)
@@ -252,6 +260,17 @@ class CondaWorker(BaseWorker):
         self._use_local_url = use_local_url
         self._server_url = server_url
         self._disable_ssl = disable_ssl
+        
+        # Set up working directory base path
+        if working_dir:
+            self._working_dir_base = Path(working_dir)
+        else:
+            # Default to /tmp with random subfolder for this worker instance
+            self._working_dir_base = Path(tempfile.gettempdir()) / f"hypha_sessions_{shortuuid.uuid()}"
+        
+        # Ensure base working directory exists
+        self._working_dir_base.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Using working directory base: {self._working_dir_base}")
 
         # Detect available package manager (mamba preferred over conda)
         try:
@@ -263,6 +282,7 @@ class CondaWorker(BaseWorker):
         # Session management
         self._sessions: Dict[str, SessionInfo] = {}
         self._session_data: Dict[str, Dict[str, Any]] = {}
+        self._session_working_dirs: Dict[str, Path] = {}  # Track working directories per session
 
         # Environment cache
         self._env_cache = EnvironmentCache()
@@ -617,8 +637,14 @@ class CondaWorker(BaseWorker):
             }
         )
 
-        # Create and start the Jupyter kernel
-        kernel = CondaKernel(executor.env_path)
+        # Create session-specific working directory
+        session_working_dir = self._working_dir_base / config.id
+        session_working_dir.mkdir(parents=True, exist_ok=True)
+        self._session_working_dirs[config.id] = session_working_dir
+        logger.info(f"Created session working directory: {session_working_dir}")
+
+        # Create and start the Jupyter kernel with working directory
+        kernel = CondaKernel(executor.env_path, working_dir=str(session_working_dir))
         try:
             # Honor provided startup timeout when available
             await kernel.start(timeout=float(config.timeout) if config.timeout else 30.0)
@@ -960,9 +986,19 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
             logger.error(f"Failed to stop conda environment session {session_id}: {e}")
             raise
         finally:
-            # Cleanup
+            # Cleanup working directory
+            session_working_dir = self._session_working_dirs.get(session_id)
+            if session_working_dir and session_working_dir.exists():
+                try:
+                    shutil.rmtree(session_working_dir)
+                    logger.info(f"Removed session working directory: {session_working_dir}")
+                except Exception as e:
+                    logger.warning(f"Failed to remove working directory {session_working_dir}: {e}")
+            
+            # Cleanup session data
             self._sessions.pop(session_id, None)
             self._session_data.pop(session_id, None)
+            self._session_working_dirs.pop(session_id, None)
 
     
 
@@ -1043,7 +1079,9 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
 
 async def hypha_startup(server):
     """Hypha startup function to initialize conda environment worker."""
-    worker = CondaWorker(server_url=server.config.local_base_url, use_local_url=True)  # Built-in worker should use local URLs
+    # Built-in worker should use local URLs and a specific working directory
+    working_dir = os.environ.get("HYPHA_WORKING_DIR")
+    worker = CondaWorker(server_url=server.config.local_base_url, use_local_url=True, working_dir=working_dir)
     await worker.register_worker_service(server)
     logger.info("Conda environment worker initialized and registered")
 
@@ -1134,6 +1172,12 @@ Examples:
         help="Directory for caching conda environments (default: from HYPHA_CACHE_DIR env var or ~/.hypha_conda_cache)",
     )
     parser.add_argument(
+        "--working-dir",
+        type=str,
+        default=get_env_var("WORKING_DIR"),
+        help="Base directory for session working directories (default: from HYPHA_WORKING_DIR env var or /tmp/hypha_sessions_<uuid>)",
+    )
+    parser.add_argument(
         "--use-local-url",
         action="store_true",
         help="Use local URLs for server communication (default: false for CLI workers)",
@@ -1189,6 +1233,7 @@ Examples:
     print(f"  Visibility: {args.visibility}")
     print(f"  Use Local URL: {args.use_local_url}")
     print(f"  Cache Dir: {args.cache_dir or DEFAULT_CACHE_DIR}")
+    print(f"  Working Dir: {args.working_dir or 'Auto-generated in /tmp'}")
 
     async def run_worker():
         """Run the conda environment worker."""
@@ -1206,7 +1251,12 @@ Examples:
             )
 
             # Create and register worker
-            worker = CondaWorker(server_url=args.server_url, use_local_url=args.use_local_url, disable_ssl=args.disable_ssl)
+            worker = CondaWorker(
+                server_url=args.server_url, 
+                use_local_url=args.use_local_url, 
+                disable_ssl=args.disable_ssl,
+                working_dir=args.working_dir
+            )
             if args.cache_dir:
                 worker._env_cache = EnvironmentCache(cache_dir=args.cache_dir)
 
@@ -1285,6 +1335,7 @@ async def run_from_env():
         visibility = os.environ.get("HYPHA_VISIBILITY", "protected")
         disable_ssl = os.environ.get("HYPHA_DISABLE_SSL", "false").lower() in ("true", "1", "yes")
         cache_dir = os.environ.get("HYPHA_CACHE_DIR")
+        working_dir = os.environ.get("HYPHA_WORKING_DIR")
         verbose = os.environ.get("HYPHA_VERBOSE", "false").lower() in ("true", "1", "yes")
 
         # Validate required environment variables
@@ -1335,7 +1386,7 @@ async def run_from_env():
         )
 
         # Create and register worker
-        worker = CondaWorker(server_url=server_url, disable_ssl=disable_ssl)
+        worker = CondaWorker(server_url=server_url, disable_ssl=disable_ssl, working_dir=working_dir)
         if cache_dir:
             worker._env_cache = EnvironmentCache(cache_dir=cache_dir)
 

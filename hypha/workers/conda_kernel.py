@@ -15,14 +15,16 @@ from jupyter_client.manager import AsyncKernelManager
 class CondaKernel:
     """Manages a Jupyter kernel running in a conda environment."""
 
-    def __init__(self, conda_env_path: Union[str, Path]):
+    def __init__(self, conda_env_path: Union[str, Path], working_dir: Optional[str] = None):
         """Initialize the conda kernel.
         
         Args:
             conda_env_path: Path to the conda environment
+            working_dir: Working directory for kernel execution (optional)
         """
         self.conda_env_path = Path(conda_env_path)
         self.python_path = self.conda_env_path / "bin" / "python"
+        self.working_dir = working_dir
         
         # Verify the environment exists
         if not self.python_path.exists():
@@ -55,6 +57,10 @@ class CondaKernel:
             display_name=f"Python ({self.conda_env_path.name})",
             language="python",
         )
+        
+        # Set working directory for kernel if specified
+        if self.working_dir:
+            self.kernel_manager.kernel_working_dir = self.working_dir
         
         # kernel_cmd is already set via the KernelSpec above
         
@@ -109,6 +115,13 @@ class CondaKernel:
         if not self.kernel_client:
             raise RuntimeError("Kernel not started")
             
+        # If working directory is set, prepend code to change directory
+        if self.working_dir:
+            # Add code to change to the working directory before executing user code
+            code = f"""import os
+os.chdir({repr(self.working_dir)})
+{code}"""
+        
         # Send execution request
         msg_id = self.kernel_client.execute(code)
         
