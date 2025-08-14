@@ -1305,7 +1305,8 @@ class ServerAppController:
                     }
                 )
                 
-                return artifact_info.get("manifest", manifest)
+                # Return the full artifact info, not just the manifest
+                return artifact_info
         
         except Exception as e:
             # Clean up the created artifact if installation failed
@@ -2031,12 +2032,9 @@ class ServerAppController:
                     version="stage" if stage else None,
                     context=context,
                 )
-                # Only commit if not in stage mode
-                if not stage:
-                    await self.artifact_manager.commit(
-                        published_artifact["id"],
-                        context=context,
-                    )
+                # Don't commit here - the artifact is either:
+                # 1. Already committed by duplicate() when stage=False, or
+                # 2. Intentionally left in stage mode when stage=True
         
         # Return the published artifact info
         read_version = "stage" if stage else None
@@ -2101,17 +2099,28 @@ class ServerAppController:
         # Start the app using the worker with reorganized config
         full_client_id = workspace + "/" + client_id
         additional_kwargs = additional_kwargs or {}
+        
+        # Split app_id if it contains workspace prefix
+        if "/" in app_id:
+            # app_id is in format "workspace/alias", extract just the alias for service registration
+            _, app_alias = app_id.rsplit("/", 1)
+            artifact_id_for_worker = app_id  # Use full ID for artifact access
+            app_id_for_registration = app_alias  # Use just alias for service registration
+        else:
+            artifact_id_for_worker = f"{workspace}/{app_id}"
+            app_id_for_registration = app_id
+        
         await worker.start(
             {
                 "id": full_client_id,
-                "app_id": app_id,
+                "app_id": app_id_for_registration,  # Use alias for service registration
                 "workspace": workspace,
                 "client_id": client_id,
                 "server_url": effective_server_url,
                 "app_files_base_url": effective_app_files_base_url,
                 "token": token,
                 "entry_point": entry_point,
-                "artifact_id": f"{workspace}/{app_id}",
+                "artifact_id": artifact_id_for_worker,  # Use full ID for artifact access
                 "timeout": timeout,
                 "manifest": manifest,
                 "progress_callback": progress_callback,
@@ -2124,7 +2133,7 @@ class ServerAppController:
         # Store session info in Redis for horizontal scaling
         session_data = {
             "id": full_client_id,
-            "app_id": app_id,
+            "app_id": app_id_for_registration,  # Store the alias for consistency
             "workspace": workspace,
             "client_id": client_id,
             "app_type": app_type,
