@@ -17,7 +17,7 @@ import pytest_asyncio
 from sqlalchemy import create_engine
 
 from hypha.core import UserInfo, auth, UserPermission
-from hypha.core.auth import generate_presigned_token, create_scope
+from hypha.core.auth import generate_auth_token, create_scope
 from hypha.minio import setup_minio_executables, start_minio_server
 from redis import Redis
 
@@ -103,12 +103,40 @@ def _cleanup_server_process(proc, server_name):
 @pytest_asyncio.fixture
 def event_loop():
     """Create an event loop for each test."""
-    yield asyncio.get_event_loop()
+    try:
+        # Try to get existing event loop
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("Event loop is closed")
+    except RuntimeError:
+        # Create a new event loop if none exists or is closed
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    yield loop
+    
+    # Clean up the loop after the test
+    try:
+        if not loop.is_closed():
+            # Cancel all pending tasks
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+    except Exception:
+        pass
 
 
 def pytest_sessionfinish(session, exitstatus):
     """Clean up after the tests."""
-    asyncio.get_event_loop().close()
+    try:
+        loop = asyncio.get_event_loop()
+        if not loop.is_closed():
+            loop.close()
+    except RuntimeError:
+        # No event loop in the current thread, which is fine
+        pass
 
 
 def _generate_token(id, roles):
@@ -124,8 +152,14 @@ def _generate_token(id, roles):
         scope=create_scope(workspaces={f"ws-user-{id}": UserPermission.admin}),
         expires_at=None,
     )
-    token = generate_presigned_token(root_user_info, 18000)
-    yield token
+    # Since generate_auth_token is now async, we need to run it in an event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        token = loop.run_until_complete(generate_auth_token(root_user_info, 18000))
+        yield token
+    finally:
+        loop.close()
 
 
 @pytest_asyncio.fixture(name="root_user_token", scope="session")
@@ -141,8 +175,14 @@ def generate_root_user_token():
         scope=create_scope(workspaces={"*": UserPermission.admin}),
         expires_at=None,
     )
-    token = generate_presigned_token(root_user_info, 1800)
-    yield token
+    # Since generate_auth_token is now async, we need to run it in an event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        token = loop.run_until_complete(generate_auth_token(root_user_info, 1800))
+        yield token
+    finally:
+        loop.close()
 
 
 @pytest_asyncio.fixture(name="test_user_token", scope="session")

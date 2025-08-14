@@ -10,7 +10,7 @@ import threading
 import asyncio
 from hypha.server import create_application, get_argparser
 from hypha.__main__ import generate_token_command, create_cli_parser
-from hypha.core.auth import parse_token
+from hypha.core.auth import _parse_token
 import uvicorn
 
 
@@ -22,14 +22,14 @@ class TestCLI:
         parser = create_cli_parser()
         args = parser.parse_args(["generate-token"])
 
-        token = generate_token_command(args)
+        token = asyncio.run(generate_token_command(args))
 
         # Token should be a string
         assert isinstance(token, str)
         assert len(token) > 0
 
         # Should be able to parse the token
-        user_info = parse_token(token)
+        user_info = _parse_token(token)
         assert user_info is not None
         assert user_info.is_anonymous is True
         assert "anonymous" in user_info.roles
@@ -39,9 +39,9 @@ class TestCLI:
         parser = create_cli_parser()
         args = parser.parse_args(["generate-token", "--workspace", "test-workspace"])
 
-        token = generate_token_command(args)
+        token = asyncio.run(generate_token_command(args))
 
-        user_info = parse_token(token)
+        user_info = _parse_token(token)
         assert user_info.scope is not None
         assert "test-workspace" in user_info.scope.workspaces
         assert user_info.scope.current_workspace == "test-workspace"
@@ -51,9 +51,9 @@ class TestCLI:
         parser = create_cli_parser()
         args = parser.parse_args(["generate-token", "--expires-in", "7200"])
 
-        token = generate_token_command(args)
+        token = asyncio.run(generate_token_command(args))
 
-        user_info = parse_token(token)
+        user_info = _parse_token(token)
         # Token should be valid and have the correct expiration
         assert user_info is not None
 
@@ -62,9 +62,9 @@ class TestCLI:
         parser = create_cli_parser()
         args = parser.parse_args(["generate-token", "--client-id", "test-client"])
 
-        token = generate_token_command(args)
+        token = asyncio.run(generate_token_command(args))
 
-        user_info = parse_token(token)
+        user_info = _parse_token(token)
         assert user_info.scope is not None
         assert user_info.scope.client_id == "test-client"
 
@@ -73,9 +73,9 @@ class TestCLI:
         parser = create_cli_parser()
         args = parser.parse_args(["generate-token", "--user-id", "test-user"])
 
-        token = generate_token_command(args)
+        token = asyncio.run(generate_token_command(args))
 
-        user_info = parse_token(token)
+        user_info = _parse_token(token)
         assert user_info.id == "test-user"
 
     def test_generate_token_with_email(self):
@@ -83,9 +83,9 @@ class TestCLI:
         parser = create_cli_parser()
         args = parser.parse_args(["generate-token", "--email", "test@example.com"])
 
-        token = generate_token_command(args)
+        token = asyncio.run(generate_token_command(args))
 
-        user_info = parse_token(token)
+        user_info = _parse_token(token)
         assert user_info.email == "test@example.com"
 
     def test_generate_token_with_roles(self):
@@ -95,9 +95,9 @@ class TestCLI:
             ["generate-token", "--role", "admin", "--role", "user"]
         )
 
-        token = generate_token_command(args)
+        token = asyncio.run(generate_token_command(args))
 
-        user_info = parse_token(token)
+        user_info = _parse_token(token)
         assert "admin" in user_info.roles
         assert "user" in user_info.roles
 
@@ -106,9 +106,9 @@ class TestCLI:
         parser = create_cli_parser()
         args = parser.parse_args(["generate-token", "--scope", "my-workspace#admin"])
 
-        token = generate_token_command(args)
+        token = asyncio.run(generate_token_command(args))
 
-        user_info = parse_token(token)
+        user_info = _parse_token(token)
         assert user_info.scope is not None
         assert "my-workspace" in user_info.scope.workspaces
         assert user_info.scope.workspaces["my-workspace"].value == "a"
@@ -121,9 +121,9 @@ class TestCLI:
             ["generate-token", "--permission", "admin", "--workspace", "test-ws"]
         )
 
-        token = generate_token_command(args)
+        token = asyncio.run(generate_token_command(args))
 
-        user_info = parse_token(token)
+        user_info = _parse_token(token)
         assert user_info.scope is not None
         assert user_info.scope.workspaces["test-ws"].value == "a"
 
@@ -152,9 +152,9 @@ class TestCLI:
             ]
         )
 
-        token = generate_token_command(args)
+        token = asyncio.run(generate_token_command(args))
 
-        user_info = parse_token(token)
+        user_info = _parse_token(token)
         assert user_info.id == "full-test-user"
         assert user_info.email == "fulltest@example.com"
         assert "admin" in user_info.roles

@@ -4,12 +4,13 @@ import asyncio
 import json
 import logging
 import ssl
+import inspect
 import os
 import sys
 from calendar import timegm
 import datetime
 from os import environ as env
-from typing import List, Union, Dict
+from typing import List, Union, Dict, Callable
 from urllib.request import urlopen
 
 import shortuuid
@@ -37,15 +38,30 @@ AUTH0_DOMAIN = env.get("AUTH0_DOMAIN", "amun-ai.eu.auth0.com")
 AUTH0_AUDIENCE = env.get("AUTH0_AUDIENCE", "https://amun-ai.eu.auth0.com/api/v2/")
 AUTH0_ISSUER = env.get("AUTH0_ISSUER", "https://amun.ai/")
 AUTH0_NAMESPACE = env.get("AUTH0_NAMESPACE", "https://amun.ai/")
-JWT_SECRET = env.get("HYPHA_JWT_SECRET") or env.get("JWT_SECRET")
+def _get_jwt_secret():
+    """Get JWT secret, ensuring consistency during testing and runtime."""
+    # Always check environment variables first (important for testing)
+    secret = env.get("HYPHA_JWT_SECRET") or env.get("JWT_SECRET")
+    if not secret:
+        logger.info(
+            "Neither HYPHA_JWT_SECRET nor JWT_SECRET is defined, using a random JWT_SECRET"
+        )
+        secret = shortuuid.ShortUUID().random(length=22)
+        # Set the environment variable to ensure consistency across module reloads
+        env["JWT_SECRET"] = secret
+        env["HYPHA_JWT_SECRET"] = secret
+    return secret
+
+JWT_SECRET = _get_jwt_secret()
+
+def set_jwt_secret(secret: str):
+    """Set JWT secret explicitly (mainly for testing)."""
+    global JWT_SECRET
+    env["JWT_SECRET"] = secret
+    env["HYPHA_JWT_SECRET"] = secret
+    JWT_SECRET = secret
 LOGIN_SERVICE_URL = "/public/services/hypha-login"
 LOGIN_KEY_PREFIX = "login_key:"
-
-if not JWT_SECRET:
-    logger.info(
-        "Neither HYPHA_JWT_SECRET nor JWT_SECRET is defined, using a random JWT_SECRET"
-    )
-    JWT_SECRET = shortuuid.ShortUUID().random(length=22)
 
 
 def get_user_email(token):
@@ -168,7 +184,7 @@ def generate_anonymous_user(scope=None) -> UserInfo:
     )
 
 
-def parse_token(authorization: str):
+def _parse_token(authorization: str):
     """Parse the token."""
     assert authorization, "Authorization is required"
     if authorization.startswith("Bearer ") or authorization.startswith("bearer "):
@@ -192,7 +208,27 @@ def parse_token(authorization: str):
     return get_user_info(payload)
 
 
-def generate_presigned_token(
+_current_auth_function = None
+
+
+async def set_parse_token_function(auth_function: Callable):
+    """Set the auth provider."""
+    global _current_auth_function
+    _current_auth_function = auth_function
+    logger.info("Custom parse_token function has been set")
+
+async def parse_auth_token(token: str):
+    """Get the auth provider."""
+    if _current_auth_function is None:
+        auth_function = _parse_token
+    else:
+        auth_function = _current_auth_function
+    user_info = auth_function(token)
+    if inspect.isawaitable(user_info):
+        user_info = await user_info
+    return user_info
+
+def _generate_presigned_token(
     user_info: UserInfo,
     expires_in: int,
 ):
@@ -226,29 +262,26 @@ def generate_presigned_token(
     )
     return token
 
+_generate_token_function = _generate_presigned_token
 
-def generate_reconnection_token(user_info: UserInfo, expires_in: int = 60):
-    """Generate a token for reconnection."""
-    current_time = datetime.datetime.now(datetime.timezone.utc)
-    expires_at = current_time + datetime.timedelta(seconds=expires_in)
+async def set_generate_token_function(generate_token_function: Callable):
+    """Set the generate token function."""
+    global _generate_token_function
+    _generate_token_function = generate_token_function
+    logger.info("Custom generate_token function has been set")
 
-    ret = jwt.encode(
-        {
-            "iss": AUTH0_ISSUER,
-            "sub": user_info.id,
-            "aud": AUTH0_AUDIENCE,
-            "iat": current_time,
-            "exp": expires_at,
-            "gty": "client-credentials",
-            AUTH0_NAMESPACE + "email": user_info.email,
-            AUTH0_NAMESPACE + "roles": user_info.roles,
-            "scope": generate_jwt_scope(user_info.scope),
-        },
-        JWT_SECRET,
-        algorithm="HS256",
-    )
-    return ret
-
+async def generate_auth_token(user_info: UserInfo, expires_in: int):
+    """Generate a presigned token."""
+    if _generate_token_function is None:
+        generate = _generate_presigned_token
+    else:
+        generate = _generate_token_function
+    
+    result = generate(user_info, expires_in)
+    if inspect.isawaitable(result):
+        return await result
+    else:
+        return result
 
 def parse_scope(scope: str) -> ScopeInfo:
     """Parse the scope."""
@@ -459,7 +492,7 @@ def create_login_service(store):
 
         user_token_info = UserTokenInfo.model_validate(kwargs)
         if workspace:
-            user_info = parse_token(token)
+            user_info = await parse_auth_token(token)
             # based on the user token, create a scoped token
             workspace = workspace or user_info.get_workspace()
             # generate scoped token
@@ -468,7 +501,7 @@ def create_login_service(store):
             if not user_info.check_permission(workspace, UserPermission.read):
                 raise Exception(f"Invalid permission for the workspace {workspace}")
 
-            token = generate_presigned_token(user_info, int(expires_in or 3600))
+            token = await generate_auth_token(user_info, int(expires_in or 3600))
             # replace the token
             user_token_info.token = token
         await redis.setex(
@@ -491,3 +524,106 @@ def create_login_service(store):
         "check": check_login,
         "report": report_login,
     }
+
+_login_service = None
+
+def create_custom_login_service(
+    service_id: str,
+    service_name: str,
+    index_handler: Callable,
+    start_handler: Callable,
+    check_handler: Callable,
+    report_handler: Callable,
+    parse_token_handler: Callable = None,
+    generate_token_handler: Callable = None,
+    description: str = "Custom Login Service",
+    **extra_handlers
+):
+    """Helper function to create a custom login service dictionary.
+    
+    This function helps create a login service that can be registered with Hypha.
+    The service will be automatically configured for the public workspace.
+    
+    Args:
+        service_id: Unique identifier for the service (should be "hypha-login" to replace default)
+        service_name: Human-readable name for the service
+        index_handler: Function to serve the login page (async def index(event))
+        start_handler: Function to start login session (async def start(workspace=None, expires_in=None))
+        check_handler: Function to check login status (async def check(key, timeout=180, profile=False))
+        report_handler: Function to report login completion (async def report(key, token, ...))
+        parse_token_handler: Optional custom token parsing function
+        generate_token_handler: Optional custom token generation function
+        description: Service description
+        **extra_handlers: Additional service methods
+    
+    Returns:
+        dict: Service configuration ready for registration
+        
+    Example:
+        # In a startup function:
+        async def my_startup(server):
+            login_service = server["create_custom_login_service"](
+                service_id="hypha-login",
+                service_name="My Custom Login",
+                index_handler=my_index_handler,
+                start_handler=my_start_handler,
+                check_handler=my_check_handler,
+                report_handler=my_report_handler,
+                parse_token_handler=my_parse_token,
+            )
+            await server["set_login_service"](login_service)
+    """
+    service = {
+        "id": service_id,
+        "name": service_name,
+        "type": "functions",
+        "description": description,
+        "config": {"visibility": "public"},
+        "index": index_handler,
+        "start": start_handler,
+        "check": check_handler,
+        "report": report_handler,
+    }
+    
+    # Add any extra handlers
+    service.update(extra_handlers)
+    
+    # Add custom auth functions if provided
+    if parse_token_handler:
+        service["parse_token"] = parse_token_handler
+    if generate_token_handler:
+        service["generate_token"] = generate_token_handler
+        
+    return service
+
+async def set_login_service(server, login_service: dict):
+    """Set the login service."""
+    global _login_service
+    
+    assert "name" in login_service and "id" in login_service, "Login service should at least contain `name` and `id`"
+    assert "index" in login_service and "start" in login_service and "check" in login_service and "report" in login_service, "Login service should at least contain `index`, `start`, `check`, and `report`"
+    
+    # Ensure the service is configured for public workspace
+    login_service_copy = login_service.copy()
+    if "config" not in login_service_copy:
+        login_service_copy["config"] = {}
+    login_service_copy["config"]["visibility"] = "public"
+    login_service_copy["config"]["workspace"] = "public"
+    
+    _login_service = login_service_copy
+    
+    # Register the login service in the public workspace
+    try:
+        await server.register_service(_login_service)
+        logger.info(f"Successfully registered custom login service: {login_service_copy['id']}")
+    except Exception as e:
+        logger.error(f"Failed to register login service: {e}")
+        raise
+    
+    # Set custom auth functions if provided
+    if "parse_token" in login_service:
+        await set_parse_token_function(login_service["parse_token"])
+        logger.info("Custom parse_token function registered")
+    if "generate_token" in login_service:
+        await set_generate_token_function(login_service["generate_token"])
+        logger.info("Custom generate_token function registered")
