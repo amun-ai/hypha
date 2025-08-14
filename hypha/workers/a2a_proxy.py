@@ -19,6 +19,7 @@ from hypha.workers.base import (
     SessionInfo,
     SessionNotFoundError,
     WorkerError,
+    safe_call_callback,
 )
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "INFO").upper()
@@ -209,7 +210,7 @@ class A2AClientRunner(BaseWorker):
             raise Exception("A2A SDK not available. Install with: pip install a2a")
 
         # Call progress callback if provided
-        config.progress_callback(
+        await safe_call_callback(config.progress_callback,
             {"type": "info", "message": "Initializing A2A proxy worker..."}
         )
 
@@ -227,7 +228,7 @@ class A2AClientRunner(BaseWorker):
             "services": [],
         }
 
-        config.progress_callback(
+        await safe_call_callback(config.progress_callback,
             {"type": "info", "message": "Connecting to Hypha server..."}
         )
 
@@ -240,7 +241,7 @@ class A2AClientRunner(BaseWorker):
             }
         )
 
-        config.progress_callback(
+        await safe_call_callback(config.progress_callback,
             {
                 "type": "info",
                 "message": f"Connecting to {len(a2a_agents)} A2A agent(s)...",
@@ -250,7 +251,7 @@ class A2AClientRunner(BaseWorker):
         # Connect to each A2A agent
         for agent_name, agent_config in a2a_agents.items():
             try:
-                config.progress_callback(
+                await safe_call_callback(config.progress_callback,
                     {
                         "type": "info",
                         "message": f"Connecting to A2A agent: {agent_name}...",
@@ -266,7 +267,7 @@ class A2AClientRunner(BaseWorker):
                     f"Successfully connected to A2A agent: {agent_name}"
                 )
                 logger.info(f"Successfully connected to A2A agent: {agent_name}")
-                config.progress_callback(
+                await safe_call_callback(config.progress_callback,
                     {
                         "type": "info",
                         "message": f"Successfully connected to A2A agent: {agent_name}",
@@ -277,14 +278,14 @@ class A2AClientRunner(BaseWorker):
                 error_msg = f"Failed to connect to A2A agent {agent_name}: {str(e)}"
                 session_data["logs"]["error"].append(error_msg)
                 logger.error(error_msg)
-                config.progress_callback({"type": "error", "message": error_msg})
+                await safe_call_callback(config.progress_callback, {"type": "error", "message": error_msg})
                 # For single agent configs, fail fast instead of continuing
                 if len(a2a_agents) == 1:
                     raise Exception(error_msg)
                 # Continue with other agents even if one fails
                 continue
 
-        config.progress_callback(
+        await safe_call_callback(config.progress_callback,
             {"type": "info", "message": "Registering default service..."}
         )
 
@@ -306,14 +307,14 @@ class A2AClientRunner(BaseWorker):
                 error_msg = (
                     f"Failed to connect to any A2A agents. Last error: {last_error}"
                 )
-                config.progress_callback({"type": "error", "message": error_msg})
+                await safe_call_callback(config.progress_callback, {"type": "error", "message": error_msg})
                 raise Exception(error_msg)
             else:
                 error_msg = "Failed to connect to any A2A agents"
-                config.progress_callback({"type": "error", "message": error_msg})
+                await safe_call_callback(config.progress_callback, {"type": "error", "message": error_msg})
                 raise Exception(error_msg)
 
-        config.progress_callback(
+        await safe_call_callback(config.progress_callback,
             {
                 "type": "success",
                 "message": f"A2A proxy initialized successfully with {len(session_data['a2a_clients'])} agent(s)",
@@ -343,7 +344,7 @@ class A2AClientRunner(BaseWorker):
             logger.info(f"Connecting to A2A agent {agent_name} at {agent_url}")
 
             if config:
-                config.progress_callback(
+                await safe_call_callback(config.progress_callback,
                     {
                         "type": "info",
                         "message": f"Discovering capabilities from {agent_name}...",
@@ -384,13 +385,13 @@ class A2AClientRunner(BaseWorker):
             logger.info(f"Agent {agent_name}: Found {len(skills)} skills")
 
             if config:
-                config.progress_callback(
+                await safe_call_callback(config.progress_callback,
                     {
                         "type": "info",
                         "message": f"Found {len(skills)} skills from {agent_name}",
                     }
                 )
-                config.progress_callback(
+                await safe_call_callback(config.progress_callback,
                     {
                         "type": "info",
                         "message": f"Registering services for {agent_name}...",

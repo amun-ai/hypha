@@ -106,6 +106,48 @@ env:
     value: "https://your-s3-endpoint"
 ```
 
+### Built-in Conda Worker
+
+The Hypha server can include a built-in conda worker for executing Python code in isolated environments (similar to Jupyter notebooks). To enable it, simply add the startup function and configure the environment variables:
+
+```yaml
+env:
+  # Enable conda worker
+  - name: HYPHA_STARTUP_FUNCTIONS
+    value: "hypha.workers.conda:hypha_startup"
+  
+  # Optional: Configure directories (these are the defaults)
+  - name: CONDA_WORKING_DIR
+    value: "/tmp/conda-sessions"    # Temporary storage
+  - name: CONDA_CACHE_DIR
+    value: "/tmp/conda-cache"        # Temporary cache
+  
+  # Optional: Restrict to specific workspaces
+  # - name: CONDA_AUTHORIZED_WORKSPACES
+  #   value: "workspace1,workspace2"
+```
+
+#### Conda Worker with Persistent Cache (Recommended)
+
+For better performance in production, use persistent storage for the conda environment cache:
+
+```yaml
+# Enable persistence for conda cache
+persistence:
+  enabled: true
+  size: 10Gi
+
+env:
+  - name: HYPHA_STARTUP_FUNCTIONS
+    value: "hypha.workers.conda:hypha_startup"
+  - name: CONDA_WORKING_DIR
+    value: "/tmp/conda-sessions"    # Keep temporary (auto-cleaned)
+  - name: CONDA_CACHE_DIR
+    value: "/data/conda-cache"      # Use persistent storage for cache
+```
+
+**Note**: The conda worker requires either `conda` or `mamba` to be available in the container. The official Hypha image (`ghcr.io/amun-ai/hypha`) includes these by default.
+
 For a complete production setup with all services included, use the **Hypha Server Kit** instead of configuring these manually.
 
 ## Upgrading and Management

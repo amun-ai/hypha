@@ -22,6 +22,7 @@ from hypha.workers.base import (
     SessionNotFoundError,
     WorkerError,
     WorkerNotAvailableError,
+    safe_call_callback,
 )
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
@@ -162,13 +163,12 @@ class KubernetesWorker(BaseWorker):
             raise WorkerError(f"Session {session_id} already exists")
 
         # Report initial progress
-        if progress_callback:
-            progress_callback(
-                {
-                    "type": "info",
-                    "message": f"Starting Kubernetes pod session {session_id}",
-                }
-            )
+        await safe_call_callback(progress_callback,
+            {
+                "type": "info",
+                "message": f"Starting Kubernetes pod session {session_id}",
+            }
+        )
 
         # Create session info
         session_info = SessionInfo(
@@ -192,13 +192,12 @@ class KubernetesWorker(BaseWorker):
             # Update session status
             session_info.status = SessionStatus.RUNNING
 
-            if progress_callback:
-                progress_callback(
-                    {
-                        "type": "success",
-                        "message": f"Kubernetes pod session {session_id} started successfully",
-                    }
-                )
+            await safe_call_callback(progress_callback,
+                {
+                    "type": "success",
+                    "message": f"Kubernetes pod session {session_id} started successfully",
+                }
+            )
 
             logger.info(f"Started Kubernetes pod session {session_id}")
             return session_id
@@ -207,13 +206,12 @@ class KubernetesWorker(BaseWorker):
             session_info.status = SessionStatus.FAILED
             session_info.error = str(e)
 
-            if progress_callback:
-                progress_callback(
-                    {
-                        "type": "error",
-                        "message": f"Failed to start Kubernetes pod session: {str(e)}",
-                    }
-                )
+            await safe_call_callback(progress_callback,
+                {
+                    "type": "error",
+                    "message": f"Failed to start Kubernetes pod session: {str(e)}",
+                }
+            )
 
             logger.error(f"Failed to start Kubernetes pod session {session_id}: {e}")
             # Clean up failed session
@@ -546,10 +544,9 @@ class KubernetesWorker(BaseWorker):
         if not pod_name:
             raise WorkerError(f"No pod name found for session {session_id}")
 
-        if progress_callback:
-            progress_callback(
-                {"type": "info", "message": f"Executing command in pod {pod_name}..."}
-            )
+        await safe_call_callback(progress_callback,
+            {"type": "info", "message": f"Executing command in pod {pod_name}..."}
+        )
 
         try:
             # Configure execution options from config
@@ -640,15 +637,10 @@ class KubernetesWorker(BaseWorker):
                     f"Command executed at {datetime.now().isoformat()} - Status: {status_text}"
                 )
 
-                if progress_callback:
-                    if success:
-                        progress_callback(
-                            {"type": "success", "message": "Command executed successfully"}
-                        )
-                    else:
-                        progress_callback(
-                            {"type": "error", "message": f"Command failed with return code: {return_code}"}
-                        )
+                await safe_call_callback(progress_callback,
+                    {"type": "success" if success else "error",
+                     "message": "Command executed successfully" if success else f"Command failed with return code: {return_code}"}
+                )
 
                 # Return result in consistent format
                 result = {
@@ -669,8 +661,7 @@ class KubernetesWorker(BaseWorker):
                 error_msg = f"Kubernetes API error during command execution: {str(e)}"
                 logger.error(f"Failed to execute command in pod {pod_name}: {e}")
                 
-                if progress_callback:
-                    progress_callback({"type": "error", "message": error_msg})
+                await safe_call_callback(progress_callback, {"type": "error", "message": error_msg})
                 
                 # Update logs
                 logs = session_data.get("logs", {})
@@ -688,8 +679,7 @@ class KubernetesWorker(BaseWorker):
 
         except asyncio.TimeoutError as e:
             error_msg = str(e)
-            if progress_callback:
-                progress_callback({"type": "error", "message": error_msg})
+            await safe_call_callback(progress_callback, {"type": "error", "message": error_msg})
             
             logs = session_data.get("logs", {})
             logs.setdefault("error", []).append(error_msg)
@@ -707,8 +697,7 @@ class KubernetesWorker(BaseWorker):
             error_msg = f"Failed to execute command: {str(e)}"
             logger.error(f"Failed to execute command in session {session_id}: {e}")
             
-            if progress_callback:
-                progress_callback({"type": "error", "message": error_msg})
+            await safe_call_callback(progress_callback, {"type": "error", "message": error_msg})
             
             logs = session_data.get("logs", {})
             logs.setdefault("error", []).append(error_msg)

@@ -187,6 +187,17 @@ env:
   # Startup functions (space-separated list)
   # - name: HYPHA_STARTUP_FUNCTIONS
   #   value: "my_module:startup_function another_module:init_function"
+  # To Enable conda worker (merge with other startup functions )
+  # - name: HYPHA_STARTUP_FUNCTIONS
+    # value: "hypha.workers.conda:hypha_startup"
+
+  # Conda worker configuration (when using conda worker as startup function)
+  # - name: CONDA_WORKING_DIR
+  #   value: "/tmp/conda-sessions"
+  # - name: CONDA_CACHE_DIR
+  #   value: "/tmp/conda-cache"
+  # - name: CONDA_AUTHORIZED_WORKSPACES
+  #   value: "workspace1,workspace2"
   
   # Server ID (auto-generated when autoscaling is enabled)
   # - name: HYPHA_SERVER_ID
@@ -255,6 +266,9 @@ startupCommand:
     - "--port=$(HYPHA_PORT)"
 
 # Persistence Configuration
+# Note: This is optional. Required only if you want to:
+# - Cache conda environments for better performance
+# - Store other persistent data (e.g., database, artifacts)
 persistence:
   enabled: true
   volumeName: hypha-app-storage

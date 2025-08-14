@@ -1,5 +1,6 @@
 """Base worker API for standardized worker implementation."""
 
+import inspect
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -9,6 +10,22 @@ from typing import Any, Dict, List, Optional, Union, Protocol, Callable
 from pydantic import BaseModel, Field, field_serializer
 
 logger = logging.getLogger(__name__)
+
+
+async def safe_call_callback(callback: Optional[Callable], message: Dict[str, Any]) -> None:
+    """Call a progress callback, handling None and sync/async functions.
+    
+    Args:
+        callback: Optional callback function that may be sync or async
+        message: Message dictionary to pass to the callback
+    """
+    if not callback:
+        return
+    
+    if inspect.iscoroutinefunction(callback):
+        await callback(message)
+    else:
+        callback(message)
 
 
 class SessionStatus(Enum):

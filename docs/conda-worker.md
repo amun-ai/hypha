@@ -196,6 +196,8 @@ The Conda Environment Worker supports various configuration options through comm
 | `--service-id` | Service ID for the worker | No | Auto-generated |
 | `--visibility` | Service visibility: `public` or `protected` | No | `protected` |
 | `--cache-dir` | Directory for caching conda environments | No | `~/.hypha_conda_cache` |
+| `--working-dir` | Base directory for session working directories | No | `/tmp/hypha_sessions_<uuid>` |
+| `--authorized-workspaces` | Comma-separated list of authorized workspaces | No | All workspaces |
 | `--verbose` / `-v` | Enable verbose logging | No | False |
 
 ### Environment Variables
@@ -210,6 +212,8 @@ All command line arguments can be set using environment variables with the `HYPH
 | `HYPHA_SERVICE_ID` | `--service-id` |
 | `HYPHA_VISIBILITY` | `--visibility` |
 | `HYPHA_CACHE_DIR` | `--cache-dir` |
+| `HYPHA_WORKING_DIR` | `--working-dir` |
+| `HYPHA_AUTHORIZED_WORKSPACES` | `--authorized-workspaces` |
 
 ### Example Configurations
 
@@ -787,6 +791,178 @@ Get logs for a conda environment session.
 - `type`: Optional log type filter ("stdout", "stderr", "info", "error", "progress")
 - `offset`: Starting position for log entries  
 - `limit`: Maximum number of log entries to return
+
+## Working Directory Configuration
+
+The Conda Worker uses a working directory to store session-specific files and data. Each session gets its own isolated subdirectory within the base working directory.
+
+### Working Directory Features
+
+- **Session isolation**: Each session gets its own subdirectory (e.g., `/tmp/conda-sessions/session-123/`)
+- **Automatic cleanup**: Session directories are removed when sessions are stopped
+- **File staging**: Files downloaded via `files_to_stage` are placed in the session's working directory
+- **Temporary storage**: Working directories use temporary storage since sessions are ephemeral
+
+### Configuration Options
+
+#### Command Line
+```bash
+python -m hypha.workers.conda \
+  --working-dir /opt/conda-sessions \
+  --cache-dir /opt/conda-cache
+```
+
+#### Environment Variables
+```bash
+export CONDA_WORKING_DIR=/opt/conda-sessions
+export CONDA_CACHE_DIR=/opt/conda-cache
+```
+
+#### Built-in Worker (Startup Function)
+When using the conda worker as a built-in startup function:
+```bash
+export CONDA_WORKING_DIR=/data/conda-sessions
+export CONDA_CACHE_DIR=/data/conda-cache
+export CONDA_AUTHORIZED_WORKSPACES=workspace1,workspace2
+python -m hypha.server --startup-functions hypha.workers.conda:hypha_startup
+```
+
+### Deployment Configurations
+
+#### Helm Chart Configuration
+
+When deploying with the Hypha Helm chart, configure the conda worker in `values.yaml`:
+
+```yaml
+# Configure built-in conda worker
+condaWorker:
+  enabled: true
+  workingDir: "/tmp/conda-sessions"  # Temporary storage for session data
+  cacheDir: "/data/conda-cache"       # Persistent storage for environment cache (optional)
+  authorizedWorkspaces: ""             # Empty means all workspaces
+
+# Add conda worker to startup functions
+env:
+  - name: HYPHA_STARTUP_FUNCTIONS
+    value: "hypha.workers.conda:hypha_startup"
+
+# Optional: Enable persistent storage only if you want to cache conda environments
+# This can significantly speed up environment creation
+persistence:
+  enabled: true
+  size: 10Gi
+  accessModes:
+    - ReadWriteMany
+```
+
+The Helm chart automatically:
+- Creates the necessary directories with proper permissions
+- Uses temporary storage for session working directories (no persistence needed)
+- Optionally mounts persistent storage for conda environment cache
+- Sets environment variables for the conda worker
+
+#### Docker Compose Configuration
+
+```yaml
+version: '3.8'
+
+services:
+  hypha-server:
+    image: ghcr.io/amun-ai/hypha:latest
+    environment:
+      - HYPHA_STARTUP_FUNCTIONS=hypha.workers.conda:hypha_startup
+      - CONDA_WORKING_DIR=/tmp/conda-sessions    # Temporary storage
+      - CONDA_CACHE_DIR=/data/conda-cache         # Optional: persistent cache
+    volumes:
+      - hypha-cache:/data    # Optional: for caching environments
+    command: python -m hypha.server
+
+volumes:
+  hypha-cache:    # Optional: only needed if you want to cache environments
+    driver: local
+```
+
+#### Kubernetes Deployment
+
+For production Kubernetes deployments without Helm:
+
+```yaml
+# Optional: PVC for conda environment cache
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: conda-cache
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hypha-server
+spec:
+  replicas: 1
+  template:
+    spec:
+      initContainers:
+        - name: init-cache
+          image: busybox
+          command: ['sh', '-c']
+          args:
+            - |
+              # Only create cache directory in persistent storage
+              mkdir -p /data/conda-cache
+              chmod 755 /data/conda-cache
+              chown -R 1000:1000 /data/conda-cache
+          volumeMounts:
+            - name: cache
+              mountPath: /data
+          securityContext:
+            runAsUser: 0
+      containers:
+        - name: hypha
+          image: ghcr.io/amun-ai/hypha:latest
+          env:
+            - name: HYPHA_STARTUP_FUNCTIONS
+              value: "hypha.workers.conda:hypha_startup"
+            - name: CONDA_WORKING_DIR
+              value: "/tmp/conda-sessions"    # Temporary storage
+            - name: CONDA_CACHE_DIR
+              value: "/data/conda-cache"       # Persistent cache
+          volumeMounts:
+            - name: cache
+              mountPath: /data
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: conda-cache
+```
+
+### Storage Recommendations
+
+#### Working Directory (`CONDA_WORKING_DIR`)
+- **Storage Type**: Temporary (e.g., `/tmp`)
+- **Persistence**: Not required
+- **Purpose**: Stores session-specific files that are automatically cleaned up
+- **Size**: Depends on your workload, typically a few GB is sufficient
+
+#### Cache Directory (`CONDA_CACHE_DIR`)
+- **Storage Type**: Persistent (optional but recommended)
+- **Persistence**: Recommended for production to speed up environment creation
+- **Purpose**: Caches conda environments to avoid re-downloading packages
+- **Size**: 10-20 GB recommended, depending on the variety of environments
+
+### Best Practices
+
+1. **Use temporary storage for working directories**: Session data is ephemeral and doesn't need persistence
+2. **Consider persistent cache**: While optional, caching environments significantly improves performance
+3. **Set appropriate permissions**: Ensure directories are writable by the application user (typically UID 1000)
+4. **Monitor disk usage**: Conda environments can consume significant disk space in the cache
+5. **Automatic cleanup**: Working directories are cleaned automatically when sessions end
+6. **Network storage for cache**: When using network storage (NFS, EFS) for cache, ensure sufficient IOPS
 
 ## Advanced Configuration
 

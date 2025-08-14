@@ -57,13 +57,10 @@ def call_progress_callback(progress_callback: Any, message: dict):
     logger.info("%s %s", logging_emoji.get(message.get("type", "info"), "🔸"), message.get("message", ""))
     if not progress_callback:
         return
-    try:
-        if inspect.iscoroutinefunction(progress_callback):
-            asyncio.create_task(progress_callback(message))
-        else:
-            progress_callback(message)
-    except Exception as cb_err:
-        logger.debug(f"Progress callback invocation error: {cb_err}")
+    if inspect.iscoroutinefunction(progress_callback):
+        asyncio.create_task(progress_callback(message))
+    else:
+        progress_callback(message)
 
 class WorkerSelectionConfig(BaseModel):
     mode: Optional[str] = Field(
@@ -1505,7 +1502,7 @@ class ServerAppController:
                     or f"http://127.0.0.1:{self.port}",
                     "workspace": context["ws"],
                     "user": context["user"],
-                    "progress_callback": progress_callback,
+                    "progress_callback": _progress_callback,  # Use the wrapped callback
                 }
 
                 # Use WorkerManager context manager for the compile operation to ensure connection stays alive
@@ -2062,9 +2059,10 @@ class ServerAppController:
         context: dict = None,
     ):
         """Start the app by type using the appropriate worker."""
-        progress_callback(
-            {"type": "info", "message": f"Initializing {app_type} worker..."}
-        )
+        if progress_callback:
+            progress_callback(
+                {"type": "info", "message": f"Initializing {app_type} worker..."}
+            )
 
         # Use provided worker or get a worker that supports this app type
         if not worker:
@@ -2078,9 +2076,10 @@ class ServerAppController:
             if not worker:
                 raise Exception(f"No server app worker found for type: {app_type}")
 
-        progress_callback(
-            {"type": "info", "message": f"Starting {app_type} application..."}
-        )
+        if progress_callback:
+            progress_callback(
+                {"type": "info", "message": f"Starting {app_type} application..."}
+            )
 
         # Get entry point from manifest
         entry_point = manifest.entry_point
@@ -2123,7 +2122,7 @@ class ServerAppController:
                 "artifact_id": artifact_id_for_worker,  # Use full ID for artifact access
                 "timeout": timeout,
                 "manifest": manifest,
-                "progress_callback": progress_callback,
+                "progress_callback": progress_callback,  # Pass it directly, workers will handle it
                 "disable_ssl": self.disable_ssl,
                 **additional_kwargs,
             },
