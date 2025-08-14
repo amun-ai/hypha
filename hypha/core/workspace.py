@@ -1702,28 +1702,6 @@ class WorkspaceManager:
 
             if self._enable_service_search:
                 redis_data = await self._embed_service(service.to_redis_dict())
-                # Add to vector search index - use the same key as Redis storage
-                # but without the "services:" prefix since add_vectors will add it
-                vector_data = redis_data.copy()
-                vector_data["id"] = f"{visibility}|{service.type}:{service.id}@{app_id}"
-                # Extract workspace and visibility for vector search filtering
-                vector_data["workspace"] = service.config.workspace or ws
-                vector_data["visibility"] = visibility
-                # Convert bytes back to numpy array for vector search
-                if "service_embedding" in vector_data and isinstance(vector_data["service_embedding"], bytes):
-                    vector_data["service_embedding"] = np.frombuffer(vector_data["service_embedding"], dtype=np.float32)
-                logger.info(f"Adding service to vector search: id={vector_data['id']}, workspace={vector_data['workspace']}, visibility={vector_data['visibility']}, has_embedding={'service_embedding' in vector_data}")
-                try:
-                    await self._vector_search.add_vectors(
-                        "services",
-                        [vector_data],
-                        update=True
-                    )
-                    logger.info(f"Successfully added service {vector_data['id']} to vector search")
-                except Exception as e:
-                    logger.error(f"Failed to add service to vector search: {e}")
-                    # Re-raise to maintain original behavior
-                    raise
             else:
                 redis_data = service.to_redis_dict()
                 if "service_embedding" in redis_data:
@@ -2010,13 +1988,6 @@ class WorkspaceManager:
         elif len(service_keys) == 1:
             logger.info("Removing service: %s", service_keys[0])
             await self._redis.delete(service_keys[0])
-            # Also remove from vector search if enabled
-            if self._enable_service_search:
-                vector_id = f"{visibility}|{service.type}:{service.id}@{service.app_id}"
-                try:
-                    await self._vector_search.remove_vectors("services", [vector_id])
-                except Exception as e:
-                    logger.warning(f"Failed to remove service from vector search: {e}")
             if ":built-in@" in key:
                 await self._event_bus.broadcast(
                     ws, "client_disconnected", {"id": client_id, "workspace": ws}
