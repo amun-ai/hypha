@@ -298,14 +298,20 @@ class KubernetesWorker(BaseWorker):
             ),
         )
 
-        # Create pod metadata with labels for tracking
+        # Create pod metadata with minimal labels and full metadata in annotations
         pod_metadata = client.V1ObjectMeta(
             name=pod_name,
             labels={
-                "hypha-worker": "k8s",
-                "hypha-app-id": config.app_id.split("/")[-1],
-                "hypha-workspace": config.workspace,
-                "created-by": "hypha-k8s-worker",
+                "app": "hypha",
+                "component": "worker-pod",
+            },
+            annotations={
+                "hypha.amun.ai/app-id": config.app_id,
+                "hypha.amun.ai/workspace": config.workspace,
+                "hypha.amun.ai/client-id": config.client_id,
+                "hypha.amun.ai/session-id": session_id,
+                "hypha.amun.ai/created-at": datetime.now().isoformat(),
+                "hypha.amun.ai/worker-type": "k8s",
             },
         )
 
