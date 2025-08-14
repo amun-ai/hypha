@@ -17,6 +17,7 @@ from hypha.workers.base import (
     SessionInfo,
     SessionNotFoundError,
     WorkerError,
+    safe_call_callback,
 )
 from hypha.workers.browser_cache import BrowserCache
 from hypha.plugin_parser import parse_imjoy_plugin
@@ -192,7 +193,7 @@ class BrowserWorker(BaseWorker):
         """Start a browser app session."""
         timeout_ms = config.timeout * 1000 if config.timeout else 60000
         # Call progress callback if provided
-        config.progress_callback(
+        await safe_call_callback(config.progress_callback,
             {"type": "info", "message": "Initializing browser worker..."}
         )
 
@@ -206,7 +207,7 @@ class BrowserWorker(BaseWorker):
                 f"Browser worker only supports {self.supported_types}, got {app_type}"
             )
 
-        config.progress_callback(
+        await safe_call_callback(config.progress_callback,
             {"type": "info", "message": "Creating browser context..."}
         )
 
@@ -278,7 +279,7 @@ class BrowserWorker(BaseWorker):
                     config.workspace, config.app_id
                 )
 
-        config.progress_callback({"type": "info", "message": "Loading application..."})
+        await safe_call_callback(config.progress_callback, {"type": "info", "message": "Loading application..."})
 
         try:
             # Get the entry point from manifest - this should be a compiled HTML file uploaded to artifact manager
@@ -355,7 +356,7 @@ class BrowserWorker(BaseWorker):
             await page.wait_for_timeout(1000)  # Wait 1 second for JS initialization
             logger.info("JavaScript initialization wait completed")
 
-            config.progress_callback(
+            await safe_call_callback(config.progress_callback,
                 {"type": "success", "message": "Application loaded successfully"}
             )
 
@@ -540,7 +541,7 @@ class BrowserWorker(BaseWorker):
             config.get("progress_callback") if config and config.get("progress_callback") else _noop
         )
 
-        progress_callback(
+        await safe_call_callback(progress_callback,
             {"type": "info", "message": "Starting browser app compilation..."}
         )
 
@@ -555,7 +556,7 @@ class BrowserWorker(BaseWorker):
 
         # Handle web-app type specially - it doesn't need compilation, just validation
         if app_type == "web-app":
-            progress_callback(
+            await safe_call_callback(progress_callback,
                 {"type": "info", "message": "Processing web-app configuration..."}
             )
 
@@ -570,7 +571,7 @@ class BrowserWorker(BaseWorker):
             # No files needed for web-app type
             new_files = []
 
-            progress_callback(
+            await safe_call_callback(progress_callback,
                 {
                     "type": "success",
                     "message": "Web-app configuration processed successfully",
@@ -578,7 +579,7 @@ class BrowserWorker(BaseWorker):
             )
             return new_manifest, new_files
 
-        progress_callback(
+        await safe_call_callback(progress_callback,
             {"type": "info", "message": f"Compiling {app_type} application..."}
         )
 
@@ -601,7 +602,7 @@ class BrowserWorker(BaseWorker):
         # Only process config/script files for compilation if there's a source file
         # This indicates they were extracted from XML, not provided directly by user
         if source_file:
-            progress_callback(
+            await safe_call_callback(progress_callback,
                 {
                     "type": "info",
                     "message": "Processing source files and configurations...",
@@ -632,7 +633,7 @@ class BrowserWorker(BaseWorker):
 
             return updated_manifest, updated_files
 
-        progress_callback(
+        await safe_call_callback(progress_callback,
             {"type": "info", "message": "Compiling source code to HTML template..."}
         )
 
@@ -644,7 +645,7 @@ class BrowserWorker(BaseWorker):
         new_manifest.update(compiled_config)
         app_type = new_manifest.get("type")
 
-        progress_callback(
+        await safe_call_callback(progress_callback,
             {"type": "info", "message": "Updating manifest and preparing files..."}
         )
 
@@ -677,7 +678,7 @@ class BrowserWorker(BaseWorker):
             )
             del new_manifest["code"]
 
-        progress_callback(
+        await safe_call_callback(progress_callback,
             {
                 "type": "success",
                 "message": f"Browser app compilation completed. Generated {entry_point}",

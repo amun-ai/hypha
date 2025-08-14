@@ -19,6 +19,7 @@ from hypha.workers.base import (
     SessionInfo,
     SessionNotFoundError,
     WorkerError,
+    safe_call_callback,
 )
 
 # Compatibility for asyncio.timeout (Python 3.11+)
@@ -241,7 +242,7 @@ class MCPClientRunner(BaseWorker):
             raise Exception("MCP SDK not available. Install with: pip install mcp")
 
         # Call progress callback if provided
-        config.progress_callback(
+        await safe_call_callback(config.progress_callback,
             {"type": "info", "message": "Initializing MCP proxy worker..."}
         )
 
@@ -259,7 +260,7 @@ class MCPClientRunner(BaseWorker):
             "services": [],
         }
 
-        config.progress_callback(
+        await safe_call_callback(config.progress_callback,
             {"type": "info", "message": "Connecting to Hypha server..."}
         )
 
@@ -272,7 +273,7 @@ class MCPClientRunner(BaseWorker):
             }
         )
 
-        config.progress_callback(
+        await safe_call_callback(config.progress_callback,
             {
                 "type": "info",
                 "message": f"Connecting to {len(mcp_servers)} MCP server(s)...",
@@ -282,7 +283,7 @@ class MCPClientRunner(BaseWorker):
         # Connect to each MCP server
         for server_name, server_config in mcp_servers.items():
             try:
-                config.progress_callback(
+                await safe_call_callback(config.progress_callback,
                     {
                         "type": "info",
                         "message": f"Connecting to MCP server: {server_name}...",
@@ -298,7 +299,7 @@ class MCPClientRunner(BaseWorker):
                     f"Successfully connected to MCP server: {server_name}"
                 )
                 logger.info(f"Successfully connected to MCP server: {server_name}")
-                config.progress_callback(
+                await safe_call_callback(config.progress_callback,
                     {
                         "type": "info",
                         "message": f"Successfully connected to MCP server: {server_name}",
@@ -309,14 +310,14 @@ class MCPClientRunner(BaseWorker):
                 error_msg = f"Failed to connect to MCP server {server_name}: {str(e)}"
                 session_data["logs"]["error"].append(error_msg)
                 logger.error(error_msg)
-                config.progress_callback({"type": "error", "message": error_msg})
+                await safe_call_callback(config.progress_callback, {"type": "error", "message": error_msg})
                 # For single server configs, fail fast instead of continuing
                 if len(mcp_servers) == 1:
                     raise Exception(error_msg)
                 # Continue with other servers even if one fails
                 continue
 
-        config.progress_callback(
+        await safe_call_callback(config.progress_callback,
             {"type": "info", "message": "Registering default service..."}
         )
 
@@ -339,14 +340,14 @@ class MCPClientRunner(BaseWorker):
                 error_msg = (
                     f"Failed to connect to any MCP servers. Last error: {last_error}"
                 )
-                config.progress_callback({"type": "error", "message": error_msg})
+                await safe_call_callback(config.progress_callback, {"type": "error", "message": error_msg})
                 raise Exception(error_msg)
             else:
                 error_msg = "Failed to connect to any MCP servers"
-                config.progress_callback({"type": "error", "message": error_msg})
+                await safe_call_callback(config.progress_callback, {"type": "error", "message": error_msg})
                 raise Exception(error_msg)
 
-        config.progress_callback(
+        await safe_call_callback(config.progress_callback,
             {
                 "type": "success",
                 "message": f"MCP proxy initialized successfully with {len(session_data['mcp_clients'])} server(s)",
@@ -473,7 +474,7 @@ class MCPClientRunner(BaseWorker):
         transport = session_data["mcp_clients"][server_name]["transport"]
 
         if config:
-            config.progress_callback(
+            await safe_call_callback(config.progress_callback,
                 {
                     "type": "info",
                     "message": f"Discovering capabilities from {server_name}...",
@@ -671,13 +672,13 @@ class MCPClientRunner(BaseWorker):
             )
 
             if config:
-                config.progress_callback(
+                await safe_call_callback(config.progress_callback,
                     {
                         "type": "info",
                         "message": f"Found {len(tools.keys())} tools, {len(resources.keys())} resources, {len(prompts.keys())} prompts from {server_name}",
                     }
                 )
-                config.progress_callback(
+                await safe_call_callback(config.progress_callback,
                     {
                         "type": "info",
                         "message": f"Registering services for {server_name}...",

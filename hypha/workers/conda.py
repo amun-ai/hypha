@@ -25,6 +25,7 @@ from hypha.workers.base import (
     SessionInfo,
     SessionNotFoundError,
     WorkerError,
+    safe_call_callback,
 )
 from hypha.workers.conda_executor import CondaEnvExecutor
 from hypha.workers.conda_kernel import CondaKernel
@@ -426,7 +427,7 @@ class CondaWorker(BaseWorker):
             if not item or item.strip() == "":
                 raise WorkerError("Empty or whitespace-only path in files_to_stage")
             
-        await progress_callback(
+        await safe_call_callback(progress_callback,
             {"type": "info", "message": f"Preparing {len(files_to_stage)} files/folders from artifact manager..."}
         )
         
@@ -511,7 +512,7 @@ class CondaWorker(BaseWorker):
                     source = source.rstrip("/")
                     target = target.rstrip("/")
                     
-                    await progress_callback(
+                    await safe_call_callback(progress_callback,
                         {"type": "info", "message": f"Downloading folder recursively: {source} -> {target}"}
                     )
                     
@@ -522,7 +523,7 @@ class CondaWorker(BaseWorker):
                     except OSError as mkdir_error:
                         error_msg = f"Failed to create directory {target_folder}: {mkdir_error}"
                         logger.error(error_msg)
-                        await progress_callback(
+                        await safe_call_callback(progress_callback,
                             {"type": "error", "message": error_msg}
                         )
                         raise WorkerError(error_msg) from mkdir_error
@@ -530,12 +531,12 @@ class CondaWorker(BaseWorker):
                     # Recursively download all files
                     file_count = await download_directory_recursive(client, source, target_folder)
                     
-                    await progress_callback(
+                    await safe_call_callback(progress_callback,
                         {"type": "success", "message": f"Downloaded folder {source} ({file_count} items)"}
                     )
                 else:
                     # Handle single file download
-                    await progress_callback(
+                    await safe_call_callback(progress_callback,
                         {"type": "info", "message": f"Downloading file: {source} -> {target}"}
                     )
                     
@@ -557,13 +558,13 @@ class CondaWorker(BaseWorker):
                             target_file.write_bytes(response.content)
                             
                             logger.info(f"Downloaded {source} to {target_file}")
-                            await progress_callback(
+                            await safe_call_callback(progress_callback,
                                 {"type": "success", "message": f"Downloaded {source}"}
                             )
                         except OSError as write_error:
                             error_msg = f"Failed to write file {target_file}: {write_error}"
                             logger.error(error_msg)
-                            await progress_callback(
+                            await safe_call_callback(progress_callback,
                                 {"type": "error", "message": error_msg}
                             )
                             raise WorkerError(error_msg) from write_error
@@ -572,7 +573,7 @@ class CondaWorker(BaseWorker):
                         if e.response.status_code == 404:
                             error_msg = f"File not found in artifact manager: {source}"
                             logger.error(error_msg)
-                            await progress_callback(
+                            await safe_call_callback(progress_callback,
                                 {"type": "error", "message": error_msg}
                             )
                             raise WorkerError(error_msg) from e
@@ -594,12 +595,7 @@ class CondaWorker(BaseWorker):
         async def progress_callback(message: dict):
             """Invoke optional progress callback if provided, supporting sync or async callables."""
             callback = getattr(config, "progress_callback", None)
-            if callback is None:
-                return
-            if inspect.iscoroutinefunction(callback):
-                await callback(message)
-            else:
-                callback(message)
+            await safe_call_callback(callback, message)
 
         if session_id in self._sessions:
             raise WorkerError(f"Session {session_id} already exists")
@@ -1050,10 +1046,9 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
         if not await kernel.is_alive():
             raise WorkerError(f"Kernel for session {session_id} is not alive")
 
-        if progress_callback:
-            progress_callback(
-                {"type": "info", "message": "Executing code in Jupyter kernel..."}
-            )
+        await safe_call_callback(progress_callback,
+            {"type": "info", "message": "Executing code in Jupyter kernel..."}
+        )
 
         try:
             # Configure execution options from config
@@ -1091,15 +1086,10 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
                 f"Code executed at {datetime.now().isoformat()} - Status: {status_text}"
             )
 
-            if progress_callback:
-                if result["success"]:
-                    progress_callback(
-                        {"type": "success", "message": "Code executed successfully"}
-                    )
-                else:
-                    progress_callback(
-                        {"type": "error", "message": "Code execution failed"}
-                    )
+            await safe_call_callback(progress_callback,
+                {"type": "success" if result["success"] else "error", 
+                 "message": "Code executed successfully" if result["success"] else "Code execution failed"}
+            )
 
             # Convert kernel format to expected API format for backward compatibility
             api_result = {
@@ -1114,8 +1104,7 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
 
         except asyncio.TimeoutError:
             error_msg = f"Code execution timed out after {timeout} seconds"
-            if progress_callback:
-                progress_callback({"type": "error", "message": error_msg})
+            await safe_call_callback(progress_callback, {"type": "error", "message": error_msg})
             
             logs = session_data.get("logs", {})
             logs.setdefault("error", []).append(error_msg)
@@ -1133,8 +1122,7 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
             error_msg = f"Failed to execute code: {str(e)}"
             logger.error(f"Failed to execute code in session {session_id}: {e}")
             
-            if progress_callback:
-                progress_callback({"type": "error", "message": error_msg})
+            await safe_call_callback(progress_callback, {"type": "error", "message": error_msg})
             
             logs = session_data.get("logs", {})
             logs.setdefault("error", []).append(error_msg)
