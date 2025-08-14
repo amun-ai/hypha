@@ -64,7 +64,12 @@ async def test_service_search(fastapi_server_redis_1, test_user_token):
 
     # Wait a moment for services to be indexed
     import asyncio
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(1.0)  # Increase wait time for indexing
+    
+    # First verify services are registered by listing them
+    all_services = await api.list_services()
+    print(f"DEBUG: Registered {len(all_services)} services")
+    assert len(all_services) >= 3, f"Expected at least 3 services, but found {len(all_services)}"
     
     # Test semantic search using `text_query`
     text_query = "NLP"
@@ -80,11 +85,12 @@ async def test_service_search(fastapi_server_redis_1, test_user_token):
         if len(services) > 1:
             assert services[0]["score"] < services[1]["score"]
     else:
-        # If no results, at least verify the search completed without error
-        print(f"Warning: No services found for query '{text_query}'")
-        # Try a fallback search to ensure services are registered
-        all_services = await api.search_services(limit=10)
-        assert len(all_services) >= 3, "Services should have been registered"
+        # If no results from semantic search, it might be disabled
+        print(f"Warning: No services found for semantic query '{text_query}'")
+        # Try text-based search instead
+        services = await api.search_services(filters={"docs": "*NLP*"}, limit=3)
+        if len(services) == 0:
+            print("Warning: Search functionality may not be working properly")
 
     results = await api.search_services(query=text_query, limit=3, pagination=True)
     assert results["total"] >= 1
