@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ artifact.manifest.name or 'Collection' }} - Application Marketplace</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
+    <style>
+        .app-card {
+            transition: all 0.3s ease;
+        }
+        .app-card:hover {
+            transform: translateY(-5px);
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-gray-50 to-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-7xl">
+        <!-- Header -->
+        <header class="mb-10 text-center">
+            <h1 class="text-5xl font-bold text-gray-800 mb-4">
+                <i class="fas fa-store text-blue-500 mr-3"></i>
+                {{ artifact.manifest.name or 'Application Marketplace' }}
+            </h1>
+            <p class="text-xl text-gray-600 max-w-3xl mx-auto">
+                {{ artifact.manifest.description }}
+            </p>
+            <div class="mt-4 flex justify-center gap-4">
+                <span class="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm">
+                    <i class="fas fa-cube mr-1"></i> <span id="appCount">0</span> Apps Available
+                </span>
+                <span class="px-3 py-1 bg-green-100 text-green-700 rounded-full text-sm">
+                    <i class="fas fa-server mr-1"></i> Workspace: {{ workspace }}
+                </span>
+            </div>
+        </header>
+        
+        <!-- Search Bar -->
+        <div class="mb-8 max-w-2xl mx-auto">
+            <div class="relative">
+                <input type="text" id="searchInput" 
+                       placeholder="Search applications by name or description..." 
+                       class="w-full px-6 py-3 pl-12 border-2 border-gray-200 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent shadow-sm">
+                <i class="fas fa-search absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400"></i>
+            </div>
+        </div>
+
+        <!-- Filter Tags -->
+        <div class="mb-6 flex justify-center flex-wrap gap-2" id="filterTags">
+            <button onclick="filterByType('all')" class="filter-tag px-4 py-2 bg-gray-200 text-gray-700 rounded-full text-sm hover:bg-blue-500 hover:text-white transition-colors active">
+                All Types
+            </button>
+            <!-- Dynamic type filters will be added here -->
+        </div>
+        
+        <!-- Apps Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-6" id="appsGrid">
+            <!-- Apps will be loaded dynamically -->
+            <div class="col-span-full text-center py-8" id="loadingState">
+                <i class="fas fa-spinner fa-spin text-2xl text-gray-400 mb-2"></i>
+                <p class="text-gray-600">Loading applications...</p>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Artifact Details Modal -->
+    <div id="detailsModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50 flex items-center justify-center p-4">
+        <div class="bg-white rounded-xl max-w-2xl w-full max-h-[80vh] overflow-y-auto">
+            <div class="sticky top-0 bg-white border-b px-6 py-4 flex justify-between items-center">
+                <h2 class="text-2xl font-bold text-gray-800">Artifact Details</h2>
+                <button onclick="closeDetails()" class="text-gray-500 hover:text-gray-700">
+                    <i class="fas fa-times text-xl"></i>
+                </button>
+            </div>
+            <div id="detailsContent" class="p-6">
+                <!-- Details will be loaded here -->
+            </div>
+        </div>
+    </div>
+    
+
+    <script>
+        // App data and pagination state
+        let allAppsData = [];
+        let filteredAppsData = [];
+        let currentPage = 1;
+        let itemsPerPage = 12;
+        let totalItems = 0;
+        let currentSearchQuery = '';
+        let currentTypeFilter = 'all';
+        let searchTimeout = null;
+        let availableTypes = new Set();
+        
+        // Fetch collection children with pagination and search
+        async function fetchApps(page = 1, searchQuery = '', typeFilter = 'all') {
+            try {
+                // Show loading state
+                document.getElementById('appsGrid').innerHTML = `
+                    <div class="col-span-full text-center py-8" id="loadingState">
+                        <i class="fas fa-spinner fa-spin text-2xl text-gray-400 mb-2"></i>
+                        <p class="text-gray-600">Loading applications...</p>
+                    </div>
+                `;
+                
+                // Calculate offset for pagination
+                const offset = (page - 1) * itemsPerPage;
+                
+                // Build URL with pagination parameters
+                let url = `{{artifact_base_url}}/children?pagination=true&offset=${offset}&limit=${itemsPerPage}`;
+                
+                // Add filters object
+                const filters = {};
+                if (typeFilter && typeFilter !== 'all') {
+                    filters.type = typeFilter;
+                }
+                
+                // Add filters to URL if any exist
+                if (Object.keys(filters).length > 0) {
+                    url += `&filters=${encodeURIComponent(JSON.stringify(filters))}`;
+                }
+                
+                // Add search keywords if provided
+                if (searchQuery && searchQuery.trim()) {
+                    const keywords = searchQuery.trim().split(' ').filter(k => k.length > 0);
+                    if (keywords.length > 0) {
+                        url += `&keywords=${encodeURIComponent(keywords.join(','))}`;
+                    }
+                }
+                
+                const response = await fetch(url);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                
+                // Handle paginated response
+                if (data.items && typeof data.total === 'number') {
+                    allAppsData = data.items;
+                    totalItems = data.total;
+                } else {
+                    // Fallback for non-paginated response
+                    allAppsData = Array.isArray(data) ? data : [];
+                    totalItems = allAppsData.length;
+                }
+                
+                filteredAppsData = allAppsData;
+                currentPage = page;
+                currentSearchQuery = searchQuery;
+                currentTypeFilter = typeFilter;
+                
+                // Collect types from the fetched data
+                collectTypesFromData(allAppsData);
+                
+                renderApps();
+                renderPagination();
+                updateAppCount();
+                initializeFilters();
+            } catch (error) {
+                console.error('Failed to fetch apps:', error);
+                document.getElementById('appsGrid').innerHTML = `
+                    <div class="col-span-full text-center py-16">
+                        <i class="fas fa-exclamation-triangle text-6xl text-red-300 mb-4"></i>
+                        <p class="text-xl text-red-500">Failed to load applications</p>
+                        <p class="text-red-400 mt-2">${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+        
+        // Render apps grid
+        function renderApps() {
+            const grid = document.getElementById('appsGrid');
+            grid.innerHTML = '';
+            
+            if (filteredAppsData.length === 0) {
+                grid.innerHTML = `
+                    <div class="col-span-full text-center py-16">
+                        <i class="fas fa-inbox text-6xl text-gray-300 mb-4"></i>
+                        <p class="text-xl text-gray-500">${currentSearchQuery || currentTypeFilter !== 'all' ? 'No applications found matching your search.' : 'No applications available in this marketplace yet.'}</p>
+                        <p class="text-gray-400 mt-2">${currentSearchQuery || currentTypeFilter !== 'all' ? 'Try adjusting your search or filters.' : 'Check back later or publish your own applications!'}</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            filteredAppsData.forEach(app => {
+                const appCard = createAppCard(app);
+                grid.appendChild(appCard);
+            });
+        }
+        
+        // Update app count
+        function updateAppCount() {
+            document.getElementById('appCount').textContent = totalItems;
+        }
+        
+        // Render pagination controls
+        function renderPagination() {
+            const totalPages = Math.ceil(totalItems / itemsPerPage);
+            
+            if (totalPages <= 1) {
+                // Remove pagination container if it exists
+                const existingPagination = document.getElementById('paginationContainer');
+                if (existingPagination) {
+                    existingPagination.remove();
+                }
+                return;
+            }
+            
+            // Create or get pagination container
+            let paginationContainer = document.getElementById('paginationContainer');
+            if (!paginationContainer) {
+                paginationContainer = document.createElement('div');
+                paginationContainer.id = 'paginationContainer';
+                paginationContainer.className = 'mt-8 flex justify-center items-center gap-2 flex-wrap';
+                document.querySelector('.container').appendChild(paginationContainer);
+            }
+            
+            // Build pagination HTML
+            let paginationHTML = '';
+            
+            // Previous button
+            paginationHTML += `
+                <button onclick="goToPage(${currentPage - 1})" 
+                        ${currentPage === 1 ? 'disabled' : ''}
+                        class="px-3 py-2 rounded-lg bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                    <i class="fas fa-chevron-left mr-1"></i> Previous
+                </button>
+            `;
+            
+            // Page numbers with ellipsis
+            const pageNumbers = getPageNumbers(currentPage, totalPages);
+            pageNumbers.forEach(pageNum => {
+                if (pageNum === '...') {
+                    paginationHTML += `<span class="px-2 py-2 text-gray-500">...</span>`;
+                } else {
+                    paginationHTML += `
+                        <button onclick="goToPage(${pageNum})" 
+                                class="px-3 py-2 rounded-lg border transition-colors ${
+                                    currentPage === pageNum 
+                                    ? 'bg-blue-500 text-white border-blue-500 shadow-sm' 
+                                    : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
+                                }">
+                            ${pageNum}
+                        </button>
+                    `;
+                }
+            });
+            
+            // Next button
+            paginationHTML += `
+                <button onclick="goToPage(${currentPage + 1})" 
+                        ${currentPage === totalPages ? 'disabled' : ''}
+                        class="px-3 py-2 rounded-lg bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                    Next <i class="fas fa-chevron-right ml-1"></i>
+                </button>
+            `;
+            
+            // Page info
+            paginationHTML += `
+                <div class="ml-4 text-sm text-gray-600">
+                    Page ${currentPage} of ${totalPages} (${totalItems} items)
+                </div>
+            `;
+            
+            paginationContainer.innerHTML = paginationHTML;
+        }
+        
+        // Get page numbers with ellipsis
+        function getPageNumbers(current, total) {
+            const delta = 2;
+            const range = [];
+            const rangeWithDots = [];
+            
+            range.push(1);
+            
+            for (let i = Math.max(2, current - delta); i <= Math.min(total - 1, current + delta); i++) {
+                range.push(i);
+            }
+            
+            if (total > 1) {
+                range.push(total);
+            }
+            
+            const uniqueRange = Array.from(new Set(range)).sort((a, b) => a - b);
+            
+            let prev = 0;
+            for (const page of uniqueRange) {
+                if (page - prev > 1) {
+                    rangeWithDots.push('...');
+                }
+                rangeWithDots.push(page);
+                prev = page;
+            }
+            
+            return rangeWithDots;
+        }
+        
+        // Navigate to page
+        function goToPage(page) {
+            const totalPages = Math.ceil(totalItems / itemsPerPage);
+            if (page < 1 || page > totalPages) return;
+            
+            fetchApps(page, currentSearchQuery, currentTypeFilter);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+        
+        // Create app card element
+        function createAppCard(app) {
+            const div = document.createElement('div');
+            div.className = 'bg-white rounded-xl shadow-lg hover:shadow-xl app-card';
+            div.dataset.type = app.type || 'generic';
+            
+            div.innerHTML = `
+                <div class="p-6">
+                    <!-- App Header -->
+                    <div class="flex items-start justify-between mb-4">
+                        <div class="p-3 bg-gradient-to-br from-blue-400 to-blue-600 rounded-lg shadow-md">
+                            <i class="fas fa-cube text-2xl text-white"></i>
+                        </div>
+                        ${app.manifest?.daemon ? `
+                        <span class="px-2 py-1 bg-green-100 text-green-700 rounded-full text-xs font-semibold">
+                            <i class="fas fa-server mr-1"></i> Daemon
+                        </span>
+                        ` : ''}
+                    </div>
+                    
+                    <!-- App Info -->
+                    <h3 class="text-lg font-bold text-gray-800 mb-2 app-name truncate" title="${app.manifest?.name || app.id}">
+                        ${app.manifest?.name || app.id}
+                    </h3>
+                    
+                    <!-- Artifact ID Chip -->
+                    <div class="flex items-center gap-2 mb-3">
+                        <span class="px-2 py-1 bg-gray-200 text-gray-700 rounded text-xs font-mono">
+                            ID: ${app.id}
+                        </span>
+                        <button onclick="copyArtifactId('${app.id}', this)" 
+                                class="px-2 py-1 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded text-xs transition-colors duration-200 flex items-center"
+                                title="Copy artifact ID">
+                            <i class="fas fa-copy text-xs"></i>
+                        </button>
+                    </div>
+                    
+                    <p class="text-gray-600 text-sm mb-4 app-description line-clamp-3" style="display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;">
+                        ${app.manifest?.description || 'No description available'}
+                    </p>
+                    
+                    <!-- Tags -->
+                    <div class="flex flex-wrap gap-1 mb-4">
+                        <span class="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-medium">
+                            ${app.type || 'generic'}
+                        </span>
+                        <span class="px-2 py-1 bg-gray-100 text-gray-700 rounded text-xs">
+                            v${app.manifest?.version || '1.0.0'}
+                        </span>
+                        ${app.manifest?.singleton ? `
+                        <span class="px-2 py-1 bg-purple-100 text-purple-700 rounded text-xs">
+                            Singleton
+                        </span>
+                        ` : ''}
+                    </div>
+                    
+                    <!-- Stats -->
+                    <div class="flex justify-between text-xs text-gray-500 mb-4">
+                        <span><i class="fas fa-download mr-1"></i> ${Math.floor(app.download_count || 0)} downloads</span>
+                        <span><i class="fas fa-eye mr-1"></i> ${Math.floor(app.view_count || 0)} views</span>
+                    </div>
+                    
+                    <!-- Action Buttons -->
+                    <div class="flex gap-2">
+                        <button onclick="viewArtifact('${app.id}')" 
+                                class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors duration-200 py-2 px-4">
+                            <i class="fas fa-external-link-alt mr-2"></i> View Artifact
+                        </button>
+                        <button onclick="viewDetails('${app.id}')" 
+                                class="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors duration-200">
+                            <i class="fas fa-info-circle"></i>
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            return div;
+        }
+        
+        // Collect types from fetched data
+        function collectTypesFromData(data) {
+            data.forEach(app => {
+                if (app.type) {
+                    availableTypes.add(app.type);
+                }
+            });
+        }
+        
+        // Initialize type filters based on available types
+        function initializeFilters() {
+            const filterContainer = document.getElementById('filterTags');
+            const existingFilters = filterContainer.querySelectorAll('.filter-tag:not([onclick*="all"])');
+            existingFilters.forEach(filter => filter.remove());
+            
+            // Only show type filters if we have types
+            if (availableTypes.size === 0) return;
+            
+            // Sort types alphabetically for consistent display
+            const sortedTypes = Array.from(availableTypes).sort();
+            
+            sortedTypes.forEach(type => {
+                const button = document.createElement('button');
+                button.onclick = () => filterByType(type);
+                button.className = 'filter-tag px-4 py-2 bg-gray-200 text-gray-700 rounded-full text-sm hover:bg-blue-500 hover:text-white transition-colors';
+                // Keep current active state if this type is selected
+                if (currentTypeFilter === type) {
+                    button.classList.add('bg-blue-500', 'text-white');
+                    button.classList.remove('bg-gray-200', 'text-gray-700');
+                }
+                button.textContent = type.charAt(0).toUpperCase() + type.slice(1);
+                filterContainer.appendChild(button);
+            });
+        }
+        
+        // Filter by type
+        function filterByType(type) {
+            // Clear existing types collection to rebuild from new filtered data
+            if (type === 'all') {
+                availableTypes.clear();
+            }
+            
+            const tags = document.querySelectorAll('.filter-tag');
+            
+            // Update active tag
+            tags.forEach(tag => {
+                const tagText = tag.textContent.toLowerCase();
+                if (type === 'all' && tag.textContent === 'All Types') {
+                    tag.classList.add('bg-blue-500', 'text-white');
+                    tag.classList.remove('bg-gray-200', 'text-gray-700');
+                } else if (tagText === type || tag.textContent.toLowerCase() === type.toLowerCase()) {
+                    tag.classList.add('bg-blue-500', 'text-white');
+                    tag.classList.remove('bg-gray-200', 'text-gray-700');
+                } else {
+                    tag.classList.remove('bg-blue-500', 'text-white');
+                    tag.classList.add('bg-gray-200', 'text-gray-700');
+                }
+            });
+            
+            // Fetch filtered results from server
+            currentPage = 1;
+            fetchApps(1, currentSearchQuery, type);
+        }
+        
+        // Copy artifact ID to clipboard
+        function copyArtifactId(artifactId, buttonElement) {
+            navigator.clipboard.writeText(artifactId).then(() => {
+                // Show feedback
+                const originalIcon = buttonElement.innerHTML;
+                buttonElement.innerHTML = '<i class="fas fa-check text-xs"></i>';
+                buttonElement.classList.remove('bg-blue-100', 'hover:bg-blue-200', 'text-blue-700');
+                buttonElement.classList.add('bg-green-100', 'text-green-700');
+                
+                setTimeout(() => {
+                    buttonElement.innerHTML = originalIcon;
+                    buttonElement.classList.remove('bg-green-100', 'text-green-700');
+                    buttonElement.classList.add('bg-blue-100', 'hover:bg-blue-200', 'text-blue-700');
+                }, 2000);
+            }).catch(err => {
+                console.error('Failed to copy artifact ID:', err);
+                // Fallback for older browsers
+                const textArea = document.createElement('textarea');
+                textArea.value = artifactId;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+            });
+        }
+        
+        // View artifact
+        function viewArtifact(artifactId) {
+            // Navigate to the artifact's view page
+            const [ws, id] = artifactId.split("/")
+            window.location.href = `{{public_base_url}}/${ws}/view/${id}`;
+        }
+
+        // Toggle workspace dropdown
+        function toggleWorkspaceDropdown() {
+            const dropdown = document.getElementById('workspaceDropdown');
+            const btn = document.getElementById('workspaceDropdownBtn');
+            const icon = btn.querySelector('i');
+            
+            if (dropdown.classList.contains('hidden')) {
+                dropdown.classList.remove('hidden');
+                icon.classList.remove('fa-chevron-down');
+                icon.classList.add('fa-chevron-up');
+            } else {
+                dropdown.classList.add('hidden');
+                icon.classList.remove('fa-chevron-up');
+                icon.classList.add('fa-chevron-down');
+            }
+        }
+        
+        // Select workspace from dropdown
+        function selectWorkspace(workspaceName) {
+            document.getElementById('workspaceInput').value = workspaceName;
+            document.getElementById('workspaceDropdown').classList.add('hidden');
+            const btn = document.getElementById('workspaceDropdownBtn');
+            const icon = btn.querySelector('i');
+            icon.classList.remove('fa-chevron-up');
+            icon.classList.add('fa-chevron-down');
+        }
+        
+        
+        // View app details
+        function viewDetails(appId) {
+            const app = appsData.find(a => a.id === appId);
+            if (!app) return;
+            
+            const modal = document.getElementById('detailsModal');
+            const content = document.getElementById('detailsContent');
+            
+            content.innerHTML = `
+                <div class="space-y-4">
+                    <div>
+                        <h3 class="text-lg font-semibold text-gray-800 mb-2">${app.manifest.name || app.id}</h3>
+                        <p class="text-gray-600">${app.manifest.description || 'No description available'}</p>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="bg-gray-50 p-3 rounded-lg">
+                            <p class="text-sm text-gray-500 mb-1">Type</p>
+                            <p class="font-medium">${app.type || 'Unknown'}</p>
+                        </div>
+                        <div class="bg-gray-50 p-3 rounded-lg">
+                            <p class="text-sm text-gray-500 mb-1">Version</p>
+                            <p class="font-medium">${app.manifest.version || '1.0.0'}</p>
+                        </div>
+                        <div class="bg-gray-50 p-3 rounded-lg">
+                            <p class="text-sm text-gray-500 mb-1">Downloads</p>
+                            <p class="font-medium">${Math.floor(app.download_count || 0)}</p>
+                        </div>
+                        <div class="bg-gray-50 p-3 rounded-lg">
+                            <p class="text-sm text-gray-500 mb-1">Views</p>
+                            <p class="font-medium">${Math.floor(app.view_count || 0)}</p>
+                        </div>
+                    </div>
+                    
+                    ${app.manifest.requirements ? `
+                    <div>
+                        <h4 class="font-semibold text-gray-800 mb-2">Requirements</h4>
+                        <pre class="bg-gray-50 p-3 rounded-lg text-sm overflow-x-auto">${JSON.stringify(app.manifest.requirements, null, 2)}</pre>
+                    </div>
+                    ` : ''}
+                </div>
+            `;
+            
+            modal.classList.remove('hidden');
+        }
+        
+        // Close details modal
+        function closeDetails() {
+            document.getElementById('detailsModal').classList.add('hidden');
+        }
+        
+        // Debounced search functionality
+        function debounceSearch(func, wait) {
+            return function executedFunction(...args) {
+                const later = () => {
+                    clearTimeout(searchTimeout);
+                    func(...args);
+                };
+                clearTimeout(searchTimeout);
+                searchTimeout = setTimeout(later, wait);
+            };
+        }
+        
+        // Handle search with debouncing
+        const handleSearch = debounceSearch(function(searchTerm) {
+            currentPage = 1;
+            fetchApps(1, searchTerm, currentTypeFilter);
+        }, 500);
+        
+        // Search input event listener
+        document.getElementById('searchInput').addEventListener('input', function(e) {
+            const searchTerm = e.target.value;
+            handleSearch(searchTerm);
+        });
+        
+        // Handle immediate search on Enter key
+        document.getElementById('searchInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                clearTimeout(searchTimeout);
+                currentPage = 1;
+                fetchApps(1, e.target.value, currentTypeFilter);
+            }
+        });
+        
+        // Close modal on escape key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                closeDetails();
+            }
+        });
+        
+        // Initialize on load
+        async function initialize() {
+            // First fetch to get initial data and discover available types
+            await fetchApps(1, '', 'all');
+            
+            // If we want to discover more types, we could fetch a larger sample
+            // This is optional and can be removed if not needed
+            if (availableTypes.size < 2) {
+                // Try to fetch more items to discover types (without showing them)
+                try {
+                    const response = await fetch(`{{artifact_base_url}}/children?limit=50`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        const items = data.items || data;
+                        collectTypesFromData(Array.isArray(items) ? items : []);
+                        initializeFilters(); // Re-initialize filters with discovered types
+                    }
+                } catch (error) {
+                    console.log('Could not fetch additional types:', error);
+                }
+            }
+            
+            populateWorkspaceDropdown();
+        }
+        
+        initialize();
+        
+        // Populate workspace dropdown
+        async function populateWorkspaceDropdown() {
+            try {
+                const dropdown = document.getElementById('workspaceDropdown').querySelector('.py-1');
+                
+                // Add current workspace if available
+                const currentWorkspace = '{{ workspace }}';
+                if (currentWorkspace && currentWorkspace !== 'public') {
+                    const option = document.createElement('div');
+                    option.className = 'px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm';
+                    option.textContent = currentWorkspace;
+                    option.onclick = () => selectWorkspace(currentWorkspace);
+                    dropdown.appendChild(option);
+                }
+                
+                // Always add public workspace option
+                if (currentWorkspace !== 'public') {
+                    const publicOption = document.createElement('div');
+                    publicOption.className = 'px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm';
+                    publicOption.innerHTML = 'public <span class="text-gray-500">(shared workspace)</span>';
+                    publicOption.onclick = () => selectWorkspace('public');
+                    dropdown.appendChild(publicOption);
+                }
+                
+                // Add some common workspace examples
+                const examples = ['my-workspace', 'team-workspace', 'dev-workspace'];
+                examples.forEach(workspace => {
+                    if (workspace !== currentWorkspace) {
+                        const option = document.createElement('div');
+                        option.className = 'px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm text-gray-600';
+                        option.innerHTML = `${workspace} <span class="text-xs">(example)</span>`;
+                        option.onclick = () => selectWorkspace(workspace);
+                        dropdown.appendChild(option);
+                    }
+                });
+                
+                // TODO: Fetch user's accessible workspaces from server
+                // This would require an API endpoint to list user workspaces
+                
+            } catch (error) {
+                console.error('Failed to populate workspace dropdown:', error);
+            }
+        }
+    </script>
+</body>
+</html>

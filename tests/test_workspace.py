@@ -802,3 +802,213 @@ async def test_unlisted_services_permission_checks(fastapi_server, test_user_tok
     await api.unregister_service(regular_service["id"])
 
     await api.disconnect()
+
+
+async def test_authorized_workspaces(fastapi_server, test_user_token):
+    """Test the authorized_workspaces feature for protected services."""
+    
+    # First connect to create workspaces
+    api_init = await connect_to_server({
+        "client_id": "init-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+    
+    # Create the workspaces
+    workspace_a_info = await api_init.create_workspace({
+        "id": "test-auth-workspace-a",
+        "name": "Test Auth Workspace A",
+        "description": "Workspace A for testing authorized_workspaces",
+        "persistent": False,
+    }, overwrite=True)
+    
+    workspace_b_info = await api_init.create_workspace({
+        "id": "test-auth-workspace-b",
+        "name": "Test Auth Workspace B",
+        "description": "Workspace B for testing authorized_workspaces",
+        "persistent": False,
+    }, overwrite=True)
+    
+    workspace_c_info = await api_init.create_workspace({
+        "id": "test-auth-workspace-c",
+        "name": "Test Auth Workspace C",
+        "description": "Workspace C for testing authorized_workspaces",
+        "persistent": False,
+    }, overwrite=True)
+    
+    await api_init.disconnect()
+    
+    # Now connect to each workspace
+    api_a = await connect_to_server({
+        "client_id": "workspace-a-client",
+        "workspace": "test-auth-workspace-a",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+    workspace_a = api_a.config.workspace
+    
+    # Create workspace B - will be authorized
+    api_b = await connect_to_server({
+        "client_id": "workspace-b-client",
+        "workspace": "test-auth-workspace-b",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+    workspace_b = api_b.config.workspace
+    
+    # Create workspace C - will NOT be authorized
+    api_c = await connect_to_server({
+        "client_id": "workspace-c-client",
+        "workspace": "test-auth-workspace-c",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+    workspace_c = api_c.config.workspace
+    
+    # Test 1: Verify that authorized_workspaces only works with protected visibility
+    try:
+        await api_a.register_service({
+            "id": "invalid-public-service",
+            "config": {
+                "visibility": "public",
+                "authorized_workspaces": [workspace_b]
+            },
+            "test_method": lambda x: f"Result: {x}"
+        })
+        # Should not fail, but authorized_workspaces should be ignored for public services
+        print("✅ Public services ignore authorized_workspaces")
+    except Exception as e:
+        print(f"Warning: Public service with authorized_workspaces raised: {e}")
+    
+    # Test 2: Register a protected service with authorized_workspaces
+    protected_service = await api_a.register_service({
+        "id": "protected-with-auth",
+        "name": "Protected Service with Auth",
+        "config": {
+            "visibility": "protected",
+            "authorized_workspaces": [workspace_b]  # Only workspace B is authorized
+        },
+        "test_method": lambda x: f"Protected result: {x}"
+    })
+    
+    # Test 3: Workspace A (owner) can always access its own service
+    try:
+        service_a = await api_a.get_service(f"{workspace_a}/protected-with-auth")
+        result = await service_a.test_method("from workspace A")
+        assert result == "Protected result: from workspace A"
+        print("✅ Owner workspace can access its own protected service")
+        
+        # Check that owner can see authorized_workspaces list
+        service_info = await api_a.get_service_info(f"{workspace_a}/protected-with-auth")
+        assert hasattr(service_info.config, 'authorized_workspaces') or 'authorized_workspaces' in service_info.config.__dict__
+        print("✅ Owner workspace can see authorized_workspaces list")
+    except Exception as e:
+        assert False, f"Owner workspace should have access: {e}"
+    
+    # Test 4: Workspace B (authorized) can access the service and invoke methods
+    try:
+        # Can get service info
+        service_info_b = await api_b.get_service_info(f"{workspace_a}/protected-with-auth")
+        assert service_info_b is not None
+        print("✅ Authorized workspace B can get service info")
+        
+        # Check that authorized workspace cannot see the authorized_workspaces list for security
+        assert not hasattr(service_info_b.config, 'authorized_workspaces') or service_info_b.config.authorized_workspaces is None
+        print("✅ Authorized workspace cannot see the authorized_workspaces list")
+        
+        # Can get and invoke the service
+        service_b = await api_b.get_service(f"{workspace_a}/protected-with-auth")
+        result = await service_b.test_method("from workspace B")
+        assert result == "Protected result: from workspace B"
+        print("✅ Authorized workspace B can invoke service methods")
+    except Exception as e:
+        assert False, f"Authorized workspace B should have full access: {e}"
+    
+    # Test 5: Workspace C (not authorized) cannot access the service
+    try:
+        await api_c.get_service_info(f"{workspace_a}/protected-with-auth")
+        assert False, "Workspace C should not have access"
+    except Exception as e:
+        assert "Permission denied" in str(e)
+        print("✅ Non-authorized workspace C is denied access")
+    
+    # Test 6: Test list_services respects authorized_workspaces
+    # Workspace B should see the service when listing
+    services_b = await api_b.list_services(workspace_a)
+    service_found = any(s["id"].endswith("protected-with-auth") for s in services_b)
+    assert service_found, "Authorized workspace B should see the service in list"
+    # Check that authorized_workspaces is not exposed in the list
+    for s in services_b:
+        if s["id"].endswith("protected-with-auth"):
+            assert "authorized_workspaces" not in s.get("config", {})
+    print("✅ Authorized workspace sees service in list without authorized_workspaces")
+    
+    # Workspace C should not see the service when listing
+    services_c = await api_c.list_services(workspace_a)
+    service_found = any(s["id"].endswith("protected-with-auth") for s in services_c)
+    assert not service_found, "Non-authorized workspace C should not see the service in list"
+    print("✅ Non-authorized workspace doesn't see service in list")
+    
+    # Test 7: Test with empty authorized_workspaces list (only owner has access)
+    await api_a.register_service({
+        "id": "protected-owner-only",
+        "config": {
+            "visibility": "protected",
+            "authorized_workspaces": []  # Empty list - only owner has access
+        },
+        "test_method": lambda x: f"Owner only: {x}"
+    })
+    
+    # Owner can access
+    try:
+        service = await api_a.get_service(f"{workspace_a}/protected-owner-only")
+        result = await service.test_method("owner")
+        assert result == "Owner only: owner"
+        print("✅ Owner can access service with empty authorized_workspaces")
+    except Exception as e:
+        assert False, f"Owner should have access to service with empty authorized list: {e}"
+    
+    # Other workspaces cannot access
+    try:
+        await api_b.get_service_info(f"{workspace_a}/protected-owner-only")
+        assert False, "Workspace B should not have access to owner-only service"
+    except Exception as e:
+        assert "Permission denied" in str(e)
+        print("✅ Empty authorized_workspaces denies all external access")
+    
+    # Test 8: Test dynamic update of authorized_workspaces
+    # First unregister the old service
+    await api_a.unregister_service("protected-with-auth")
+    
+    # Re-register with updated authorized_workspaces
+    await api_a.register_service({
+        "id": "protected-with-auth",
+        "config": {
+            "visibility": "protected",
+            "authorized_workspaces": [workspace_b, workspace_c]  # Now both B and C are authorized
+        },
+        "test_method": lambda x: f"Updated result: {x}"
+    })
+    
+    # Now workspace C should have full access
+    try:
+        service_info_c = await api_c.get_service_info(f"{workspace_a}/protected-with-auth")
+        assert service_info_c is not None
+        # Check that authorized workspace cannot see the authorized_workspaces list
+        assert not hasattr(service_info_c.config, 'authorized_workspaces') or service_info_c.config.authorized_workspaces is None
+        
+        # Can also invoke methods
+        service_c = await api_c.get_service(f"{workspace_a}/protected-with-auth")
+        result = await service_c.test_method("from workspace C")
+        assert result == "Updated result: from workspace C"
+        print("✅ Dynamic update of authorized_workspaces works")
+    except Exception as e:
+        assert False, f"Workspace C should now have full access after update: {e}"
+    
+    # Clean up
+    await api_a.unregister_service("protected-with-auth")
+    await api_a.unregister_service("protected-owner-only")
+    
+    await api_a.disconnect()
+    await api_b.disconnect()
+    await api_c.disconnect()

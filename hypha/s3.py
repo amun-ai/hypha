@@ -628,7 +628,7 @@ class S3Controller:
     async def _delete_dir_or_files(self, path: str, context: dict):
         """Delete files."""
         workspace = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         assert user_info.check_permission(
             workspace, UserPermission.read
         ), f"Permission denied: {workspace}"
@@ -779,7 +779,7 @@ class S3Controller:
         assert ws, f"Workspace {workspace} not found."
         if ws.read_only:
             raise Exception("Permission denied: workspace is read-only")
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         if not user_info.check_permission(ws.id, UserPermission.read_write):
             raise PermissionError(
                 f"User {user_info.id} does not have write"
@@ -806,7 +806,7 @@ class S3Controller:
     ) -> Dict[str, Any]:
         """List files in the folder."""
         workspace = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         if path.startswith("/"):
             assert user_info.check_permission(
                 "*", UserPermission.admin
@@ -842,7 +842,7 @@ class S3Controller:
             if ws.read_only and client_method != "get_object":
                 raise Exception("Permission denied: workspace is read-only")
             if path.startswith("/"):
-                user_info = UserInfo.model_validate(context["user"])
+                user_info = UserInfo.from_context(context)
                 assert user_info.check_permission(
                     "*", UserPermission.admin
                 ), "Permission denied: only admin can access the root folder."
@@ -872,7 +872,7 @@ class S3Controller:
         # make sure the path is a directory
         assert path.endswith("/"), "Path should end with a slash for directory"
         workspace = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         if path.startswith("/"):
             assert user_info.check_permission(
                 "*", UserPermission.admin
@@ -892,7 +892,7 @@ class S3Controller:
         """Delete file."""
         assert not path.endswith("/"), "Path should not end with a slash for file"
         workspace = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         if path.startswith("/"):
             assert user_info.check_permission(
                 "*", UserPermission.admin
@@ -917,7 +917,7 @@ class S3Controller:
     ) -> str:
         """Generate a presigned URL for uploading a file to S3."""
         workspace = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
 
         ws = await self.store.get_workspace_info(workspace, load=True)
         if not ws:
@@ -948,7 +948,7 @@ class S3Controller:
     ) -> str:
         """Generate a presigned URL for downloading a file from S3."""
         workspace = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
 
         ws = await self.store.get_workspace_info(workspace, load=True)
         if not ws:
@@ -973,7 +973,7 @@ class S3Controller:
     ) -> dict:
         """Initiate a multipart upload and return presigned URLs for all parts."""
         workspace = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
 
         ws = await self.store.get_workspace_info(workspace, load=True)
         if not ws:
@@ -1038,7 +1038,7 @@ class S3Controller:
     ) -> dict:
         """Complete a multipart upload."""
         workspace = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
 
         ws = await self.store.get_workspace_info(workspace, load=True)
         if not ws:
@@ -1107,7 +1107,7 @@ class S3Controller:
     ) -> dict:
         """Remove a file or directory from S3. Combines functionality of delete_file and delete_directory."""
         workspace = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
 
         ws = await self.store.get_workspace_info(workspace, load=True)
         if not ws:

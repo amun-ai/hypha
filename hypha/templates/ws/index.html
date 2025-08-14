@@ -340,6 +340,11 @@
                             url: window.location.origin + (window.HYPHA_BASE_PATH || '') + "/ws/web_app_template.hypha.html",
                             lang: 'json',
                         },
+                        {
+                            name: "WebContainer Compiler",
+                            url: window.location.origin + (window.HYPHA_BASE_PATH || '') + "/ws/webcontainer_template.hypha.html",
+                            lang: 'yaml'
+                        }
                     ],
                     ui_elements: {
                          install: {
@@ -1520,6 +1525,20 @@
                     }
                 }
             };
+            
+            // Custom close handler that ensures interval is cleared
+            const handleClose = () => {
+                // Stop auto screenshot if it's running
+                if (autoScreenshotInterval) {
+                    clearInterval(autoScreenshotInterval);
+                    setAutoScreenshotInterval(null);
+                    setAutoScreenshot(false);
+                }
+                // Call the parent's close handler
+                if (onClose) {
+                    onClose();
+                }
+            };
 
             // Cleanup interval on unmount
             React.useEffect(() => {
@@ -1570,7 +1589,7 @@
                     <div className="modal-content" style={{ maxWidth: '95vw', maxHeight: '95vh', width: '90vw' }}>
                         <div className="modal-header">
                             <h2 className="text-2xl font-bold">{appName || 'Screenshot'}</h2>
-                            <button onClick={onClose} className="text-white text-2xl">&times;</button>
+                            <button onClick={handleClose} className="text-white text-2xl">&times;</button>
                         </div>
                         <div className="modal-body" style={{ maxHeight: '80vh', overflow: 'auto' }}>
                             <div className="flex flex-col items-center space-y-4">
@@ -7073,15 +7092,25 @@ license: "MIT"`);
                     // Convert bytes to base64
                     let screenshotBase64;
                     if (screenshotBytes instanceof Uint8Array) {
-                        // If it's already a Uint8Array, convert directly
-                        screenshotBase64 = btoa(String.fromCharCode.apply(null, screenshotBytes));
+                        // Convert Uint8Array to base64 safely for large arrays
+                        let binary = '';
+                        const len = screenshotBytes.byteLength;
+                        for (let i = 0; i < len; i++) {
+                            binary += String.fromCharCode(screenshotBytes[i]);
+                        }
+                        screenshotBase64 = btoa(binary);
                     } else if (typeof screenshotBytes === 'string') {
                         // If it's already a base64 string, use it directly
                         screenshotBase64 = screenshotBytes;
                     } else if (Array.isArray(screenshotBytes)) {
                         // If it's an array of numbers, convert to Uint8Array first
                         const uint8Array = new Uint8Array(screenshotBytes);
-                        screenshotBase64 = btoa(String.fromCharCode.apply(null, uint8Array));
+                        let binary = '';
+                        const len = uint8Array.byteLength;
+                        for (let i = 0; i < len; i++) {
+                            binary += String.fromCharCode(uint8Array[i]);
+                        }
+                        screenshotBase64 = btoa(binary);
                     } else {
                         throw new Error('Unexpected screenshot data format');
                     }

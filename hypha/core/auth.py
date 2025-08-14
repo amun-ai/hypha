@@ -70,6 +70,7 @@ def get_user_info(credentials):
         roles=roles,
         scope=scope,
         expires_at=expires_at,
+        current_workspace=scope.current_workspace,
     )
     # make sure the user has admin permission to their own workspace
     user_workspace = info.get_workspace()

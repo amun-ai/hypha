@@ -293,6 +293,26 @@ class BrowserWorker(BaseWorker):
             # For web-app type, navigate directly to the entry_point URL
             if app_type == "web-app":
                 goto_url = entry_point  # Use entry_point as the external URL
+                
+                # Check if we need to append credential query parameters
+                if config.manifest.get("inject_auth_params"):
+                    # Parse the URL to check if it already has query parameters
+                    separator = "&" if "?" in goto_url else "?"
+                    
+                    # Build query parameters
+                    params = []
+                    if config.server_url:
+                        params.append(f"server_url={config.server_url}")
+                    params.append(f"client_id={config.client_id}")
+                    params.append(f"workspace={config.workspace}")
+                    params.append(f"app_id={config.app_id}")
+                    if config.token:
+                        params.append(f"token={config.token}")
+                    
+                    # Append parameters to the URL
+                    if params:
+                        goto_url = f"{goto_url}{separator}{'&'.join(params)}"
+                
                 logger.info(
                     f"Loading web-app from external URL: {goto_url} with timeout {timeout_ms}ms"
                 )

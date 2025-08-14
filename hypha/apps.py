@@ -422,7 +422,6 @@ class ServerAppController:
         self.jinja_env = Environment(
             loader=PackageLoader("hypha"), autoescape=select_autoescape()
         )
-        self.templates_dir = Path(__file__).parent / "templates"
         self.autoscaling_manager = AutoscalingManager(self)
         self.worker_manager = WorkerManager(store, cleanup_worker_sessions_callback=self.cleanup_worker_sessions)
 
@@ -742,7 +741,7 @@ class ServerAppController:
                 try:
                     # Get the full service info to access supported_types
                     # Properly validate user info before passing to get_workspace_interface
-                    user_info = UserInfo.model_validate(context["user"])
+                    user_info = UserInfo.from_context(context)
                     async with self.store.get_workspace_interface(user_info, workspace) as ws:
                         full_svc = await ws.get_service(svc["id"])
                         supported_types = full_svc.get("supported_types", [])
@@ -937,7 +936,7 @@ class ServerAppController:
         if context is None:
             context = {"user": self.store.get_root_user().model_dump(), "ws": "public"}
         workspace = context.get("ws")
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         if not user_info.check_permission(workspace, UserPermission.read_write):
             raise Exception(
                 f"User {user_info.id} does not have permission to edit worker {worker_id} in workspace {workspace}."
@@ -1008,7 +1007,7 @@ class ServerAppController:
                 try:
                     # Get the full service info
                     # Properly validate user info before passing to get_workspace_interface
-                    user_info = UserInfo.model_validate(context["user"])
+                    user_info = UserInfo.from_context(context)
                     async with self.store.get_workspace_interface(user_info, workspace) as ws:
                         full_svc = await ws.get_service(svc["id"])
                         supported_types = full_svc.get("supported_types", [])
@@ -1073,22 +1072,35 @@ class ServerAppController:
         return workers_info
 
     async def setup_applications_collection(self, overwrite=True, context=None):
-        """Set up the workspace."""
+        """Set up the workspace applications collection."""
         ws = context["ws"]
-        # Create an collection in the workspace
+        
+        # Create collection manifest
         manifest = {
             "id": "applications",
             "name": "Applications",
             "description": f"A collection of applications for workspace {ws}",
         }
+        
+        # If this is the public workspace, make the collection publicly accessible
+        config = {}
+        if ws == "public":
+            config = {
+                "permissions": {
+                    "*": "r"  # Allow anyone to read (list and view applications)
+                }
+            }
+            manifest["description"] = "Public marketplace of applications"
+        
         collection = await self.artifact_manager.create(
             type="collection",
             alias="applications",
             manifest=manifest,
+            config=config,
             overwrite=overwrite,
             context=context,
         )
-        logger.info(f"Applications collection created for workspace {ws}")
+        logger.info(f"Applications collection created for workspace {ws} (public: {ws == 'public'})")
         return collection["id"]
 
     @schema_method
@@ -1157,6 +1169,10 @@ class ServerAppController:
             None,
             description="Mode for selecting the worker. Can be 'random', 'first', 'last', 'exact', 'min_load', or 'select:criteria:function' format (e.g., 'select:min:get_load', 'select:max:get_cpu_usage'). Only used when worker_id is not specified.",
         ),
+        artifact_id: Optional[str] = Field(
+            None,
+            description="Artifact ID to install the app from. Format: 'workspace/artifact_alias'. If provided, will copy the app from this artifact instead of using source/manifest/files.",
+        ),
         context: Optional[dict] = Field(
             None,
             description="Additional context information including user and workspace details. Usually provided automatically by the system.",
@@ -1188,7 +1204,7 @@ class ServerAppController:
             }
         )
 
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         assert not user_info.is_anonymous, "Anonymous users cannot install apps"
         workspace_info = await self.store.get_workspace_info(workspace, load=True)
         assert workspace_info, f"Workspace {workspace} not found."
@@ -1205,6 +1221,107 @@ class ServerAppController:
             )
         if config is not None:
             manifest = config
+        
+        # Track created artifact for cleanup on failure
+        created_artifact_id = None
+        
+        try:
+            # If artifact_id is provided, copy app from that artifact using duplicate
+            if artifact_id:
+                _progress_callback(
+                    {
+                        "type": "info",
+                        "message": f"Installing app from artifact {artifact_id}...",
+                    }
+                )
+                
+                # Use duplicate to copy the artifact to the target workspace
+                duplicated_artifact = await self.artifact_manager.duplicate(
+                    source_artifact_id=artifact_id,
+                    target_alias=app_id,
+                    target_workspace=workspace,
+                    overwrite=overwrite,
+                    context=context,
+                )
+                
+                created_artifact_id = duplicated_artifact["id"]
+                
+                # Read the duplicated artifact to get manifest
+                artifact_info = await self.artifact_manager.read(
+                    duplicated_artifact["id"], context=context
+                )
+                
+                manifest = artifact_info.get("manifest", {})
+                
+                # If stage is False, we need to test the app by starting it
+                if not stage:
+                    _progress_callback(
+                        {
+                            "type": "info",
+                            "message": "Testing installed application...",
+                        }
+                    )
+                    
+                    # Test that the app can start
+                    try:
+                        # Extract startup config from kwargs
+                        startup_config_kwargs = extract_startup_config_kwargs(
+                            timeout=timeout,
+                            wait_for_service=wait_for_service,
+                            additional_kwargs=additional_kwargs,
+                            stop_after_inactive=stop_after_inactive,
+                        )
+                        
+                        # Try to start the app to verify it works
+                        test_info = await self.start(
+                            duplicated_artifact["id"],
+                            context=context,
+                            **startup_config_kwargs
+                        )
+                        
+                        # Stop the test instance
+                        await self.stop(test_info["id"], context=context, raise_exception=False)
+                        
+                        _progress_callback(
+                            {
+                                "type": "success",
+                                "message": "Application tested successfully!",
+                            }
+                        )
+                    except Exception as e:
+                        # If testing fails, clean up and re-raise
+                        _progress_callback(
+                            {
+                                "type": "error",
+                                "message": f"Application testing failed: {str(e)}",
+                            }
+                        )
+                        raise
+                
+                _progress_callback(
+                    {
+                        "type": "success",
+                        "message": "Installation complete!",
+                    }
+                )
+                
+                # Return the full artifact info, not just the manifest
+                return artifact_info
+        
+        except Exception as e:
+            # Clean up the created artifact if installation failed
+            if created_artifact_id:
+                _progress_callback(
+                    {
+                        "type": "warning",
+                        "message": "Cleaning up failed installation...",
+                    }
+                )
+                try:
+                    await self.artifact_manager.delete(created_artifact_id, context=context)
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to clean up artifact {created_artifact_id}: {cleanup_error}")
+            raise e
         
         # If app_id is provided, make sure it's a valid [a-zA-Z0-9-_]
         if app_id:
@@ -1469,148 +1586,169 @@ class ServerAppController:
                 overwrite=True, context=context
             )
 
-        # Create artifact using the artifact controller - let it generate the alias
-        artifact = await self.artifact_manager.create(
-            type="application",
-            alias=app_id,
-            parent_id=collection_id,
-            manifest=artifact_obj,
-            overwrite=overwrite,
-            version="stage",
-            context=context,
-        )
+        # Track created artifact for cleanup on failure
+        created_artifact_id = None
+        
+        try:
+            # Create artifact using the artifact controller - let it generate the alias
+            artifact = await self.artifact_manager.create(
+                type="application",
+                alias=app_id,
+                parent_id=collection_id,
+                manifest=artifact_obj,
+                overwrite=overwrite,
+                version="stage",
+                context=context,
+            )
+            
+            # Track for cleanup
+            created_artifact_id = artifact["id"]
 
-        # Now get the app_id from the artifact alias
-        app_id = artifact["alias"]
+            # Now get the app_id from the artifact alias
+            app_id = artifact["alias"]
 
-        # Update the artifact object with the correct app_id
-        artifact_obj["id"] = app_id
+            # Update the artifact object with the correct app_id
+            artifact_obj["id"] = app_id
 
-        # Update the artifact with the compiled manifest
-        await self.artifact_manager.edit(
-            artifact["id"],
-            stage=True,
-            manifest=artifact_obj,
-            context=context,
-        )
+            # Update the artifact with the compiled manifest
+            await self.artifact_manager.edit(
+                artifact["id"],
+                stage=True,
+                manifest=artifact_obj,
+                context=context,
+            )
 
-        # Upload all files
+            # Upload all files
+            for file_info in app_files:
+                if "path" not in file_info and "name" not in file_info:
+                    raise ValueError(f"File {file_info} must have 'name' or 'path' field")
+                if "path" not in file_info:
+                    file_info["path"] = file_info["name"]
+                if "name" not in file_info:
+                    file_info["name"] = file_info["path"].split("/")[-1]
+                file_path = file_info["path"]
+                file_content = file_info.get("content")
+                file_format = file_info.get("format", "text")
 
-        for file_info in app_files:
-            if "path" not in file_info and "name" not in file_info:
-                raise ValueError(f"File {file_info} must have 'name' or 'path' field")
-            if "path" not in file_info:
-                file_info["path"] = file_info["name"]
-            if "name" not in file_info:
-                file_info["name"] = file_info["path"].split("/")[-1]
-            file_path = file_info["path"]
-            file_content = file_info.get("content")
-            file_format = file_info.get("format", "text")
+                if not file_path or file_content is None:
+                    raise Exception("Each file must have 'name' and 'content' fields")
 
-            if not file_path or file_content is None:
-                raise Exception("Each file must have 'name' and 'content' fields")
+                # Handle different file formats
+                if file_format == "base64":
+                    try:
+                        # Check if content is in data URL format (e.g., "data:image/png;base64,...")
+                        if isinstance(file_content, str) and file_content.startswith(
+                            "data:"
+                        ):
+                            # Parse data URL format: data:[mediatype][;base64],<data>
+                            if ";base64," in file_content:
+                                # Extract base64 part after the comma
+                                base64_content = file_content.split(";base64,", 1)[1]
+                            else:
+                                raise Exception(
+                                    f"Data URL format not supported for file {file_path}. Expected format: data:mediatype;base64,content"
+                                )
+                        else:
+                            # Direct base64 content
+                            base64_content = file_content
 
-            # Handle different file formats
-            if file_format == "base64":
-                try:
-                    # Check if content is in data URL format (e.g., "data:image/png;base64,...")
-                    if isinstance(file_content, str) and file_content.startswith(
-                        "data:"
-                    ):
-                        # Parse data URL format: data:[mediatype][;base64],<data>
-                        if ";base64," in file_content:
-                            # Extract base64 part after the comma
-                            base64_content = file_content.split(";base64,", 1)[1]
+                        file_data = base64.b64decode(base64_content)
+                    except Exception as e:
+                        raise Exception(
+                            f"Failed to decode base64 content for file {file_path}: {e}"
+                        )
+                elif file_format == "json":
+                    try:
+                        if isinstance(file_content, (dict, list)):
+                            # Serialize dictionary or list to JSON string
+                            json_string = json.dumps(file_content, indent=2)
+                        elif isinstance(file_content, str):
+                            # Validate that it's valid JSON if it's already a string
+                            json.loads(file_content)  # This will raise exception if invalid
+                            json_string = file_content
                         else:
                             raise Exception(
-                                f"Data URL format not supported for file {file_path}. Expected format: data:mediatype;base64,content"
+                                f"JSON content must be a dictionary, list, or valid JSON string"
                             )
-                    else:
-                        # Direct base64 content
-                        base64_content = file_content
 
-                    file_data = base64.b64decode(base64_content)
-                except Exception as e:
-                    raise Exception(
-                        f"Failed to decode base64 content for file {file_path}: {e}"
-                    )
-            elif file_format == "json":
-                try:
-                    if isinstance(file_content, (dict, list)):
-                        # Serialize dictionary or list to JSON string
-                        json_string = json.dumps(file_content, indent=2)
-                    elif isinstance(file_content, str):
-                        # Validate that it's valid JSON if it's already a string
-                        json.loads(file_content)  # This will raise exception if invalid
-                        json_string = file_content
-                    else:
+                        file_data = json_string.encode("utf-8")
+                    except Exception as e:
                         raise Exception(
-                            f"JSON content must be a dictionary, list, or valid JSON string"
+                            f"Failed to process JSON content for file {file_path}: {e}"
                         )
-
-                    file_data = json_string.encode("utf-8")
-                except Exception as e:
-                    raise Exception(
-                        f"Failed to process JSON content for file {file_path}: {e}"
+                elif file_format == "text":
+                    file_data = (
+                        file_content.encode("utf-8")
+                        if isinstance(file_content, str)
+                        else file_content
                     )
-            elif file_format == "text":
-                file_data = (
-                    file_content.encode("utf-8")
-                    if isinstance(file_content, str)
-                    else file_content
-                )
-            else:
-                raise Exception(
-                    f"Unsupported file format '{file_format}' for file {file_path}. Must be 'text', 'json', or 'base64'"
-                )
+                else:
+                    raise Exception(
+                        f"Unsupported file format '{file_format}' for file {file_path}. Must be 'text', 'json', or 'base64'"
+                    )
 
-            # Upload the file to the artifact
-            put_url = await self.artifact_manager.put_file(
+                # Upload the file to the artifact
+                put_url = await self.artifact_manager.put_file(
                 artifact["id"], file_path=file_path, use_proxy=False, context=context
-            )
-            _progress_callback(
-                {
-                    "type": "info",
-                    "message": f"Uploading file {file_path}...",
-                }
-            )
-            async with httpx.AsyncClient() as client:
-                response = await client.put(put_url, data=file_data)
-                assert response.status_code == 200, f"Failed to upload file {file_path}"
+                )
+                _progress_callback(
+                    {
+                        "type": "info",
+                        "message": f"Uploading file {file_path}...",
+                    }
+                )
+                async with httpx.AsyncClient() as client:
+                    response = await client.put(put_url, data=file_data)
+                    assert response.status_code == 200, f"Failed to upload file {file_path}"
 
-        if not stage:
-            _progress_callback(
-                {
-                    "type": "info",
-                    "message": "Committing application artifact...",
-                }
-            )
-            # Commit the artifact if stage is not enabled
-            await self.commit_app(
-                app_id,
-                version=version,
-                context=context,
-                progress_callback=progress_callback,
-                **startup_config_kwargs,
-            )
-            # After commit, read the updated artifact to get the collected services
-            updated_artifact_info = await self.artifact_manager.read(
-                app_id, version=version, context=context
-            )
+            if not stage:
+                _progress_callback(
+                    {
+                        "type": "info",
+                        "message": "Committing application artifact...",
+                    }
+                )
+                # Commit the artifact if stage is not enabled
+                await self.commit_app(
+                    app_id,
+                    version=version,
+                    context=context,
+                    progress_callback=progress_callback,
+                    **startup_config_kwargs,
+                )
+                # After commit, read the updated artifact to get the collected services
+                updated_artifact_info = await self.artifact_manager.read(
+                    app_id, version=version, context=context
+                )
+                _progress_callback(
+                    {
+                        "type": "success",
+                        "message": "Installation complete!",
+                    }
+                )
+                return updated_artifact_info.get("manifest", artifact_obj)
             _progress_callback(
                 {
                     "type": "success",
                     "message": "Installation complete!",
                 }
             )
-            return updated_artifact_info.get("manifest", artifact_obj)
-        _progress_callback(
-            {
-                "type": "success",
-                "message": "Installation complete!",
-            }
-        )
-        return artifact_obj
+            return artifact_obj
+        
+        except Exception as e:
+            # Clean up the created artifact if installation failed
+            if created_artifact_id:
+                _progress_callback(
+                    {
+                        "type": "warning",
+                        "message": "Cleaning up failed installation...",
+                    }
+                )
+                try:
+                    await self.artifact_manager.delete(created_artifact_id, context=context)
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to clean up artifact {created_artifact_id}: {cleanup_error}")
+            raise e
 
     @schema_method
     async def edit_file(
@@ -1805,6 +1943,107 @@ class ServerAppController:
             if app.get("app_id") == app_id:
                 await self.stop(app["id"], raise_exception=False)
 
+    @schema_method
+    async def publish(
+        self,
+        app_id: str = Field(
+            ...,
+            description="The unique identifier of the application to publish. This is typically the alias of the application.",
+        ),
+        collection_id: str = Field(
+            ...,
+            description="The collection ID to publish the app to. Format: 'workspace/collection_alias'.",
+        ),
+        new_app_id: Optional[str] = Field(
+            None,
+            description="The new app ID/alias in the target collection. If not provided, uses the same as source app_id.",
+        ),
+        overwrite: bool = Field(
+            False,
+            description="Whether to overwrite if an app with the same ID already exists in the collection.",
+        ),
+        remove_secrets: bool = Field(
+            True,
+            description="Whether to remove secrets from the config before publishing. Default is True for security.",
+        ),
+        stage: bool = Field(
+            False,
+            description="Whether to publish the app in stage mode. If True, the app will be published as a staged artifact that can be discarded or committed later. Useful when the target collection doesn't allow commit permission for the current user.",
+        ),
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system.",
+        ),
+    ) -> dict:
+        """Publish an application to a marketplace collection.
+        
+        This function copies an installed application to a specified collection,
+        optionally removing secrets for security. The published app can then be
+        installed by other users who have access to the collection.
+        
+        Returns:
+            Dictionary containing the published artifact information.
+        """
+        user_info = UserInfo.from_context(context)
+        assert not user_info.is_anonymous, "Anonymous users cannot publish apps"
+        
+        # Use the duplicate function to copy the artifact
+        published_artifact = await self.artifact_manager.duplicate(
+            source_artifact_id=app_id,
+            target_alias=new_app_id or app_id,
+            target_parent_id=collection_id,
+            overwrite=overwrite,
+            stage=stage,
+            context=context,
+        )
+        
+        # If we need to remove secrets or startup_context, edit the duplicated artifact
+        if remove_secrets:
+            # Read the duplicated artifact (from stage if staged, otherwise committed)
+            read_version = "stage" if stage else None
+            artifact = await self.artifact_manager.read(
+                published_artifact["id"], 
+                version=read_version,
+                context=context
+            )
+            
+            manifest = artifact.get("manifest", {})
+            needs_update = False
+            
+            # Remove secrets if requested
+            if "config" in manifest and manifest["config"] and "secrets" in manifest["config"]:
+                manifest = manifest.copy()
+                config = manifest["config"].copy()
+                del config["secrets"]
+                manifest["config"] = config
+                needs_update = True
+            
+            # Remove startup_context as it contains user-specific info
+            if "startup_context" in manifest:
+                manifest = manifest.copy()
+                del manifest["startup_context"]
+                needs_update = True
+            
+            # Update the artifact if needed
+            if needs_update:
+                await self.artifact_manager.edit(
+                    published_artifact["id"],
+                    manifest=manifest,
+                    version="stage" if stage else None,
+                    context=context,
+                )
+                # Don't commit here - the artifact is either:
+                # 1. Already committed by duplicate() when stage=False, or
+                # 2. Intentionally left in stage mode when stage=True
+        
+        # Return the published artifact info
+        read_version = "stage" if stage else None
+        return await self.artifact_manager.read(
+            published_artifact["id"], 
+            version=read_version,
+            context=context
+        )
+
     async def start_by_type(
         self,
         app_id: str,
@@ -1860,17 +2099,28 @@ class ServerAppController:
         # Start the app using the worker with reorganized config
         full_client_id = workspace + "/" + client_id
         additional_kwargs = additional_kwargs or {}
+        
+        # Split app_id if it contains workspace prefix
+        if "/" in app_id:
+            # app_id is in format "workspace/alias", extract just the alias for service registration
+            _, app_alias = app_id.rsplit("/", 1)
+            artifact_id_for_worker = app_id  # Use full ID for artifact access
+            app_id_for_registration = app_alias  # Use just alias for service registration
+        else:
+            artifact_id_for_worker = f"{workspace}/{app_id}"
+            app_id_for_registration = app_id
+        
         await worker.start(
             {
                 "id": full_client_id,
-                "app_id": app_id,
+                "app_id": app_id_for_registration,  # Use alias for service registration
                 "workspace": workspace,
                 "client_id": client_id,
                 "server_url": effective_server_url,
                 "app_files_base_url": effective_app_files_base_url,
                 "token": token,
                 "entry_point": entry_point,
-                "artifact_id": f"{workspace}/{app_id}",
+                "artifact_id": artifact_id_for_worker,  # Use full ID for artifact access
                 "timeout": timeout,
                 "manifest": manifest,
                 "progress_callback": progress_callback,
@@ -1883,7 +2133,7 @@ class ServerAppController:
         # Store session info in Redis for horizontal scaling
         session_data = {
             "id": full_client_id,
-            "app_id": app_id,
+            "app_id": app_id_for_registration,  # Store the alias for consistency
             "workspace": workspace,
             "client_id": client_id,
             "app_type": app_type,
@@ -1985,7 +2235,7 @@ class ServerAppController:
     ):
         """Start the app and keep it alive."""
         workspace = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
 
         # Add "__rlb" suffix to enable load balancing metrics for app clients
         # Add "_rapp_" prefix to identify app clients
@@ -2400,7 +2650,7 @@ class ServerAppController:
         """Stop a server app instance."""
         if not context:
             context = {"user": self.store.get_root_user().model_dump(), "ws": "public"}
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         workspace = context["ws"]
         if not user_info.check_permission(workspace, UserPermission.read):
             raise Exception(
@@ -2466,7 +2716,7 @@ class ServerAppController:
         ),
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get server app instance logs."""
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         workspace = context["ws"]
         if not user_info.check_permission(workspace, UserPermission.read):
             raise Exception(
@@ -2502,7 +2752,7 @@ class ServerAppController:
         ),
     ) -> str:
         """Take a screenshot of a running server app instance."""
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         workspace = context["ws"]
         if not user_info.check_permission(workspace, UserPermission.read):
             raise Exception(
@@ -2555,7 +2805,7 @@ class ServerAppController:
         
         Returns the execution results in a format specific to the worker implementation.
         """
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         workspace = context["ws"]
         if not user_info.check_permission(workspace, UserPermission.read_write):
             raise Exception(
@@ -2727,8 +2977,6 @@ class ServerAppController:
                     elif format == "json":
                         return response.json()
                     elif format == "binary":
-                        import base64
-
                         return base64.b64encode(response.content).decode()
                     else:
                         raise ValueError(
@@ -3249,4 +3497,5 @@ class ServerAppController:
             "read_file": self.read_file,
             "validate_app_manifest": self.validate_app_manifest,
             "edit_app": self.edit_app,
+            "publish": self.publish,
         }

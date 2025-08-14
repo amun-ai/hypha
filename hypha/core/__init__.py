@@ -117,20 +117,9 @@ class ServiceInfo(BaseModel):
 
         # Expand config fields to store as separate keys
         if "config" in redis_data and redis_data["config"]:
-            # Iterate through the keys for ServiceConfig and store them to self
-            for field_name, field_info in ServiceConfig.model_fields.items():
-                value = redis_data["config"].get(field_name)
-                if value is None:
-                    continue
-                elif field_name == "service_embedding":
-                    redis_data[field_name] = value
-                elif field_info.annotation in {str, Optional[str]}:
-                    redis_data[field_name] = value
-                elif field_info.annotation in {list, List[str], Optional[List[str]]}:
-                    redis_data[field_name] = ",".join(value)
-                else:
-                    redis_data[field_name] = json.dumps(value)
-            del redis_data["config"]
+            # Store entire config as JSON to preserve all fields including extra fields
+            redis_data["config"] = json.dumps(redis_data["config"])
+            # Note: We keep the config as a single JSON field to preserve all extra fields
         return redis_data
 
     @classmethod
@@ -139,61 +128,41 @@ class ServiceInfo(BaseModel):
         Deserialize a Redis-compatible dictionary back to a model instance.
         """
         converted_data = {}
-        # Note: Here we only convert the fields that are in the model
-        # and ignore any extra fields that might be present in the data
-        # Iterate over fields and decode based on their type
-        # Extract the fields form ServiceConfig first
-        config_data = {}
-        for field_name, field_info in ServiceConfig.model_fields.items():
-            if not in_bytes:
-                if field_name not in service_data:
-                    continue
-                value = service_data.get(field_name)
-                del service_data[field_name]
-            else:
-                if field_name.encode("utf-8") not in service_data:
-                    continue
-                value = service_data.get(field_name.encode("utf-8"))
-                del service_data[field_name.encode("utf-8")]
-            if value is None:
-                config_data[field_name] = None
-            elif field_name == "service_embedding":
-                config_data[field_name] = value
-            elif field_info.annotation in {str, Optional[str]}:
-                config_data[field_name] = (
-                    value if isinstance(value, str) else value.decode("utf-8")
-                )
-            elif field_info.annotation in {list, List[str], Optional[List[str]]}:
-                config_data[field_name] = (
-                    value.split(",")
-                    if isinstance(value, str)
-                    else value.decode("utf-8").split(",")
-                )
-            else:
-                value_str = value if isinstance(value, str) else value.decode("utf-8")
-                config_data[field_name] = json.loads(value_str)
-
-        if config_data:
-            if in_bytes:
-                service_data[b"config"] = ServiceConfig.model_validate(config_data)
-            else:
-                service_data["config"] = ServiceConfig.model_validate(config_data)
+        
+        # Check if config is stored as JSON (new format)
+        config_key = b"config" if in_bytes else "config"
+        if config_key in service_data:
+            config_value = service_data[config_key]
+            if config_value:
+                # Deserialize JSON config
+                if isinstance(config_value, bytes):
+                    config_dict = json.loads(config_value.decode("utf-8"))
+                elif isinstance(config_value, str):
+                    config_dict = json.loads(config_value)
+                else:
+                    config_dict = config_value
+                # Store the parsed config
+                converted_data["config"] = ServiceConfig.model_validate(config_dict)
+            # Remove config from service_data so it's not processed again
+            del service_data[config_key]
 
         for field_name, field_info in cls.model_fields.items():
+            if field_name == "config":
+                # Config is already handled above
+                continue
+                
             if not in_bytes:
                 value = service_data.get(field_name)
             else:
                 value = service_data.get(field_name.encode("utf-8"))
             if value is None:
                 converted_data[field_name] = None
-            elif field_name == "config":
-                converted_data[field_name] = value
             elif field_info.annotation in {str, Optional[str]}:
                 converted_data[field_name] = (
                     value if isinstance(value, str) else value.decode("utf-8")
                 )
             elif field_info.annotation in {list, List[str], Optional[List[str]]}:
-                config_data[field_name] = (
+                converted_data[field_name] = (
                     value.split(",")
                     if isinstance(value, str)
                     else value.decode("utf-8").split(",")
@@ -258,12 +227,21 @@ class UserInfo(BaseModel):
     email: Optional[EmailStr] = None
     parent: Optional[str] = None
     expires_at: Optional[float] = None
+    current_workspace: Optional[str] = None
     _metadata: Dict[str, Any] = PrivateAttr(
         default_factory=lambda: {}
     )  # e.g. s3 credential
 
     def get_workspace(self):
         return f"ws-user-{self.id}"
+    
+    @classmethod
+    def from_context(cls, context: Dict[str, Any]):
+        """Create a user info from a context."""
+        # context contains 'user' and 'ws'
+        user_info = cls.model_validate(context["user"])
+        user_info.current_workspace = context.get("ws")
+        return user_info
 
     def get_metadata(self, key=None) -> Dict[str, Any]:
         """Return the metadata."""
