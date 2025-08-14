@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ artifact.manifest.name or 'Collection' }} - Application Marketplace</title>
+    <title>{{ artifact.manifest.name or 'Collection' }}</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
     <style>
@@ -21,14 +21,14 @@
         <header class="mb-10 text-center">
             <h1 class="text-5xl font-bold text-gray-800 mb-4">
                 <i class="fas fa-store text-blue-500 mr-3"></i>
-                {{ artifact.manifest.name or 'Application Marketplace' }}
+                {{ artifact.manifest.name or 'Collection' }}
             </h1>
             <p class="text-xl text-gray-600 max-w-3xl mx-auto">
                 {{ artifact.manifest.description }}
             </p>
             <div class="mt-4 flex justify-center gap-4">
                 <span class="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm">
-                    <i class="fas fa-cube mr-1"></i> <span id="appCount">0</span> Apps Available
+                    <i class="fas fa-cube mr-1"></i> <span id="appCount">0</span> Artifacts Available
                 </span>
                 <span class="px-3 py-1 bg-green-100 text-green-700 rounded-full text-sm">
                     <i class="fas fa-server mr-1"></i> Workspace: {{ workspace }}
@@ -40,7 +40,7 @@
         <div class="mb-8 max-w-2xl mx-auto">
             <div class="relative">
                 <input type="text" id="searchInput" 
-                       placeholder="Search applications by name or description..." 
+                       placeholder="Search artifacts by name or description..." 
                        class="w-full px-6 py-3 pl-12 border-2 border-gray-200 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent shadow-sm">
                 <i class="fas fa-search absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400"></i>
             </div>
@@ -59,7 +59,7 @@
             <!-- Apps will be loaded dynamically -->
             <div class="col-span-full text-center py-8" id="loadingState">
                 <i class="fas fa-spinner fa-spin text-2xl text-gray-400 mb-2"></i>
-                <p class="text-gray-600">Loading applications...</p>
+                <p class="text-gray-600">Loading artifacts...</p>
             </div>
         </div>
     </div>
@@ -99,7 +99,7 @@
                 document.getElementById('appsGrid').innerHTML = `
                     <div class="col-span-full text-center py-8" id="loadingState">
                         <i class="fas fa-spinner fa-spin text-2xl text-gray-400 mb-2"></i>
-                        <p class="text-gray-600">Loading applications...</p>
+                        <p class="text-gray-600">Loading artifacts...</p>
                     </div>
                 `;
                 
@@ -162,7 +162,7 @@
                 document.getElementById('appsGrid').innerHTML = `
                     <div class="col-span-full text-center py-16">
                         <i class="fas fa-exclamation-triangle text-6xl text-red-300 mb-4"></i>
-                        <p class="text-xl text-red-500">Failed to load applications</p>
+                        <p class="text-xl text-red-500">Failed to load artifacts</p>
                         <p class="text-red-400 mt-2">${error.message}</p>
                     </div>
                 `;
@@ -178,8 +178,8 @@
                 grid.innerHTML = `
                     <div class="col-span-full text-center py-16">
                         <i class="fas fa-inbox text-6xl text-gray-300 mb-4"></i>
-                        <p class="text-xl text-gray-500">${currentSearchQuery || currentTypeFilter !== 'all' ? 'No applications found matching your search.' : 'No applications available in this marketplace yet.'}</p>
-                        <p class="text-gray-400 mt-2">${currentSearchQuery || currentTypeFilter !== 'all' ? 'Try adjusting your search or filters.' : 'Check back later or publish your own applications!'}</p>
+                        <p class="text-xl text-gray-500">${currentSearchQuery || currentTypeFilter !== 'all' ? 'No artifacts found matching your search.' : 'No artifacts available in this collection yet.'}</p>
+                        <p class="text-gray-400 mt-2">${currentSearchQuery || currentTypeFilter !== 'all' ? 'Try adjusting your search or filters.' : 'Check back later or add your own artifacts!'}</p>
                     </div>
                 `;
                 return;
@@ -261,7 +261,7 @@
             // Page info
             paginationHTML += `
                 <div class="ml-4 text-sm text-gray-600">
-                    Page ${currentPage} of ${totalPages} (${totalItems} items)
+                    Page ${currentPage} of ${totalPages} (${totalItems} artifacts)
                 </div>
             `;
             
@@ -375,8 +375,9 @@
                                 class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors duration-200 py-2 px-4">
                             <i class="fas fa-external-link-alt mr-2"></i> View Artifact
                         </button>
-                        <button onclick="viewDetails('${app.id}')" 
-                                class="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors duration-200">
+                        <button onclick="event.stopPropagation(); viewDetails('${app.id}')" 
+                                class="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors duration-200"
+                                title="View Details">
                             <i class="fas fa-info-circle"></i>
                         </button>
                     </div>
@@ -513,8 +514,23 @@
         
         // View app details
         function viewDetails(appId) {
-            const app = appsData.find(a => a.id === appId);
-            if (!app) return;
+            // Check if data is loaded
+            if (typeof filteredAppsData === 'undefined' || !filteredAppsData) {
+                console.error('App data not loaded yet. filteredAppsData is undefined.');
+                alert('Please wait for the artifacts to load before viewing details.');
+                return;
+            }
+            
+            if (filteredAppsData.length === 0) {
+                console.error('No apps in filteredAppsData');
+                return;
+            }
+            
+            const app = filteredAppsData.find(a => a.id === appId);
+            if (!app) {
+                console.error('App not found:', appId, 'in', filteredAppsData);
+                return;
+            }
             
             const modal = document.getElementById('detailsModal');
             const content = document.getElementById('detailsContent');
@@ -522,8 +538,8 @@
             content.innerHTML = `
                 <div class="space-y-4">
                     <div>
-                        <h3 class="text-lg font-semibold text-gray-800 mb-2">${app.manifest.name || app.id}</h3>
-                        <p class="text-gray-600">${app.manifest.description || 'No description available'}</p>
+                        <h3 class="text-lg font-semibold text-gray-800 mb-2">${app.manifest?.name || app.id}</h3>
+                        <p class="text-gray-600">${app.manifest?.description || 'No description available'}</p>
                     </div>
                     
                     <div class="grid grid-cols-2 gap-4">
@@ -533,7 +549,7 @@
                         </div>
                         <div class="bg-gray-50 p-3 rounded-lg">
                             <p class="text-sm text-gray-500 mb-1">Version</p>
-                            <p class="font-medium">${app.manifest.version || '1.0.0'}</p>
+                            <p class="font-medium">${app.manifest?.version || '1.0.0'}</p>
                         </div>
                         <div class="bg-gray-50 p-3 rounded-lg">
                             <p class="text-sm text-gray-500 mb-1">Downloads</p>
@@ -545,7 +561,7 @@
                         </div>
                     </div>
                     
-                    ${app.manifest.requirements ? `
+                    ${app.manifest?.requirements ? `
                     <div>
                         <h4 class="font-semibold text-gray-800 mb-2">Requirements</h4>
                         <pre class="bg-gray-50 p-3 rounded-lg text-sm overflow-x-auto">${JSON.stringify(app.manifest.requirements, null, 2)}</pre>

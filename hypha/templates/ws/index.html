@@ -2151,6 +2151,16 @@
                                 <div className="flex justify-between items-center w-full mt-3">
                                     <div className="flex gap-2">
                                         <button
+                                            className="bg-green-600 hover:bg-green-500 text-white font-bold py-1 px-3 rounded text-sm transition duration-300"
+                                            onClick={() => {
+                                                // Navigate to the view page for this artifact
+                                                window.location.href = `./${artifact.id.split('/')[0]}/view/${artifact.alias}`;
+                                            }}
+                                            title="View artifact"
+                                        >
+                                            <i className="fas fa-eye mr-1"></i> View
+                                        </button>
+                                        <button
                                             className="bg-blue-500 hover:bg-blue-400 text-white font-bold py-1 px-3 rounded text-sm transition duration-300"
                                             onClick={() => onMoreInfo(artifact)}
                                         >
