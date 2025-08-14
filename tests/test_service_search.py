@@ -113,13 +113,22 @@ async def test_service_search(fastapi_server_redis_1, test_user_token):
             print("Skipping remaining search tests")
             return
 
-    # Test with pagination - only if search is working
-    if len(services) > 0:
-        results = await api.search_services(query=text_query, limit=3, pagination=True)
-        assert results["total"] >= 1
+    results = await api.search_services(query=text_query, limit=3, pagination=True)
+    
+    # Debug: If no results, try different approaches to identify the issue
+    if results["total"] == 0:
+        # Try searching without a query (should return all services)
+        all_search = await api.search_services(limit=10, pagination=True)
+        print(f"DEBUG: Search without query returned {all_search['total']} results")
+        
+        # Try searching with a different query
+        generic_search = await api.search_services(query="service", limit=10, pagination=True)
+        print(f"DEBUG: Search for 'service' returned {generic_search['total']} results")
+        
+        # The assertion should still fail to maintain test integrity
+        assert results["total"] >= 1, f"Expected at least 1 result for '{text_query}', but got {results['total']}. All search: {all_search['total']}, Generic search: {generic_search['total']}"
     else:
-        # Skip pagination test if search is not returning results
-        print("Skipping pagination test as search is not returning results")
+        assert results["total"] >= 1
 
     embedding = np.ones(384).astype(np.float32)
     await api.register_service(
