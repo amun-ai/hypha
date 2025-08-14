@@ -2264,7 +2264,9 @@ with open("example2.txt", "wb") as f:
 
 ## Static Site Hosting
 
-The Artifact Manager supports hosting static websites through special "site" artifacts. These artifacts can serve static files with optional Jinja2 template rendering, making them perfect for hosting documentation, portfolios, or any static web content.
+The Artifact Manager supports hosting static websites through special "view" endpoint. These artifacts can serve static files with optional Jinja2 template rendering, making them perfect for hosting documentation, portfolios, or any static web content.
+
+By setting the `view_config`, any artifact can be turned into a static site or pages, similar to Github Pages.
 
 ### Site Artifact Features
 
@@ -2275,9 +2277,9 @@ The Artifact Manager supports hosting static websites through special "site" art
 - **Access Control**: Permission-based access to site content
 - **View Statistics**: Track page views and download counts
 
-### Creating and Deploying a Static Site
+### Creating and Deploying a Static View
 
-#### Step 1: Create a Site Artifact
+#### Step 1: Create a View Artifact
 
 ```python
 import asyncio
@@ -2292,14 +2294,14 @@ async def deploy_static_site():
     workspace = api.config.workspace
     token = await api.generate_token()
 
-    # Create a site artifact
+    # Create a view artifact
     manifest = {
         "name": "My Portfolio",
         "description": "A personal portfolio website",
-        "type": "site"
     }
     
-    config = {
+    view_config = {
+        "root_directory": "/", # it can be a subdirectory too
         "templates": ["index.html", "about.html"],  # Files that use Jinja2 templates
         "template_engine": "jinja2",
         "headers": {
@@ -2309,14 +2311,15 @@ async def deploy_static_site():
     }
     
     site_artifact = await artifact_manager.create(
-        type="site",
         alias="my-portfolio",
         manifest=manifest,
-        config=config,
+        config={
+            "view_config": view_config
+        },
         stage=True
     )
     
-    print(f"Site artifact created with ID: {site_artifact.id}")
+    print(f"Artifact created with ID: {site_artifact.id}")
     return site_artifact, workspace, token
 ```
 
@@ -2445,7 +2448,7 @@ async def commit_and_deploy(artifact_manager, site_artifact):
     print("Site committed and deployed!")
     
     # The site is now accessible at:
-    # https://your-hypha-server.com/{workspace}/site/my-portfolio/
+    # https://your-hypha-server.com/{workspace}/view/my-portfolio/
     
     return site_artifact
 ```
@@ -2466,7 +2469,7 @@ async def main():
     await commit_and_deploy(artifact_manager, site_artifact)
     
     # Step 4: Test the site
-    site_url = f"{SERVER_URL}/{workspace}/site/my-portfolio/"
+    site_url = f"{SERVER_URL}/{workspace}/view/my-portfolio/"
     print(f"Your site is now live at: {site_url}")
     
     # Test the site
@@ -2486,7 +2489,8 @@ asyncio.run(main())
 #### Template Configuration
 
 ```python
-config = {
+view_config = {
+    "root_directory": "/",
     "templates": ["index.html", "about.html", "contact.html"],  # Files to render with Jinja2
     "template_engine": "jinja2",  # Currently only Jinja2 is supported
     "headers": {
@@ -2504,7 +2508,7 @@ When using Jinja2 templates, the following variables are available:
 
 - **`MANIFEST`**: The artifact's manifest data
 - **`CONFIG`**: The artifact's configuration (excluding secrets)
-- **`BASE_URL`**: The base URL for the site (e.g., `/workspace/site/alias/`)
+- **`BASE_URL`**: The base URL for the site (e.g., `/workspace/view/alias/`)
 - **`PUBLIC_BASE_URL`**: The public base URL of the Hypha server
 - **`LOCAL_BASE_URL`**: The local base URL for cluster-internal access
 - **`WORKSPACE`**: The workspace name
@@ -2516,7 +2520,7 @@ When using Jinja2 templates, the following variables are available:
 
 #### HTTP Endpoint
 
-**URL Pattern**: `GET /{workspace}/site/{artifact_alias}/{file_path:path}`
+**URL Pattern**: `GET /{workspace}/view/{artifact_alias}/{file_path:path}`
 
 **Parameters**:
 - **workspace**: The workspace containing the site
@@ -2544,21 +2548,21 @@ async def test_site():
     async with httpx.AsyncClient() as client:
         # Access the main page
         response = await client.get(
-            f"{SERVER_URL}/{workspace}/site/my-portfolio/",
+            f"{SERVER_URL}/{workspace}/view/my-portfolio/",
             headers={"Authorization": f"Bearer {token}"}
         )
         print(f"Main page: {response.status_code}")
         
         # Access a specific file
         response = await client.get(
-            f"{SERVER_URL}/{workspace}/site/my-portfolio/style.css",
+            f"{SERVER_URL}/{workspace}/view/my-portfolio/style.css",
             headers={"Authorization": f"Bearer {token}"}
         )
         print(f"CSS file: {response.status_code}")
         
         # Access staged version
         response = await client.get(
-            f"{SERVER_URL}/{workspace}/site/my-portfolio/?stage=true",
+            f"{SERVER_URL}/{workspace}/view/my-portfolio/?stage=true",
             headers={"Authorization": f"Bearer {token}"}
         )
         print(f"Staged version: {response.status_code}")
@@ -2632,7 +2636,6 @@ async def deploy_portfolio():
     
     # Create site artifact
     site = await artifact_manager.create(
-        type="site",
         alias="portfolio",
         manifest={
             "name": "John Doe - Portfolio",
@@ -2640,11 +2643,14 @@ async def deploy_portfolio():
             "type": "site"
         },
         config={
-            "templates": ["index.html", "about.html", "projects.html"],
-            "template_engine": "jinja2",
-            "headers": {
-                "Access-Control-Allow-Origin": "*",
-                "Cache-Control": "max-age=3600"
+            "view": {
+                "root_directory": "/",
+                "templates": ["index.html", "about.html", "projects.html"],
+                "template_engine": "jinja2",
+                "headers": {
+                    "Access-Control-Allow-Origin": "*",
+                    "Cache-Control": "max-age=3600"
+                }
             }
         },
         stage=True
@@ -2665,7 +2671,7 @@ async def deploy_portfolio():
     # Deploy
     await artifact_manager.commit(site.id)
     
-    print(f"Portfolio deployed at: {SERVER_URL}/{workspace}/site/portfolio/")
+    print(f"Portfolio deployed at: {SERVER_URL}/{workspace}/view/portfolio/")
     return site
 
 # Deploy the portfolio

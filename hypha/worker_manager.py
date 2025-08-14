@@ -106,7 +106,7 @@ class WorkerManager:
         
         # Connect to workspace
         if context and workspace != "public":
-            user_info = UserInfo.model_validate(context["user"])
+            user_info = UserInfo.from_context(context)
             workspace_interface = await self.store.get_workspace_interface(
                 user_info, workspace
             ).__aenter__()
@@ -376,6 +376,10 @@ class WorkerManager:
         from_workspace: Optional[str] = None
     ) -> Optional[WorkerConnection]:
         """Create a new worker connection."""
+        # Auto-detect if worker_id is from public workspace
+        if worker_id.startswith("public/"):
+            from_workspace = "public"
+        
         if from_workspace == "public" or (from_workspace is None and not context):
             # Use public API
             server = await self.store.get_public_api()
@@ -389,7 +393,7 @@ class WorkerManager:
             else:
                 workspace = context.get("ws")
             
-            user_info = UserInfo.model_validate(context["user"])
+            user_info = UserInfo.from_context(context)
             
             # Create persistent workspace interface (don't use async with!)
             workspace_interface = await self.store.get_workspace_interface(

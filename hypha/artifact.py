@@ -11,6 +11,7 @@ import math
 import asyncio
 from io import BytesIO
 import zipfile
+from pathlib import Path
 from sqlalchemy import (
     event,
     Column,
@@ -1088,8 +1089,9 @@ class ArtifactController:
                 )
 
         # HTTP endpoint for serving static sites
-        @router.get("/{workspace}/site/{artifact_alias}/{file_path:path}")
-        async def serve_site_file(
+        @router.get("/{workspace}/view/{artifact_alias}")
+        @router.get("/{workspace}/view/{artifact_alias}/{file_path:path}")
+        async def serve_view_page(
             request: Request,
             workspace: str,
             artifact_alias: str,
@@ -1099,8 +1101,40 @@ class ArtifactController:
             version: Optional[str] = None,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
-            """Serve files from a static site artifact with optional Jinja2 template rendering."""
+            """Serve files from a static site artifact with optional Jinja2 template rendering.
+            
+            Supports Redis caching for improved performance. Cache configuration via view_config:
+            {
+                "cache": {
+                    "enabled": true,
+                    "ttl": 300,  # Cache time-to-live in seconds
+                    "patterns": ["*.html", "*.css", "*.js"]  # File patterns to cache
+                }
+            }
+            
+            Note: Only public (non-token), non-stage content is cached.
+            """
             try:
+                # Check cache first for non-stage, public artifacts
+                cache_key = None
+                use_cache = False
+                if not stage and not token and self._cache:
+                    # Only cache public, non-stage content
+                    cache_key = f"artifact:view:{workspace}:{artifact_alias}:{version or 'latest'}:{file_path or 'index.html'}"
+                    try:
+                        cached_content = await self._cache.get(cache_key)
+                        if cached_content:
+                            # Parse cached response
+                            import pickle
+                            cached_response = pickle.loads(cached_content)
+                            return Response(
+                                content=cached_response['content'],
+                                media_type=cached_response['media_type'],
+                                headers=cached_response.get('headers', {})
+                            )
+                    except Exception as e:
+                        logger.debug(f"Cache retrieval failed: {e}")
+                        # Continue without cache
                 artifact_id = self._validate_artifact_id(
                     artifact_alias, {"ws": workspace}
                 )
@@ -1124,16 +1158,45 @@ class ArtifactController:
                         user_info, artifact_id, "get_file", session
                     )
 
-                    # Verify this is a site artifact
-                    if artifact.type != "site":
+                    # Check if view is disabled
+                    view_config = artifact.config.get("view_config")
+                    if view_config == "disabled":
                         raise HTTPException(
-                            status_code=400,
-                            detail="This artifact is not a site artifact",
+                            status_code=404,
+                            detail="View access is disabled for this artifact",
                         )
+                    
+                    # If no view_config provided, load default template based on artifact type
+                    if view_config is None:
+                        artifact_type = artifact.type or "generic"
+                        template_dir = Path(__file__).parent / "templates" / "artifacts" / artifact_type
+                        
+                        # Check if type-specific template exists
+                        if not template_dir.exists():
+                            # Fall back to default template if type-specific doesn't exist
+                            template_dir = Path(__file__).parent / "templates" / "artifacts" / "default"
+                        
+                        # If still no template found, artifact cannot be served as view
+                        if not template_dir.exists():
+                            raise HTTPException(
+                                status_code=400,
+                                detail="This artifact type does not support view mode",
+                            )
+                        
+                        # Load default configuration for this artifact type
+                        view_config = {
+                            "template_engine": "jinja2",
+                            "templates": ["index.html"],
+                            "root_directory": "/",
+                        }
 
                     # Default to index.html if file_path is empty or just "/"
                     if not file_path or file_path == "/":
                         file_path = "index.html"
+                    
+                    # Strip leading slash to avoid absolute path issues in safe_join
+                    if file_path and file_path.startswith("/"):
+                        file_path = file_path[1:]
 
                     # Increment view count for the artifact
                     await self._increment_stat(session, artifact.id, "view_count")
@@ -1141,17 +1204,20 @@ class ArtifactController:
 
                     # Get artifact configuration
                     config = artifact.config or {}
-                    templates = config.get("templates", [])
-                    template_engine = config.get("template_engine")
-                    custom_headers = config.get("headers", {})
+                    root_directory = view_config.get("root_directory", config.get("root_directory", "/"))
+                    templates = view_config.get("templates", [])
+                    template_engine = view_config.get("template_engine", "jinja2")
+                    custom_headers = view_config.get("headers", {})
+                    metadata = view_config.get("metadata", {})
+                    use_builtin_template = view_config.get("use_builtin_template", True)
 
-                    version_index = self._get_version_index(artifact, version)
-                    s3_config = self._get_s3_config(artifact, parent_artifact)
-                    file_key = safe_join(
-                        s3_config["prefix"],
-                        f"{artifact.id}/v{version_index}",
-                        file_path,
-                    )
+                    
+                    # Handle root_directory properly - if it's "/", use file_path directly
+                    if root_directory == "/":
+                        abs_file_path = file_path
+                    else:
+                        abs_file_path = safe_join(root_directory, file_path)
+                    
 
                     # Check if file needs template rendering
                     if (
@@ -1159,45 +1225,63 @@ class ArtifactController:
                         and template_engine == "jinja2"
                         and file_path in templates
                     ):
-
-                        # Get file content for template rendering
-                        async with self._create_client_async(s3_config) as s3_client:
-                            try:
-                                obj_info = await s3_client.get_object(
-                                    Bucket=s3_config["bucket"], Key=file_key
-                                )
-                                content = await obj_info["Body"].read()
-                                content = content.decode("utf-8")
-                            except ClientError:
+                        content = None
+                        
+                        # File not found in artifact, check for builtin template
+                        if use_builtin_template or artifact.config.get("view_config") is None:
+                            artifact_type = artifact.type or "default"
+                            template_path = Path(__file__).parent / "templates" / "artifacts" / artifact_type / file_path
+                            
+                            # Try type-specific template first
+                            if not template_path.exists():
+                                # Fall back to default template
+                                template_path = Path(__file__).parent / "templates" / "artifacts" / "default" / file_path
+                            
+                            if template_path.exists():
+                                with open(template_path, 'r', encoding='utf-8') as f:
+                                    content = f.read()
+                            else:
                                 raise HTTPException(
                                     status_code=404,
-                                    detail=f"File not found: {file_path}",
+                                    detail=f"Template file not found: {file_path}",
                                 )
+                        else:
+                            version_index = self._get_version_index(artifact, version)
+                            s3_config = self._get_s3_config(artifact, parent_artifact)
+                    
+                            file_key = safe_join(
+                                s3_config["prefix"],
+                                f"{artifact.id}/v{version_index}",
+                                abs_file_path,
+                            )
+                            # First try to get file content from artifact
+                            async with self._create_client_async(s3_config) as s3_client:
+                                try:
+                                    obj_info = await s3_client.get_object(
+                                        Bucket=s3_config["bucket"], Key=file_key
+                                    )
+                                    content = await obj_info["Body"].read()
+                                    content = content.decode("utf-8")
+                                except ClientError:
+                                    raise HTTPException(
+                                        status_code=404,
+                                        detail=f"File not found: {file_path} (absolute path: {abs_file_path})",
+                                    )
 
                         # Prepare Jinja2 template context
                         artifact_data = self._generate_artifact_data(
                             artifact, parent_artifact
                         )
 
-                        # Exclude secrets from config for template context
-                        config_for_template = {
-                            k: v for k, v in config.items() if k != "secrets"
-                        }
-
                         template_context = {
-                            "PUBLIC_BASE_URL": self.store.public_base_url,
-                            "LOCAL_BASE_URL": self.store.local_base_url,
-                            "BASE_URL": f"/{workspace}/site/{artifact_alias}/",
-                            "VIEW_COUNT": artifact_data.get("view_count", 0),
-                            "DOWNLOAD_COUNT": artifact_data.get("download_count", 0),
-                            "MANIFEST": artifact_data.get("manifest", {}),
-                            "CONFIG": config_for_template,
-                            "WORKSPACE": workspace,
-                            "USER": (
-                                user_info.model_dump()
-                                if user_info and not user_info.is_anonymous
-                                else None
-                            ),
+                            "public_base_url": self.store.public_base_url,
+                            "local_base_url": self.store.local_base_url,
+                            "artifact": artifact_data,
+                            "view_base_url": f"{self.store.public_base_url}/{workspace}/view/{artifact.alias}",
+                            "artifact_base_url": f"{self.store.public_base_url}/{workspace}/artifacts/{artifact.alias}",
+                            "workspace": workspace,
+                            "user": user_info.model_dump(mode="json"),
+                            "metadata": metadata,
                         }
 
                         # Render template
@@ -1228,6 +1312,39 @@ class ArtifactController:
                                     response_headers[key] = value
                                 else:
                                     response_headers[key] = value
+
+                        # Cache the response if caching is enabled
+                        if cache_key and self._cache and not stage and not token:
+                            try:
+                                # Check if this artifact/page is cacheable based on config
+                                cache_config = view_config.get("cache", {})
+                                cache_enabled = cache_config.get("enabled", False)
+                                cache_ttl = cache_config.get("ttl", 300)  # Default 5 minutes
+                                cache_patterns = cache_config.get("patterns", ["*.html", "*.css", "*.js"])
+                                
+                                # Check if file matches cache patterns
+                                import fnmatch
+                                should_cache = cache_enabled and any(
+                                    fnmatch.fnmatch(file_path, pattern) 
+                                    for pattern in cache_patterns
+                                )
+                                
+                                # Also limit cache size - don't cache files larger than 1MB
+                                if should_cache and len(rendered) <= 1024 * 1024:
+                                    import pickle
+                                    cache_data = {
+                                        'content': rendered,
+                                        'media_type': mime_type,
+                                        'headers': response_headers
+                                    }
+                                    await self._cache.set(
+                                        cache_key, 
+                                        pickle.dumps(cache_data),
+                                        expire=cache_ttl
+                                    )
+                            except Exception as e:
+                                logger.debug(f"Failed to cache response: {e}")
+                                # Continue without caching
 
                         return Response(
                             content=rendered,
@@ -1278,7 +1395,7 @@ class ArtifactController:
             except HTTPException:
                 raise
             except KeyError:
-                raise HTTPException(status_code=404, detail="Artifact not found")
+                raise HTTPException(status_code=404, detail=f"Artifact `{artifact_alias}` not found")
             except PermissionError:
                 raise HTTPException(status_code=403, detail="Permission denied")
             except Exception as e:
@@ -1579,26 +1696,73 @@ class ArtifactController:
             return permission  # Assume it's already a list
 
     async def _check_permissions(self, artifact, user_info, operation):
-        """Check whether a user has permission to perform an operation on an artifact."""
+        """Check whether a user has permission to perform an operation on an artifact.
+        
+        Permission checks are performed in the following order:
+        1. Workspace-based permissions (workspace/* or workspace/user)
+           - IMPORTANT: Only grants access if user's current_workspace matches
+        2. Specific user permission (by user ID or email)
+        3. Authenticated users permission (@)
+        4. Global permission for all users (*)
+        """
         # Check specific artifact permissions
         permissions = {}
         if artifact and artifact.config:
             permissions = artifact.config.get("permissions", {})
 
-        # Specific user permission
+        # 1. Check workspace-based permissions
+        # Parse all permission keys that contain "/" to check for workspace-based permissions
+        current_workspace = getattr(user_info, 'current_workspace', None)
+        
+        for perm_key, perm_value in permissions.items():
+            if "/" in perm_key:
+                # This is a workspace-based permission
+                parts = perm_key.split("/", 1)
+                if len(parts) == 2:
+                    workspace, target = parts
+                    
+                    # Check if user's current workspace matches
+                    if current_workspace and current_workspace == workspace:
+                        # Check different target patterns
+                        if target == "*":
+                            # All users from this workspace
+                            if operation in self._expand_permission(perm_value):
+                                return True
+                        elif target == "@":
+                            # Authenticated users from this workspace
+                            if not user_info.is_anonymous:
+                                if operation in self._expand_permission(perm_value):
+                                    return True
+                        elif target == user_info.id:
+                            # Specific user ID from this workspace
+                            if operation in self._expand_permission(perm_value):
+                                return True
+                        elif hasattr(user_info, 'email') and user_info.email and target == user_info.email:
+                            # Specific email from this workspace
+                            if operation in self._expand_permission(perm_value):
+                                return True
+
+        # 2. Check specific user permission (by ID or email)
         if user_info.id in permissions:
             if operation in self._expand_permission(permissions[user_info.id]):
                 return True
+        
+        # Also check by email if available
+        if hasattr(user_info, 'email') and user_info.email:
+            if user_info.email in permissions:
+                if operation in self._expand_permission(permissions[user_info.email]):
+                    return True
 
-        # Check based on user's authentication status
+        # 3. Check based on user's authentication status (authenticated users)
         if not user_info.is_anonymous and "@" in permissions:
             if operation in self._expand_permission(permissions["@"]):
                 return True
 
-        # Global permission for all users
+        # 4. Global permission for all users
         if "*" in permissions:
             if operation in self._expand_permission(permissions["*"]):
                 return True
+        
         return False
 
     async def _get_artifact_with_permission(
@@ -2067,7 +2231,7 @@ class ArtifactController:
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
 
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
 
         # Validate the manifest
         if type == "collection":
@@ -2372,7 +2536,7 @@ class ArtifactController:
         """Reset the artifact's download count and view count."""
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         artifact_id = self._validate_artifact_id(artifact_id, context)
 
         session = await self._get_session()
@@ -2406,7 +2570,7 @@ class ArtifactController:
         """Edit the artifact's manifest and save it in the database."""
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         artifact_id = self._validate_artifact_id(artifact_id, context)
         session = await self._get_session()
         manifest = manifest and make_json_safe(manifest)
@@ -2601,7 +2765,7 @@ class ArtifactController:
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
 
         # Handle stage parameter
         if stage:
@@ -2705,7 +2869,7 @@ class ArtifactController:
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         session = await self._get_session()
         assert version != "stage", "Version cannot be 'stage' when committing."
         try:
@@ -2958,7 +3122,7 @@ class ArtifactController:
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
 
         try:
             session = await self._get_session()
@@ -3074,7 +3238,7 @@ class ArtifactController:
         """
         Add vectors to a vector collection.
         """
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         session = await self._get_session()
         max_retries = 3
         retry_delay = 0.5  # seconds
@@ -3124,6 +3288,208 @@ class ArtifactController:
         finally:
             await session.close()
 
+    async def duplicate(
+        self,
+        source_artifact_id: str,
+        target_alias: str = None,
+        target_workspace: str = None,
+        target_parent_id: str = None,
+        overwrite: bool = False,
+        remove_secrets: bool = True,
+        stage: bool = False,
+        context: dict = None,
+    ):
+        """Duplicate an artifact from one workspace to another or within the same workspace.
+        
+        Args:
+            source_artifact_id: The ID of the artifact to duplicate
+            target_alias: The alias for the new artifact (optional, will auto-generate if not provided)
+            target_workspace: The workspace to duplicate to (optional, defaults to source workspace)
+            target_parent_id: The parent artifact ID for the new artifact (optional)
+            overwrite: Whether to overwrite an existing artifact with the same alias
+            remove_secrets: Whether to remove secrets from the duplicated artifact (default True)
+            stage: Whether to leave the duplicated artifact in stage mode (default False). 
+                   If True, the artifact will remain staged and can be discarded or committed later.
+                   Useful when the target collection doesn't allow commit permission for the current user.
+            context: The context containing user and workspace information
+        
+        Returns:
+            The ID of the newly created artifact
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        
+        source_artifact_id = self._validate_artifact_id(source_artifact_id, context)
+        user_info = UserInfo.from_context(context)
+        
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                # Get source artifact with read permission
+                source_artifact, source_parent = await self._get_artifact_with_permission(
+                    user_info, source_artifact_id, "read", session
+                )
+                
+                if not source_artifact.manifest:
+                    raise ValueError(
+                        f"Source artifact '{source_artifact_id}' must be committed before it can be duplicated."
+                    )
+                
+                # Use source workspace if target workspace not specified
+                if target_workspace is None:
+                    target_workspace = source_artifact.workspace
+                
+                # Check permissions for target workspace
+                if target_parent_id:
+                    target_parent_id = self._validate_artifact_id(target_parent_id, context)
+                    target_parent, _ = await self._get_artifact_with_permission(
+                        user_info, target_parent_id, "create", session
+                    )
+                    # Ensure target workspace matches parent's workspace
+                    if target_workspace and target_workspace != target_parent.workspace:
+                        raise ValueError(
+                            "Target workspace must match the parent artifact's workspace."
+                        )
+                    target_workspace = target_parent.workspace
+                else:
+                    # Creating orphan artifact in target workspace
+                    if not user_info.check_permission(
+                        target_workspace, UserPermission.read_write
+                    ):
+                        raise PermissionError(
+                            f"User does not have permission to create an artifact in workspace '{target_workspace}'."
+                        )
+                    target_parent = None
+                
+                # Check if target workspace exists and is persistent
+                winfo = await self.store.get_workspace_info(target_workspace, load=True)
+                if not winfo:
+                    raise ValueError(f"Workspace '{target_workspace}' does not exist.")
+                if not winfo.persistent:
+                    raise PermissionError(
+                        f"Cannot create artifact in a non-persistent workspace `{target_workspace}`."
+                    )
+        finally:
+            await session.close()
+        
+        # Create the new artifact with copied manifest and config
+        new_config = dict(source_artifact.config) if source_artifact.config else {}
+        # Remove source-specific config like zenodo info
+        new_config.pop("zenodo", None)
+        new_config.pop("id_parts", None)
+        
+        # Copy permissions but ensure current user has full access
+        if "permissions" not in new_config:
+            new_config["permissions"] = {}
+        new_config["permissions"][user_info.id] = "*"
+        
+        # Copy manifest and optionally remove secrets
+        new_manifest = dict(source_artifact.manifest)
+        if remove_secrets and "secrets" in new_manifest:
+            del new_manifest["secrets"]
+        
+        # Create the new artifact in stage mode so we can add files before committing
+        new_artifact_info = await self.create(
+            alias=target_alias,
+            workspace=target_workspace,
+            parent_id=target_parent_id,
+            manifest=new_manifest,
+            type=source_artifact.type,
+            config=new_config,
+            secrets=None,  # Don't copy secrets for security
+            overwrite=overwrite,
+            version="stage",  # Create in stage mode to add files
+            context=context,
+        )
+        
+        new_artifact_id = new_artifact_info["id"]
+        
+        # Copy all files from source to target
+        source_s3_config = self._get_s3_config(source_artifact, source_parent)
+        
+        # Get target artifact for S3 config
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                target_artifact, target_parent = await self._get_artifact_with_permission(
+                    user_info, new_artifact_id, "put_file", session
+                )
+                target_s3_config = self._get_s3_config(target_artifact, target_parent)
+                
+                # Determine target version - since we created in stage mode, check staging
+                # The target artifact was just created in stage mode, so files go to v0
+                # which is where staging files are stored
+                target_version = 0
+                
+                # List all files in the source artifact
+                source_versions = source_artifact.versions or []
+                latest_version = len(source_versions) - 1 if source_versions else 0
+                source_prefix = safe_join(
+                    source_s3_config["prefix"],
+                    f"{source_artifact.id}/v{latest_version}/"
+                )
+                
+                async with self._create_client_async(source_s3_config) as source_s3:
+                    async with self._create_client_async(target_s3_config) as target_s3:
+                        # List and copy all files
+                        paginator = source_s3.get_paginator("list_objects_v2")
+                        page_iterator = paginator.paginate(
+                            Bucket=source_s3_config["bucket"],
+                            Prefix=source_prefix
+                        )
+                        
+                        file_count = 0
+                        async for page in page_iterator:
+                            if "Contents" in page:
+                                for obj in page["Contents"]:
+                                    # Get relative file path
+                                    file_path = obj["Key"][len(source_prefix):]
+                                    if not file_path:  # Skip the prefix itself
+                                        continue
+                                    
+                                    # Copy file from source to target
+                                    source_key = obj["Key"]
+                                    # Since we're creating in stage mode, files should go to staging location
+                                    # which will become v0 after commit
+                                    target_key = safe_join(
+                                        target_s3_config["prefix"],
+                                        f"{target_artifact.id}/v{target_version}/{file_path}"
+                                    )
+                                    
+                                    # Download from source and upload to target
+                                    response = await source_s3.get_object(
+                                        Bucket=source_s3_config["bucket"],
+                                        Key=source_key
+                                    )
+                                    body = await response["Body"].read()
+                                    
+                                    await target_s3.put_object(
+                                        Bucket=target_s3_config["bucket"],
+                                        Key=target_key,
+                                        Body=body,
+                                        ContentType=response.get("ContentType", "application/octet-stream"),
+                                    )
+                                    file_count += 1
+                        
+                        # Update file count in the new artifact
+                        target_artifact.file_count = file_count
+                        await session.commit()
+                        
+                        logger.info(
+                            f"Successfully duplicated artifact '{source_artifact_id}' to '{new_artifact_id}' with {file_count} files"
+                        )
+        finally:
+            await session.close()
+        
+        # Conditionally commit the new artifact after copying files
+        if not stage:
+            await self.commit(new_artifact_id, context=context)
+            # Return the committed artifact info
+            return await self.read(new_artifact_id, context=context)
+        else:
+            # Return the staged artifact info
+            return await self.read(new_artifact_id, version="stage", context=context)
+
     async def search_vectors(
         self,
         artifact_id: str,
@@ -3137,7 +3503,7 @@ class ArtifactController:
         pagination: Optional[bool] = False,
         context: dict = None,
     ):
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         session = await self._get_session()
         try:
             async with session.begin():
@@ -3173,7 +3539,7 @@ class ArtifactController:
         ids: list,
         context: dict = None,
     ):
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         session = await self._get_session()
         try:
             async with session.begin():
@@ -3210,7 +3576,7 @@ class ArtifactController:
         id: int,
         context: dict = None,
     ):
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         session = await self._get_session()
         try:
             async with session.begin():
@@ -3238,7 +3604,7 @@ class ArtifactController:
         pagination: bool = False,
         context: dict = None,
     ):
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         session = await self._get_session()
         try:
             async with session.begin():
@@ -3276,7 +3642,7 @@ class ArtifactController:
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         session = await self._get_session()
         if download_weight < 0:
             raise ValueError(
@@ -3394,7 +3760,7 @@ class ArtifactController:
             raise ValueError("Context must include 'ws' (workspace).")
 
         artifact_id = self._validate_artifact_id(artifact_id, context)
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
 
         if download_weight < 0:
             raise ValueError(
@@ -3532,7 +3898,7 @@ class ArtifactController:
             raise ValueError("Context must include 'ws' (workspace).")
 
         artifact_id = self._validate_artifact_id(artifact_id, context)
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
 
         # Get upload info from cache
         cache_key = f"multipart_upload:{upload_id}"
@@ -3579,7 +3945,7 @@ class ArtifactController:
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         session = await self._get_session()
         try:
             async with session.begin():
@@ -3716,7 +4082,7 @@ class ArtifactController:
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
 
         # Handle stage parameter
         if stage:
@@ -3814,7 +4180,7 @@ class ArtifactController:
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
 
         # Handle stage parameter
         if stage:
@@ -4475,7 +4841,7 @@ class ArtifactController:
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         session = await self._get_session()
         try:
             async with session.begin():
@@ -4723,7 +5089,7 @@ class ArtifactController:
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         session = await self._get_session()
 
         try:
@@ -4870,7 +5236,7 @@ class ArtifactController:
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         session = await self._get_session(read_only=True)
 
         try:
@@ -4900,7 +5266,7 @@ class ArtifactController:
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         session = await self._get_session()
 
         try:
@@ -4940,6 +5306,100 @@ class ArtifactController:
         finally:
             await session.close()
 
+    async def set_parent(
+        self,
+        artifact_id: str,
+        new_parent_id: Optional[str] = None,
+        context: dict = None,
+    ):
+        """Set or clear the parent ID of an artifact. 
+        
+        Args:
+            artifact_id: The ID of the artifact to modify
+            new_parent_id: The new parent artifact ID, or None to make it an orphan artifact
+            context: Context containing user and workspace information
+            
+        Returns:
+            The updated artifact information
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.from_context(context)
+        
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                # Get the artifact with write permission
+                artifact, old_parent = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "edit", session
+                )
+                
+                # If setting a new parent, validate it
+                new_parent = None
+                if new_parent_id:
+                    new_parent_id = self._validate_artifact_id(new_parent_id, context)
+                    new_parent, _ = await self._get_artifact_with_permission(
+                        user_info, new_parent_id, "create", session
+                    )
+                    
+                    # Check that new parent is a collection
+                    if new_parent.type != "collection":
+                        raise ValueError(
+                            f"New parent must be a collection, but '{new_parent_id}' is of type '{new_parent.type}'"
+                        )
+                    
+                    # Check that new parent is in the same workspace
+                    if new_parent.workspace != artifact.workspace:
+                        raise ValueError(
+                            f"Cannot move artifact to a different workspace. "
+                            f"Artifact is in '{artifact.workspace}' but parent is in '{new_parent.workspace}'"
+                        )
+                    
+                    # Prevent circular dependencies
+                    if new_parent_id == artifact_id:
+                        raise ValueError("An artifact cannot be its own parent")
+                    
+                    # Check if moving would create a cycle (if artifact is a collection)
+                    if artifact.type == "collection":
+                        # Check if new_parent is a descendant of artifact
+                        current = new_parent
+                        while current and current.parent_id:
+                            if current.parent_id == artifact.id:
+                                raise ValueError(
+                                    "Cannot set parent: this would create a circular dependency"
+                                )
+                            # Get the parent of current
+                            current = await self._get_artifact(session, current.parent_id)
+                    
+                    artifact.parent_id = new_parent.id
+                else:
+                    # Making it an orphan - check workspace permissions
+                    if not user_info.check_permission(
+                        artifact.workspace, UserPermission.read_write
+                    ):
+                        raise PermissionError(
+                            f"User does not have permission to create orphan artifacts in workspace '{artifact.workspace}'"
+                        )
+                    artifact.parent_id = None
+                
+                artifact.last_modified = int(time.time())
+                session.add(artifact)
+                await session.commit()
+                
+                logger.info(
+                    f"Updated parent of artifact {artifact_id} to {new_parent_id}"
+                )
+                
+                # Return updated artifact data
+                return self._generate_artifact_data(artifact, new_parent)
+                
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
+
     async def set_download_weight(
         self,
         artifact_id: str,
@@ -4952,7 +5412,7 @@ class ArtifactController:
             raise ValueError("Context must include 'ws' (workspace).")
         
         artifact_id = self._validate_artifact_id(artifact_id, context)
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.from_context(context)
         
         if download_weight < 0:
             raise ValueError(f"Download weight must be non-negative, got: {download_weight}")
@@ -5016,12 +5476,14 @@ class ArtifactController:
             "commit": self.commit,
             "discard": self.discard,
             "delete": self.delete,
+            "duplicate": self.duplicate,
             "put_file": self.put_file,
             "put_file_start_multipart": self.put_file_start_multipart,
             "put_file_complete_multipart": self.put_file_complete_multipart,
             "remove_file": self.remove_file,
             "get_file": self.get_file,
             "list": self.list_children,
+            "list_children": self.list_children,
             "list_files": self.list_files,
             "add_vectors": self.add_vectors,
             "search_vectors": self.search_vectors,
@@ -5031,5 +5493,6 @@ class ArtifactController:
             "publish": self.publish,
             "get_secret": self.get_secret,
             "set_secret": self.set_secret,
+            "set_parent": self.set_parent,
             "set_download_weight": self.set_download_weight,
         }

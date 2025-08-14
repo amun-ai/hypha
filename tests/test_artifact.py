@@ -922,6 +922,448 @@ async def test_publish_artifact(minio_server, fastapi_server, test_user_token):
     ), "Zenodo publication information missing in config"
 
 
+async def test_duplicate_artifact(minio_server, fastapi_server, test_user_token):
+    """Test duplicating an artifact to another workspace or parent."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+    
+    # Create source collection
+    source_collection_manifest = {
+        "name": "Source Collection",
+        "description": "Collection to copy from",
+    }
+    source_collection = await artifact_manager.create(
+        type="collection",
+        alias="source-collection",
+        manifest=source_collection_manifest,
+    )
+    
+    # Create source artifact with files
+    source_manifest = {
+        "name": "Source Artifact",
+        "description": "Artifact to duplicate",
+        "version": "1.0.0",
+        "custom_field": "test_value",
+    }
+    source_artifact = await artifact_manager.create(
+        type="dataset",
+        alias="source-artifact",
+        parent_id=source_collection["id"],
+        manifest=source_manifest,
+        config={"custom_config": "config_value"},
+        secrets={"api_key": "secret123"},  # Secrets should not be copied
+        version="stage",
+    )
+    
+    # Add files to source artifact
+    file1_content = b"This is test file 1"
+    file1_url = await artifact_manager.put_file(
+        source_artifact["id"], 
+        file_path="data/file1.txt",
+        use_proxy=False
+    )
+    response = requests.put(file1_url, data=file1_content)
+    assert response.status_code == 200
+    
+    file2_content = b"This is test file 2"
+    file2_url = await artifact_manager.put_file(
+        source_artifact["id"],
+        file_path="data/file2.txt", 
+        use_proxy=False
+    )
+    response = requests.put(file2_url, data=file2_content)
+    assert response.status_code == 200
+    
+    # Commit the source artifact
+    await artifact_manager.commit(source_artifact["id"])
+    
+    # Test 1: Duplicate to same workspace, different parent
+    target_collection_manifest = {
+        "name": "Target Collection",
+        "description": "Collection to copy to",
+    }
+    target_collection = await artifact_manager.create(
+        type="collection",
+        alias="target-collection",
+        manifest=target_collection_manifest,
+    )
+    
+    duplicated1 = await artifact_manager.duplicate(
+        source_artifact_id=source_artifact["id"],
+        target_alias="duplicated-artifact-1",
+        target_parent_id=target_collection["id"],
+    )
+    
+    # Verify duplicated artifact
+    dup1_data = await artifact_manager.read(duplicated1["id"])
+    assert dup1_data["manifest"]["name"] == "Source Artifact"
+    assert dup1_data["manifest"]["custom_field"] == "test_value"
+    assert dup1_data["config"]["custom_config"] == "config_value"
+    assert "secrets" not in dup1_data or dup1_data.get("secrets") is None  # Secrets not copied
+    
+    # Verify files were copied
+    dup1_files = await artifact_manager.list_files(duplicated1["id"])
+    
+    # Check that we have the data directory
+    file_and_dir_names = sorted([f["name"] for f in dup1_files])
+    assert "data" in file_and_dir_names  # Should have data directory
+    
+    # List files in the data directory specifically
+    data_files = await artifact_manager.list_files(duplicated1["id"], dir_path="data")
+    data_file_names = sorted([f["name"] for f in data_files])
+    assert len(data_file_names) == 2
+    assert data_file_names == ["file1.txt", "file2.txt"]
+    
+    # Download and verify file content
+    file1_download_url = await artifact_manager.get_file(
+        duplicated1["id"],
+        file_path="data/file1.txt",
+        use_proxy=False
+    )
+    response = requests.get(file1_download_url)
+    assert response.content == file1_content
+    
+    # Test 2: Duplicate within same parent (sibling)
+    duplicated2 = await artifact_manager.duplicate(
+        source_artifact_id=source_artifact["id"],
+        target_alias="duplicated-artifact-2",
+        target_parent_id=source_collection["id"],
+    )
+    
+    dup2_data = await artifact_manager.read(duplicated2["id"])
+    assert dup2_data["manifest"]["name"] == "Source Artifact"
+    assert dup2_data["parent_id"] == source_collection["id"]
+    
+    # Test 3: Duplicate with overwrite
+    duplicated3_first = await artifact_manager.create(
+        type="dataset",
+        alias="duplicated-artifact-3",
+        parent_id=target_collection["id"],
+        manifest={"name": "To be overwritten"},
+        version="stage",
+    )
+    await artifact_manager.commit(duplicated3_first["id"])
+    
+    duplicated3 = await artifact_manager.duplicate(
+        source_artifact_id=source_artifact["id"],
+        target_alias="duplicated-artifact-3",
+        target_parent_id=target_collection["id"],
+        overwrite=True,
+    )
+    
+    dup3_data = await artifact_manager.read(duplicated3["id"])
+    assert dup3_data["manifest"]["name"] == "Source Artifact"  # Should be overwritten
+    
+    # Test 4: Auto-generate alias if not provided
+    duplicated4 = await artifact_manager.duplicate(
+        source_artifact_id=source_artifact["id"],
+        target_parent_id=target_collection["id"],
+    )
+    
+    dup4_data = await artifact_manager.read(duplicated4["id"])
+    assert dup4_data["manifest"]["name"] == "Source Artifact"
+    assert dup4_data["alias"] != source_artifact["alias"]  # Should have different alias
+    
+    # Clean up
+    await artifact_manager.delete(source_collection["id"])
+    await artifact_manager.delete(target_collection["id"])
+
+
+async def test_set_parent_artifact(minio_server, fastapi_server, test_user_token):
+    """Test setting and clearing parent ID of artifacts."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+    
+    # Create two collections
+    collection1 = await artifact_manager.create(
+        type="collection",
+        alias="collection-1",
+        manifest={"name": "Collection 1"},
+    )
+    
+    collection2 = await artifact_manager.create(
+        type="collection",
+        alias="collection-2",
+        manifest={"name": "Collection 2"},
+    )
+    
+    # Create an artifact in collection1
+    artifact = await artifact_manager.create(
+        type="dataset",
+        alias="test-artifact",
+        parent_id=collection1["id"],
+        manifest={"name": "Test Artifact"},
+    )
+    
+    # Verify initial parent
+    assert artifact["parent_id"] == collection1["id"]
+    
+    # Test 1: Move artifact to collection2
+    updated = await artifact_manager.set_parent(
+        artifact["id"],
+        new_parent_id=collection2["id"]
+    )
+    assert updated["parent_id"] == collection2["id"]
+    
+    # Verify by reading the artifact
+    artifact_data = await artifact_manager.read(artifact["id"])
+    assert artifact_data["parent_id"] == collection2["id"]
+    
+    # Test 2: Clear parent (make it orphan)
+    orphan = await artifact_manager.set_parent(
+        artifact["id"],
+        new_parent_id=None
+    )
+    assert orphan["parent_id"] is None
+    
+    # Verify orphan status
+    artifact_data = await artifact_manager.read(artifact["id"])
+    assert artifact_data["parent_id"] is None
+    
+    # Test 3: Set parent back to collection1
+    with_parent = await artifact_manager.set_parent(
+        artifact["id"],
+        new_parent_id=collection1["id"]
+    )
+    assert with_parent["parent_id"] == collection1["id"]
+    
+    # Test 4: Error case - try to set non-collection as parent
+    non_collection = await artifact_manager.create(
+        type="dataset",
+        alias="non-collection",
+        manifest={"name": "Not a collection"},
+    )
+    
+    try:
+        await artifact_manager.set_parent(
+            artifact["id"],
+            new_parent_id=non_collection["id"]
+        )
+        assert False, "Should have raised error for non-collection parent"
+    except Exception as e:
+        assert "must be a collection" in str(e)
+    
+    # Test 5: Error case - circular dependency
+    sub_collection = await artifact_manager.create(
+        type="collection",
+        alias="sub-collection",
+        parent_id=collection1["id"],
+        manifest={"name": "Sub Collection"},
+    )
+    
+    try:
+        # Try to set collection1's parent to sub_collection (would create cycle)
+        await artifact_manager.set_parent(
+            collection1["id"],
+            new_parent_id=sub_collection["id"]
+        )
+        assert False, "Should have raised error for circular dependency"
+    except Exception as e:
+        assert "circular dependency" in str(e).lower()
+    
+    # Test 6: Self-parent should fail
+    try:
+        await artifact_manager.set_parent(
+            collection1["id"],
+            new_parent_id=collection1["id"]
+        )
+        assert False, "Should have raised error for self-parent"
+    except Exception as e:
+        assert "cannot be its own parent" in str(e).lower()
+    
+    # Clean up
+    await artifact_manager.delete(collection1["id"])
+    await artifact_manager.delete(collection2["id"])
+    await artifact_manager.delete(non_collection["id"])
+
+
+async def test_workspace_specific_permissions(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test workspace-specific permission feature using workspace/user format."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+    
+    # Get current workspace from API config
+    current_workspace = api.config.get("workspace", "ws-user-user-1")
+    user_id = "user-1"  # This is the test user's ID
+    
+    # Create artifact with workspace-specific permissions
+    artifact = await artifact_manager.create(
+        type="dataset",
+        alias="workspace-permission-test",
+        manifest={"name": "Workspace Permission Test"},
+        config={
+            "permissions": {
+                "*": "r",  # Read-only for everyone by default
+                f"{current_workspace}/*": "rw",  # Read-write for all users from this workspace
+                f"special-workspace/{user_id}": "rw+",  # This won't apply unless user is in special-workspace
+            }
+        }
+    )
+    
+    # Current user should have write access since they're from the authorized workspace
+    await artifact_manager.edit(
+        artifact_id=artifact["id"],
+        manifest={"name": "Updated by workspace user"}
+    )
+    
+    # Verify the edit worked
+    read_artifact = await artifact_manager.read(artifact_id=artifact["id"])
+    assert read_artifact["manifest"]["name"] == "Updated by workspace user"
+    
+    # Test more specific workspace/user permission
+    artifact2 = await artifact_manager.create(
+        type="dataset",
+        alias="workspace-user-test",
+        manifest={"name": "Workspace User Test"},
+        config={
+            "permissions": {
+                "*": "r",  # Read-only for everyone
+                f"{current_workspace}/{user_id}": "rw+",  # Only this specific user from this workspace
+            }
+        }
+    )
+    
+    # Should have access
+    await artifact_manager.edit(
+        artifact_id=artifact2["id"],
+        manifest={"name": "Updated by specific workspace user"}
+    )
+    
+    read_artifact2 = await artifact_manager.read(artifact_id=artifact2["id"])
+    assert read_artifact2["manifest"]["name"] == "Updated by specific workspace user"
+    
+    print("✅ Workspace-specific permissions working correctly")
+
+
+async def test_workspace_based_permissions(
+    minio_server, fastapi_server, test_user_token, test_user_token_2
+):
+    """Test basic permission features for artifacts including email-based permissions."""
+    # Connect as first user
+    api1 = await connect_to_server(
+        {"name": "test-client-1", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager1 = await api1.get_service("public/artifact-manager")
+    user1_info = api1.config["user"]
+    
+    # Connect as second user
+    api2 = await connect_to_server(
+        {"name": "test-client-2", "server_url": SERVER_URL, "token": test_user_token_2}
+    )
+    artifact_manager2 = await api2.get_service("public/artifact-manager")
+    user2_info = api2.config["user"]
+    
+    # Create a collection with specific permissions
+    collection = await artifact_manager1.create(
+        type="collection",
+        alias="permission-test",
+        manifest={"name": "Permission Test"},
+        config={
+            "permissions": {
+                user1_info["id"]: "*",  # Owner has full access
+                # User2 has no access initially
+            }
+        },
+    )
+    
+    # Test 1: User2 should not be able to read without permission
+    try:
+        await artifact_manager2.read(collection["id"])
+        assert False, "User2 should not have read access"
+    except Exception as e:
+        assert "permission" in str(e).lower()
+    
+    # Test 2: Grant read permission to user2 by ID
+    await artifact_manager1.edit(
+        collection["id"],
+        config={
+            "permissions": {
+                user1_info["id"]: "*",
+                user2_info["id"]: "r",  # Grant read to user2
+            }
+        },
+    )
+    
+    # Now user2 should be able to read
+    collection_data = await artifact_manager2.read(collection["id"])
+    assert collection_data["id"] == collection["id"]
+    
+    # But user2 still shouldn't be able to edit
+    try:
+        await artifact_manager2.edit(
+            collection["id"],
+            manifest={"name": "Modified by User2"}
+        )
+        assert False, "User2 should not have edit permission"
+    except Exception as e:
+        assert "permission" in str(e).lower()
+    
+    # Test 3: Grant write permission by email if available
+    if user2_info.get("email"):
+        await artifact_manager1.edit(
+            collection["id"],
+            config={
+                "permissions": {
+                    user1_info["id"]: "*",
+                    user2_info["email"]: "rw",  # Grant by email
+                }
+            },
+        )
+        
+        # User2 should now be able to edit
+        await artifact_manager2.edit(
+            collection["id"],
+            manifest={"name": "Modified by User2 via email permission"}
+        )
+        
+        updated = await artifact_manager2.read(collection["id"])
+        assert updated["manifest"]["name"] == "Modified by User2 via email permission"
+    
+    # Test 4: Test @ permission for authenticated users
+    await artifact_manager1.edit(
+        collection["id"],
+        config={
+            "permissions": {
+                user1_info["id"]: "*",
+                "@": "r",  # All authenticated users can read
+            }
+        },
+    )
+    
+    # User2 should be able to read
+    collection_data = await artifact_manager2.read(collection["id"])
+    assert collection_data["id"] == collection["id"]
+    
+    # Test 5: Test * permission for all users
+    await artifact_manager1.edit(
+        collection["id"],
+        config={
+            "permissions": {
+                user1_info["id"]: "*",
+                "*": "r",  # All users (including anonymous) can read
+            }
+        },
+    )
+    
+    # User2 should still be able to read
+    collection_data = await artifact_manager2.read(collection["id"])
+    assert collection_data["id"] == collection["id"]
+    
+    # Clean up
+    await artifact_manager1.delete(collection["id"])
+    
+    await api1.disconnect()
+    await api2.disconnect()
+
+
 async def test_artifact_filtering(
     minio_server, fastapi_server, test_user_token, test_user_token_2
 ):
@@ -6249,10 +6691,9 @@ async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_tok
     manifest = {
         "name": "Test Static Site",
         "description": "A test static website",
-        "type": "site",
     }
 
-    config = {
+    view_config = {
         "templates": ["index.html", "about.html"],
         "template_engine": "jinja2",
         "headers": {
@@ -6267,10 +6708,11 @@ async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_tok
 
     # Create and commit an artifact with actual files
     artifact = await artifact_manager.create(
-        type="site",
         alias=artifact_alias,
         manifest=manifest,
-        config=config,
+        config={
+            "view_config": view_config
+        },
         stage=True,
     )
 
@@ -6333,7 +6775,7 @@ async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_tok
     async with httpx.AsyncClient() as client:
         # Test serving regular static file (non-templated)
         r = await client.get(
-            f"{SERVER_URL}/{ws}/site/{artifact_alias}/static.html", headers=headers
+            f"{SERVER_URL}/{ws}/view/{artifact_alias}/static.html", headers=headers
         )
         assert r.status_code == 200  # Should stream content directly
         assert "text/html" in r.headers.get("content-type", "")
@@ -6341,7 +6783,7 @@ async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_tok
 
         # Test serving CSS file with correct mime type
         r = await client.get(
-            f"{SERVER_URL}/{ws}/site/{artifact_alias}/style.css", headers=headers
+            f"{SERVER_URL}/{ws}/view/{artifact_alias}/style.css", headers=headers
         )
         assert r.status_code == 200  # Should stream content directly
         assert "text/css" in r.headers.get("content-type", "")
@@ -6349,7 +6791,7 @@ async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_tok
 
         # Test serving JSON file
         r = await client.get(
-            f"{SERVER_URL}/{ws}/site/{artifact_alias}/data.json", headers=headers
+            f"{SERVER_URL}/{ws}/view/{artifact_alias}/data.json", headers=headers
         )
         assert r.status_code == 200  # Should stream content directly
         assert "application/json" in r.headers.get("content-type", "")
@@ -6357,7 +6799,7 @@ async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_tok
 
         # Test serving templated file (should render template)
         r = await client.get(
-            f"{SERVER_URL}/{ws}/site/{artifact_alias}/index.html", headers=headers
+            f"{SERVER_URL}/{ws}/view/{artifact_alias}/index.html", headers=headers
         )
         assert r.status_code == 200
         assert "text/html" in r.headers.get("content-type", "")
@@ -6366,27 +6808,27 @@ async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_tok
         content = r.text
         assert "Test Static Site" in content  # From MANIFEST.name
         assert "A test static website" in content  # From MANIFEST.description
-        assert f"/{ws}/site/{artifact_alias}/" in content  # BASE_URL
+        assert f"/{ws}/view/{artifact_alias}/" in content  # BASE_URL
         assert ws in content  # WORKSPACE (use actual workspace name)
         assert "View Count:" in content  # VIEW_COUNT should be present
 
         # Test default index.html serving
         r = await client.get(
-            f"{SERVER_URL}/{ws}/site/{artifact_alias}/", headers=headers
+            f"{SERVER_URL}/{ws}/view/{artifact_alias}/", headers=headers
         )
         assert r.status_code == 200
         assert "Test Static Site" in r.text
 
         # Test CORS headers
         r = await client.get(
-            f"{SERVER_URL}/{ws}/site/{artifact_alias}/index.html", headers=headers
+            f"{SERVER_URL}/{ws}/view/{artifact_alias}/index.html", headers=headers
         )
         assert r.headers.get("Access-Control-Allow-Origin") == "*"
         assert r.headers.get("Cache-Control") == "max-age=3600"
 
         # Test non-existent file
         r = await client.get(
-            f"{SERVER_URL}/{ws}/site/{artifact_alias}/nonexistent.html", headers=headers
+            f"{SERVER_URL}/{ws}/view/{artifact_alias}/nonexistent.html", headers=headers
         )
         assert r.status_code == 404
 
@@ -6399,17 +6841,22 @@ async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_tok
 
         # Should fail for non-site artifact
         r = await client.get(
-            f"{SERVER_URL}/{ws}/site/regular-artifact/index.html", headers=headers
+            f"{SERVER_URL}/{ws}/view/regular-artifact/index.html", headers=headers
         )
         assert r.status_code == 400
-        assert "not a site artifact" in r.text.lower()
+        assert "does not support view mode" in r.text.lower()
 
         # Test stage parameter (create staged version)
         staged_artifact = await artifact_manager.create(
-            type="site",
             alias="staged-site",
             manifest={"name": "Staged Site"},
-            config={"template_engine": "jinja2", "templates": ["index.html"]},
+            config={
+                "view_config": {
+                    "root_directory": "/",
+                    "templates": ["index.html"],
+                    "template_engine": "jinja2",
+                }
+            },
             stage=True,
         )
 
@@ -6422,13 +6869,13 @@ async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_tok
         assert response.ok
 
         r = await client.get(
-            f"{SERVER_URL}/{ws}/site/staged-site/index.html?stage=true", headers=headers
+            f"{SERVER_URL}/{ws}/view/staged-site/index.html?stage=true", headers=headers
         )
         assert r.status_code == 200
 
         # Test default index.html serving when path is empty
         r = await client.get(
-            f"{SERVER_URL}/{ws}/site/{artifact_alias}/", headers=headers
+            f"{SERVER_URL}/{ws}/view/{artifact_alias}/", headers=headers
         )
         assert r.status_code == 200
         assert "Test Static Site" in r.text
