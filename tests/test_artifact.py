@@ -6733,15 +6733,15 @@ async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_tok
     # Templated HTML file (with Jinja2)
     template_content = """<!DOCTYPE html>
 <html>
-<head><title>{{ MANIFEST.name }}</title></head>
+<head><title>{{ artifact.manifest.name }}</title></head>
 <body>
-    <h1>{{ MANIFEST.name }}</h1>
-    <p>{{ MANIFEST.description }}</p>
-    <p>Base URL: {{ BASE_URL }}</p>
-    <p>Public URL: {{ PUBLIC_BASE_URL }}</p>
-    <p>Workspace: {{ WORKSPACE }}</p>
-    <p>User: {{ USER.id if USER else 'Anonymous' }}</p>
-    <p>View Count: {{ VIEW_COUNT }}</p>
+    <h1>{{ artifact.manifest.name }}</h1>
+    <p>{{ artifact.manifest.description }}</p>
+    <p>Base URL: {{ local_base_url }}</p>
+    <p>Public URL: {{ public_base_url }}</p>
+    <p>Workspace: {{ workspace }}</p>
+    <p>User: {{ user.id if user else 'Anonymous' }}</p>
+    <p>View Count: {{ artifact.view_count }}</p>
 </body>
 </html>"""
 
@@ -6806,11 +6806,11 @@ async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_tok
 
         # Check template rendering
         content = r.text
-        assert "Test Static Site" in content  # From MANIFEST.name
-        assert "A test static website" in content  # From MANIFEST.description
-        assert f"/{ws}/view/{artifact_alias}/" in content  # BASE_URL
-        assert ws in content  # WORKSPACE (use actual workspace name)
-        assert "View Count:" in content  # VIEW_COUNT should be present
+        assert "Test Static Site" in content  # From artifact.manifest.name
+        assert "A test static website" in content  # From artifact.manifest.description
+        assert f"/{ws}/view/{artifact_alias}/" in content  # local_base_url
+        assert ws in content  # workspace (use actual workspace name)
+        assert "View Count:" in content  # artifact.view_count should be present
 
         # Test default index.html serving
         r = await client.get(

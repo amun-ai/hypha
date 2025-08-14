@@ -4717,6 +4717,8 @@ def setup():
     api.export({
         "test": lambda: "Hello from marketplace app"
     })
+
+api.export({"setup": setup})
 </script>"""
         
         # Install the app locally first
