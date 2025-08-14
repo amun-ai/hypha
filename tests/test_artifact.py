@@ -6696,6 +6696,7 @@ async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_tok
     view_config = {
         "templates": ["index.html", "about.html"],
         "template_engine": "jinja2",
+        "use_builtin_template": False,  # Use uploaded templates from S3, not builtin
         "headers": {
             "Access-Control-Allow-Origin": "*",
             "Cache-Control": "max-age=3600",
@@ -6808,7 +6809,7 @@ async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_tok
         content = r.text
         assert "Test Static Site" in content  # From artifact.manifest.name
         assert "A test static website" in content  # From artifact.manifest.description
-        assert f"/{ws}/view/{artifact_alias}/" in content  # local_base_url
+        assert "http://127.0.0.1:38283" in content  # local_base_url (full URL)
         assert ws in content  # workspace (use actual workspace name)
         assert "View Count:" in content  # artifact.view_count should be present
 
@@ -6855,6 +6856,7 @@ async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_tok
                     "root_directory": "/",
                     "templates": ["index.html"],
                     "template_engine": "jinja2",
+                    "use_builtin_template": False,  # Use uploaded template from S3
                 }
             },
             stage=True,

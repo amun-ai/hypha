@@ -1218,6 +1218,15 @@ class ArtifactController:
                     else:
                         abs_file_path = safe_join(root_directory, file_path)
                     
+                    # Get S3 configuration and file key (needed for both templated and non-templated files)
+                    version_index = self._get_version_index(artifact, version)
+                    s3_config = self._get_s3_config(artifact, parent_artifact)
+                    
+                    file_key = safe_join(
+                        s3_config["prefix"],
+                        f"{artifact.id}/v{version_index}",
+                        abs_file_path,
+                    )
 
                     # Check if file needs template rendering
                     if (
@@ -1227,7 +1236,7 @@ class ArtifactController:
                     ):
                         content = None
                         
-                        # File not found in artifact, check for builtin template
+                        # Check if we should use builtin template
                         if use_builtin_template or artifact.config.get("view_config") is None:
                             artifact_type = artifact.type or "default"
                             template_path = Path(__file__).parent / "templates" / "artifacts" / artifact_type / file_path
@@ -1246,15 +1255,7 @@ class ArtifactController:
                                     detail=f"Template file not found: {file_path}",
                                 )
                         else:
-                            version_index = self._get_version_index(artifact, version)
-                            s3_config = self._get_s3_config(artifact, parent_artifact)
-                    
-                            file_key = safe_join(
-                                s3_config["prefix"],
-                                f"{artifact.id}/v{version_index}",
-                                abs_file_path,
-                            )
-                            # First try to get file content from artifact
+                            # Try to get file content from artifact in S3
                             async with self._create_client_async(s3_config) as s3_client:
                                 try:
                                     obj_info = await s3_client.get_object(
