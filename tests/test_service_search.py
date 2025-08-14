@@ -79,14 +79,17 @@ async def test_service_search(fastapi_server_redis_1, test_user_token):
     import asyncio
     await asyncio.sleep(2.0)  # Increase wait time for indexing
     
-    # Try to check if the services collection exists in vector search
+    # Try to check if services are in the vector search index
     try:
-        # Check if vector search index is properly initialized
-        from hypha.core import RedisStore
-        collections_result = await api.call("public/*:built-in", "list_collections")
-        print(f"DEBUG: Vector collections available: {collections_result}")
+        # Check what's in the services vector collection
+        vector_service = await api.get_service("public/*:built-in")
+        if hasattr(vector_service, 'list_vectors'):
+            vectors = await vector_service.list_vectors("services", limit=10)
+            print(f"DEBUG: Services in vector index: {len(vectors)} vectors")
+            for v in vectors[:3]:
+                print(f"  - Vector ID: {v.get('id', 'unknown')}")
     except Exception as e:
-        print(f"DEBUG: Could not list vector collections: {e}")
+        print(f"DEBUG: Could not check vector collection: {e}")
     
     # First verify services are registered by listing them
     all_services = await api.list_services()
@@ -120,9 +123,6 @@ async def test_service_search(fastapi_server_redis_1, test_user_token):
         services = await api.search_services(filters={"docs": "*NLP*"}, limit=3)
         if len(services) == 0:
             print("Warning: Search functionality may not be working properly")
-            # Skip remaining tests if search is not working at all
-            print("Skipping remaining search tests")
-            return
 
     results = await api.search_services(query=text_query, limit=3, pagination=True)
     

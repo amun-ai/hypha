@@ -24,7 +24,7 @@
                 {{ artifact.manifest.name or 'Application Marketplace' }}
             </h1>
             <p class="text-xl text-gray-600 max-w-3xl mx-auto">
-                {{ artifact.manifest.description or 'Browse and install applications for your workspace' }}
+                {{ artifact.manifest.description }}
             </p>
             <div class="mt-4 flex justify-center gap-4">
                 <span class="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm">
@@ -79,78 +79,84 @@
         </div>
     </div>
     
-    <!-- Install Modal (Hidden - Installation not supported) -->
-    <div id="installModal" style="display: none !important;" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50 flex items-center justify-center p-4">
-        <div class="bg-white rounded-xl max-w-md w-full">
-            <div class="p-6">
-                <div class="flex justify-between items-center mb-4">
-                    <h2 class="text-2xl font-bold text-gray-800">Install Application</h2>
-                    <button onclick="closeInstallModal()" class="text-gray-500 hover:text-gray-700">
-                        <i class="fas fa-times text-xl"></i>
-                    </button>
-                </div>
-                <div class="mb-6">
-                    <p class="text-gray-600 mb-2">Installing: <span id="installAppId" class="font-mono bg-gray-100 px-2 py-1 rounded"></span></p>
-                    <p class="text-gray-600 mb-4">Enter or select a workspace to install this application:</p>
-                    
-                    <!-- Workspace Input with Dropdown -->
-                    <div class="relative">
-                        <input 
-                            id="workspaceInput" 
-                            type="text" 
-                            placeholder="Type workspace name or select from dropdown"
-                            class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 pr-10"
-                        />
-                        <div class="absolute inset-y-0 right-0 flex items-center">
-                            <button 
-                                id="workspaceDropdownBtn"
-                                type="button" 
-                                onclick="toggleWorkspaceDropdown()"
-                                class="px-3 py-2 text-gray-400 hover:text-gray-600 focus:outline-none"
-                            >
-                                <i class="fas fa-chevron-down"></i>
-                            </button>
-                        </div>
-                        
-                        <!-- Dropdown Menu -->
-                        <div id="workspaceDropdown" class="hidden absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
-                            <div class="py-1">
-                                <!-- Options will be populated by JavaScript -->
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <p class="text-gray-500 text-xs mt-2">
-                        You can type a new workspace name or select from existing workspaces
-                    </p>
-                </div>
-                <div class="flex gap-3">
-                    <button onclick="closeInstallModal()" class="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors">
-                        Cancel
-                    </button>
-                    <button onclick="performInstall()" class="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
-                        <i class="fas fa-download mr-2"></i> Install
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-    
+
     <script>
-        // App data will be fetched from server
-        let appsData = [];
+        // App data and pagination state
+        let allAppsData = [];
+        let filteredAppsData = [];
+        let currentPage = 1;
+        let itemsPerPage = 12;
+        let totalItems = 0;
+        let currentSearchQuery = '';
+        let currentTypeFilter = 'all';
+        let searchTimeout = null;
+        let availableTypes = new Set();
         
-        // Fetch collection children
-        async function fetchApps() {
+        // Fetch collection children with pagination and search
+        async function fetchApps(page = 1, searchQuery = '', typeFilter = 'all') {
             try {
-                const response = await fetch(`{{artifact_base_url}}/children`);
+                // Show loading state
+                document.getElementById('appsGrid').innerHTML = `
+                    <div class="col-span-full text-center py-8" id="loadingState">
+                        <i class="fas fa-spinner fa-spin text-2xl text-gray-400 mb-2"></i>
+                        <p class="text-gray-600">Loading applications...</p>
+                    </div>
+                `;
+                
+                // Calculate offset for pagination
+                const offset = (page - 1) * itemsPerPage;
+                
+                // Build URL with pagination parameters
+                let url = `{{artifact_base_url}}/children?pagination=true&offset=${offset}&limit=${itemsPerPage}`;
+                
+                // Add filters object
+                const filters = {};
+                if (typeFilter && typeFilter !== 'all') {
+                    filters.type = typeFilter;
+                }
+                
+                // Add filters to URL if any exist
+                if (Object.keys(filters).length > 0) {
+                    url += `&filters=${encodeURIComponent(JSON.stringify(filters))}`;
+                }
+                
+                // Add search keywords if provided
+                if (searchQuery && searchQuery.trim()) {
+                    const keywords = searchQuery.trim().split(' ').filter(k => k.length > 0);
+                    if (keywords.length > 0) {
+                        url += `&keywords=${encodeURIComponent(keywords.join(','))}`;
+                    }
+                }
+                
+                const response = await fetch(url);
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                 }
-                appsData = await response.json();
+                
+                const data = await response.json();
+                
+                // Handle paginated response
+                if (data.items && typeof data.total === 'number') {
+                    allAppsData = data.items;
+                    totalItems = data.total;
+                } else {
+                    // Fallback for non-paginated response
+                    allAppsData = Array.isArray(data) ? data : [];
+                    totalItems = allAppsData.length;
+                }
+                
+                filteredAppsData = allAppsData;
+                currentPage = page;
+                currentSearchQuery = searchQuery;
+                currentTypeFilter = typeFilter;
+                
+                // Collect types from the fetched data
+                collectTypesFromData(allAppsData);
+                
                 renderApps();
+                renderPagination();
+                updateAppCount();
                 initializeFilters();
-                document.getElementById('appCount').textContent = appsData.length;
             } catch (error) {
                 console.error('Failed to fetch apps:', error);
                 document.getElementById('appsGrid').innerHTML = `
@@ -168,21 +174,137 @@
             const grid = document.getElementById('appsGrid');
             grid.innerHTML = '';
             
-            if (appsData.length === 0) {
+            if (filteredAppsData.length === 0) {
                 grid.innerHTML = `
                     <div class="col-span-full text-center py-16">
                         <i class="fas fa-inbox text-6xl text-gray-300 mb-4"></i>
-                        <p class="text-xl text-gray-500">No applications available in this marketplace yet.</p>
-                        <p class="text-gray-400 mt-2">Check back later or publish your own applications!</p>
+                        <p class="text-xl text-gray-500">${currentSearchQuery || currentTypeFilter !== 'all' ? 'No applications found matching your search.' : 'No applications available in this marketplace yet.'}</p>
+                        <p class="text-gray-400 mt-2">${currentSearchQuery || currentTypeFilter !== 'all' ? 'Try adjusting your search or filters.' : 'Check back later or publish your own applications!'}</p>
                     </div>
                 `;
                 return;
             }
             
-            appsData.forEach(app => {
+            filteredAppsData.forEach(app => {
                 const appCard = createAppCard(app);
                 grid.appendChild(appCard);
             });
+        }
+        
+        // Update app count
+        function updateAppCount() {
+            document.getElementById('appCount').textContent = totalItems;
+        }
+        
+        // Render pagination controls
+        function renderPagination() {
+            const totalPages = Math.ceil(totalItems / itemsPerPage);
+            
+            if (totalPages <= 1) {
+                // Remove pagination container if it exists
+                const existingPagination = document.getElementById('paginationContainer');
+                if (existingPagination) {
+                    existingPagination.remove();
+                }
+                return;
+            }
+            
+            // Create or get pagination container
+            let paginationContainer = document.getElementById('paginationContainer');
+            if (!paginationContainer) {
+                paginationContainer = document.createElement('div');
+                paginationContainer.id = 'paginationContainer';
+                paginationContainer.className = 'mt-8 flex justify-center items-center gap-2 flex-wrap';
+                document.querySelector('.container').appendChild(paginationContainer);
+            }
+            
+            // Build pagination HTML
+            let paginationHTML = '';
+            
+            // Previous button
+            paginationHTML += `
+                <button onclick="goToPage(${currentPage - 1})" 
+                        ${currentPage === 1 ? 'disabled' : ''}
+                        class="px-3 py-2 rounded-lg bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                    <i class="fas fa-chevron-left mr-1"></i> Previous
+                </button>
+            `;
+            
+            // Page numbers with ellipsis
+            const pageNumbers = getPageNumbers(currentPage, totalPages);
+            pageNumbers.forEach(pageNum => {
+                if (pageNum === '...') {
+                    paginationHTML += `<span class="px-2 py-2 text-gray-500">...</span>`;
+                } else {
+                    paginationHTML += `
+                        <button onclick="goToPage(${pageNum})" 
+                                class="px-3 py-2 rounded-lg border transition-colors ${
+                                    currentPage === pageNum 
+                                    ? 'bg-blue-500 text-white border-blue-500 shadow-sm' 
+                                    : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
+                                }">
+                            ${pageNum}
+                        </button>
+                    `;
+                }
+            });
+            
+            // Next button
+            paginationHTML += `
+                <button onclick="goToPage(${currentPage + 1})" 
+                        ${currentPage === totalPages ? 'disabled' : ''}
+                        class="px-3 py-2 rounded-lg bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                    Next <i class="fas fa-chevron-right ml-1"></i>
+                </button>
+            `;
+            
+            // Page info
+            paginationHTML += `
+                <div class="ml-4 text-sm text-gray-600">
+                    Page ${currentPage} of ${totalPages} (${totalItems} items)
+                </div>
+            `;
+            
+            paginationContainer.innerHTML = paginationHTML;
+        }
+        
+        // Get page numbers with ellipsis
+        function getPageNumbers(current, total) {
+            const delta = 2;
+            const range = [];
+            const rangeWithDots = [];
+            
+            range.push(1);
+            
+            for (let i = Math.max(2, current - delta); i <= Math.min(total - 1, current + delta); i++) {
+                range.push(i);
+            }
+            
+            if (total > 1) {
+                range.push(total);
+            }
+            
+            const uniqueRange = Array.from(new Set(range)).sort((a, b) => a - b);
+            
+            let prev = 0;
+            for (const page of uniqueRange) {
+                if (page - prev > 1) {
+                    rangeWithDots.push('...');
+                }
+                rangeWithDots.push(page);
+                prev = page;
+            }
+            
+            return rangeWithDots;
+        }
+        
+        // Navigate to page
+        function goToPage(page) {
+            const totalPages = Math.ceil(totalItems / itemsPerPage);
+            if (page < 1 || page > totalPages) return;
+            
+            fetchApps(page, currentSearchQuery, currentTypeFilter);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
         }
         
         // Create app card element
@@ -264,39 +386,57 @@
             return div;
         }
         
-        // Initialize type filters
-        function initializeFilters() {
-            const types = new Set();
-            appsData.forEach(app => {
-                if (app.manifest && app.type) {
-                    types.add(app.type);
+        // Collect types from fetched data
+        function collectTypesFromData(data) {
+            data.forEach(app => {
+                if (app.type) {
+                    availableTypes.add(app.type);
                 }
             });
-            
+        }
+        
+        // Initialize type filters based on available types
+        function initializeFilters() {
             const filterContainer = document.getElementById('filterTags');
             const existingFilters = filterContainer.querySelectorAll('.filter-tag:not([onclick*="all"])');
             existingFilters.forEach(filter => filter.remove());
             
-            types.forEach(type => {
+            // Only show type filters if we have types
+            if (availableTypes.size === 0) return;
+            
+            // Sort types alphabetically for consistent display
+            const sortedTypes = Array.from(availableTypes).sort();
+            
+            sortedTypes.forEach(type => {
                 const button = document.createElement('button');
                 button.onclick = () => filterByType(type);
                 button.className = 'filter-tag px-4 py-2 bg-gray-200 text-gray-700 rounded-full text-sm hover:bg-blue-500 hover:text-white transition-colors';
-                button.textContent = type;
+                // Keep current active state if this type is selected
+                if (currentTypeFilter === type) {
+                    button.classList.add('bg-blue-500', 'text-white');
+                    button.classList.remove('bg-gray-200', 'text-gray-700');
+                }
+                button.textContent = type.charAt(0).toUpperCase() + type.slice(1);
                 filterContainer.appendChild(button);
             });
         }
         
         // Filter by type
         function filterByType(type) {
-            const cards = document.querySelectorAll('.app-card');
+            // Clear existing types collection to rebuild from new filtered data
+            if (type === 'all') {
+                availableTypes.clear();
+            }
+            
             const tags = document.querySelectorAll('.filter-tag');
             
             // Update active tag
             tags.forEach(tag => {
+                const tagText = tag.textContent.toLowerCase();
                 if (type === 'all' && tag.textContent === 'All Types') {
                     tag.classList.add('bg-blue-500', 'text-white');
                     tag.classList.remove('bg-gray-200', 'text-gray-700');
-                } else if (tag.textContent === type) {
+                } else if (tagText === type || tag.textContent.toLowerCase() === type.toLowerCase()) {
                     tag.classList.add('bg-blue-500', 'text-white');
                     tag.classList.remove('bg-gray-200', 'text-gray-700');
                 } else {
@@ -305,14 +445,9 @@
                 }
             });
             
-            // Filter cards
-            cards.forEach(card => {
-                if (type === 'all' || card.dataset.type === type) {
-                    card.style.display = 'block';
-                } else {
-                    card.style.display = 'none';
-                }
-            });
+            // Fetch filtered results from server
+            currentPage = 1;
+            fetchApps(1, currentSearchQuery, type);
         }
         
         // Copy artifact ID to clipboard
@@ -347,20 +482,7 @@
             const [ws, id] = artifactId.split("/")
             window.location.href = `{{public_base_url}}/${ws}/view/${id}`;
         }
-        
-        // Show install modal with workspace selection
-        function showInstallModal(artifactId) {
-            const modal = document.getElementById('installModal');
-            const appIdSpan = document.getElementById('installAppId');
-            appIdSpan.textContent = artifactId.split("/")[1];
-            modal.classList.remove('hidden');
-        }
-        
-        // Close install modal
-        function closeInstallModal() {
-            document.getElementById('installModal').classList.add('hidden');
-        }
-        
+
         // Toggle workspace dropdown
         function toggleWorkspaceDropdown() {
             const dropdown = document.getElementById('workspaceDropdown');
@@ -388,20 +510,6 @@
             icon.classList.add('fa-chevron-down');
         }
         
-        // Perform installation
-        async function performInstall() {
-            const artifactId = document.getElementById('installAppId').textContent;
-            const selectedWorkspace = document.getElementById('workspaceInput').value.trim();
-            
-            if (!selectedWorkspace) {
-                alert('Please enter or select a workspace');
-                return;
-            }
-            
-            // Redirect to workspace dashboard with install instruction
-            const installUrl = `/${selectedWorkspace}/#install:${artifactId}`;
-            window.location.href = installUrl;
-        }
         
         // View app details
         function viewDetails(appId) {
@@ -454,21 +562,37 @@
             document.getElementById('detailsModal').classList.add('hidden');
         }
         
-        // Search functionality
+        // Debounced search functionality
+        function debounceSearch(func, wait) {
+            return function executedFunction(...args) {
+                const later = () => {
+                    clearTimeout(searchTimeout);
+                    func(...args);
+                };
+                clearTimeout(searchTimeout);
+                searchTimeout = setTimeout(later, wait);
+            };
+        }
+        
+        // Handle search with debouncing
+        const handleSearch = debounceSearch(function(searchTerm) {
+            currentPage = 1;
+            fetchApps(1, searchTerm, currentTypeFilter);
+        }, 500);
+        
+        // Search input event listener
         document.getElementById('searchInput').addEventListener('input', function(e) {
-            const searchTerm = e.target.value.toLowerCase();
-            const cards = document.querySelectorAll('.app-card');
-            
-            cards.forEach(card => {
-                const name = card.querySelector('.app-name').textContent.toLowerCase();
-                const description = card.querySelector('.app-description').textContent.toLowerCase();
-                
-                if (name.includes(searchTerm) || description.includes(searchTerm)) {
-                    card.style.display = 'block';
-                } else {
-                    card.style.display = 'none';
-                }
-            });
+            const searchTerm = e.target.value;
+            handleSearch(searchTerm);
+        });
+        
+        // Handle immediate search on Enter key
+        document.getElementById('searchInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                clearTimeout(searchTimeout);
+                currentPage = 1;
+                fetchApps(1, e.target.value, currentTypeFilter);
+            }
         });
         
         // Close modal on escape key
@@ -479,8 +603,31 @@
         });
         
         // Initialize on load
-        fetchApps();
-        populateWorkspaceDropdown();
+        async function initialize() {
+            // First fetch to get initial data and discover available types
+            await fetchApps(1, '', 'all');
+            
+            // If we want to discover more types, we could fetch a larger sample
+            // This is optional and can be removed if not needed
+            if (availableTypes.size < 2) {
+                // Try to fetch more items to discover types (without showing them)
+                try {
+                    const response = await fetch(`{{artifact_base_url}}/children?limit=50`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        const items = data.items || data;
+                        collectTypesFromData(Array.isArray(items) ? items : []);
+                        initializeFilters(); // Re-initialize filters with discovered types
+                    }
+                } catch (error) {
+                    console.log('Could not fetch additional types:', error);
+                }
+            }
+            
+            populateWorkspaceDropdown();
+        }
+        
+        initialize();
         
         // Populate workspace dropdown
         async function populateWorkspaceDropdown() {
