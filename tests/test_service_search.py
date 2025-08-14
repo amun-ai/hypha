@@ -77,11 +77,22 @@ async def test_service_search(fastapi_server_redis_1, test_user_token):
 
     # Wait a moment for services to be indexed
     import asyncio
-    await asyncio.sleep(1.0)  # Increase wait time for indexing
+    await asyncio.sleep(2.0)  # Increase wait time for indexing
+    
+    # Try to check if the services collection exists in vector search
+    try:
+        # Check if vector search index is properly initialized
+        from hypha.core import RedisStore
+        collections_result = await api.call("public/*:built-in", "list_collections")
+        print(f"DEBUG: Vector collections available: {collections_result}")
+    except Exception as e:
+        print(f"DEBUG: Could not list vector collections: {e}")
     
     # First verify services are registered by listing them
     all_services = await api.list_services()
     print(f"DEBUG: Registered {len(all_services)} services")
+    for svc in all_services[:3]:  # Print first 3 services for debugging
+        print(f"  - Service: {svc.get('id', 'unknown')} - {svc.get('name', 'unnamed')}")
     assert len(all_services) >= 3, f"Expected at least 3 services, but found {len(all_services)}"
     
     # Only run search tests if search is enabled
@@ -120,13 +131,19 @@ async def test_service_search(fastapi_server_redis_1, test_user_token):
         # Try searching without a query (should return all services)
         all_search = await api.search_services(limit=10, pagination=True)
         print(f"DEBUG: Search without query returned {all_search['total']} results")
+        if all_search["total"] > 0:
+            print(f"DEBUG: First result from all search: {all_search['items'][0]}")
         
         # Try searching with a different query
         generic_search = await api.search_services(query="service", limit=10, pagination=True)
         print(f"DEBUG: Search for 'service' returned {generic_search['total']} results")
         
+        # Try without pagination to see if that's the issue
+        no_page_search = await api.search_services(query=text_query, limit=10)
+        print(f"DEBUG: Search without pagination returned {len(no_page_search)} results")
+        
         # The assertion should still fail to maintain test integrity
-        assert results["total"] >= 1, f"Expected at least 1 result for '{text_query}', but got {results['total']}. All search: {all_search['total']}, Generic search: {generic_search['total']}"
+        assert results["total"] >= 1, f"Expected at least 1 result for '{text_query}', but got {results['total']}. All search: {all_search['total']}, Generic search: {generic_search['total']}, No pagination: {len(no_page_search)}"
     else:
         assert results["total"] >= 1
 
