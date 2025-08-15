@@ -36,48 +36,17 @@ def unwrap_object_proxy(obj):
         return obj
 
 
-try:
-    import mcp.types as types
-    from mcp.server.lowlevel import Server
-    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
-    from mcp.server.streamable_http import (
-        EventCallback,
-        EventId,
-        EventMessage,
-        EventStore,
-        StreamId,
-    )
-    from mcp.types import JSONRPCMessage
+import mcp.types as types
+from mcp.server.lowlevel import Server
+from mcp.server.streamable_http import (
+    EventCallback,
+    EventId,
+    EventMessage,
+    EventStore,
+    StreamId,
+)
+from mcp.types import JSONRPCMessage
 
-    MCP_SDK_AVAILABLE = True
-except ImportError:
-    logger.warning("MCP SDK not available. Install with: pip install mcp")
-    MCP_SDK_AVAILABLE = False
-
-    # Define dummy classes for type hints
-    class Server:
-        pass
-
-    class StreamableHTTPSessionManager:
-        pass
-
-    class EventStore:
-        pass
-
-    class JSONRPCMessage:
-        pass
-
-    class EventCallback:
-        pass
-
-    class EventId:
-        pass
-
-    class EventMessage:
-        pass
-
-    class StreamId:
-        pass
 
 
 @dataclass
@@ -754,7 +723,7 @@ class HyphaMCPServer:
                     return types.ReadResourceResult(
                         contents=[
                             types.TextResourceContents(
-                                uri=uri, mimeType="text/plain", text=str(result)
+                                uri=str(uri), mimeType="text/plain", text=str(result)
                             )
                         ]
                     )
@@ -785,7 +754,7 @@ class HyphaMCPServer:
                         return types.ReadResourceResult(
                             contents=[
                                 types.TextResourceContents(
-                                    uri=uri,
+                                    uri=str(uri),
                                     mimeType="text/plain",
                                     text=f"Resource '{uri}' not found",
                                 )
@@ -806,7 +775,7 @@ class HyphaMCPServer:
                     return types.ReadResourceResult(
                         contents=[
                             types.TextResourceContents(
-                                uri=uri, mimeType="text/plain", text=str(result)
+                                uri=str(uri), mimeType="text/plain", text=str(result)
                             )
                         ]
                     )
@@ -1747,7 +1716,8 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
 
             elif request_data.get("method") == "resources/list":
                 # Handle resources/list method - this is what many MCP clients call
-                # We can reuse the same logic as resources/templates/list but return "resources" instead of "resourceTemplates"
+                # Check for both list_resources and list_resource_templates
+                has_list_resources = "list_resources" in service
                 has_list_resource_templates = "list_resource_templates" in service
                 has_inline_resources = (
                     hasattr(service, "resources")
@@ -1757,11 +1727,16 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                     and service_info.service_schema.resources
                     and len(service.resources) > 0
                 )
-                has_resources = has_list_resource_templates or has_inline_resources
+                has_resources = has_list_resources or has_list_resource_templates or has_inline_resources
 
                 if has_resources:
                     try:
-                        if has_list_resource_templates:
+                        if has_list_resources:
+                            # Use list_resources if available
+                            resources = await mcp_server._call_service_function(
+                                "list_resources", {}
+                            )
+                        elif has_list_resource_templates:
                             resources = await mcp_server._call_service_function(
                                 "list_resource_templates", {}
                             )
@@ -1881,15 +1856,18 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                             logger.debug(f"First resource: {resources[0]}")
 
                             for resource_data in resources:
+                                # Unwrap ObjectProxy first
+                                unwrapped_resource = unwrap_object_proxy(resource_data)
+                                
                                 # Convert to dict if it's an MCP object
-                                if hasattr(resource_data, "model_dump"):
-                                    resource_dict = resource_data.model_dump()
-                                elif isinstance(resource_data, dict):
-                                    resource_dict = resource_data
+                                if hasattr(unwrapped_resource, "model_dump"):
+                                    resource_dict = unwrapped_resource.model_dump()
+                                elif isinstance(unwrapped_resource, dict):
+                                    resource_dict = unwrapped_resource
                                 else:
                                     resource_dict = {
-                                        "uri": str(resource_data),
-                                        "name": str(resource_data),
+                                        "uri": str(unwrapped_resource),
+                                        "name": str(unwrapped_resource),
                                     }
 
                                 resources_data.append(resource_dict)
@@ -1938,8 +1916,10 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                     # Find the resource by URI
                     resource_to_read = None
                     for key, resource in service.resources.items():
-                        if resource.get("uri") == uri:
-                            resource_to_read = resource
+                        # Unwrap ObjectProxy if needed
+                        resource_unwrapped = unwrap_object_proxy(resource)
+                        if resource_unwrapped.get("uri") == uri:
+                            resource_to_read = resource_unwrapped
                             assert key == uri, f"Resource URI mismatch: {key} != {uri}"
                             break
 
@@ -1966,7 +1946,15 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                             }
                         else:
                             try:
-                                content = await read_function()
+                                # Unwrap the function if it's an ObjectProxy
+                                read_function_unwrapped = unwrap_object_proxy(read_function)
+                                # Call the function - it might be async or sync
+                                if inspect.iscoroutinefunction(read_function_unwrapped):
+                                    content = await read_function_unwrapped()
+                                else:
+                                    content = read_function_unwrapped()
+                                    if asyncio.isfuture(content) or inspect.iscoroutine(content):
+                                        content = await content
                                 response = {
                                     "jsonrpc": "2.0",
                                     "id": request_data.get("id"),

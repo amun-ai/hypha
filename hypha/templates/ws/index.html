@@ -4163,6 +4163,7 @@ license: "MIT"`);
             const [serverName, setServerName] = React.useState('my-server');
             const [serverUrl, setServerUrl] = React.useState('');
             const [serverType, setServerType] = React.useState('streamable-http');
+            const [appId, setAppId] = React.useState('mcp-server');
             const [appName, setAppName] = React.useState('My MCP Server');
             const [appDescription, setAppDescription] = React.useState('Integration with external MCP servers');
             const [authHeaders, setAuthHeaders] = React.useState('');
@@ -4172,6 +4173,7 @@ license: "MIT"`);
                 
                 const mcpConfig = {
                     type: "mcp-server",
+                    id: appId,
                     name: appName,
                     version: "1.0.0",
                     description: appDescription,
@@ -4208,14 +4210,34 @@ license: "MIT"`);
                         <div className="modal-body">
                             <form onSubmit={handleSubmit}>
                                 <div className="mb-4">
-                                    <label className="block text-sm font-medium text-gray-200">App Name</label>
+                                    <label className="block text-sm font-medium text-gray-200">App ID</label>
+                                    <input
+                                        type="text"
+                                        value={appId}
+                                        onChange={(e) => setAppId(e.target.value)}
+                                        className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        pattern="[a-z0-9-]+"
+                                        title="App ID should contain only lowercase letters, numbers, and hyphens"
+                                        placeholder="mcp-server"
+                                        required
+                                    />
+                                    <p className="text-gray-500 text-xs mt-1">
+                                        Unique identifier for this app (lowercase, numbers, hyphens only)
+                                    </p>
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">Display Name</label>
                                     <input
                                         type="text"
                                         value={appName}
                                         onChange={(e) => setAppName(e.target.value)}
                                         className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        placeholder="My MCP Server"
                                         required
                                     />
+                                    <p className="text-gray-500 text-xs mt-1">
+                                        Human-readable name for the app
+                                    </p>
                                 </div>
                                 <div className="mb-4">
                                     <label className="block text-sm font-medium text-gray-200">Description</label>
@@ -5735,6 +5757,7 @@ license: "MIT"`);
                     
                     window.addProgressLog('Installing MCP server with progress tracking...', 'info');
                     const appInfo = await controller.install({
+                        app_id: mcpConfig.id,
                         config: mcpConfig,
                         overwrite: true,
                         progress_callback: progressCallback,

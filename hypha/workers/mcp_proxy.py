@@ -49,27 +49,11 @@ logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("mcp_proxy")
 logger.setLevel(LOGLEVEL)
 
-# Try to import MCP SDK
-try:
-    import mcp.types as mcp_types
-    from mcp.client.streamable_http import streamablehttp_client
-    from mcp.client.session import ClientSession
-
-    MCP_SDK_AVAILABLE = True
-
-    # Try to import SSE client
-    try:
-        from mcp.client.sse import sse_client
-
-        SSE_CLIENT_AVAILABLE = True
-    except ImportError:
-        logger.warning("SSE client not available. Install with: pip install mcp[sse]")
-        SSE_CLIENT_AVAILABLE = False
-
-except ImportError:
-    logger.warning("MCP SDK not available. Install with: pip install mcp")
-    MCP_SDK_AVAILABLE = False
-    SSE_CLIENT_AVAILABLE = False
+# Import MCP SDK - let it fail directly if not available
+import mcp.types as mcp_types
+from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.session import ClientSession
+from mcp.client.sse import sse_client
 
 
 class MCPClientRunner(BaseWorker):
@@ -191,9 +175,6 @@ class MCPClientRunner(BaseWorker):
         context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Start a new MCP client session."""
-        if not MCP_SDK_AVAILABLE:
-            raise WorkerError("MCP SDK not available. Install with: pip install mcp")
-
         # Handle both pydantic model and dict input for RPC compatibility
         if isinstance(config, dict):
             config = WorkerConfig(**config)
@@ -238,9 +219,6 @@ class MCPClientRunner(BaseWorker):
 
     async def _start_mcp_session(self, config: WorkerConfig) -> Dict[str, Any]:
         """Start MCP client session and connect to configured servers."""
-        if not MCP_SDK_AVAILABLE:
-            raise Exception("MCP SDK not available. Install with: pip install mcp")
-
         # Call progress callback if provided
         await safe_call_callback(config.progress_callback,
             {"type": "info", "message": "Initializing MCP proxy worker..."}
@@ -442,15 +420,12 @@ class MCPClientRunner(BaseWorker):
         config: WorkerConfig = None,
     ):
         """Connect to MCP server using SSE transport."""
-        if not SSE_CLIENT_AVAILABLE:
-            raise RuntimeError(
-                "SSE client not available. Install with: pip install mcp[sse]"
-            )
-
         server_url = server_config.get("url")
         headers = server_config.get("headers", {})
 
         logger.debug(f"Connecting to SSE server {server_name} at {server_url}")
+        if headers:
+            logger.debug(f"Using custom headers for {server_name}: {list(headers.keys())}")
 
         # Store session info for later use
         session_data["mcp_clients"][server_name] = {
@@ -458,6 +433,7 @@ class MCPClientRunner(BaseWorker):
             "session_id": f"sse-{uuid.uuid4().hex[:8]}",
             "url": server_url,
             "transport": "sse",
+            "headers": headers,  # Store headers for later use
         }
 
         # Collect and register server capabilities
@@ -490,10 +466,6 @@ class MCPClientRunner(BaseWorker):
             if transport == "streamable-http":
                 client_context = streamablehttp_client(server_url)
             elif transport == "sse":
-                if not SSE_CLIENT_AVAILABLE:
-                    raise RuntimeError(
-                        "SSE client not available. Install with: pip install mcp[sse]"
-                    )
                 client_context = sse_client(url=server_url)
             else:
                 raise ValueError(f"Unsupported transport type: {transport}")
@@ -699,15 +671,13 @@ class MCPClientRunner(BaseWorker):
         server_config = session_data["mcp_clients"][server_name]["config"]
         server_url = server_config.get("url")
         transport = session_data["mcp_clients"][server_name]["transport"]
+        headers = session_data["mcp_clients"][server_name].get("headers", {})
 
         if transport == "streamable-http":
             return streamablehttp_client(server_url)
         elif transport == "sse":
-            if not SSE_CLIENT_AVAILABLE:
-                raise RuntimeError(
-                    "SSE client not available. Install with: pip install mcp[sse]"
-                )
-            return sse_client(url=server_url)
+            # Pass headers to SSE client for authentication
+            return sse_client(url=server_url, headers=headers if headers else None)
         else:
             raise ValueError(f"Unsupported transport type: {transport}")
 
@@ -1280,23 +1250,16 @@ class MCPClientRunner(BaseWorker):
 
 async def hypha_startup(server):
     """Hypha startup function to initialize MCP client."""
-    if MCP_SDK_AVAILABLE:
-        worker = MCPClientRunner()
-        await worker.register_worker_service(server)
-        logger.info("MCP client worker initialized and registered")
-    else:
-        logger.warning("MCP library not available, skipping MCP client worker")
+    worker = MCPClientRunner()
+    await worker.register_worker_service(server)
+    logger.info("MCP client worker initialized and registered")
 
 
 async def start_worker(server_url, workspace, token):
     """Start MCP worker standalone."""
     from hypha_rpc import connect
 
-    if not MCP_SDK_AVAILABLE:
-        logger.error("MCP library not available")
-        return
-
-    server = await connect(server_url, workspace=workspace, token=token)
+    await connect(server_url, workspace=workspace, token=token)
     worker = MCPClientRunner()
     logger.info(f"MCP worker started, server: {server_url}, workspace: {workspace}")
 

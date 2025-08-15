@@ -34,7 +34,6 @@ from sqlalchemy.ext.asyncio import (
 from hypha.core.auth import (
     create_scope,
     parse_token,
-    generate_anonymous_user,
     UserPermission,
     AUTH0_CLIENT_ID,
     AUTH0_DOMAIN,
@@ -177,7 +176,7 @@ class RedisStore:
             email=None,
             parent=None,
             roles=["anonymous"],
-            scope=create_scope("public#r", current_workspace="public"),
+            scope=create_scope("ws-anonymous#r", current_workspace="ws-anonymous"),
             expires_at=None,
         )
         self._anonymous_workspace_info = None
@@ -777,16 +776,15 @@ class RedisStore:
             return user_info
         else:
             # Use a fixed anonymous user
-            if not hasattr(self, "_http_anonymous_user"):
-                self._http_anonymous_user = UserInfo(
-                    id="http-anonymous",
-                    is_anonymous=True,
-                    email=None,
-                    parent=None,
-                    roles=["anonymous"],
-                    scope=create_scope("public#r", current_workspace="public"),
-                    expires_at=None,
-                )
+            self._http_anonymous_user = UserInfo(
+                id="http-anonymous",
+                is_anonymous=True,
+                email=None,
+                parent=None,
+                roles=["anonymous"],
+                scope=create_scope("ws-anonymous#r", current_workspace="ws-anonymous"),
+                expires_at=None,
+            )
             return self._http_anonymous_user
 
     async def get_all_workspace(self):
