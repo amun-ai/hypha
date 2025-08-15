@@ -27,19 +27,11 @@ import os
 import psutil
 import pytest
 import statistics
-import sys
 import time
-import traceback
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional
-import threading
-import websockets
 from datetime import datetime
 
 from hypha_rpc import connect_to_server
-from hypha.core import UserInfo
-from hypha.core.store import RedisStore
-from hypha.utils import random_id
 
 # Configure logging
 logging.basicConfig(

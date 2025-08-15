@@ -45,3 +45,4 @@ mcp==1.11.0
 conda-pack>=0.7.0
 jupyter_client>=8.0.0
 kubernetes>=24.2.0
+psutil>=5.9.0
