@@ -77,6 +77,7 @@ started_app = await controller.start(
 )
 
 print(f"App started with session ID: {started_app.id}")
+print(f"Using worker: {started_app.worker_id}")
 
 # Get the app service and use it
 app_service = await api.get_service(f"default@{app_info.id}")
@@ -148,6 +149,35 @@ result2 = await controller.execute(
 - **Conda Environments**: Execute Python code in isolated conda environments (see [Conda Worker Documentation](conda-worker.md))
 - **Python Interpreters**: Run Python scripts in various Python contexts
 - **Custom Workers**: Any worker that implements the execute method (see [Worker API Documentation](workers.md))
+
+### Step 3.6: Interacting with the Worker Directly
+
+After starting a session, you can interact directly with the worker that is running your application. The `worker_id` returned in the start response allows you to get a reference to the worker service:
+
+```python
+# Start an app session
+started_app = await controller.start(app_info.id, wait_for_service="default")
+
+# Get the worker service directly using the worker_id
+worker = await server.get_service(started_app.worker_id)
+
+# Now you can interact with the worker directly
+# For example, get logs from the worker
+logs = await worker.get_logs(started_app.id)
+
+# Or execute code in the session (for workers that support it)
+if hasattr(worker, 'execute'):
+    result = await worker.execute(
+        started_app.id,
+        "print('Executing directly on the worker!')",
+        config={"timeout": 30.0}
+    )
+```
+
+This is particularly useful for:
+- **Terminal workers**: Execute commands and get screen output
+- **Conda workers**: Run Python code in specific environments
+- **Custom workers**: Access worker-specific functionality not exposed through the controller
 
 ### Step 4: Managing Apps
 

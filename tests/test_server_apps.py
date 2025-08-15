@@ -168,6 +168,7 @@ async def test_server_apps(fastapi_server, test_user_token):
     )
     config = await controller.start(config.id)
     assert "id" in config.keys()
+    assert "worker_id" in config.keys()
     app = await api.get_app(config.id)
 
     # objects = await api.list_remote_objects()
@@ -200,6 +201,7 @@ async def test_server_apps(fastapi_server, test_user_token):
     )
     config = await controller.start(config.id)
     assert "app_id" in config
+    assert "worker_id" in config
     app = await api.get_app(config.id)
     assert "add2" in app, str(app and app.keys())
     result = await app.add2(4)
@@ -233,6 +235,7 @@ async def test_singleton_apps(fastapi_server, test_user_token):
         wait_for_service="default",
     )
     assert "id" in config1.keys()
+    assert "worker_id" in config1.keys()
 
     # Start the app for the second time - should get the same session
     config2 = await controller.start(
@@ -242,6 +245,12 @@ async def test_singleton_apps(fastapi_server, test_user_token):
     assert (
         config1["id"] == config2["id"]
     ), "Singleton app should return the same session when started twice"
+    # Worker ID is now directly in the response structure
+    worker_id_1 = config1["worker_id"]
+    worker_id_2 = config2["worker_id"]
+    assert (
+        worker_id_1 == worker_id_2
+    ), "Singleton app should use the same worker when started twice"
 
     # Stop the singleton app
     await controller.stop(config1.id)
@@ -298,6 +307,7 @@ async def test_daemon_apps(fastapi_server, test_user_token_6, root_user_token):
             wait_for_service="default",
         )
         assert "id" in config.keys()
+        assert "worker_id" in config.keys()
 
         # Verify the daemon app is running
         running_apps = await controller.list_running()
@@ -4901,4 +4911,170 @@ api.export({"setup": setup})
             pass
         raise e
     
+    await api.disconnect()
+
+
+async def test_terminal_worker_app(fastapi_server, test_user_token):
+    """Test terminal worker with server apps."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 10,
+            "token": test_user_token,
+        }
+    )
+
+    controller = await api.get_service("public/server-apps")
+
+    # Test Terminal app code
+    TEST_TERMINAL_CODE = """
+echo "Terminal app started!"
+echo "User: $(whoami)"
+echo "Working directory: $(pwd)"
+echo "Python version:"
+python3 --version
+echo "Testing complete!"
+"""
+
+    # Create a terminal app that runs a command
+    terminal_app_info = await controller.install(
+        source=TEST_TERMINAL_CODE,
+        manifest={
+            "name": "Test Terminal App",
+            "type": "terminal",
+            "version": "1.0.0",
+            "entry_point": "main.sh",
+            "description": "A test terminal app",
+            "startup_command": "/bin/bash",
+        },
+        timeout=10,
+        wait_for_service=False,
+        overwrite=True,
+    )
+
+    assert terminal_app_info["name"] == "Test Terminal App"
+    assert terminal_app_info["type"] == "terminal"
+    assert terminal_app_info["entry_point"] == "main.sh"
+
+    # Start the terminal app
+    started_app = await controller.start(
+        terminal_app_info["id"],
+        wait_for_service=False,
+        timeout=10,
+    )
+
+    assert "id" in started_app
+    assert "worker_id" in started_app
+
+    # Give it a moment to start
+    await asyncio.sleep(1)
+
+    # Get logs to see the output
+    logs = await controller.get_logs(started_app["id"])
+    assert len(logs) > 0
+
+    # Check that our commands were executed
+    log_text = " ".join(logs.get("stdout", [])) + " ".join(logs.get("info", []))
+    
+    # The terminal should have started
+    assert "Terminal session started" in log_text or len(logs.get("info", [])) > 0
+
+    # Stop the terminal session
+    await controller.stop(started_app["id"])
+
+    # Test a terminal app with interactive command execution
+    interactive_app_info = await controller.install(
+        source="# Interactive terminal",
+        manifest={
+            "name": "Interactive Terminal App",
+            "type": "terminal",
+            "version": "1.0.0",
+            "entry_point": "interactive.sh",
+            "startup_command": "python3 -i",  # Interactive Python
+        },
+        timeout=10,
+        wait_for_service=False,
+        overwrite=True,
+    )
+
+    # Start the interactive app
+    interactive_started = await controller.start(
+        interactive_app_info["id"],
+        wait_for_service=False,
+        timeout=10,
+    )
+
+    # Give Python interpreter time to start
+    await asyncio.sleep(1)
+
+    # Use the worker_id returned from start to get the worker directly
+    assert "worker_id" in interactive_started
+    worker = await api.get_service(interactive_started["worker_id"])
+    
+    # Test getting the screen before any command
+    screen_before = await worker.get_logs(interactive_started["id"], type="screen")
+    assert isinstance(screen_before, str)
+    
+    # Test 1: Execute with default cleaned output
+    result = await worker.execute(interactive_started["id"], "print(f'Hello from Python {101}')")
+    assert result["status"] == "ok"
+    
+    # Check cleaned output (should not have command echo or ANSI codes)
+    stdout_output = next((o for o in result["outputs"] if o["type"] == "stream"), None)
+    assert stdout_output is not None
+    cleaned_text = stdout_output["text"]
+    print(f"Cleaned output: {repr(cleaned_text)}")
+    assert "Hello from Python 101" in cleaned_text
+    # Should NOT contain ANSI codes
+    assert "\x1b" not in cleaned_text  # No ANSI escape sequences
+    
+    # Test 2: Execute with raw output enabled
+    result_raw = await worker.execute(
+        interactive_started["id"], 
+        "print(f'Raw test {202}')",
+        config={"raw_output": True}
+    )
+    assert result_raw["status"] == "ok"
+    
+    # Check raw output (should have command echo and possibly ANSI codes)
+    stdout_raw = next((o for o in result_raw["outputs"] if o["type"] == "stream"), None)
+    assert stdout_raw is not None
+    raw_text = stdout_raw["text"]
+    print(f"Raw output (first 150 chars): {repr(raw_text[:150])}...")
+    assert "Raw test 202" in raw_text
+    # Raw output should include the command echo
+    assert "print(f'Raw test" in raw_text
+    
+    # Test getting the current screen content (should be clean)
+    current_screen = await worker.get_logs(interactive_started["id"], type="screen")
+    assert isinstance(current_screen, str)
+    assert "Hello from Python 101" in current_screen
+    assert "Raw test 202" in current_screen
+    assert "\x1b" not in current_screen  # No ANSI codes in rendered screen
+    print(f"Screen content (cleaned, last 200 chars): {repr(current_screen[-200:])}")
+    
+    # Execute a calculation with default cleaned output
+    result = await worker.execute(interactive_started["id"], "2 + 3422")
+    assert result["status"] == "ok"
+    
+    # Check cleaned calculation output
+    calc_output = next((o for o in result["outputs"] if o["type"] == "stream"), None)
+    assert calc_output is not None
+    calc_text = calc_output["text"]
+    print(f"Calculation output (cleaned): {repr(calc_text)}")
+    assert "3424" in calc_text
+    
+    # Verify screen has been updated and is clean
+    final_screen = await worker.get_logs(interactive_started["id"], type="screen")
+    assert "3424" in final_screen
+    assert "\x1b" not in final_screen  # Ensure screen is clean
+
+    # Stop the interactive session
+    await controller.stop(interactive_started["id"])
+
+    # Clean up
+    await controller.uninstall(terminal_app_info["id"])
+    await controller.uninstall(interactive_app_info["id"])
+
     await api.disconnect()
