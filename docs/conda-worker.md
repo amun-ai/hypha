@@ -816,6 +816,7 @@ python -m hypha.workers.conda \
 ```bash
 export CONDA_WORKING_DIR=/opt/conda-sessions
 export CONDA_CACHE_DIR=/opt/conda-cache
+export CONDA_AUTHORIZED_WORKSPACES=public,root
 ```
 
 #### Built-in Worker (Startup Function)
@@ -931,7 +932,7 @@ spec:
             - name: CONDA_WORKING_DIR
               value: "/tmp/conda-sessions"    # Temporary storage
             - name: CONDA_CACHE_DIR
-              value: "/data/conda-cache"       # Persistent cache
+              value: "/tmp/conda-cache"       # Persistent cache
           volumeMounts:
             - name: cache
               mountPath: /data

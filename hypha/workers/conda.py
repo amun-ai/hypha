@@ -246,7 +246,7 @@ class CondaWorker(BaseWorker):
 
     instance_counter: int = 0
 
-    def __init__(self, server_url: str = None, use_local_url: Union[bool, str] = False, working_dir: str = None):
+    def __init__(self, server_url: str = None, use_local_url: Union[bool, str] = False, working_dir: str = None, cache_dir: str = None):
         """Initialize the conda environment worker.
         
         Args:
@@ -294,7 +294,7 @@ class CondaWorker(BaseWorker):
         self._session_working_dirs: Dict[str, Path] = {}  # Track working directories per session
 
         # Environment cache
-        self._env_cache = EnvironmentCache()
+        self._env_cache = EnvironmentCache(cache_dir=cache_dir)
 
     @property
     def supported_types(self) -> List[str]:
@@ -1295,7 +1295,7 @@ async def hypha_startup(server):
     # Built-in worker should use local URLs and a specific working directory
     working_dir = os.environ.get("CONDA_WORKING_DIR")
     authorized_workspaces = [w.strip() for w in os.environ.get("CONDA_AUTHORIZED_WORKSPACES", "").strip().split(",") if w.strip()]
-    worker = CondaWorker(server_url=server.config.local_base_url, use_local_url=True, working_dir=working_dir)
+    worker = CondaWorker(server_url=server.config.local_base_url, use_local_url=True, working_dir=working_dir, cache_dir=os.environ.get("CONDA_CACHE_DIR", DEFAULT_CACHE_DIR))
     service = worker.get_worker_service()
     if authorized_workspaces:
         service["config"]["authorized_workspaces"] = authorized_workspaces
@@ -1480,10 +1480,9 @@ Examples:
             worker = CondaWorker(
                 server_url=args.server_url, 
                 use_local_url=args.use_local_url,
-                working_dir=args.working_dir
+                working_dir=args.working_dir,
+                cache_dir=args.cache_dir
             )
-            if args.cache_dir:
-                worker._env_cache = EnvironmentCache(cache_dir=args.cache_dir)
 
             # Get service config and set custom properties
             service_config = worker.get_worker_service()
@@ -1561,9 +1560,9 @@ async def run_from_env():
         service_id = os.environ.get("HYPHA_SERVICE_ID")
         visibility = os.environ.get("HYPHA_VISIBILITY", "protected")
         disable_ssl = os.environ.get("HYPHA_DISABLE_SSL", "false").lower() in ("true", "1", "yes")
-        cache_dir = os.environ.get("HYPHA_CACHE_DIR")
-        working_dir = os.environ.get("HYPHA_WORKING_DIR")
-        verbose = os.environ.get("HYPHA_VERBOSE", "false").lower() in ("true", "1", "yes")
+        cache_dir = os.environ.get("CONDA_CACHE_DIR")
+        working_dir = os.environ.get("CONDA_WORKING_DIR")
+        verbose = os.environ.get("CONDA_VERBOSE", "false").lower() in ("true", "1", "yes")
 
         # Validate required environment variables
         if not server_url:
@@ -1593,8 +1592,8 @@ async def run_from_env():
         logger.info(f"  Package Manager: {package_manager}")
         logger.info(f"  Server URL: {server_url}")
         logger.info(f"  Workspace: {workspace}")
-        logger.info(f"  Client ID: {client_id or 'auto-generated'}")
-        logger.info(f"  Service ID: {service_id or 'auto-generated'}")
+        logger.info(f"  Client ID: {client_id}")
+        logger.info(f"  Service ID: {service_id}")
         logger.info(f"  Visibility: {visibility}")
         # Override cache directory if specified
         global DEFAULT_CACHE_DIR
@@ -1613,9 +1612,7 @@ async def run_from_env():
         )
 
         # Create and register worker
-        worker = CondaWorker(server_url=server_url, working_dir=working_dir)
-        if cache_dir:
-            worker._env_cache = EnvironmentCache(cache_dir=cache_dir)
+        worker = CondaWorker(server_url=server_url, working_dir=working_dir, cache_dir=cache_dir)
 
         # Get service config and set custom properties
         service_config = worker.get_worker_service()
