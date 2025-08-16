@@ -207,11 +207,15 @@
                 this.fitAddon = null;
                 this.connectionRetryInterval = null;
                 this.isReconnecting = false;
+                this.isLoggedIn = false; // Track login state
                 this.attachableSessions = new Set(); // Track sessions that can be attached to
                 
                 this.initializeElements();
                 this.setupEventListeners();
                 this.loadPersistedTerminals();
+                
+                // Disable terminal creation buttons initially
+                this.disableTerminalCreation();
                 
                 // Get session ID from URL if present and store it
                 this.urlSessionId = this.getSessionIdFromUrl();
@@ -319,6 +323,9 @@
                         // Connect to terminal service
                         await this.connectToTerminalService();
                         
+                        // Mark as logged in before showing main app
+                        this.isLoggedIn = true;
+                        
                         // Show main app
                         this.showMainApp();
                         
@@ -353,6 +360,26 @@
                 }
             }
 
+            disableTerminalCreation() {
+                // Disable terminal creation buttons until login is complete
+                if (this.elements && this.elements.newTerminalBtn) {
+                    this.elements.newTerminalBtn.disabled = true;
+                }
+                if (this.elements && this.elements.welcomeNewTerminal) {
+                    this.elements.welcomeNewTerminal.disabled = true;
+                }
+            }
+            
+            enableTerminalCreation() {
+                // Enable terminal creation buttons after successful login
+                if (this.elements && this.elements.newTerminalBtn) {
+                    this.elements.newTerminalBtn.disabled = false;
+                }
+                if (this.elements && this.elements.welcomeNewTerminal) {
+                    this.elements.welcomeNewTerminal.disabled = false;
+                }
+            }
+
             initializeElements() {
                 this.elements = {
                     loginScreen: document.getElementById('loginScreen'),
@@ -381,8 +408,20 @@
             setupEventListeners() {
                 this.elements.loginBtn.addEventListener('click', () => this.login());
                 this.elements.logoutBtn.addEventListener('click', () => this.logout());
-                this.elements.newTerminalBtn.addEventListener('click', () => this.createNewTerminal());
-                this.elements.welcomeNewTerminal.addEventListener('click', () => this.createNewTerminal());
+                this.elements.newTerminalBtn.addEventListener('click', () => {
+                    if (!this.isLoggedIn) {
+                        this.showError('Please wait for login to complete');
+                        return;
+                    }
+                    this.createNewTerminal();
+                });
+                this.elements.welcomeNewTerminal.addEventListener('click', () => {
+                    if (!this.isLoggedIn) {
+                        this.showError('Please wait for login to complete');
+                        return;
+                    }
+                    this.createNewTerminal();
+                });
                 
                 // Terminal menu toggle
                 this.elements.terminalMenuBtn.addEventListener('click', (e) => {
@@ -527,6 +566,9 @@
                     
                     // Connect to terminal service
                     await this.connectToTerminalService();
+                    
+                    // Mark as logged in before showing main app
+                    this.isLoggedIn = true;
                     
                     // Switch to main app
                     this.showMainApp();
@@ -792,6 +834,10 @@
                 this.elements.userInfo.textContent = `${this.user.email} @ ${this.user.workspace}`;
                 this.elements.userEmail.textContent = this.user.email;
                 
+                // Mark as logged in and enable terminal creation
+                this.isLoggedIn = true;
+                this.enableTerminalCreation();
+                
                 // Preserve URL query parameters when showing main app
                 // The URL should not be modified here
                 this.updateConnectionStatus('Connected', true);
@@ -823,6 +869,10 @@
                 this.terminalService = null;
                 this.user = null;
                 this.isReconnecting = false;
+                this.isLoggedIn = false; // Mark as logged out
+                
+                // Disable terminal creation buttons
+                this.disableTerminalCreation();
                 
                 // Show login screen
                 this.elements.mainApp.classList.add('hidden');
@@ -832,6 +882,12 @@
             }
 
             async createNewTerminal() {
+                // Double-check login state
+                if (!this.isLoggedIn || !this.server || !this.terminalService) {
+                    this.showError('Cannot create terminal: Not fully connected to server');
+                    return;
+                }
+                
                 try {
                     this.updateConnectionStatus('Creating terminal...', true);
                     
@@ -998,13 +1054,58 @@
                 if (!this.terminalService || !data) return;
                 
                 try {
-                    const result = await this.terminalService.write_to_terminal(terminalId, data);
-                    if (!result.success) {
-                        console.error('Terminal write failed:', result.error);
-                        // Don't show error to user for individual keystrokes unless it's serious
-                        if (result.error.includes('not found')) {
-                            this.showError('Terminal session lost. Please create a new terminal.');
-                            this.closeTerminal(terminalId, false);
+                    // For large pastes, send in chunks to prevent overwhelming the backend
+                    // Optimized for speed: larger chunks and minimal delay
+                    const CHUNK_SIZE = 4096; // 4KB chunks for faster throughput
+                    const CHUNK_DELAY = 2; // 2ms minimal delay, just enough to prevent blocking
+                    
+                    if (data.length <= CHUNK_SIZE) {
+                        // Small data, send directly
+                        const result = await this.terminalService.write_to_terminal(terminalId, data);
+                        if (!result.success) {
+                            console.error('Terminal write failed:', result.error);
+                            // Don't show error to user for individual keystrokes unless it's serious
+                            if (result.error.includes('not found')) {
+                                this.showError('Terminal session lost. Please create a new terminal.');
+                                this.closeTerminal(terminalId, false);
+                            }
+                        }
+                    } else {
+                        // Large data, send in chunks with adaptive delay
+                        console.log(`Sending large input (${data.length} chars) in ${Math.ceil(data.length / CHUNK_SIZE)} chunks`);
+                        
+                        // Send chunks with minimal delay for speed
+                        const chunks = [];
+                        for (let i = 0; i < data.length; i += CHUNK_SIZE) {
+                            chunks.push(data.substring(i, i + CHUNK_SIZE));
+                        }
+                        
+                        // Process chunks with optimized batching
+                        for (let i = 0; i < chunks.length; i++) {
+                            const chunk = chunks[i];
+                            
+                            const result = await this.terminalService.write_to_terminal(terminalId, chunk);
+                            if (!result.success) {
+                                console.error('Terminal write failed:', result.error);
+                                if (result.error.includes('not found')) {
+                                    this.showError('Terminal session lost. Please create a new terminal.');
+                                    this.closeTerminal(terminalId, false);
+                                    break;
+                                }
+                            }
+                            
+                            // Use adaptive delay: shorter delays for smaller remaining data
+                            if (i + 1 < chunks.length) {
+                                // Only yield control briefly to prevent UI freezing
+                                // Use 0 delay for microtask scheduling when we have few chunks left
+                                const delay = chunks.length - i > 5 ? CHUNK_DELAY : 0;
+                                if (delay > 0) {
+                                    await new Promise(resolve => setTimeout(resolve, delay));
+                                } else {
+                                    // Yield control to microtask queue without delay
+                                    await Promise.resolve();
+                                }
+                            }
                         }
                     }
                 } catch (error) {
@@ -1174,7 +1275,7 @@
                     await this.terminalService.stop(terminalId);
                 } catch (error) {
                     console.error('Failed to close terminal on backend:', error);
-                    if (error.message.includes('not in authorized users list') || error.message.includes('No user email found')) {
+                    if (`${error}`.includes('not in authorized users list') || error.message.includes('No user email found')) {
                         this.showError('Access denied: You are not authorized to use this terminal service.');
                         this.logout(); // Force logout on authorization error
                         return;
