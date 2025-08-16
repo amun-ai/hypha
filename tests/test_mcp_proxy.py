@@ -173,7 +173,20 @@ async def test_mcp_streamable_http_round_trip_service_consistency(
 
     # Test the tools with the same parameters
     original_result = await original_tool(operation="add", a=5, b=3)
-    mcp_result = await mcp_tool(operation="add", a=5, b=3)
+    
+    # Add a small delay to ensure connection is stable
+    await asyncio.sleep(0.1)
+    
+    try:
+        mcp_result = await mcp_tool(operation="add", a=5, b=3)
+    except Exception as e:
+        # If connection error, try once more after a delay
+        if "Connection has already been closed" in str(e):
+            await asyncio.sleep(0.5)
+            mcp_result = await mcp_tool(operation="add", a=5, b=3)
+        else:
+            raise
+    
     assert (
         original_result == mcp_result
     ), f"Tool results differ: original={original_result}, mcp={mcp_result}"

@@ -294,6 +294,9 @@ class CondaWorker(BaseWorker):
         self._session_working_dirs: Dict[str, Path] = {}  # Track working directories per session
 
         # Environment cache
+        # If cache_dir is None, use a default location under the working directory base
+        if cache_dir is None:
+            cache_dir = str(self._working_dir_base / ".hypha_conda_cache")
         self._env_cache = EnvironmentCache(cache_dir=cache_dir)
 
     @property
@@ -1254,18 +1257,6 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
                 result[log_type_key] = log_entries[offset:end_idx]
             return result
 
-    async def take_screenshot(
-        self,
-        session_id: str,
-        format: str = "png",
-        context: Optional[Dict[str, Any]] = None,
-    ) -> bytes:
-        """Take a screenshot - not supported for conda environment sessions."""
-        raise NotImplementedError(
-            "Screenshots not supported for conda environment sessions"
-        )
-
-
     async def shutdown(self, context: Optional[Dict[str, Any]] = None) -> None:
         """Shutdown the conda environment worker."""
         logger.info("Shutting down conda environment worker...")
@@ -1285,8 +1276,6 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
     def get_worker_service(self) -> Dict[str, Any]:
         """Get the service configuration for registration with conda-specific methods."""
         service_config = super().get_worker_service()
-        # Add conda environment specific methods
-        service_config["take_screenshot"] = self.take_screenshot
         return service_config
 
 

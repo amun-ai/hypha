@@ -263,19 +263,6 @@ class PythonEvalRunner(BaseWorker):
                 result[log_type_key] = log_entries[offset:end_idx]
             return result
 
-    async def take_screenshot(
-        self,
-        session_id: str,
-        format: str = "png",
-        context: Optional[Dict[str, Any]] = None,
-    ) -> bytes:
-        """Take a screenshot - not supported for Python eval."""
-        raise NotImplementedError(
-            "Screenshots not supported for Python evaluation sessions"
-        )
-
-    
-
     async def shutdown(self, context: Optional[Dict[str, Any]] = None) -> None:
         """Shutdown the Python eval worker."""
         logger.info("Shutting down Python eval worker...")
@@ -293,8 +280,6 @@ class PythonEvalRunner(BaseWorker):
     def get_worker_service(self) -> Dict[str, Any]:
         """Get the service configuration for registration with python-eval-specific methods."""
         service_config = super().get_worker_service()
-        # Add Python eval specific methods if any
-        service_config["take_screenshot"] = self.take_screenshot
         return service_config
 
 

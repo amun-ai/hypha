@@ -370,20 +370,7 @@ print(f"Sum: {sum_val}")
     else:
         print("Error:", result.get("error", {}))
     
-    # Method 2: Execute code via server apps controller (recommended)
-    app_controller = await server.get_service("public/server-apps")
-    
-    result = await app_controller.execute(
-        session_id=session_id,
-        script=code,
-        config={"timeout": 30.0}
-    )
-    
-    if result["status"] == "ok":
-        for output in result.get("outputs", []):
-            if output["type"] == "stream" and output["name"] == "stdout":
-                print("Output:", output["text"])
-    
+   
     # Stop the session
     await conda_worker.stop(session_id)
 
@@ -407,6 +394,9 @@ The execute method provides Jupyter-like functionality with the following featur
 ### Execute Method API
 
 ```python
+
+session_info = await app_contrller.start("my-conda-worker")
+conda_worker = await server.get_service(session_info["worker_id"])
 # Direct worker execution
 result = await conda_worker.execute(
     session_id="my-session",
@@ -415,13 +405,6 @@ result = await conda_worker.execute(
         "timeout": 30.0,    # Execution timeout in seconds
     },
     progress_callback=lambda info: print(f"📍 {info['message']}")
-)
-
-# Server-side execution (recommended)
-result = await app_controller.execute(
-    session_id="my-workspace/my-session", 
-    script="print('Hello World!')",
-    config={"timeout": 30.0}
 )
 ```
 

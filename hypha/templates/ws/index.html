@@ -7120,7 +7120,20 @@ license: "MIT"`);
                         throw new Error('WebSocket connection not ready. Please wait for the connection to be established.');
                     }
                     const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
-                    const screenshotBytes = await controller.takeScreenshot(sessionId);
+                    
+                    // First get the session info to find the worker_id
+                    const runningApps = await controller.listRunning();
+                    const sessionInfo = runningApps.find(app => app.id === sessionId);
+                    
+                    if (!sessionInfo || !sessionInfo.worker_id) {
+                        throw new Error('Could not find worker_id for this session');
+                    }
+                    
+                    // Get the worker service using the worker_id
+                    const worker = await ws.getService(sessionInfo.worker_id, { case_conversion: 'camel' });
+                    
+                    // Call take_screenshot from the worker
+                    const screenshotBytes = await worker.takeScreenshot(sessionId);
                     
                     // Convert bytes to base64
                     let screenshotBase64;

@@ -2546,7 +2546,7 @@ class ServerAppController:
                     service_name = ":".join(
                         service_id_parts[1:]
                     )  # Get service name part
-                    manifest_svc.id = f"{workspace_part}/*:{service_name}"
+                    manifest_svc.id = f"{workspace_part}/*:{service_name}@{app_id}"
                 manifest_services.append(manifest_svc)
 
             manifest.services = manifest_services
@@ -2625,7 +2625,10 @@ class ServerAppController:
             {"type": "success", "message": "Application startup completed successfully"}
         )
 
-        return session_data
+        # Remove _worker from the response as it cannot be serialized
+        # Create a copy without the _worker field
+        response_data = {k: v for k, v in session_data.items() if not k.startswith('_')}
+        return response_data
 
     @schema_method
     async def stop(
@@ -2726,106 +2729,6 @@ class ServerAppController:
                 return await worker.get_logs(
                     session_id, type=type, offset=offset, limit=limit, context=context
                 )
-            else:
-                raise Exception(f"Worker not found for session: {session_id}")
-        else:
-            raise Exception(f"Server app instance not found: {session_id}")
-
-    @schema_method
-    async def take_screenshot(
-        self,
-        session_id: str = Field(
-            ...,
-            description="The session ID of the running application instance. This is typically in the format 'workspace/client_id'.",
-        ),
-        format: str = Field(
-            "png",
-            description="Screenshot format: 'png' or 'jpeg'. Returns base64 encoded image data.",
-        ),
-        context: Optional[dict] = Field(
-            None,
-            description="Additional context information including user and workspace details. Usually provided automatically by the system.",
-        ),
-    ) -> str:
-        """Take a screenshot of a running server app instance."""
-        user_info = UserInfo.from_context(context)
-        workspace = context["ws"]
-        if not user_info.check_permission(workspace, UserPermission.read):
-            raise Exception(
-                f"User {user_info.id} does not have permission"
-                f" to take screenshot of app {session_id} in workspace {workspace}."
-            )
-        session_data = await self._get_session_from_redis(session_id)
-        if session_data:
-            worker = self._get_worker_from_cache(session_data["worker_id"])
-            if worker:
-                return await worker.take_screenshot(
-                    session_id, format=format, context=context
-                )
-            else:
-                raise Exception(f"Worker not found for session: {session_id}")
-        else:
-            raise Exception(f"Server app instance not found: {session_id}")
-
-    @schema_method
-    async def execute(
-        self,
-        session_id: str = Field(
-            ...,
-            description="The session ID of the running application instance. This is typically in the format 'workspace/client_id'.",
-        ),
-        script: str = Field(
-            ...,
-            description="The script/code to execute in the session. For Python sessions, this is Python code. For browser sessions, this is JavaScript code.",
-        ),
-        config: Optional[Dict[str, Any]] = Field(
-            None,
-            description="Optional execution configuration specific to the worker type.",
-        ),
-        progress_callback: Any = Field(
-            None,
-            description="Callback function to receive progress updates during execution.",
-        ),
-        context: Optional[dict] = Field(
-            None,
-            description="Additional context information including user and workspace details. Usually provided automatically by the system.",
-        ),
-    ) -> Any:
-        """Execute a script in a running server app instance.
-        
-        This method allows you to interact with running application sessions by executing scripts.
-        The behavior depends on the worker type:
-        - Conda worker: Executes Python code via Jupyter kernel
-        - Browser worker: Executes JavaScript code via Playwright
-        - Other workers: May not support this method
-        
-        Returns the execution results in a format specific to the worker implementation.
-        """
-        user_info = UserInfo.from_context(context)
-        workspace = context["ws"]
-        if not user_info.check_permission(workspace, UserPermission.read_write):
-            raise Exception(
-                f"User {user_info.id} does not have permission"
-                f" to execute scripts in app {session_id} in workspace {workspace}."
-            )
-        session_data = await self._get_session_from_redis(session_id)
-        if session_data:
-            _progress_callback = partial(call_progress_callback, progress_callback)
-
-            worker = self._get_worker_from_cache(session_data["worker_id"])
-            if worker:
-                if hasattr(worker, "execute"):
-                    return await worker.execute(
-                        session_id, 
-                        script=script, 
-                        config=config,
-                        progress_callback=_progress_callback,
-                        context=context
-                    )
-                else:
-                    raise NotImplementedError(
-                        f"Worker for session {session_id} does not support the execute method"
-                    )
             else:
                 raise Exception(f"Worker not found for session: {session_id}")
         else:
@@ -3525,8 +3428,6 @@ class ServerAppController:
             "list_workers": self.list_workers,
             "edit_worker": self.edit_worker,
             "get_logs": self.get_logs,
-            "take_screenshot": self.take_screenshot,
-            "execute": self.execute,
             "edit_file": self.edit_file,
             "remove_file": self.remove_file,
             "list_files": self.list_files,

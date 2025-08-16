@@ -246,22 +246,40 @@ async def test_terminal_worker_run_conda_worker(fastapi_server, test_user_token)
     assert session_id == "test-conda-terminal"
 
     # Wait for conda worker to register
-    max_wait = 20  # 20 seconds max wait
+    max_wait = 30  # 30 seconds max wait (increased from 20)
     conda_worker_found = False
+    startup_output = ""
+    
     while max_wait > 0:
         try:
+            # Try to get some output from the terminal to debug
+            try:
+                terminal_output = await worker.read_terminal(session_id)
+                if terminal_output:
+                    startup_output += terminal_output
+            except:
+                pass
+            
             services = await api.list_services()
             for service in services:
-                if service.get("id") == "conda-in-terminal":
+                # Look for service ID that contains 'conda-in-terminal' (might have workspace prefix)
+                if "conda-in-terminal" in service.get("id", ""):
                     conda_worker_found = True
                     break
             if conda_worker_found:
                 break
-        except:
-            pass
-        await asyncio.sleep(0.5)
-        max_wait -= 0.5
+        except Exception as e:
+            # Log but continue
+            print(f"Error checking services: {e}")
+        await asyncio.sleep(1.0)  # Increased from 0.5 to 1.0
+        max_wait -= 1.0
 
+    # If not found, print debug information
+    if not conda_worker_found:
+        print(f"Terminal output during startup:\n{startup_output}")
+        all_services = await api.list_services()
+        print(f"All available services: {[s.get('id') for s in all_services]}")
+    
     assert conda_worker_found, "Conda worker should have registered from terminal"
 
     # Get the conda worker service

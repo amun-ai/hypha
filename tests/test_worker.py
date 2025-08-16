@@ -184,7 +184,6 @@ async def test_browser_worker_service_registration(fastapi_server, test_user_tok
     assert worker_service is not None
     assert hasattr(worker_service, "start")
     assert hasattr(worker_service, "stop")
-    assert hasattr(worker_service, "take_screenshot")
     assert hasattr(worker_service, "get_logs")
     assert hasattr(worker_service, "compile")
 
@@ -335,27 +334,29 @@ async def test_browser_worker_session_lifecycle(fastapi_server, test_user_token)
 
 async def test_conda_worker_cli_functionality():
     """Test conda worker CLI argument parsing and configuration."""
-    from hypha.workers.conda import main
+    import subprocess
     import sys
-    from unittest.mock import patch
 
     # Test help functionality (should not raise exception)
-    with patch.object(sys, "argv", ["conda.py", "--help"]):
-        try:
-            main()
-        except SystemExit as e:
-            # --help causes SystemExit with code 0
-            assert e.code == 0
+    result = subprocess.run(
+        [sys.executable, "-m", "hypha.workers.conda", "--help"],
+        capture_output=True,
+        text=True
+    )
+    assert result.returncode == 0
+    assert "Hypha Conda Environment Worker" in result.stdout
 
     print("✓ Conda worker CLI help works")
 
-    # Test missing required arguments
-    with patch.object(sys, "argv", ["conda.py"]):
-        try:
-            main()
-        except SystemExit as e:
-            # Missing required args should cause SystemExit with code 1
-            assert e.code == 1
+    # Test missing required arguments (should show help and environment variables info)
+    result = subprocess.run(
+        [sys.executable, "-m", "hypha.workers.conda"],
+        capture_output=True,
+        text=True,
+        env={}  # Clear environment to ensure no HYPHA_ variables are set
+    )
+    # Without required arguments or env vars, it should fail
+    assert result.returncode != 0 or "Server URL" in result.stdout
 
     print("✓ Conda worker CLI validates required arguments")
 

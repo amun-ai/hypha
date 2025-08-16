@@ -1,7 +1,6 @@
 """Test MCP (Model Context Protocol) services."""
 
 import asyncio
-import json
 import time
 from typing import Dict, Any, List, Optional
 
@@ -522,7 +521,6 @@ async def test_mcp_inline_config_service(fastapi_server, test_user_token):
             "type": "mcp",
             "config": {
                 "visibility": "public",
-                "run_in_executor": True,
             },
             "tools": {
                 "simple_tool": simple_tool  # Use the actual schema function
@@ -673,7 +671,6 @@ async def test_mcp_merged_approach(fastapi_server, test_user_token):
             "type": "mcp",
             "config": {
                 "visibility": "public",
-                "run_in_executor": True,
             },
             "tools": {"simple_tool": simple_tool},
             "resources": {
@@ -773,7 +770,7 @@ async def test_mcp_merged_approach(fastapi_server, test_user_token):
     await api.disconnect()
 
 
-async def test_mcp_validation_errors(fastapi_server, test_user_token):
+async def test_mcp_validation_errors(fastapi_server, test_user_token, redis_server):
     """Test that validation errors are properly raised for invalid configurations."""
     server = await connect_to_server(
         {
@@ -783,8 +780,12 @@ async def test_mcp_validation_errors(fastapi_server, test_user_token):
         }
     )
 
-    # Test direct validation by creating HyphaMCPServer directly with invalid configs
-    from hypha.mcp import HyphaMCPServer
+    # Test direct validation by creating HyphaMCPAdapter directly with invalid configs
+    from hypha.mcp import HyphaMCPAdapter
+    from redis import asyncio as aioredis
+
+    # Create redis client like in hypha/core/store.py
+    redis_client = aioredis.from_url(redis_server)
 
     # Test 1: Tool that is not a schema function should raise error
     def non_schema_tool(text: str) -> str:
@@ -797,28 +798,30 @@ async def test_mcp_validation_errors(fastapi_server, test_user_token):
             for k, v in kwargs.items():
                 setattr(self, k, v)
 
-    service_info = MockServiceInfo(tools={non_schema_tool.__name__: non_schema_tool})
+    # The service object should contain the tools, not the service_info
+    service_with_tools = {"tools": {non_schema_tool.__name__: non_schema_tool}}
+    service_info = MockServiceInfo()
 
     try:
-        HyphaMCPServer({}, service_info)
+        HyphaMCPAdapter(service_with_tools, service_info, redis_client)
         assert False, "Should have raised ValueError for non-schema tool"
     except ValueError as e:
         assert "must be a @schema_function decorated function" in str(e)
         print("✓ Tool validation error properly raised")
 
     # Test 2: Resource without read function should raise error
-    service_info = MockServiceInfo(
-        resources={
+    service_with_resources = {
+        "resources": {
             "resource://test": {
                 "uri": "resource://test",
                 "name": "Test Resource",
                 "description": "A test resource",
             }
         }
-    )
+    }
 
     try:
-        HyphaMCPServer({}, service_info)
+        HyphaMCPAdapter(service_with_resources, service_info, redis_client)
         assert False, "Should have raised ValueError for resource without read"
     except ValueError as e:
         assert "must have a 'read' key" in str(e)
@@ -828,8 +831,8 @@ async def test_mcp_validation_errors(fastapi_server, test_user_token):
     def non_schema_read():
         return "content"
 
-    service_info = MockServiceInfo(
-        resources={
+    service_with_bad_resource = {
+        "resources": {
             "resource://test": {
                 "uri": "resource://test",
                 "name": "Test Resource",
@@ -837,27 +840,27 @@ async def test_mcp_validation_errors(fastapi_server, test_user_token):
                 "read": non_schema_read,
             }
         }
-    )
+    }
 
     try:
-        HyphaMCPServer({}, service_info)
+        HyphaMCPAdapter(service_with_bad_resource, service_info, redis_client)
         assert False, "Should have raised ValueError for non-schema read function"
     except ValueError as e:
         assert "must be a @schema_function decorated function" in str(e)
         print("✓ Resource read validation error properly raised")
 
     # Test 4: Prompt without read function should raise error
-    service_info = MockServiceInfo(
-        prompts={
+    service_with_prompts = {
+        "prompts": {
             "test_prompt": {
                 "name": "test_prompt",
                 "description": "A test prompt",
             }
         }
-    )
+    }
 
     try:
-        HyphaMCPServer({}, service_info)
+        HyphaMCPAdapter(service_with_prompts, service_info, redis_client)
         assert False, "Should have raised ValueError for prompt without read"
     except ValueError as e:
         assert "must have a 'read' key" in str(e)

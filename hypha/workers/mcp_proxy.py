@@ -1112,9 +1112,9 @@ class MCPClientRunner(BaseWorker):
             # Register the service with correct structure
             service_def = {
                 "id": server_name,
-                "name": f"MCP Server: {server_name}",
-                "description": f"Unified service exposing tools, resources, and prompts from MCP server {server_name}",
-                "type": "mcp-server-proxy",
+                "name": f"MCP Server for {server_name}",
+                "description": f"Tools, resources, and prompts from MCP server {server_name}",
+                "type": "mcp",
                 "config": {"visibility": "public"},
                 "tools": tools,
                 "resources": resources,
