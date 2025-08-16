@@ -217,8 +217,8 @@ class BrowserWorker(BaseWorker):
             "accept_downloads": False  # Default to false for security
         }
         
-        # Add Playwright configuration from environment variables
-        self._apply_playwright_env_config(context_options)
+        # Add Playwright configuration from environment variables and manifest
+        self._apply_playwright_env_config(context_options, config.manifest)
         
         context = await self.browser.new_context(**context_options)
 
@@ -968,11 +968,12 @@ class BrowserWorker(BaseWorker):
         """Get cache statistics for an app."""
         return await self.cache_manager.get_cache_stats(workspace, app_id)
 
-    def _apply_playwright_env_config(self, context_options: Dict[str, Any]) -> None:
-        """Apply Playwright configuration from environment variables to context options.
+    def _apply_playwright_env_config(self, context_options: Dict[str, Any], manifest: Optional[Dict[str, Any]] = None) -> None:
+        """Apply Playwright configuration from environment variables and manifest to context options.
         
         Args:
             context_options: Dictionary of context options to modify in-place
+            manifest: Optional manifest configuration that can override environment variables
         """
         # Security & CSP Settings
         bypass_csp = os.environ.get("PLAYWRIGHT_BYPASS_CSP")
@@ -1004,6 +1005,20 @@ class BrowserWorker(BaseWorker):
         timezone_id = os.environ.get("PLAYWRIGHT_TIMEZONE_ID")
         if timezone_id:
             context_options["timezone_id"] = timezone_id
+        
+        # Check manifest first, then fall back to environment variable
+        disable_cors = None
+        if manifest and 'disable_cors' in manifest:
+            disable_cors = manifest['disable_cors']
+        else:
+            disable_cors_env = os.environ.get("PLAYWRIGHT_DISABLE_CORS")
+            if disable_cors_env in ['1', 'true', 'yes']:
+                disable_cors = True
+        
+        if disable_cors:
+            context_options['extra_http_headers'] = {
+                'Access-Control-Allow-Origin': '*',
+            }
         
         # Geolocation Configuration
         geolocation_lat = os.environ.get("PLAYWRIGHT_GEOLOCATION_LATITUDE")
