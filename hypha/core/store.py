@@ -959,6 +959,9 @@ class RedisStore:
     def set_artifact_manager(self, controller):
         """Set the artifact controller."""
         self._artifact_manager = controller
+        # Also update the workspace manager's reference if it exists
+        if hasattr(self, '_workspace_manager') and self._workspace_manager:
+            self._workspace_manager._artifact_manager = controller
 
     def register_public_service(self, service: dict):
         """Register a service."""

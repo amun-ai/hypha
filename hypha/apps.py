@@ -716,7 +716,9 @@ class ServerAppController:
         if context:
             try:
                 workspace_svcs = await self.store._workspace_manager.list_services(
-                    {"type": "server-app-worker"}, context=context
+                    {"type": "server-app-worker"}, 
+                    include_app_services=True,  # Include workers from app manifests
+                    context=context
                 )
                 logger.info(
                     f"Found {len(workspace_svcs)} server-app-worker services in workspace {workspace}: {[svc['id'] for svc in workspace_svcs]}"
@@ -777,7 +779,10 @@ class ServerAppController:
         # Fallback to public workers if no workspace workers found
         if not selected_svcs:
             server = await self.store.get_public_api()
-            public_svcs = await server.list_services({"type": "server-app-worker"})
+            public_svcs = await server.list_services(
+                {"type": "server-app-worker"},
+                include_app_services=True  # Include workers from app manifests
+            )
             logger.info(
                 f"Found {len(public_svcs)} server-app-worker services in public workspace: {[svc['id'] for svc in public_svcs]}"
             )
@@ -989,7 +994,9 @@ class ServerAppController:
         if context:
             try:
                 workspace_svcs = await self.store._workspace_manager.list_services(
-                    {"type": "server-app-worker"}, context=context
+                    {"type": "server-app-worker"}, 
+                    include_app_services=True,  # Include workers from app manifests
+                    context=context
                 )
                 logger.info(
                     f"Found {len(workspace_svcs)} server-app-worker services in workspace {workspace}"
@@ -1034,7 +1041,10 @@ class ServerAppController:
         # Always fetch public workers to allow frontend filtering
         try:
             server = await self.store.get_public_api()
-            public_svcs = await server.list_services({"type": "server-app-worker"})
+            public_svcs = await server.list_services(
+                {"type": "server-app-worker"},
+                include_app_services=True  # Include workers from app manifests
+            )
             logger.info(
                 f"Found {len(public_svcs)} server-app-worker services in public workspace"
             )
@@ -1324,13 +1334,12 @@ class ServerAppController:
             if not _allowed_characters.match(app_id):
                 raise ValueError(f"App id {app_id} is not a valid string, only alphanumeric characters, -, and _ are allowed")
 
-        # Simplified installation: Convert source to files and use worker compilation
 
         # Initialize artifact object from manifest or create default
         if manifest:
-            artifact_obj = manifest.copy()
+            artifact_manifest = manifest.copy()
         else:
-            artifact_obj = {
+            artifact_manifest = {
                 "name": "Untitled App",
                 "version": "0.1.0",
                 "type": "hypha",  # Default type
@@ -1352,13 +1361,13 @@ class ServerAppController:
             mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
             mhash = mhash.encode("base58").decode("ascii")
             # Verify the source code if hash provided
-            if "source_hash" in artifact_obj:
-                source_hash = artifact_obj["source_hash"]
+            if "source_hash" in artifact_manifest:
+                source_hash = artifact_manifest["source_hash"]
                 target_mhash = multihash.decode(source_hash.encode("ascii"), "base58")
                 assert target_mhash.verify(
                     source.encode("utf-8")
                 ), f"App source code verification failed (source_hash: {source_hash})."
-            artifact_obj["source_hash"] = mhash
+            artifact_manifest["source_hash"] = mhash
 
         # Handle URL downloads
         if source and source.startswith("http"):
@@ -1380,27 +1389,27 @@ class ServerAppController:
                     source = response.text
             else:
                 # For other HTTP sources, treat as external URLs
-                artifact_obj["entry_point"] = source.split("?")[0].split("/")[-1]
+                artifact_manifest["entry_point"] = source.split("?")[0].split("/")[-1]
                 source = None
 
         # Handle raw HTML content - convert type to window if needed
         elif source and is_raw_html_content(source):
-            if artifact_obj.get("type") == "hypha":
-                artifact_obj["type"] = "window"
+            if artifact_manifest.get("type") == "hypha":
+                artifact_manifest["type"] = "window"
             # Set default name if not provided or is default "Untitled App"
-            if artifact_obj.get("name") in [None, "Untitled App"]:
-                artifact_obj["name"] = "Raw HTML App"
-            artifact_obj["entry_point"] = "index.html"
+            if artifact_manifest.get("name") in [None, "Untitled App"]:
+                artifact_manifest["name"] = "Raw HTML App"
+            artifact_manifest["entry_point"] = "index.html"
 
         # Convert source to files list with enhanced XML parsing
         app_files = []
         if source and source.strip().startswith("<"):
             # Try to extract files from XML source (ImJoy/Hypha format)
             extracted_files, remaining_source = extract_files_from_source(source)
-            # let's load config.json/yaml and update the artifact_obj
+            # let's load config.json/yaml and update the artifact_manifest
             for file in extracted_files:
                 if file["name"] == "manifest.json":
-                    artifact_obj.update(file["content"])
+                    artifact_manifest.update(file["content"])
             # now remove the manifest.json from the extracted_files
             extracted_files = [
                 file for file in extracted_files if file["name"] != "manifest.json"
@@ -1414,7 +1423,7 @@ class ServerAppController:
             if script_files:
                 # Use the first script file as entry point
                 script_file = script_files[0]
-                artifact_obj["entry_point"] = script_file["name"]
+                artifact_manifest["entry_point"] = script_file["name"]
                 # Update the path in app_files to match entry_point
                 for f in app_files:
                     if f.get("name") == script_file["name"]:
@@ -1423,7 +1432,7 @@ class ServerAppController:
             # If there's remaining source content, add it as source file
             if remaining_source and remaining_source.strip():
                 # Use entry_point from manifest if available, otherwise default to "source"
-                source_file_path = artifact_obj.get("entry_point", "source")
+                source_file_path = artifact_manifest.get("entry_point", "source")
                 # Only add remaining source if we haven't already set an entry point from extracted scripts
                 if not script_files:
                     app_files.append(
@@ -1435,7 +1444,7 @@ class ServerAppController:
                     )
         elif source:
             # Use entry_point from manifest if available, otherwise default to "source"
-            source_file_path = artifact_obj.get("entry_point", "source")
+            source_file_path = artifact_manifest.get("entry_point", "source")
             app_files.append(
                 {"path": source_file_path, "content": source, "format": "text"}
             )
@@ -1444,8 +1453,14 @@ class ServerAppController:
         if files:
             app_files.extend(files)
 
+
+        if "services" in artifact_manifest or "service_ids" in artifact_manifest:
+            raise ValueError(
+                "Services and service_ids fields are not allowed in the app manifest."
+            )
+
         # Always try to get a worker for compilation - this ensures all browser apps are handled consistently
-        app_type = artifact_obj.get("type", "hypha")
+        app_type = artifact_manifest.get("type", "hypha")
         worker = None
 
         if app_type in ["application", None]:
@@ -1455,8 +1470,8 @@ class ServerAppController:
             assert source is not None, "Source is missing"
             # Ensure source is in top level xml format with tags such as <config> <script>
 
-        if "entry_point" not in artifact_obj:
-            artifact_obj["entry_point"] = "source"
+        if "entry_point" not in artifact_manifest:
+            artifact_manifest["entry_point"] = "source"
 
         # Try to get worker that supports this app type
         if worker_id:
@@ -1517,18 +1532,18 @@ class ServerAppController:
                         worker_id, context, from_workspace=None
                     ) as active_worker:
                         compiled_manifest, app_files = await active_worker.compile(
-                            artifact_obj, app_files, config=compile_config, context=context
+                            artifact_manifest, app_files, config=compile_config, context=context
                         )
-                        # merge the compiled manifest into the artifact_obj
-                        artifact_obj.update(compiled_manifest)
+                        # merge the compiled manifest into the artifact_manifest
+                        artifact_manifest.update(compiled_manifest)
                 else:
                     # Fallback to using the original worker (may fail with connection closed error)
                     logger.warning("Could not determine worker_id, using original worker (may fail)")
                     compiled_manifest, app_files = await worker.compile(
-                        artifact_obj, app_files, config=compile_config, context=context
+                        artifact_manifest, app_files, config=compile_config, context=context
                     )
-                    # merge the compiled manifest into the artifact_obj
-                    artifact_obj.update(compiled_manifest)
+                    # merge the compiled manifest into the artifact_manifest
+                    artifact_manifest.update(compiled_manifest)
 
                 logger.info(f"Worker compiled app with type {app_type}")
             except Exception as e:
@@ -1544,7 +1559,7 @@ class ServerAppController:
             }
         )
         # Store startup_context with workspace and user info from installation time
-        artifact_obj["startup_context"] = {"ws": context["ws"], "user": context["user"]}
+        artifact_manifest["startup_context"] = {"ws": context["ws"], "user": context["user"]}
 
         # Merge startup_config with proper priority: kwargs > manifest
         # Note: progress_callback is excluded from stored config as it's not serializable
@@ -1555,25 +1570,30 @@ class ServerAppController:
             stop_after_inactive=stop_after_inactive,
         )
 
-        existing_startup_config = artifact_obj.get("startup_config", {})
+        existing_startup_config = artifact_manifest.get("startup_config", {})
         merged_startup_config = merge_startup_config(
             existing_startup_config, **startup_config_kwargs
         )
 
         if merged_startup_config:
-            artifact_obj["startup_config"] = merged_startup_config
+            artifact_manifest["startup_config"] = merged_startup_config
 
         if mhash:
             # Store source hash for singleton checking
-            artifact_obj["source_hash"] = mhash
+            artifact_manifest["source_hash"] = mhash
 
-        assert artifact_obj.get("type") not in [
+        assert artifact_manifest.get("type") not in [
             "application",
             None,
         ], "Application type should not be application or None"
 
-        ApplicationManifest.model_validate(artifact_obj)
-
+        ApplicationManifest.model_validate(artifact_manifest)
+        
+        # Extract service IDs for searchability - store full service IDs
+        if "services" in artifact_manifest:
+            artifact_manifest["service_ids"] = [svc.get("id") for svc in artifact_manifest["services"] if svc.get("id")]
+        else:
+            artifact_manifest["service_ids"] = []
         try:
             artifact = await self.artifact_manager.read("applications", context=context)
             collection_id = artifact["id"]
@@ -1591,7 +1611,7 @@ class ServerAppController:
                 type="application",
                 alias=app_id,
                 parent_id=collection_id,
-                manifest=artifact_obj,
+                manifest=artifact_manifest,
                 overwrite=overwrite,
                 version="stage",
                 context=context,
@@ -1604,13 +1624,13 @@ class ServerAppController:
             app_id = artifact["alias"]
 
             # Update the artifact object with the correct app_id
-            artifact_obj["id"] = app_id
+            artifact_manifest["id"] = app_id
 
             # Update the artifact with the compiled manifest
             await self.artifact_manager.edit(
                 artifact["id"],
                 stage=True,
-                manifest=artifact_obj,
+                manifest=artifact_manifest,
                 context=context,
             )
 
@@ -1722,14 +1742,14 @@ class ServerAppController:
                         "message": "Installation complete!",
                     }
                 )
-                return updated_artifact_info.get("manifest", artifact_obj)
+                return updated_artifact_info.get("manifest", artifact_manifest)
             _progress_callback(
                 {
                     "type": "success",
                     "message": "Installation complete!",
                 }
             )
-            return artifact_obj
+            return artifact_manifest
         
         except Exception as e:
             # Clean up the created artifact if installation failed

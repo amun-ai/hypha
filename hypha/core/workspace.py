@@ -1335,9 +1335,13 @@ class WorkspaceManager:
             False,
             description="Whether to include unlisted services in the results. Only works if the user is from the same workspace as the unlisted services.",
         ),
+        include_app_services: bool = Field(
+            False,
+            description="Whether to include services from installed applications that are not currently running. These services are discovered from application artifact manifests.",
+        ),
         context: Optional[dict] = None,
     ):
-        """Return a list of services based on the query."""
+        """Return a list of services based on the query, optionally including services from installed apps."""
         assert context is not None
         cws = context["ws"]
         user_info = UserInfo.from_context(context)
@@ -1581,6 +1585,147 @@ class WorkspaceManager:
                 # else: user has workspace permission, keep authorized_workspaces for owner
             
             services.append(service_dict)
+
+        # Include services from installed application artifacts if requested
+        if include_app_services:
+            if not self._artifact_manager:
+                logger.warning("Artifact manager not available, skipping app services")
+                return services
+            try:
+                # Build filters for querying artifacts with service_ids
+                artifact_filters = {
+                    "type": "application"
+                }
+                
+                # Add more specific filters based on query parameters
+                if service_id != "*":
+                    # Build the full service ID pattern to match
+                    # Note: service_ids in manifest don't have @app-id suffix
+                    service_id_pattern = f"{workspace}/*:{service_id}"
+                    # Use $in operator to check if the service_ids array contains this specific ID
+                    artifact_filters["manifest"] = {"service_ids": {"$in": [service_id_pattern]}}
+                
+                # Add app_id filter if specified
+                if app_id != "*":
+                    artifact_filters["alias"] = app_id
+                
+                # Query applications collection for the current workspace only
+                # Use the workspace from the query, not from context
+                app_context = dict(context)
+                if workspace != "*":
+                    app_context["workspace"] = workspace
+                
+                try:
+                    # List children artifacts (installed apps) with filters
+                    # Include both staged and committed artifacts
+                    all_artifacts = await self._artifact_manager.list_children(
+                        parent_id="applications",
+                        filters=artifact_filters,
+                        limit=1000,  # Reasonable limit for apps
+                        stage=False,  # Include both staged and committed artifacts
+                        context=app_context
+                    )
+                    logger.debug(f"DEBUG: Found {len(all_artifacts)} artifacts with filters: {artifact_filters}")
+                except KeyError as e:
+                    logger.debug(f"KeyError checking applications collection: {e}")
+                    all_artifacts = []
+
+                # Process artifacts to extract all services at once
+                existing_service_ids = {svc.get("id") for svc in services}
+                
+                for artifact in all_artifacts:
+                    manifest = artifact.get("manifest", {})
+                    app_services = manifest.get("services", [])
+                    artifact_app_id = artifact.get("alias") or artifact.get("id")
+                    
+                    # Process all services from this app
+                    for app_service in app_services:
+                        # Format service ID as <service_id>@<app-id> for lazy loading
+                        original_service_id = app_service.get("id")
+                        if original_service_id:
+                            # Extract the service name part and append @app-id
+                            parts = original_service_id.split(":")
+                            if len(parts) >= 2:
+                                service_name = parts[-1]
+                                # Reconstruct as workspace/client:service@app-id
+                                service_id_with_app = f"{':'.join(parts[:-1])}:{service_name}@{artifact_app_id}"
+                            else:
+                                service_id_with_app = f"{original_service_id}@{artifact_app_id}"
+                        else:
+                            continue  # Skip if no service ID
+                            
+                        service_dict = {
+                            "id": service_id_with_app,
+                            "name": app_service.get("name"),
+                            "type": app_service.get("type"),
+                            "description": app_service.get("description"),
+                            "config": app_service.get("config", {}),
+                            "app_id": artifact_app_id,
+                            "_source": "app_manifest"
+                        }
+                        
+                        # Skip if service ID is missing or already running
+                        if not service_dict["id"] or service_dict["id"] in existing_service_ids:
+                            continue
+                        
+                        # Apply type filter
+                        if type_filter != "*" and service_dict.get("type") != type_filter:
+                            continue
+                        
+                        # Apply service_id filter (double-check since we already filtered at query level)
+                        if service_id != "*":
+                            svc_id_parts = service_dict["id"].split(":")
+                            if len(svc_id_parts) > 1:
+                                svc_name = svc_id_parts[1].split("@")[0]
+                                logger.debug(f"DEBUG: Filtering service_id={service_id}, service={service_dict['id']}, svc_name={svc_name}")
+                                if svc_name != service_id:
+                                    logger.debug(f"DEBUG: Skipping service {service_dict['id']} because {svc_name} != {service_id}")
+                                    continue
+                        
+                        # Get service visibility and workspace
+                        service_visibility = service_dict.get("config", {}).get("visibility", "public")
+                        service_workspace = (
+                            service_dict["id"].split("/")[0] 
+                            if "/" in service_dict["id"] 
+                            else workspace
+                        )
+                        
+                        # Apply visibility filter
+                        if visibility != "*" and service_visibility != visibility:
+                            if not (visibility == "protected" and service_visibility in ["protected", "public"]):
+                                continue
+                        
+                        # Check unlisted services
+                        if service_visibility == "unlisted":
+                            if not include_unlisted:
+                                continue
+                            elif service_workspace != cws:
+                                continue
+                            
+                        # Check protected services permissions
+                        if service_visibility == "protected":
+                            has_workspace_permission = user_info.check_permission(
+                                service_workspace, UserPermission.read
+                            )
+                            
+                            if not has_workspace_permission:
+                                config = service_dict.get("config", {})
+                                authorized_workspaces = config.get("authorized_workspaces", [])
+                                if not (authorized_workspaces and cws in authorized_workspaces):
+                                    continue
+                                
+                                # Remove authorized_workspaces for security
+                                if "authorized_workspaces" in service_dict.get("config", {}):
+                                    del service_dict["config"]["authorized_workspaces"]
+                        
+                        services.append(service_dict)
+                
+            except KeyError:
+                    # Applications collection doesn't exist yet
+                logger.debug("Applications collection not found, skipping app services")
+            except Exception as e:
+                logger.warning(f"Failed to query app services from artifacts: {e}")
+                # Continue without app services rather than failing the entire request
 
         return services
 

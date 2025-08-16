@@ -35,13 +35,19 @@ POSTGRES_DB = "postgres"
 POSTGRES_URI = f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@localhost:{POSTGRES_PORT}/{POSTGRES_DB}"
 
 
-def find_item(items, key, value):
-    """Find an item with key or attributes in an object list."""
-    filtered = [
-        item
-        for item in items
-        if (item[key] if isinstance(item, dict) else getattr(item, key)) == value
-    ]
+def find_item(items, key_or_predicate, value=None):
+    """Find an item with key or attributes in an object list, or using a predicate function."""
+    if callable(key_or_predicate):
+        # If it's a function, use it as a predicate
+        filtered = [item for item in items if key_or_predicate(item)]
+    else:
+        # Original behavior with key and value
+        key = key_or_predicate
+        filtered = [
+            item
+            for item in items
+            if (item[key] if isinstance(item, dict) else getattr(item, key)) == value
+        ]
     if len(filtered) == 0:
         return None
 
