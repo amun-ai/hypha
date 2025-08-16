@@ -573,7 +573,7 @@ async def test_asgi_auth_context(fastapi_server, test_user_token):
         # Public services run in the public workspace, not the user's workspace
         assert result.get("user_id") == "http-anonymous"
         assert result.get("has_context") == True
-        assert result.get("workspace") == "public"
+        assert result.get("workspace") == "ws-anonymous"
         print("✓ Anonymous ASGI access works with context")
 
     # Test 2: Public ASGI service WITH token

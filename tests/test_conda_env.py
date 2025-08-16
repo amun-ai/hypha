@@ -2033,7 +2033,8 @@ print(f"Files found: {sorted(files)}")
                 # Initialize worker with test server URL
                 worker = CondaWorker(
                     server_url=test_server_url,
-                    working_dir=str(working_dir_base)
+                    working_dir=str(working_dir_base),
+                    cache_dir=conda_test_workspace["cache_dir"]
                 )
                 worker._env_cache = EnvironmentCache(
                     cache_dir=conda_test_workspace["cache_dir"], max_size=5

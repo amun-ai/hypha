@@ -251,6 +251,13 @@ def create_application(args):
             args.startup_functions.append(k8s_startup_function)
             logger.info("Automatically added Kubernetes worker to startup functions")
 
+    # Automatically add Terminal worker startup function if Terminal worker is enabled
+    if args.enable_terminal_worker:
+        terminal_startup_function = "hypha.workers.terminal:hypha_startup"
+        if terminal_startup_function not in args.startup_functions:
+            args.startup_functions.append(terminal_startup_function)
+            logger.info("Automatically added Terminal worker to startup functions")
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Here we can register all the startup functions
@@ -597,6 +604,11 @@ def get_argparser(add_help=True):
         "--enable-k8s-worker",
         action="store_true",
         help="enable Kubernetes pod worker support",
+    )
+    parser.add_argument(
+        "--enable-terminal-worker",
+        action="store_true",
+        help="enable Terminal worker support for executing commands",
     )
     parser.add_argument(
         "--interactive",

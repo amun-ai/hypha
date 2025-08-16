@@ -72,6 +72,7 @@ class ServiceConfig(BaseModel):
     singleton: Optional[bool] = False
     created_by: Optional[Dict] = None
     service_embedding: Optional[Any] = None
+    authorized_workspaces: Optional[List[str]] = None
 
 
 class ServiceInfo(BaseModel):

@@ -526,6 +526,128 @@ asyncio.run(main())
 
 ## Advanced Features
 
+### Startup Scripts
+
+The browser worker supports executing JavaScript startup scripts automatically after the page loads. This is useful for:
+- Injecting utility functions
+- Setting up event listeners
+- Modifying page behavior
+- Pre-configuring the application environment
+
+#### Configuration
+
+Add a `startup_script` field to your manifest pointing to a JavaScript file in the artifact manager:
+
+```yaml
+# manifest.yaml
+name: My App with Startup Script
+type: web-app
+entry_point: https://example.com
+startup_script: scripts/initialize.js  # Path to JS file in artifact manager
+```
+
+#### Example Startup Script
+
+```javascript
+// scripts/initialize.js
+console.log('Startup script executing...');
+
+// Add utility functions to the window
+window.utils = {
+    getData: async function() {
+        const response = await fetch('/api/data');
+        return response.json();
+    },
+    
+    formatDate: function(date) {
+        return new Intl.DateTimeFormat('en-US').format(date);
+    }
+};
+
+// Set up event listeners
+document.addEventListener('DOMContentLoaded', function() {
+    console.log('Page fully loaded');
+    
+    // Auto-fill forms, set defaults, etc.
+    const form = document.querySelector('#myForm');
+    if (form) {
+        form.querySelector('#apiKey').value = localStorage.getItem('apiKey') || '';
+    }
+});
+
+// Modify page behavior
+if (window.location.hostname === 'example.com') {
+    // Remove ads or unwanted elements
+    document.querySelectorAll('.ad-banner').forEach(el => el.remove());
+    
+    // Add custom styles
+    const style = document.createElement('style');
+    style.textContent = `
+        body { font-family: 'Monaco', monospace; }
+        .highlight { background-color: yellow; }
+    `;
+    document.head.appendChild(style);
+}
+
+// Return status for logging
+'Startup script completed successfully';
+```
+
+#### Important Notes
+
+1. **Execution Timing**: The startup script runs after the page loads but before the application is considered ready
+2. **Error Handling**: Errors in the startup script are logged but won't fail the session
+3. **File Location**: The script must be uploaded to the artifact manager alongside your application
+4. **Security**: The script runs with full page access, so ensure it's from a trusted source
+
+### Script Execution API
+
+You can execute JavaScript code in a running browser session using the `execute` method:
+
+```python
+# Connect to browser worker
+browser_worker = await server.get_service("my-browser-worker")
+
+# Start a session
+session_id = await browser_worker.start(config)
+
+# Execute JavaScript code
+result = await browser_worker.execute(session_id, """
+    // Interact with the page
+    const data = {
+        title: document.title,
+        url: window.location.href,
+        cookies: document.cookie,
+        localStorage: Object.keys(localStorage)
+    };
+    
+    // Perform actions
+    document.querySelector('#submit-button')?.click();
+    
+    // Return data
+    return data;
+""")
+
+print(f"Page info: {result}")
+
+# Execute more complex operations
+await browser_worker.execute(session_id, """
+    // Wait for an element to appear
+    await new Promise(resolve => {
+        const observer = new MutationObserver((mutations, obs) => {
+            if (document.querySelector('#dynamic-content')) {
+                obs.disconnect();
+                resolve();
+            }
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+    });
+    
+    // Extract and return the content
+    return document.querySelector('#dynamic-content').textContent;
+""")
+```
+
 ### Screenshot Capabilities
 
 The browser worker can take screenshots of running applications:
@@ -559,8 +681,13 @@ cache_routes:
 
 ### Authentication Support
 
-The browser worker can handle various authentication methods:
+The browser worker provides comprehensive authentication support with cookies, localStorage, sessionStorage, and HTTP headers that are set BEFORE the page loads:
 
+#### Cookie Configuration
+
+Cookies can be configured in two ways:
+
+**Simple Format (name-value pairs):**
 ```yaml
 # In your application manifest
 name: Authenticated App
@@ -569,11 +696,125 @@ entry_point: https://my-app.example.com
 cookies:
   session_id: "abc123"
   user_token: "xyz789"
+```
+
+**Advanced Format (full cookie objects):**
+```yaml
+# In your application manifest
+name: Authenticated App
+type: web-app
+entry_point: https://my-app.example.com
+cookies:
+  - name: "session_id"
+    value: "abc123"
+    domain: "example.com"
+    path: "/"
+    expires: 1735689600  # Unix timestamp
+    httpOnly: true
+    secure: true
+    sameSite: "Lax"  # Can be: Strict, Lax, or None
+  - name: "user_token"
+    value: "xyz789"
+    domain: ".example.com"  # Subdomain wildcard
+    path: "/api"
+```
+
+#### Storage Configuration
+
+Both localStorage and sessionStorage are preloaded BEFORE the page loads using initialization scripts:
+
+```yaml
+# In your application manifest
+name: Storage Example
+type: web-app
+entry_point: https://my-app.example.com
+
+# localStorage - persists across browser sessions
 local_storage:
   api_key: "my-api-key"
-  user_preferences: "dark-mode"
-authorization_token: "Bearer jwt-token-here"
+  user_preferences: '{"theme": "dark", "language": "en"}'
+  auth_token: "stored-token-123"
+
+# sessionStorage - cleared when tab closes
+session_storage:
+  temp_data: "temporary-value"
+  session_id: "current-session-123"
 ```
+
+#### HTTP Headers Configuration
+
+Custom HTTP headers can be set through the manifest or environment variables:
+
+```yaml
+# In your application manifest
+name: API Client App
+type: web-app
+entry_point: https://api.example.com
+
+# Authorization header shorthand
+authorization_token: "Bearer jwt-token-here"
+
+# Custom HTTP headers
+extra_http_headers:
+  X-API-Key: "api-key-123"
+  X-Client-Version: "2.0.0"
+  Custom-Header: "custom-value"
+```
+
+#### Complete Authentication Example
+
+```yaml
+# manifest.yaml - Full authentication configuration
+name: Enterprise App
+type: web-app
+entry_point: https://enterprise.example.com
+
+# Cookies with full configuration
+cookies:
+  - name: "auth_session"
+    value: "secure-session-id"
+    domain: ".example.com"
+    path: "/"
+    expires: 1735689600
+    httpOnly: true
+    secure: true
+    sameSite: "Strict"
+
+# Preloaded localStorage
+local_storage:
+  api_endpoint: "https://api.example.com/v2"
+  user_id: "user-123"
+  preferences: '{"notifications": true}'
+
+# Preloaded sessionStorage
+session_storage:
+  csrf_token: "csrf-token-abc"
+  temp_state: '{"step": 2, "data": {}}'
+
+# Authorization header
+authorization_token: "Bearer eyJhbGciOiJIUzI1NiIs..."
+
+# Additional HTTP headers
+extra_http_headers:
+  X-API-Version: "2.0"
+  X-Request-ID: "request-123"
+
+# Security settings
+bypass_csp: false
+ignore_https_errors: false
+```
+
+#### Important Notes
+
+1. **Storage Preloading**: localStorage and sessionStorage are set using `page.add_init_script()`, ensuring they're available immediately when the page loads
+2. **Cookie Domains**: Cookies automatically use the target URL's domain if not specified
+3. **Security**: All values are properly escaped to prevent injection attacks
+4. **Persistence**: localStorage persists across sessions, sessionStorage is cleared when the tab closes
+5. **Order of Operations**: Authentication is set up in this order:
+   - Cookies are added to the context
+   - HTTP headers are configured
+   - Storage initialization scripts are added
+   - Page navigation occurs with all auth already in place
 
 ## Monitoring and Logging
 
@@ -680,13 +921,176 @@ Failed to connect to server
 3. **Resource management**: Monitor memory usage, especially for long-running sessions
 4. **Docker optimization**: Use `--shm-size=2gb` or higher for better performance
 
-### Security Considerations
+### Security Architecture
 
-1. **Token security**: Store tokens securely, use environment variables
-2. **Network security**: Use HTTPS for server connections
-3. **Workspace isolation**: Use appropriate visibility settings
-4. **Resource limits**: Monitor resource usage in production environments
-5. **Browser security**: Applications run in isolated browser contexts
+The Browser Worker implements multiple layers of security to ensure safe execution of web applications in multi-tenant environments:
+
+#### 1. Browser Context Isolation
+
+Each application session runs in a **completely isolated browser context**, which provides:
+
+- **Separate storage**: Each context has its own cookies, localStorage, sessionStorage, and IndexedDB
+- **Separate cache**: HTTP cache is isolated per context
+- **Separate permissions**: Each context can have different browser permissions
+- **Memory isolation**: JavaScript heap and execution contexts are completely separated
+- **No cross-context access**: Applications in different contexts cannot access each other's data, even if served from the same origin
+
+This is equivalent to running applications in completely separate browser profiles, ensuring strong isolation between different users' applications.
+
+#### 2. CORS and Web Security Configuration
+
+The Browser Worker provides flexible CORS handling to balance functionality with security:
+
+##### Default Configuration (CORS Bypass Enabled)
+By default, the browser runs with `--disable-web-security` to allow applications to access external APIs without CORS restrictions:
+
+```bash
+# Default behavior - CORS checks disabled
+export PLAYWRIGHT_DISABLE_WEB_SECURITY=true  # This is the default
+```
+
+This configuration:
+- Allows cross-origin requests to any API without CORS headers
+- Maintains process isolation with `--site-per-process` for defense in depth
+- Keeps browser context isolation intact (critical for multi-tenant security)
+
+##### Strict Security Mode
+For production environments requiring strict CORS enforcement:
+
+```bash
+# Enable strict CORS checking
+export PLAYWRIGHT_DISABLE_WEB_SECURITY=false
+```
+
+This configuration:
+- Enforces standard browser CORS policies
+- Requires proper CORS headers from servers
+- Provides maximum security but may limit API access
+
+#### 3. Process Isolation
+
+The browser maintains process-level isolation using `--site-per-process`:
+- Different origins run in separate OS processes
+- Provides defense against Spectre-style attacks
+- Adds an additional security boundary beyond context isolation
+
+#### 4. Application-Level Security Controls
+
+##### Per-Application HTTP Headers
+Applications can configure custom HTTP headers through the manifest:
+
+```yaml
+# In application manifest
+extra_http_headers:
+  X-API-Key: "your-api-key"
+  Authorization: "Bearer token"
+  Custom-Header: "value"
+```
+
+##### Content Security Policy (CSP)
+Control CSP enforcement per application:
+
+```yaml
+# In application manifest
+bypass_csp: false  # Enforce CSP (default)
+# or
+bypass_csp: true   # Bypass CSP for development/testing
+```
+
+##### HTTPS Certificate Validation
+Configure certificate validation per application:
+
+```yaml
+# In application manifest
+ignore_https_errors: false  # Validate certificates (default)
+# or
+ignore_https_errors: true   # Skip certificate validation for testing
+```
+
+#### 5. Security Configuration Options
+
+| Configuration | Environment Variable | Manifest Field | Description | Security Impact |
+|--------------|---------------------|----------------|-------------|-----------------|
+| Web Security | `PLAYWRIGHT_DISABLE_WEB_SECURITY` | - | Disable CORS checks | Allows cross-origin API access |
+| CSP Bypass | `PLAYWRIGHT_BYPASS_CSP` | `bypass_csp` | Bypass Content Security Policy | Allows inline scripts/styles |
+| HTTPS Errors | `PLAYWRIGHT_IGNORE_HTTPS_ERRORS` | `ignore_https_errors` | Ignore certificate errors | Allows self-signed certificates |
+| Downloads | `PLAYWRIGHT_ACCEPT_DOWNLOADS` | - | Enable file downloads | Allows saving files locally |
+| HTTP Headers | `PLAYWRIGHT_EXTRA_HTTP_HEADERS` | `extra_http_headers` | Custom request headers | Adds authentication/API keys |
+
+#### 6. Best Practices for Different Environments
+
+##### Development Environment
+Maximum flexibility for testing and development:
+
+```bash
+export PLAYWRIGHT_DISABLE_WEB_SECURITY=true  # Allow cross-origin requests
+export PLAYWRIGHT_BYPASS_CSP=true            # Allow inline scripts
+export PLAYWRIGHT_IGNORE_HTTPS_ERRORS=true   # Allow self-signed certs
+export PLAYWRIGHT_ACCEPT_DOWNLOADS=true      # Allow file downloads
+```
+
+##### Production Environment
+Balanced security with necessary functionality:
+
+```bash
+export PLAYWRIGHT_DISABLE_WEB_SECURITY=true  # May be needed for API access
+export PLAYWRIGHT_BYPASS_CSP=false           # Enforce CSP
+export PLAYWRIGHT_IGNORE_HTTPS_ERRORS=false  # Validate certificates
+export PLAYWRIGHT_ACCEPT_DOWNLOADS=false     # Restrict downloads
+```
+
+##### High-Security Environment
+Maximum security with restricted functionality:
+
+```bash
+export PLAYWRIGHT_DISABLE_WEB_SECURITY=false # Enforce CORS
+export PLAYWRIGHT_BYPASS_CSP=false           # Enforce CSP
+export PLAYWRIGHT_IGNORE_HTTPS_ERRORS=false  # Validate certificates
+export PLAYWRIGHT_ACCEPT_DOWNLOADS=false     # No downloads
+export PLAYWRIGHT_PERMISSIONS=""             # No special permissions
+```
+
+#### 7. Multi-Tenant Security Guarantees
+
+Even with CORS disabled, the Browser Worker maintains strong isolation between tenants:
+
+1. **Context Isolation**: Each user's application runs in a separate browser context
+2. **Storage Isolation**: No shared cookies, localStorage, or cache between contexts
+3. **Memory Isolation**: Separate JavaScript execution environments
+4. **Network Isolation**: Each context can have different proxy settings and authentication
+
+This architecture ensures that:
+- User A's application **cannot** access User B's application data
+- Even if both applications are served from the same origin
+- Even if web security is disabled for CORS bypass
+- Each context acts as a completely independent browser instance
+
+#### 8. Security Considerations
+
+1. **Token Security**: 
+   - Store tokens securely using environment variables or secrets management
+   - Never commit tokens to version control
+   - Rotate tokens regularly
+
+2. **Network Security**: 
+   - Always use HTTPS for server connections in production
+   - Configure proper TLS certificates
+   - Consider using VPN or private networks for sensitive deployments
+
+3. **Resource Limits**: 
+   - Monitor CPU and memory usage
+   - Set appropriate resource limits in container orchestration
+   - Implement rate limiting for API calls
+
+4. **Audit Logging**: 
+   - Enable verbose logging for security auditing
+   - Monitor for unusual access patterns
+   - Keep logs for compliance requirements
+
+5. **Regular Updates**: 
+   - Keep Hypha and Playwright updated
+   - Apply security patches promptly
+   - Monitor security advisories
 
 ## API Reference
 
@@ -697,6 +1101,29 @@ Start a new browser session.
 
 #### `stop(session_id: str) -> None`
 Stop a browser session.
+
+#### `execute(session_id: str, script: str) -> Any`
+Execute JavaScript code in a browser session and return the result.
+
+**Parameters:**
+- `session_id`: The session ID to execute the script in
+- `script`: JavaScript code to execute in the page context
+
+**Returns:**
+The result of the script execution (can be any JSON-serializable value)
+
+**Example:**
+```python
+# Execute script in running session
+result = await browser_worker.execute(session_id, """
+    // Access page elements and return data
+    const title = document.title;
+    const links = Array.from(document.querySelectorAll('a')).map(a => a.href);
+    return { title, linkCount: links.length };
+""")
+print(f"Page title: {result['title']}")
+print(f"Number of links: {result['linkCount']}")
+```
 
 #### `take_screenshot(session_id: str, format: str = "png") -> bytes`
 Take a screenshot of a browser session.

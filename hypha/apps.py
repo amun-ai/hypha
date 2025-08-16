@@ -443,7 +443,7 @@ class ServerAppController:
             session_data = await self._get_session_from_redis(full_client_id)
             if session_data:
                 # Get worker from cache
-                worker = self._get_worker_from_cache(session_data.get("worker_id"))
+                worker = self._get_worker_from_cache(session_data["worker_id"])
                 if worker:
                     # Create context for worker call
                     context = {
@@ -461,8 +461,8 @@ class ServerAppController:
             worker_sessions_to_cleanup = []
             
             for session in all_sessions:
-                worker_id = session.get("worker_id")
-                if worker_id and client_id in worker_id:
+                worker_id = session["worker_id"]
+                if client_id in worker_id:
                     # This session was running on the disconnected worker
                     worker_sessions_to_cleanup.append(session)
             
@@ -672,9 +672,8 @@ class ServerAppController:
             worker_ids = set()
             
             for session in all_sessions:
-                worker_id = session.get("worker_id")
-                if worker_id:
-                    worker_ids.add(worker_id)
+                worker_id = session["worker_id"]
+                worker_ids.add(worker_id)
             
             # Check each worker's health
             dead_workers = []
@@ -948,7 +947,7 @@ class ServerAppController:
             # Stop all sessions using this worker
             all_sessions = await self._get_all_sessions()
             for session in all_sessions:
-                if session.get("worker_id") == worker_id and session.get("id", "").startswith(f"{workspace}/"):
+                if session["worker_id"] == worker_id and session.get("id", "").startswith(f"{workspace}/"):
                     try:
                         await self._stop(session["id"], raise_exception=False, context=context)
                     except Exception:
@@ -2129,7 +2128,7 @@ class ServerAppController:
             context=context,
         )
 
-        # Store session info in Redis for horizontal scaling
+        # Create session data to be returned (not stored in Redis yet)
         session_data = {
             "id": full_client_id,
             "app_id": app_id_for_registration,  # Store the alias for consistency
@@ -2146,14 +2145,15 @@ class ServerAppController:
             "worker_id": worker.get("id"),  # Store worker service ID
             "_worker": worker,  # Keep for local caching
         }
-        await self._store_session_in_redis(full_client_id, session_data)
         
-        # Cache the worker instance by its service ID
+        # Cache the worker instance by its service ID (still do this here for immediate availability)
         worker_id = worker.get("id")
         if worker_id:
             self._worker_cache[worker_id] = worker
 
-        return full_client_id
+        # Return session_data instead of just the client_id
+        # The caller (start method) will store it in Redis after adding services
+        return session_data
 
     def _extract_core_error(self, error, logs=None):
         """Extract the core error message from worker logs or exception."""
@@ -2341,15 +2341,7 @@ class ServerAppController:
 
         # collecting services registered during the startup of the script
         collected_services: List[ServiceInfo] = []
-        app_info = {
-            "id": full_client_id,
-            "app_id": app_id,
-            "workspace": workspace,
-            "client_id": client_id,
-            "config": {},
-            "session_id": None,  # Will be updated after start_by_type
-        }
-
+        _collected_config = {}  # To collect config from default service
         # Only set up event waiting if not in detached mode
         event_future = None
         if not detached:
@@ -2373,7 +2365,7 @@ class ServerAppController:
                 if info["id"] == full_client_id + ":default":
                     for key in ["config", "name", "description"]:
                         if info.get(key):
-                            app_info[key] = info[key]
+                            _collected_config[key] = info[key]
                     _progress_callback(
                         {"type": "success", "message": "Default service configured"}
                     )
@@ -2442,7 +2434,7 @@ class ServerAppController:
             logger.debug(
                 f"Starting app with server_url: {server_url} (local_base_url: {self.local_base_url}, port: {self.port})"
             )
-            session_id = await self.start_by_type(
+            session_data = await self.start_by_type(
                 app_id=app_id,
                 app_type=app_type,
                 client_id=client_id,
@@ -2458,9 +2450,10 @@ class ServerAppController:
                 worker_selection_mode=worker_selection_mode if not selected_worker else None,
                 context=context,
             )
-
-            # Update app_info with session data
-            app_info["session_id"] = session_id
+            
+            # Store the initial session data in Redis immediately after starting
+            # This ensures the session is tracked even if something goes wrong later
+            await self._store_session_in_redis(full_client_id, session_data)
 
             # Progress update after worker starts but before waiting for services
             if not detached:
@@ -2533,9 +2526,10 @@ class ServerAppController:
             _progress_callback(
                 {"type": "info", "message": "Updating application manifest..."}
             )
-            manifest.name = manifest.name or app_info.get("name", "Untitled App")
-            manifest.description = manifest.description or app_info.get(
-                "description", ""
+            # Update manifest with collected config if available
+            manifest.name = manifest.name or _collected_config.get("name", session_data.get("name", "Untitled App"))
+            manifest.description = manifest.description or _collected_config.get(
+                "description", session_data.get("description", "")
             )
 
             # Replace client ID with * in service IDs for manifest storage
@@ -2552,6 +2546,8 @@ class ServerAppController:
                     service_name = ":".join(
                         service_id_parts[1:]
                     )  # Get service name part
+                    # Don't include @app_id in the service ID within the manifest
+                    # The app_id is already known from the manifest context
                     manifest_svc.id = f"{workspace_part}/*:{service_name}"
                 manifest_services.append(manifest_svc)
 
@@ -2577,7 +2573,7 @@ class ServerAppController:
         except (asyncio.TimeoutError, Exception) as exp:
             # Get worker logs for debugging
             logs = None
-            session_data = await self._get_session_from_redis(full_client_id)
+            # Use the session_data we already have (from start_by_type)
             if session_data and "worker_id" in session_data:
                 worker = self._get_worker_from_cache(session_data["worker_id"])
                 if worker:
@@ -2600,20 +2596,23 @@ class ServerAppController:
                 if not wait_for_service:
                     self.event_bus.off_local("client_connected", client_connected)
 
+        # Merge session_data with collected services and config
+        # session_data already exists from start_by_type, now we add the collected info
         if wait_for_service:
-            app_info["service_id"] = (
+            session_data["service_id"] = (
                 full_client_id + ":" + wait_for_service + "@" + app_id
             )
-        app_info["services"] = [
+        session_data["services"] = [
             svc.model_dump(mode="json") for svc in collected_services
         ]
-        # Update session in Redis with services and final metadata
-        session_data = await self._get_session_from_redis(full_client_id)
-        if session_data:
-            session_data["services"] = app_info["services"]
-            session_data["name"] = manifest.name
-            session_data["description"] = manifest.description
-            await self._store_session_in_redis(full_client_id, session_data)
+        # Update with final manifest values and collected config
+        session_data["name"] = manifest.name
+        session_data["description"] = manifest.description
+        session_data["config"] = _collected_config.get("config", {})  # Use collected config if available
+        session_data["session_id"] = full_client_id  # Add session_id which is same as id
+        
+        # Store the final updated session data back to Redis
+        await self._store_session_in_redis(full_client_id, session_data)
 
         # Start autoscaling if enabled
         if manifest.autoscaling and manifest.autoscaling.enabled:
@@ -2628,7 +2627,10 @@ class ServerAppController:
             {"type": "success", "message": "Application startup completed successfully"}
         )
 
-        return app_info
+        # Remove _worker from the response as it cannot be serialized
+        # Create a copy without the _worker field
+        response_data = {k: v for k, v in session_data.items() if not k.startswith('_')}
+        return response_data
 
     @schema_method
     async def stop(
@@ -2667,7 +2669,7 @@ class ServerAppController:
         if session_data:
             try:
                 # Get worker from cache and stop session
-                worker = self._get_worker_from_cache(session_data.get("worker_id"))
+                worker = self._get_worker_from_cache(session_data["worker_id"])
                 if worker:
                     await worker.stop(session_id, context=context)
             except Exception as exp:
@@ -2724,111 +2726,11 @@ class ServerAppController:
             )
         session_data = await self._get_session_from_redis(session_id)
         if session_data:
-            worker = self._get_worker_from_cache(session_data.get("worker_id"))
+            worker = self._get_worker_from_cache(session_data["worker_id"])
             if worker:
                 return await worker.get_logs(
                     session_id, type=type, offset=offset, limit=limit, context=context
                 )
-            else:
-                raise Exception(f"Worker not found for session: {session_id}")
-        else:
-            raise Exception(f"Server app instance not found: {session_id}")
-
-    @schema_method
-    async def take_screenshot(
-        self,
-        session_id: str = Field(
-            ...,
-            description="The session ID of the running application instance. This is typically in the format 'workspace/client_id'.",
-        ),
-        format: str = Field(
-            "png",
-            description="Screenshot format: 'png' or 'jpeg'. Returns base64 encoded image data.",
-        ),
-        context: Optional[dict] = Field(
-            None,
-            description="Additional context information including user and workspace details. Usually provided automatically by the system.",
-        ),
-    ) -> str:
-        """Take a screenshot of a running server app instance."""
-        user_info = UserInfo.from_context(context)
-        workspace = context["ws"]
-        if not user_info.check_permission(workspace, UserPermission.read):
-            raise Exception(
-                f"User {user_info.id} does not have permission"
-                f" to take screenshot of app {session_id} in workspace {workspace}."
-            )
-        session_data = await self._get_session_from_redis(session_id)
-        if session_data:
-            worker = self._get_worker_from_cache(session_data.get("worker_id"))
-            if worker:
-                return await worker.take_screenshot(
-                    session_id, format=format, context=context
-                )
-            else:
-                raise Exception(f"Worker not found for session: {session_id}")
-        else:
-            raise Exception(f"Server app instance not found: {session_id}")
-
-    @schema_method
-    async def execute(
-        self,
-        session_id: str = Field(
-            ...,
-            description="The session ID of the running application instance. This is typically in the format 'workspace/client_id'.",
-        ),
-        script: str = Field(
-            ...,
-            description="The script/code to execute in the session. For Python sessions, this is Python code. For browser sessions, this is JavaScript code.",
-        ),
-        config: Optional[Dict[str, Any]] = Field(
-            None,
-            description="Optional execution configuration specific to the worker type.",
-        ),
-        progress_callback: Any = Field(
-            None,
-            description="Callback function to receive progress updates during execution.",
-        ),
-        context: Optional[dict] = Field(
-            None,
-            description="Additional context information including user and workspace details. Usually provided automatically by the system.",
-        ),
-    ) -> Any:
-        """Execute a script in a running server app instance.
-        
-        This method allows you to interact with running application sessions by executing scripts.
-        The behavior depends on the worker type:
-        - Conda worker: Executes Python code via Jupyter kernel
-        - Browser worker: Executes JavaScript code via Playwright
-        - Other workers: May not support this method
-        
-        Returns the execution results in a format specific to the worker implementation.
-        """
-        user_info = UserInfo.from_context(context)
-        workspace = context["ws"]
-        if not user_info.check_permission(workspace, UserPermission.read_write):
-            raise Exception(
-                f"User {user_info.id} does not have permission"
-                f" to execute scripts in app {session_id} in workspace {workspace}."
-            )
-        session_data = await self._get_session_from_redis(session_id)
-        if session_data:
-            _progress_callback = partial(call_progress_callback, progress_callback)
-
-            worker = self._get_worker_from_cache(session_data.get("worker_id"))
-            if worker:
-                if hasattr(worker, "execute"):
-                    return await worker.execute(
-                        session_id, 
-                        script=script, 
-                        config=config,
-                        progress_callback=_progress_callback,
-                        context=context
-                    )
-                else:
-                    raise NotImplementedError(
-                        f"Worker for session {session_id} does not support the execute method"
-                    )
             else:
                 raise Exception(f"Worker not found for session: {session_id}")
         else:
@@ -2919,6 +2821,48 @@ class ServerAppController:
             return artifact_info
         except Exception as exp:
             raise Exception(f"Failed to get app info for {app_id}: {exp}") from exp
+
+    @schema_method
+    async def get_session_info(
+        self,
+        session_id: str = Field(
+            ...,
+            description="The unique identifier of the session to inspect.",
+        ),
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system.",
+        ),
+    ) -> dict:
+        """Get detailed information about a specific session.
+
+        This method returns comprehensive information about a session:
+        1. Validates permissions and session existence
+        2. Retrieves the session metadata
+        3. Returns detailed configuration and service information
+
+        Returns a dictionary containing:
+        - id: The session ID
+        - workspace: The workspace ID
+        - user: The user ID
+        - app: The application ID
+        - status: The current status of the session
+        - created_at: Creation timestamp
+        - updated_at: Last update timestamp
+        - worker_id: The worker service ID
+        """
+        user_info = UserInfo.from_context(context)
+        workspace = context["ws"]
+        if not user_info.check_permission(workspace, UserPermission.read):
+            raise Exception(
+                f"User {user_info.id} does not have permission"
+                f" to get session info for {session_id} in workspace {workspace}."
+            )
+        session_data = await self._get_session_from_redis(session_id)
+        if session_data:
+            return session_data
+        else:
+            raise Exception(f"Session not found: {session_id}")
 
     @schema_method
     async def read_file(
@@ -3486,13 +3430,12 @@ class ServerAppController:
             "list_workers": self.list_workers,
             "edit_worker": self.edit_worker,
             "get_logs": self.get_logs,
-            "take_screenshot": self.take_screenshot,
-            "execute": self.execute,
             "edit_file": self.edit_file,
             "remove_file": self.remove_file,
             "list_files": self.list_files,
             "commit_app": self.commit_app,
             "get_app_info": self.get_app_info,
+            "get_session_info": self.get_session_info,
             "read_file": self.read_file,
             "validate_app_manifest": self.validate_app_manifest,
             "edit_app": self.edit_app,

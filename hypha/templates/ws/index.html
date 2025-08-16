@@ -975,15 +975,16 @@
             };
             
             const getServiceUrl = (service) => {
-                // For running apps: [workspace]/apps/[client_id]:[service_id]/
+                // For running apps: [workspace]/services/[client_id]:[service_id]@[app_id]/
                 const serviceName = service.id.split('@')[0];
                 
-                return `${serverUrl}/${workspace}/services/${serviceName.split("/")[1]}`;
+                return `${serverUrl}/${workspace}/services/${serviceName.split("/")[1]}@${app.app_id}`;
                 
             };
             
             const getAppUrl = (service) => {
-                return `${serverUrl}/${workspace}/apps/${service.id.split("/")[1]}/`;
+                // For ASGI apps: [workspace]/apps/[client_id]:[service_id]@[app_id]/
+                return `${serverUrl}/${workspace}/apps/${service.id.split("/")[1]}@${app.app_id}/`;
             };
             
             return (
@@ -4163,6 +4164,7 @@ license: "MIT"`);
             const [serverName, setServerName] = React.useState('my-server');
             const [serverUrl, setServerUrl] = React.useState('');
             const [serverType, setServerType] = React.useState('streamable-http');
+            const [appId, setAppId] = React.useState('mcp-server');
             const [appName, setAppName] = React.useState('My MCP Server');
             const [appDescription, setAppDescription] = React.useState('Integration with external MCP servers');
             const [authHeaders, setAuthHeaders] = React.useState('');
@@ -4172,6 +4174,7 @@ license: "MIT"`);
                 
                 const mcpConfig = {
                     type: "mcp-server",
+                    id: appId,
                     name: appName,
                     version: "1.0.0",
                     description: appDescription,
@@ -4208,14 +4211,34 @@ license: "MIT"`);
                         <div className="modal-body">
                             <form onSubmit={handleSubmit}>
                                 <div className="mb-4">
-                                    <label className="block text-sm font-medium text-gray-200">App Name</label>
+                                    <label className="block text-sm font-medium text-gray-200">App ID</label>
+                                    <input
+                                        type="text"
+                                        value={appId}
+                                        onChange={(e) => setAppId(e.target.value)}
+                                        className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        pattern="[a-z0-9-]+"
+                                        title="App ID should contain only lowercase letters, numbers, and hyphens"
+                                        placeholder="mcp-server"
+                                        required
+                                    />
+                                    <p className="text-gray-500 text-xs mt-1">
+                                        Unique identifier for this app (lowercase, numbers, hyphens only)
+                                    </p>
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">Display Name</label>
                                     <input
                                         type="text"
                                         value={appName}
                                         onChange={(e) => setAppName(e.target.value)}
                                         className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        placeholder="My MCP Server"
                                         required
                                     />
+                                    <p className="text-gray-500 text-xs mt-1">
+                                        Human-readable name for the app
+                                    </p>
                                 </div>
                                 <div className="mb-4">
                                     <label className="block text-sm font-medium text-gray-200">Description</label>
@@ -5735,6 +5758,7 @@ license: "MIT"`);
                     
                     window.addProgressLog('Installing MCP server with progress tracking...', 'info');
                     const appInfo = await controller.install({
+                        app_id: mcpConfig.id,
                         config: mcpConfig,
                         overwrite: true,
                         progress_callback: progressCallback,
@@ -7097,7 +7121,20 @@ license: "MIT"`);
                         throw new Error('WebSocket connection not ready. Please wait for the connection to be established.');
                     }
                     const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
-                    const screenshotBytes = await controller.takeScreenshot(sessionId);
+                    
+                    // First get the session info to find the worker_id
+                    const runningApps = await controller.listRunning();
+                    const sessionInfo = runningApps.find(app => app.id === sessionId);
+                    
+                    if (!sessionInfo || !sessionInfo.worker_id) {
+                        throw new Error('Could not find worker_id for this session');
+                    }
+                    
+                    // Get the worker service using the worker_id
+                    const worker = await ws.getService(sessionInfo.worker_id, { case_conversion: 'camel' });
+                    
+                    // Call take_screenshot from the worker
+                    const screenshotBytes = await worker.takeScreenshot(sessionId);
                     
                     // Convert bytes to base64
                     let screenshotBase64;
