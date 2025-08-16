@@ -2546,7 +2546,9 @@ class ServerAppController:
                     service_name = ":".join(
                         service_id_parts[1:]
                     )  # Get service name part
-                    manifest_svc.id = f"{workspace_part}/*:{service_name}@{app_id}"
+                    # Don't include @app_id in the service ID within the manifest
+                    # The app_id is already known from the manifest context
+                    manifest_svc.id = f"{workspace_part}/*:{service_name}"
                 manifest_services.append(manifest_svc)
 
             manifest.services = manifest_services

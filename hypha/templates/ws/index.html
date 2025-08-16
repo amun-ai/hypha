@@ -975,15 +975,16 @@
             };
             
             const getServiceUrl = (service) => {
-                // For running apps: [workspace]/apps/[client_id]:[service_id]/
+                // For running apps: [workspace]/services/[client_id]:[service_id]@[app_id]/
                 const serviceName = service.id.split('@')[0];
                 
-                return `${serverUrl}/${workspace}/services/${serviceName.split("/")[1]}`;
+                return `${serverUrl}/${workspace}/services/${serviceName.split("/")[1]}@${app.app_id}`;
                 
             };
             
             const getAppUrl = (service) => {
-                return `${serverUrl}/${workspace}/apps/${service.id.split("/")[1]}/`;
+                // For ASGI apps: [workspace]/apps/[client_id]:[service_id]@[app_id]/
+                return `${serverUrl}/${workspace}/apps/${service.id.split("/")[1]}@${app.app_id}/`;
             };
             
             return (

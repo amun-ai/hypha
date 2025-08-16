@@ -223,7 +223,7 @@ class HyphaMCPAdapter:
         self.session_manager = StreamableHTTPSessionManager(
             app=self.server,
             event_store=self.event_store,
-            # stateless=True,
+            stateless=True,
             json_response=True  # Enable JSON responses for better compatibility
         )
         
@@ -265,16 +265,24 @@ class HyphaMCPAdapter:
         # Check if the service object has inline configuration
         # Handle both dict and object attribute access
         if isinstance(self.service, dict):
+            # Only consider it inline config if tools/resources/prompts are dicts
+            tools = self.service.get("tools")
+            resources = self.service.get("resources")
+            prompts = self.service.get("prompts")
             return any([
-                self.service.get("tools"),
-                self.service.get("resources"),
-                self.service.get("prompts")
+                tools and isinstance(tools, dict),
+                resources and isinstance(resources, dict),
+                prompts and isinstance(prompts, dict)
             ])
         else:
+            # For object attributes, check if they are dicts
+            tools = getattr(self.service, "tools", None)
+            resources = getattr(self.service, "resources", None)
+            prompts = getattr(self.service, "prompts", None)
             return any([
-                hasattr(self.service, "tools") and self.service.tools,
-                hasattr(self.service, "resources") and self.service.resources,
-                hasattr(self.service, "prompts") and self.service.prompts
+                tools and isinstance(tools, dict),
+                resources and isinstance(resources, dict),
+                prompts and isinstance(prompts, dict)
             ])
     
     def _setup_native_mcp_handlers(self):

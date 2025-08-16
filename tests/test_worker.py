@@ -709,7 +709,7 @@ async def test_mcp_worker_integration(fastapi_server, test_user_token):
             "name": "Test MCP Service",
             "type": "mcp",
             "config": {"visibility": "public"},
-            "tools": [test_tool],
+            "tools": {"test_tool": test_tool},
         }
     )
 
