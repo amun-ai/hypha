@@ -837,8 +837,12 @@ class WorkspaceManager:
         exists = False
         if overwrite:
             try:
-                await self.load_workspace_info(config["id"], increment_counter=False)
+                existing_workspace = await self.load_workspace_info(config["id"], increment_counter=False)
                 exists = True
+                # Close the existing workspace to clean up resources (e.g., vector collections)
+                if existing_workspace.persistent and self._artifact_manager:
+                    logger.info(f"Closing existing workspace {config['id']} before overwriting")
+                    await self._artifact_manager.close_workspace(existing_workspace)
             except KeyError:
                 pass
         else:
@@ -894,8 +898,11 @@ class WorkspaceManager:
                 logger.error("Failed to verify workspace creation")
                 raise KeyError(f"Failed to create workspace: {workspace.id}")
 
-            # Update status to ready
-            await self._set_workspace_status(workspace.id, WorkspaceStatus.READY)
+            # For non-persistent workspaces or anonymous workspaces, set to ready immediately
+            # For persistent workspaces, the status will be set by _prepare_workspace
+            if not workspace.persistent or workspace.id.startswith(ANONYMOUS_USER_WS_PREFIX):
+                # Update status to ready for non-persistent workspaces
+                await self._set_workspace_status(workspace.id, WorkspaceStatus.READY)
 
         except Exception as e:
             logger.error(f"Failed to verify workspace creation: {str(e)}")
@@ -912,10 +919,13 @@ class WorkspaceManager:
         # prepare the workspace for the user
         if not workspace.id.startswith(
             ANONYMOUS_USER_WS_PREFIX
-        ):  # Skip preparation for anonymous workspaces
+        ) and workspace.persistent:  # Only prepare persistent workspaces
             task = asyncio.create_task(self._prepare_workspace(workspace))
             background_tasks.add(task)
             task.add_done_callback(background_tasks.discard)
+        elif workspace.persistent:
+            # For persistent workspaces that don't need preparation, set to ready
+            await self._set_workspace_status(workspace.id, WorkspaceStatus.READY)
         
 
         

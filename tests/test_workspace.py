@@ -1012,3 +1012,144 @@ async def test_authorized_workspaces(fastapi_server, test_user_token):
     await api_a.disconnect()
     await api_b.disconnect()
     await api_c.disconnect()
+
+
+async def test_workspace_status_and_overwrite(fastapi_server, test_user_token):
+    """Test workspace status reporting and overwrite functionality."""
+    import asyncio
+    
+    # Test 1: Create a non-persistent workspace - should be ready immediately
+    api = await connect_to_server(
+        {
+            "name": "test status client",
+            "server_url": WS_SERVER_URL,
+            "token": test_user_token,
+        }
+    )
+    
+    # Create non-persistent workspace
+    workspace_name = f"test-status-ws-{uuid.uuid4().hex[:8]}"
+    await api.create_workspace({
+        "name": workspace_name,
+        "description": "Non-persistent workspace for status testing",
+        "persistent": False,
+    })
+    
+    # Connect to the non-persistent workspace
+    api_ws = await connect_to_server({
+        "name": "test client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+        "workspace": workspace_name,
+    })
+    
+    # Check status immediately - should be ready for non-persistent
+    status = await api_ws.check_status()
+    assert status["status"] == "ready", f"Non-persistent workspace should be ready immediately, got: {status}"
+    assert status.get("errors") is None, "Should have no errors"
+    
+    await api_ws.disconnect()
+    
+    # Test 2: Create a persistent workspace and verify preparation status
+    persistent_ws_name = f"test-persistent-ws-{uuid.uuid4().hex[:8]}"
+    await api.create_workspace({
+        "name": persistent_ws_name,
+        "description": "Persistent workspace for status testing",
+        "persistent": True,
+    })
+    
+    # Connect to the persistent workspace
+    api_persistent = await connect_to_server({
+        "name": "test client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+        "workspace": persistent_ws_name,
+    })
+    
+    # Wait for workspace to be ready (should handle preparation)
+    status = await wait_for_workspace_ready(api_persistent, timeout=30)
+    assert status["status"] == "ready", f"Persistent workspace should become ready, got: {status}"
+    assert status.get("errors") is None, f"Should have no errors after preparation, got: {status.get('errors')}"
+    
+    await api_persistent.disconnect()
+    
+    # Test 3: Overwrite existing persistent workspace
+    # First create a workspace
+    overwrite_ws_name = f"test-overwrite-ws-{uuid.uuid4().hex[:8]}"
+    await api.create_workspace({
+        "name": overwrite_ws_name,
+        "description": "Initial workspace",
+        "persistent": True,
+    })
+    
+    # Connect and wait for it to be ready
+    api_initial = await connect_to_server({
+        "name": "test client initial",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+        "workspace": overwrite_ws_name,
+    })
+    
+    initial_status = await wait_for_workspace_ready(api_initial, timeout=30)
+    assert initial_status["status"] == "ready"
+    
+    # Register a service in the initial workspace
+    await api_initial.register_service({
+        "id": "test-service",
+        "name": "Test Service",
+        "type": "test",
+        "description": "A test service for overwrite testing",
+    })
+    
+    # Verify service exists
+    services = await api_initial.list_services()
+    service_ids = [s["id"] for s in services]
+    assert any("test-service" in s for s in service_ids), f"Test service should exist, got services: {service_ids}"
+    
+    await api_initial.disconnect()
+    
+    # Now overwrite the workspace
+    await api.create_workspace({
+        "name": overwrite_ws_name,
+        "description": "Overwritten workspace",
+        "persistent": True,
+    }, overwrite=True)
+    
+    # Connect to the overwritten workspace
+    api_overwritten = await connect_to_server({
+        "name": "test client overwritten",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+        "workspace": overwrite_ws_name,
+    })
+    
+    # Wait for the overwritten workspace to be ready
+    overwrite_status = await wait_for_workspace_ready(api_overwritten, timeout=30)
+    assert overwrite_status["status"] == "ready", f"Overwritten workspace should be ready, got: {overwrite_status}"
+    assert overwrite_status.get("errors") is None, "Overwritten workspace should have no errors"
+    
+    # Verify the old service is gone (workspace was cleaned)
+    services = await api_overwritten.list_services()
+    service_ids = [s["id"] for s in services]
+    # Should only have built-in service, not the test-service we created
+    assert not any("test-service" in s for s in service_ids), f"Old service should be cleaned up after overwrite, got services: {service_ids}"
+    
+    await api_overwritten.disconnect()
+    
+    # Clean up
+    try:
+        await api.delete_workspace(workspace_name)
+    except Exception:
+        pass  # Workspace might not exist if test failed early
+    try:
+        await api.delete_workspace(persistent_ws_name)
+    except Exception:
+        pass  # Workspace might not exist if test failed early
+    try:
+        await api.delete_workspace(overwrite_ws_name)
+    except Exception:
+        pass  # Workspace might not exist if test failed early
+    
+    await api.disconnect()
+    
+    print("✅ Workspace status and overwrite functionality works correctly")

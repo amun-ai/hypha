@@ -49,13 +49,22 @@ def find_item(items, key, value):
 
 
 async def wait_for_workspace_ready(api, timeout=30):
-    """Wait for workspace to be ready."""
+    """Wait for workspace to be ready without errors."""
     start_time = time.time()
     while True:
         status = await api.check_status()
         if status["status"] == "ready":
+            # Check if there are any errors
+            if status.get("errors"):
+                # Workspace has errors, keep waiting or fail
+                if time.time() - start_time > timeout:
+                    raise TimeoutError(f"Workspace ready but with errors: {status['errors']}")
+                # Continue waiting to see if errors get resolved
+                await asyncio.sleep(0.5)
+                continue
+            # Ready without errors
             break
         if time.time() - start_time > timeout:
-            raise TimeoutError("Workspace failed to become ready")
+            raise TimeoutError(f"Workspace failed to become ready, current status: {status}")
         await asyncio.sleep(0.1)
     return status
