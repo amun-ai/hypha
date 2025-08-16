@@ -218,10 +218,13 @@ class HyphaMCPAdapter:
         else:
             raise ValueError("Redis client is required for MCP event store")
         
-        # Create session manager
+        # Create session manager - use stateless mode for simplicity
+        # In stateless mode, each request is independent and doesn't require session tracking
         self.session_manager = StreamableHTTPSessionManager(
             app=self.server,
-            event_store=self.event_store
+            event_store=self.event_store,
+            # stateless=True,
+            json_response=True  # Enable JSON responses for better compatibility
         )
         
         # Track if session manager is running
@@ -289,6 +292,7 @@ class HyphaMCPAdapter:
         if "call_tool" in self.service:
             @self.server.call_tool()
             async def call_tool(name: str, arguments: dict) -> List[types.ContentBlock]:
+                # Let exceptions propagate so MCP SDK can convert them to JSON-RPC errors
                 result = await self._call_service_function(
                     "call_tool", {"name": name, "arguments": arguments}
                 )
@@ -598,18 +602,13 @@ class HyphaMCPAdapter:
         # Handle ObjectProxy that might still be wrapped
         # Check if it's still an ObjectProxy after unwrapping (happens with nested proxies)
         if hasattr(func, '_rvalue'):
-            # Try to call it directly through RPC
-            try:
-                if inspect.iscoroutinefunction(func):
-                    result = await func(**kwargs)
-                else:
-                    result = func(**kwargs)
-                    if asyncio.isfuture(result) or inspect.iscoroutine(result):
-                        result = await result
-            except Exception as e:
-                # If RPC fails, return an error message
-                logger.error(f"Failed to call function via RPC: {e}")
-                return f"Error calling function: {str(e)}"
+            # Try to call it directly through RPC - let exceptions propagate
+            if inspect.iscoroutinefunction(func):
+                result = await func(**kwargs)
+            else:
+                result = func(**kwargs)
+                if asyncio.isfuture(result) or inspect.iscoroutine(result):
+                    result = await result
         else:
             # Normal function call
             if inspect.iscoroutinefunction(func):

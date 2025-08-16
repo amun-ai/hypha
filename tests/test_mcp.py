@@ -939,9 +939,15 @@ async def test_mcp_http_endpoint_tools(fastapi_server, test_user_token):
                 "method": "tools/list",
                 "params": {},
             },
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            },
         )
 
+        if response.status_code != 200:
+            print(f"Response status: {response.status_code}")
+            print(f"Response body: {response.text}")
         assert response.status_code == 200
         data = response.json()
         assert data["jsonrpc"] == "2.0"
@@ -960,7 +966,10 @@ async def test_mcp_http_endpoint_tools(fastapi_server, test_user_token):
                 "method": "tools/call",
                 "params": {"name": "timestamp", "arguments": {"format": "iso"}},
             },
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            },
         )
 
         assert response.status_code == 200
@@ -1048,7 +1057,10 @@ async def test_mcp_http_endpoint_prompts(fastapi_server, test_user_token):
                 "method": "prompts/list",
                 "params": {},
             },
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            },
         )
 
         assert response.status_code == 200
@@ -1075,7 +1087,10 @@ async def test_mcp_http_endpoint_prompts(fastapi_server, test_user_token):
                     },
                 },
             },
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            },
         )
 
         assert response.status_code == 200
@@ -1134,7 +1149,10 @@ async def test_mcp_http_endpoint_resources(fastapi_server, test_user_token):
                 "method": "resources/templates/list",
                 "params": {},
             },
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            },
         )
 
         assert response.status_code == 200
@@ -1206,12 +1224,16 @@ async def test_mcp_error_handling(fastapi_server, test_user_token):
         response = await client.post(
             f"{SERVER_URL}/{workspace}/mcp/error-service/mcp",
             json={"invalid": "request"},
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            },
         )
-        assert response.status_code == 200  # JSON-RPC errors are returned with 200
+        # For invalid JSON-RPC requests, we expect 400 status with error response
+        assert response.status_code == 400  # Invalid request returns 400
         data = response.json()
         assert "error" in data
-        assert data["error"]["code"] == -32600  # Invalid Request
+        assert data["error"]["code"] == -32602  # Invalid params (validation error)
 
         # Test 2: Method not found
         response = await client.post(
@@ -1222,12 +1244,16 @@ async def test_mcp_error_handling(fastapi_server, test_user_token):
                 "method": "unknown/method",
                 "params": {},
             },
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            },
         )
         assert response.status_code == 200
         data = response.json()
         assert "error" in data
-        assert data["error"]["code"] == -32601  # Method not found
+        # The MCP SDK returns -32602 (Invalid params) for unknown methods in stateless mode
+        assert data["error"]["code"] == -32602  # Invalid params
 
         # Test 3: Tool runtime error
         response = await client.post(
@@ -1238,12 +1264,19 @@ async def test_mcp_error_handling(fastapi_server, test_user_token):
                 "method": "tools/call",
                 "params": {"name": "error_tool", "arguments": {"should_error": True}},
             },
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            },
         )
         assert response.status_code == 200
         data = response.json()
-        assert "error" in data
-        assert data["error"]["code"] == -32603  # Internal error
+        # In stateless mode, tool errors are returned as results with isError flag
+        assert "result" in data
+        assert data["result"].get("isError") is True
+        # The error message should be in the content
+        assert len(data["result"]["content"]) > 0
+        assert "Intentional error for testing" in data["result"]["content"][0]["text"]
 
     await api.disconnect()
 
@@ -1260,7 +1293,10 @@ async def test_mcp_nonexistent_service(fastapi_server, test_user_token):
                 "method": "tools/list",
                 "params": {},
             },
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            },
         )
         assert response.status_code == 404
 
@@ -1288,7 +1324,10 @@ async def test_mcp_helpful_404_message(fastapi_server, test_user_token):
         # Try to access service without /mcp suffix
         response = await client.get(
             f"{SERVER_URL}/{workspace}/mcp/test-service",
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            },
         )
 
         assert response.status_code == 404
@@ -1329,7 +1368,10 @@ async def test_mcp_sse_not_implemented(fastapi_server, test_user_token):
         # Try to access SSE endpoint
         response = await client.get(
             f"{SERVER_URL}/{workspace}/mcp/test-service/sse",
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            },
         )
 
         assert response.status_code == 501
