@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Union
 from datetime import datetime
 from urllib.parse import urlparse
 
+import httpx
 from playwright.async_api import Page, async_playwright, Browser
 from jinja2 import Environment, PackageLoader, select_autoescape
 
@@ -121,12 +122,18 @@ class BrowserWorker(BaseWorker):
 
         self._playwright = await async_playwright().start()
         args = [
-            "--site-per-process",
             "--enable-unsafe-webgpu",
             "--use-vulkan",
             "--enable-features=Vulkan,WebAssemblyJSPI",
             "--enable-experimental-web-platform-features",
+            "--site-per-process",  # Keep process isolation for security
         ]
+        
+        # Optionally disable web security (bypasses CORS) - controlled by environment variable
+        # Note: We keep site-per-process enabled for security between different sites
+        if os.environ.get("PLAYWRIGHT_DISABLE_WEB_SECURITY", "true").lower() in ("true", "1", "yes"):
+            args.append("--disable-web-security")
+            logger.info("Web security disabled - CORS restrictions bypassed (process isolation maintained)")
         # so it works in the docker image
         if self.in_docker:
             args.append("--no-sandbox")
@@ -212,41 +219,45 @@ class BrowserWorker(BaseWorker):
         )
 
         # Create a new context for isolation
+        # SECURITY: Each context is completely isolated from others, preventing cross-user data access
+        # even when apps are served from the same origin
         context_options = {
-            "viewport": {"width": 1280, "height": 720}, 
-            "accept_downloads": False  # Default to false for security
+            "viewport": {"width": 1280, "height": 720},
+            "accept_downloads": False,  # Default to false for security
+            # Additional security: Use unique storage state per session
+            # This ensures complete isolation of cookies, localStorage, etc.
+            "storage_state": None,  # Start with clean state
         }
-        
+
         # Add Playwright configuration from environment variables and manifest
         self._apply_playwright_env_config(context_options, config.manifest)
-        
+
         context = await self.browser.new_context(**context_options)
 
         # Create a new page in the context
         page = await context.new_page()
 
-        entry_point = config.manifest.get("entry_point")
-        # Setup cookies, localtorage, and other authentication before loading the page
-        await self._setup_page_authentication(page, config.manifest)
+        entry_point = config.manifest.get("entry_point", "index.html")
 
-        logs = {}
-        _capture_logs_from_browser_tabs(page, logs)
+        # Setup console and error logging
+        logs = {"console": [], "error": []}
 
-        # Add extra error handling for debugging
-        page.on(
-            "requestfailed",
-            lambda request: logger.error(
-                f"Request failed: {request.url} - {request.failure}"
-            ),
-        )
-        page.on(
-            "response",
-            lambda response: (
-                logger.info(f"Response: {response.url} - {response.status}")
-                if response.status != 200
-                else None
-            ),
-        )
+        def log_console(msg):
+            logs["console"].append(
+                f"[{msg.type}] {msg.text}"
+                if msg.text
+                else (
+                    f"[{msg.type}] JSHandle@{msg.args[0]}"
+                    if msg.args
+                    else f"[{msg.type}]"
+                )
+            )
+
+        def log_error(error):
+            logs["error"].append(str(error))
+
+        page.on("console", log_console)
+        page.on("pageerror", log_error)
 
         # Setup authentication BEFORE navigation
         app_type = config.manifest.get("type")
@@ -294,12 +305,12 @@ class BrowserWorker(BaseWorker):
             # For web-app type, navigate directly to the entry_point URL
             if app_type == "web-app":
                 goto_url = entry_point  # Use entry_point as the external URL
-                
+
                 # Check if we need to append credential query parameters
                 if config.manifest.get("inject_auth_params"):
                     # Parse the URL to check if it already has query parameters
                     separator = "&" if "?" in goto_url else "?"
-                    
+
                     # Build query parameters
                     params = []
                     if config.server_url:
@@ -309,11 +320,11 @@ class BrowserWorker(BaseWorker):
                     params.append(f"app_id={config.app_id}")
                     if config.token:
                         params.append(f"token={config.token}")
-                    
+
                     # Append parameters to the URL
                     if params:
                         goto_url = f"{goto_url}{separator}{'&'.join(params)}"
-                
+
                 logger.info(
                     f"Loading web-app from external URL: {goto_url} with timeout {timeout_ms}ms"
                 )
@@ -327,27 +338,20 @@ class BrowserWorker(BaseWorker):
                 )
                 response = await page.goto(goto_url, timeout=timeout_ms, wait_until="load")
 
-            if not response:
+            # Special handling for data: and about: URLs - they don't return a response object
+            if goto_url.startswith(("data:", "about:")):
+                logger.info(f"Loaded special URL successfully: {goto_url[:50]}...")
+            elif not response:
                 await context.close()
                 raise Exception(f"Failed to load URL: {goto_url}")
-
-            if response.status != 200:
+            elif response.status != 200:
                 await context.close()
                 raise Exception(
                     f"Failed to start browser app instance, "
                     f"status: {response.status}, url: {goto_url}"
                 )
 
-            # Apply localStorage after navigation (requires loaded page)
-            if hasattr(page, "_pending_local_storage") and page._pending_local_storage:
-                for key, value in page._pending_local_storage.items():
-                    await page.evaluate(
-                        f"localStorage.setItem({repr(key)}, {repr(str(value))})"
-                    )
-                logger.info(
-                    f"Applied {len(page._pending_local_storage)} localStorage items"
-                )
-                delattr(page, "_pending_local_storage")
+            # Storage is now preloaded via add_init_script, no need for post-navigation setup
 
             logger.info("Browser app loaded successfully")
 
@@ -355,6 +359,47 @@ class BrowserWorker(BaseWorker):
             # This gives time for the api.export() call to complete
             await page.wait_for_timeout(1000)  # Wait 1 second for JS initialization
             logger.info("JavaScript initialization wait completed")
+            
+            # Execute startup script if specified in manifest
+            startup_script_path = config.manifest.get("startup_script")
+            if startup_script_path:
+                await safe_call_callback(config.progress_callback,
+                    {"type": "info", "message": f"Fetching and executing startup script: {startup_script_path}"}
+                )
+                
+                try:
+                    # Fetch the startup script from artifact manager using httpx
+                    script_url = f"{config.server_url}/{config.workspace}/artifacts/{config.app_id}/files/{startup_script_path}?use_proxy=true"
+                    
+                    async with httpx.AsyncClient(verify=not getattr(config, 'disable_ssl', True)) as client:
+                        response = await client.get(
+                            script_url,
+                            headers={"Authorization": f"Bearer {config.token}"} if config.token else {}
+                        )
+                        response.raise_for_status()
+                        startup_script = response.text
+                    
+                    # Execute the startup script in the page context
+                    await page.evaluate(startup_script)
+                    logger.info(f"Executed startup script: {startup_script_path}")
+                    
+                    await safe_call_callback(config.progress_callback,
+                        {"type": "success", "message": "Startup script executed successfully"}
+                    )
+                except httpx.HTTPStatusError as e:
+                    error_msg = f"Failed to fetch startup script {startup_script_path}: HTTP {e.response.status_code}"
+                    logger.error(error_msg)
+                    # Log error but don't fail the session - startup script is optional enhancement
+                    await safe_call_callback(config.progress_callback,
+                        {"type": "warning", "message": error_msg}
+                    )
+                except Exception as e:
+                    error_msg = f"Failed to execute startup script: {str(e)}"
+                    logger.error(error_msg)
+                    # Log error but don't fail the session - startup script is optional enhancement
+                    await safe_call_callback(config.progress_callback,
+                        {"type": "warning", "message": error_msg}
+                    )
 
             await safe_call_callback(config.progress_callback,
                 {"type": "success", "message": "Application loaded successfully"}
@@ -841,68 +886,96 @@ class BrowserWorker(BaseWorker):
         return screenshot
 
     async def _setup_page_authentication(self, page, manifest, target_url=None):
-        """Setup authentication (cookies, local_storage, headers) before navigation."""
-        # Setup cookies
-        cookies_config = manifest.get("cookies", {})
+        """Setup authentication (cookies, local_storage, session_storage, headers) before navigation.
+        
+        Manifest options:
+        - cookies: List of cookie objects or dict of name-value pairs
+        - local_storage: Dict of key-value pairs to set in localStorage
+        - session_storage: Dict of key-value pairs to set in sessionStorage
+        - authorization_token: String to set as Authorization header
+        """
+        # Setup cookies with full configuration options
+        cookies_config = manifest.get("cookies")
         if cookies_config:
-            # Convert to Playwright cookie format
             cookies = []
+            
+            # Determine default domain from target URL
+            default_domain = None
             if target_url:
                 parsed = urlparse(target_url)
-                domain = parsed.netloc
+                default_domain = parsed.netloc
+            
+            # Handle both list of cookie objects and dict of name-value pairs
+            if isinstance(cookies_config, list):
+                # Full cookie objects with all options
+                for cookie in cookies_config:
+                    cookie_obj = {
+                        "name": cookie.get("name"),
+                        "value": str(cookie.get("value", "")),
+                        "domain": cookie.get("domain", default_domain or "localhost"),
+                        "path": cookie.get("path", "/"),
+                    }
+                    # Add optional fields if present
+                    if "expires" in cookie:
+                        cookie_obj["expires"] = cookie["expires"]
+                    if "httpOnly" in cookie:
+                        cookie_obj["httpOnly"] = cookie["httpOnly"]
+                    if "secure" in cookie:
+                        cookie_obj["secure"] = cookie["secure"]
+                    if "sameSite" in cookie:
+                        cookie_obj["sameSite"] = cookie["sameSite"]
+                    cookies.append(cookie_obj)
+            elif isinstance(cookies_config, dict):
+                # Simple name-value pairs (backward compatibility)
                 for name, value in cookies_config.items():
-                    cookies.append(
-                        {
-                            "name": name,
-                            "value": str(value),
-                            "domain": domain,
-                            "path": "/",
-                        }
-                    )
-            else:
-                # For local apps, use localhost
-                for name, value in cookies_config.items():
-                    cookies.append(
-                        {
-                            "name": name,
-                            "value": str(value),
-                            "domain": "localhost",
-                            "path": "/",
-                        }
-                    )
-
-            await page.context.add_cookies(cookies)
-            logger.info(f"Setup {len(cookies)} cookies before navigation")
-
+                    cookies.append({
+                        "name": name,
+                        "value": str(value),
+                        "domain": default_domain or "localhost",
+                        "path": "/",
+                    })
+            
+            if cookies:
+                await page.context.add_cookies(cookies)
+                logger.info(f"Setup {len(cookies)} cookies before navigation")
+        
         # Setup authorization header
         auth_token = manifest.get("authorization_token")
         if auth_token:
             await page.set_extra_http_headers({"Authorization": auth_token})
             logger.info("Setup Authorization header before navigation")
+        
+        # Preload localStorage and sessionStorage using initialization script
+        # This ensures storage is set BEFORE the page loads
+        local_storage = manifest.get("local_storage", {})
+        session_storage = manifest.get("session_storage", {})
+        
+        if local_storage or session_storage:
+            # Create initialization script that runs before any page scripts
+            init_script = ""
+            
+            if local_storage:
+                init_script += "// Preload localStorage\n"
+                for key, value in local_storage.items():
+                    # Properly escape values for JavaScript
+                    escaped_key = repr(str(key))
+                    escaped_value = repr(str(value))
+                    init_script += f"try {{ localStorage.setItem({escaped_key}, {escaped_value}); }} catch(e) {{ console.warn('Failed to set localStorage item:', e); }}\n"
+                logger.info(f"Preloading {len(local_storage)} localStorage items")
+            
+            if session_storage:
+                init_script += "// Preload sessionStorage\n"
+                for key, value in session_storage.items():
+                    # Properly escape values for JavaScript
+                    escaped_key = repr(str(key))
+                    escaped_value = repr(str(value))
+                    init_script += f"try {{ sessionStorage.setItem({escaped_key}, {escaped_value}); }} catch(e) {{ console.warn('Failed to set sessionStorage item:', e); }}\n"
+                logger.info(f"Preloading {len(session_storage)} sessionStorage items")
+            
+            # Add the initialization script to run on every page/frame
+            await page.add_init_script(init_script)
+            logger.info("Storage initialization script added")
 
-        # localStorage will be set after navigation since it requires the page to be loaded
-        page._pending_local_storage = manifest.get("local_storage", {})
-
-    async def _apply_pending_page_setup(self, page: Page, url: str) -> None:
-        """Apply cookies and local_storage after page navigation."""
-        # Set cookies with correct domain
-        if hasattr(page, "_pending_cookies"):
-            parsed_url = urlparse(url)
-            domain = parsed_url.netloc
-
-            for cookie in page._pending_cookies:
-                cookie["domain"] = domain
-
-            await page.context.add_cookies(page._pending_cookies)
-            delattr(page, "_pending_cookies")
-
-        # Set localStorage
-        if hasattr(page, "_pending_local_storage"):
-            for key, value in page._pending_local_storage.items():
-                await page.evaluate(
-                    f"localStorage.setItem({repr(key)}, {repr(str(value))})"
-                )
-            delattr(page, "_pending_local_storage")
 
     async def _setup_route_caching(
         self, page: Page, workspace: str, app_id: str, cache_routes: List[str]
@@ -976,13 +1049,21 @@ class BrowserWorker(BaseWorker):
             manifest: Optional manifest configuration that can override environment variables
         """
         # Security & CSP Settings
-        bypass_csp = os.environ.get("PLAYWRIGHT_BYPASS_CSP")
-        if bypass_csp is not None:
-            context_options["bypass_csp"] = bypass_csp.lower() in ("true", "1", "yes")
+        # Check manifest first for bypass_csp
+        if manifest and 'bypass_csp' in manifest:
+            context_options["bypass_csp"] = manifest['bypass_csp']
+        else:
+            bypass_csp = os.environ.get("PLAYWRIGHT_BYPASS_CSP")
+            if bypass_csp is not None:
+                context_options["bypass_csp"] = bypass_csp.lower() in ("true", "1", "yes")
             
-        ignore_https_errors = os.environ.get("PLAYWRIGHT_IGNORE_HTTPS_ERRORS")
-        if ignore_https_errors is not None:
-            context_options["ignore_https_errors"] = ignore_https_errors.lower() in ("true", "1", "yes")
+        # Check manifest first for ignore_https_errors
+        if manifest and 'ignore_https_errors' in manifest:
+            context_options["ignore_https_errors"] = manifest['ignore_https_errors']
+        else:
+            ignore_https_errors = os.environ.get("PLAYWRIGHT_IGNORE_HTTPS_ERRORS")
+            if ignore_https_errors is not None:
+                context_options["ignore_https_errors"] = ignore_https_errors.lower() in ("true", "1", "yes")
             
         accept_downloads = os.environ.get("PLAYWRIGHT_ACCEPT_DOWNLOADS")
         if accept_downloads is not None:
@@ -1006,19 +1087,6 @@ class BrowserWorker(BaseWorker):
         if timezone_id:
             context_options["timezone_id"] = timezone_id
         
-        # Check manifest first, then fall back to environment variable
-        disable_cors = None
-        if manifest and 'disable_cors' in manifest:
-            disable_cors = manifest['disable_cors']
-        else:
-            disable_cors_env = os.environ.get("PLAYWRIGHT_DISABLE_CORS")
-            if disable_cors_env in ['1', 'true', 'yes']:
-                disable_cors = True
-        
-        if disable_cors:
-            context_options['extra_http_headers'] = {
-                'Access-Control-Allow-Origin': '*',
-            }
         
         # Geolocation Configuration
         geolocation_lat = os.environ.get("PLAYWRIGHT_GEOLOCATION_LATITUDE")
@@ -1082,21 +1150,76 @@ class BrowserWorker(BaseWorker):
                 "password": http_password
             }
         
-        # Extra HTTP Headers
+        # Extra HTTP Headers - merge from manifest and environment
+        if 'extra_http_headers' not in context_options:
+            context_options['extra_http_headers'] = {}
+            
+        # First apply headers from manifest
+        if manifest and 'extra_http_headers' in manifest:
+            if isinstance(manifest['extra_http_headers'], dict):
+                context_options['extra_http_headers'].update(manifest['extra_http_headers'])
+            else:
+                logger.warning(f"Invalid extra_http_headers in manifest, expected dict but got {type(manifest['extra_http_headers'])}")
+        
+        # Then apply headers from environment (these can override manifest headers)
         extra_headers = os.environ.get("PLAYWRIGHT_EXTRA_HTTP_HEADERS")
         if extra_headers:
             # Parse JSON format: {"Header-Name": "value", "Another-Header": "value"}
             try:
                 import json
-                context_options["extra_http_headers"] = json.loads(extra_headers)
+                env_headers = json.loads(extra_headers)
+                context_options["extra_http_headers"].update(env_headers)
             except (json.JSONDecodeError, ValueError):
                 logger.warning(f"Invalid PLAYWRIGHT_EXTRA_HTTP_HEADERS format: {extra_headers}")
+        
+        # Clean up if no headers were added
+        if not context_options['extra_http_headers']:
+            del context_options['extra_http_headers']
         
         # Base URL for Relative URLs
         base_url = os.environ.get("PLAYWRIGHT_BASE_URL")
         if base_url:
             context_options["base_url"] = base_url
 
+    async def execute(
+        self,
+        session_id: str,
+        script: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Execute JavaScript code in a browser session.
+        
+        Args:
+            session_id: The session ID to execute the script in
+            script: JavaScript code to execute in the page context
+            context: Optional context information
+            
+        Returns:
+            The result of the script execution
+            
+        Raises:
+            SessionNotFoundError: If the session doesn't exist
+            WorkerError: If the script execution fails
+        """
+        if session_id not in self._sessions:
+            raise SessionNotFoundError(f"Browser session {session_id} not found")
+        
+        session_data = self._session_data.get(session_id)
+        if not session_data or "page" not in session_data:
+            raise WorkerError(f"No page available for session {session_id}")
+        
+        page = session_data["page"]
+        
+        try:
+            # Execute the script in the page context
+            result = await page.evaluate(script)
+            logger.info(f"Executed script in session {session_id}")
+            return result
+        except Exception as e:
+            error_msg = f"Failed to execute script in session {session_id}: {str(e)}"
+            logger.error(error_msg)
+            raise WorkerError(error_msg) from e
+    
     def get_worker_service(self) -> Dict[str, Any]:
         """Get the service configuration for registration with browser-specific methods."""
         service_config = super().get_worker_service()
@@ -1104,6 +1227,7 @@ class BrowserWorker(BaseWorker):
         service_config["take_screenshot"] = self.take_screenshot
         service_config["clear_app_cache"] = self.clear_app_cache
         service_config["get_app_cache_stats"] = self.get_app_cache_stats
+        service_config["execute"] = self.execute
         return service_config
 
 

@@ -1644,6 +1644,12 @@ class WorkspaceManager:
             service.config.created_by = user_info.model_dump()
         else:
             service.config.created_by = {"id": user_info.id}
+        
+        # Validate authorized_workspaces is only used with protected visibility
+        if hasattr(service.config, 'authorized_workspaces') and service.config.authorized_workspaces is not None:
+            visibility = service.config.visibility.value if isinstance(service.config.visibility, VisibilityEnum) else service.config.visibility
+            if visibility != "protected":
+                raise ValueError(f"authorized_workspaces can only be set when visibility is 'protected', got visibility='{visibility}'")
 
         # Check for existing singleton services
         if service.config.singleton:

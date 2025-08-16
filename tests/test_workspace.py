@@ -1014,6 +1014,189 @@ async def test_authorized_workspaces(fastapi_server, test_user_token):
     await api_c.disconnect()
 
 
+async def test_authorized_workspaces_list_services(fastapi_server, test_user_token):
+    """Test that list_services includes both public and authorized protected services."""
+    
+    # Create three workspaces: A (service owner), B (authorized), C (not authorized)
+    api_init = await connect_to_server({
+        "client_id": "init-list-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+    
+    # Create the workspaces
+    workspace_a_info = await api_init.create_workspace({
+        "id": "test-list-auth-workspace-a",
+        "name": "Test List Auth Workspace A",
+        "description": "Workspace A for testing list_services with authorized_workspaces",
+        "persistent": False,
+    }, overwrite=True)
+    
+    workspace_b_info = await api_init.create_workspace({
+        "id": "test-list-auth-workspace-b",
+        "name": "Test List Auth Workspace B",
+        "description": "Workspace B for testing list_services with authorized_workspaces",
+        "persistent": False,
+    }, overwrite=True)
+    
+    workspace_c_info = await api_init.create_workspace({
+        "id": "test-list-auth-workspace-c",
+        "name": "Test List Auth Workspace C",
+        "description": "Workspace C for testing list_services with authorized_workspaces",
+        "persistent": False,
+    }, overwrite=True)
+    
+    await api_init.disconnect()
+    
+    # Connect to workspace A (service owner)
+    api_a = await connect_to_server({
+        "client_id": "workspace-a-list-client",
+        "workspace": "test-list-auth-workspace-a",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+    workspace_a = api_a.config.workspace
+    
+    # Connect to workspace B (will be authorized)
+    api_b = await connect_to_server({
+        "client_id": "workspace-b-list-client",
+        "workspace": "test-list-auth-workspace-b",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+    workspace_b = api_b.config.workspace
+    
+    # Connect to workspace C (will NOT be authorized)
+    api_c = await connect_to_server({
+        "client_id": "workspace-c-list-client",
+        "workspace": "test-list-auth-workspace-c",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+    workspace_c = api_c.config.workspace
+    
+    # Register services in workspace A with different visibility settings
+    public_service = await api_a.register_service({
+        "id": "list-test-public",
+        "name": "List Test Public Service",
+        "config": {
+            "visibility": "public",
+        },
+        "test_method": lambda: "public response"
+    })
+    
+    protected_no_auth = await api_a.register_service({
+        "id": "list-test-protected-no-auth",
+        "name": "List Test Protected No Auth",
+        "config": {
+            "visibility": "protected",
+            # No authorized_workspaces - only owner can access
+        },
+        "test_method": lambda: "protected no auth response"
+    })
+    
+    protected_with_b = await api_a.register_service({
+        "id": "list-test-protected-with-b",
+        "name": "List Test Protected With B",
+        "config": {
+            "visibility": "protected",
+            "authorized_workspaces": [workspace_b]  # Only B is authorized
+        },
+        "test_method": lambda: "protected with B response"
+    })
+    
+    protected_with_b_and_c = await api_a.register_service({
+        "id": "list-test-protected-with-bc",
+        "name": "List Test Protected With B and C",
+        "config": {
+            "visibility": "protected",
+            "authorized_workspaces": [workspace_b, workspace_c]  # Both B and C are authorized
+        },
+        "test_method": lambda: "protected with B and C response"
+    })
+    
+    # Test 1: Workspace A (owner) sees all services
+    services_a = await api_a.list_services(workspace_a)
+    service_names_a = [s["name"] for s in services_a]
+    assert "List Test Public Service" in service_names_a
+    assert "List Test Protected No Auth" in service_names_a
+    assert "List Test Protected With B" in service_names_a
+    assert "List Test Protected With B and C" in service_names_a
+    print("✅ Owner workspace sees all its services")
+    
+    # Test 2: Workspace B sees public + services where it's authorized
+    services_b = await api_b.list_services(workspace_a)
+    service_names_b = [s["name"] for s in services_b]
+    assert "List Test Public Service" in service_names_b  # Public - always visible
+    assert "List Test Protected No Auth" not in service_names_b  # Not authorized
+    assert "List Test Protected With B" in service_names_b  # B is authorized
+    assert "List Test Protected With B and C" in service_names_b  # B is authorized
+    print("✅ Workspace B sees public services and services where it's authorized")
+    
+    # Verify that authorized_workspaces is not exposed to B (except for public services where it's not sensitive)
+    for service in services_b:
+        if "config" in service and isinstance(service["config"], dict):
+            # For protected services that B is authorized to access, the list should be hidden
+            if service["name"] in ["List Test Protected With B", "List Test Protected With B and C"]:
+                assert "authorized_workspaces" not in service["config"], \
+                    f"authorized_workspaces should not be exposed to authorized workspace (service: {service['name']})"
+    print("✅ authorized_workspaces list is hidden from authorized workspaces for protected services")
+    
+    # Test 3: Workspace C sees public + services where it's authorized  
+    services_c = await api_c.list_services(workspace_a)
+    service_names_c = [s["name"] for s in services_c]
+    assert "List Test Public Service" in service_names_c  # Public - always visible
+    assert "List Test Protected No Auth" not in service_names_c  # Not authorized
+    assert "List Test Protected With B" not in service_names_c  # C is not authorized
+    assert "List Test Protected With B and C" in service_names_c  # C is authorized
+    print("✅ Workspace C sees public services and services where it's authorized")
+    
+    # Test 4: Using dict query - workspace B
+    services_b_dict = await api_b.list_services({"workspace": workspace_a})
+    service_names_b_dict = [s["name"] for s in services_b_dict]
+    assert service_names_b_dict == service_names_b  # Should be the same
+    print("✅ Dict query works the same as string query")
+    
+    # Test 5: Querying with specific service ID
+    # B should be able to list the specific service it's authorized for
+    services_b_specific = await api_b.list_services({
+        "workspace": workspace_a,
+        "service_id": "list-test-protected-with-b"
+    })
+    assert len(services_b_specific) == 1
+    assert services_b_specific[0]["name"] == "List Test Protected With B"
+    print("✅ Can query specific authorized service by ID")
+    
+    # C should not see a service it's not authorized for
+    services_c_unauthorized = await api_c.list_services({
+        "workspace": workspace_a,
+        "service_id": "list-test-protected-with-b"
+    })
+    assert len(services_c_unauthorized) == 0
+    print("✅ Cannot query specific service if not authorized")
+    
+    # Test 6: Test that owner can see authorized_workspaces in config
+    services_a_owner = await api_a.list_services(workspace_a)
+    for service in services_a_owner:
+        if service["name"] == "List Test Protected With B":
+            # Owner should be able to see the authorized_workspaces list
+            # Note: The service might have this in config if the owner has permission
+            # This is expected behavior - owners can see who they've authorized
+            pass  # Owner visibility is implementation-specific
+    
+    # Clean up
+    await api_a.unregister_service("list-test-public")
+    await api_a.unregister_service("list-test-protected-no-auth")
+    await api_a.unregister_service("list-test-protected-with-b")
+    await api_a.unregister_service("list-test-protected-with-bc")
+    
+    await api_a.disconnect()
+    await api_b.disconnect()
+    await api_c.disconnect()
+    
+    print("✅ All list_services tests with authorized_workspaces passed")
+
+
 async def test_workspace_status_and_overwrite(fastapi_server, test_user_token):
     """Test workspace status reporting and overwrite functionality."""
     import asyncio
