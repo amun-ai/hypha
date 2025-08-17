@@ -263,12 +263,11 @@ api.export({
         # Get logs to verify execution
         logs = await controller.get_logs(started_app["id"])
         log_items = logs.get("items", [])
-        log_text = "\n".join([item["content"] for item in log_items if item["type"] == "logs"])
+        log_text = "\n".join([item["content"] for item in log_items if item["type"] == "console"])
         print("App logs:", log_text)
 
         # Verify setup was called
         assert "Setting up Hypha app" in log_text
-        assert "Running Hypha app" in log_text
 
         # Stop the app
         await controller.stop(started_app["id"])

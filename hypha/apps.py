@@ -2606,8 +2606,10 @@ class ServerAppController:
             # Remove from Redis
             await self._remove_session_from_redis(full_client_id)
 
+            # Extract meaningful error message
+            error_msg = self._extract_core_error(exp, logs)
             raise Exception(
-                f"Failed to start app '{app_id}', error: {exp}, logs:\n{logs}"
+                f"Failed to start app '{app_id}', error: {error_msg}, logs:\n{logs}"
             ) from None
         finally:
             # Clean up event listeners
