@@ -131,7 +131,11 @@ async def test_terminal_worker_basic(fastapi_server, test_user_token):
     # Get logs
     logs = await worker.get_logs(session_id)
     assert isinstance(logs, dict)
-    assert "stdout" in logs or "info" in logs
+    assert "items" in logs
+    assert len(logs["items"]) > 0
+    # Check that we have stdout or info logs
+    log_types = {item["type"] for item in logs["items"]}
+    assert "stdout" in log_types or "info" in log_types
 
     # Stop the session
     await worker.stop(session_id)

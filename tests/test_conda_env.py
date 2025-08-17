@@ -370,8 +370,9 @@ print(f"Result2: {result}")
 
                 # Check logs
                 logs = await worker.get_logs(session_id)
-                assert "info" in logs
-                assert len(logs["info"]) > 0
+                assert "items" in logs
+                info_logs = [item for item in logs["items"] if item["type"] == "info"]
+                assert len(info_logs) > 0
 
                 # Stop session
                 await worker.stop(session_id)
@@ -916,8 +917,16 @@ print("=== Script completed successfully ===")
                 logs = await worker.get_logs(session_id)
 
                 # Check that stdout contains expected output
-                if "stdout" in logs and logs["stdout"]:
-                    stdout_content = "\n".join(logs["stdout"])
+                assert "items" in logs
+                stdout_logs = [
+                    item["content"] for item in logs["items"] if item["type"] == "stdout"
+                ]
+                info_logs = [
+                    item["content"] for item in logs["items"] if item["type"] == "info"
+                ]
+                
+                if stdout_logs:
+                    stdout_content = "\n".join(stdout_logs)
                     assert "Conda Environment Info" in stdout_content
                     assert "Python version:" in stdout_content
                     assert (
@@ -927,11 +936,10 @@ print("=== Script completed successfully ===")
 
                     print("✅ Standalone script executed successfully:")
                     print("  Output captured in logs")
-                    print(f"  Log types: {list(logs.keys())}")
+                    print(f"  Total log items: {len(logs['items'])}")
                 else:
                     # Check info logs for execution info
-                    assert "info" in logs
-                    assert len(logs["info"]) > 0
+                    assert len(info_logs) > 0
                     print("✅ Standalone script session created successfully")
 
                 await worker.stop(session_id)
