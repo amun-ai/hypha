@@ -1617,15 +1617,14 @@ class WorkspaceManager:
                 
                 try:
                     # List children artifacts (installed apps) with filters
-                    # Include both staged and committed artifacts
+                    # Only query committed artifacts (stage=False)
                     all_artifacts = await self._artifact_manager.list_children(
-                        parent_id="applications",
+                        parent_id=f"{cws}/applications",
                         filters=artifact_filters,
                         limit=1000,  # Reasonable limit for apps
-                        stage=False,  # Include both staged and committed artifacts
+                        stage=False,  # Only query committed artifacts, not staged
                         context=app_context
                     )
-                    logger.debug(f"DEBUG: Found {len(all_artifacts)} artifacts with filters: {artifact_filters}")
                 except KeyError as e:
                     logger.debug(f"KeyError checking applications collection: {e}")
                     all_artifacts = []

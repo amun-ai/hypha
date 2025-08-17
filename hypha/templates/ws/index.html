@@ -6,12 +6,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Hypha Workspace Management</title>
     <!-- External Scripts -->
-    <script src="./assets/hypha-rpc-websocket.js"></script>
+    <script src="../assets/hypha-rpc-websocket.js"></script>
     <script>
         // Extract base path from current URL
         const pathSegments = window.location.pathname.split('/');
         // Remove the workspace segment and any trailing empty segments
-        const basePath = pathSegments.slice(0, pathSegments.length - 1).join('/') || '';
+        const basePath = pathSegments.slice(0, pathSegments.length - 2).join('/') || '';
         window.HYPHA_BASE_PATH = basePath;
     </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/react/17.0.2/umd/react.production.min.js"></script>
@@ -2155,7 +2155,7 @@
                                             className="bg-green-600 hover:bg-green-500 text-white font-bold py-1 px-3 rounded text-sm transition duration-300"
                                             onClick={() => {
                                                 // Navigate to the view page for this artifact
-                                                window.location.href = `./${artifact.id.split('/')[0]}/view/${artifact.alias}`;
+                                                window.location.href = `../${artifact.id.split('/')[0]}/view/${artifact.alias}`;
                                             }}
                                             title="View artifact"
                                         >
