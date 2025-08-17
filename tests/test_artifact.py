@@ -554,7 +554,7 @@ async def test_artifact_permissions(
         "description": "A public dataset with example data",
     }
     with pytest.raises(
-        Exception, match=r".*User does not have permission to perform the operation.*"
+        Exception, match=r".*permission.*attach.*"
     ):
         await artifact_manager_anonymous.create(
             type="dataset",
@@ -565,7 +565,7 @@ async def test_artifact_permissions(
     # Verify that anonymous user cannot reset stats on the public collection
     with pytest.raises(
         Exception,
-        match=r".*PermissionError: User does not have permission to perform the operation.*",
+        match=r".*permission.*reset_stats.*",
     ):
         await artifact_manager_anonymous.reset_stats(artifact_id=collection.id)
 
@@ -592,7 +592,7 @@ async def test_artifact_permissions(
     # User 2 cannot reset stats on the newly created dataset
     with pytest.raises(
         Exception,
-        match=r".*PermissionError: User does not have permission to perform the operation.*",
+        match=r".*permission.*reset_stats.*",
     ):
         await artifact_manager_anonymous.reset_stats(artifact_id=dataset.id)
 
@@ -6238,11 +6238,11 @@ async def test_multi_operation_permission_checking(
     assert staged_artifact.id is not None
     assert staged_artifact.staging is not None
 
-    # Test 3: User2 owns the staged artifact they created, so they can commit it
-    # This is the new behavior - creators have admin permission on their artifacts
-    committed_staged = await artifact_manager_user2.commit(staged_artifact.id)
-    assert committed_staged.staging is None
-    assert len(committed_staged.versions) > 0
+    # Test 3: User2 cannot commit their staged artifact without attach permission
+    # Collections have absolute control - even creators need proper permissions
+    with pytest.raises(Exception) as exc_info:
+        await artifact_manager_user2.commit(staged_artifact.id)
+    assert "permission" in str(exc_info.value).lower() or "attach" in str(exc_info.value).lower()
 
     # Test 4: Update permissions to give user2 both create and commit (attach)
     collection_config_updated = {
@@ -6256,6 +6256,11 @@ async def test_multi_operation_permission_checking(
         collection.id,
         config=collection_config_updated,
     )
+
+    # Now user2 can commit their staged artifact
+    committed_staged = await artifact_manager_user2.commit(staged_artifact.id)
+    assert committed_staged.staging is None
+    assert len(committed_staged.versions) > 0
 
     # Now user2 should be able to create a non-staged artifact
     child_manifest_2 = {
@@ -8081,9 +8086,11 @@ async def test_draft_attach_detach_permissions(
     )
     assert draft_artifact["staging"] is not None
     
-    # User2 owns the draft, so they can commit it
-    committed = await artifact_manager2.commit(draft_artifact["id"])
-    assert committed["versions"] is not None
+    # User2 created the draft, but CANNOT commit it without attach permission
+    # l+ only gives draft permission, not attach
+    with pytest.raises(Exception, match=r".*permission.*attach.*"):
+        await artifact_manager2.commit(draft_artifact["id"])
+    print("✅ User cannot commit draft without attach permission even if they created it")
     
     # Test 2: Create collection where user2 cannot create drafts
     collection2 = await artifact_manager1.create(
@@ -8174,6 +8181,419 @@ async def test_draft_attach_detach_permissions(
     await api2.disconnect()
     
     print("✅ Draft, attach, and detach permissions working correctly")
+
+
+async def test_permission_isolation_between_artifacts(
+    minio_server, fastapi_server, test_user_token, test_user_token_2
+):
+    """Test that users can only edit artifacts they own, even if parent grants permission."""
+
+    # Connect as user 1 (collection owner)
+    api1 = await connect_to_server(
+        {"name": "test-client-1", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager1 = await api1.get_service("public/artifact-manager")
+    user1_info = api1.config["user"]
+
+    # Connect as user 2 (contributor)
+    api2 = await connect_to_server(
+        {"name": "test-client-2", "server_url": SERVER_URL, "token": test_user_token_2}
+    )
+    artifact_manager2 = await api2.get_service("public/artifact-manager")
+    user2_info = api2.config["user"]
+
+    # User 1 creates a collection with rw+ permission for user 2
+    # rw+ includes draft, attach, detach, and mutate permissions
+    collection = await artifact_manager1.create(
+        type="collection",
+        alias="shared-collection",
+        manifest={"name": "Shared Collection", "description": "Collection with rw+ for user2"},
+        config={
+            "permissions": {
+                user1_info["id"]: "*",  # User 1 has full control
+                user2_info["id"]: "rw+",  # User 2 can read, write, attach, detach, and mutate
+            }
+        },
+    )
+    print(f"✅ Collection created with rw+ permission for user2: {collection['id']}")
+
+    # User 1 creates their artifact in the collection
+    artifact1 = await artifact_manager1.create(
+        parent_id=collection["id"],
+        alias="user1-artifact",
+        manifest={"name": "User 1's Work", "content": "Original content by user 1"},
+        stage=False,  # Directly committed
+    )
+    print(f"✅ User 1 created artifact: {artifact1['id']}")
+
+    # User 2 creates their artifact in the same collection
+    artifact2 = await artifact_manager2.create(
+        parent_id=collection["id"],
+        alias="user2-artifact",
+        manifest={"name": "User 2's Work", "content": "Original content by user 2"},
+        stage=False,  # Directly committed (rw+ includes attach permission)
+    )
+    print(f"✅ User 2 created artifact: {artifact2['id']}")
+
+    # User 2 CAN edit their own artifact
+    await artifact_manager2.edit(
+        artifact2["id"],
+        manifest={"name": "User 2's Work", "content": "Modified by user 2"},
+    )
+    print(f"✅ User 2 successfully edited their own artifact")
+
+    # User 2 CANNOT edit User 1's artifact (even with rw+ on collection)
+    try:
+        await artifact_manager2.edit(
+            artifact1["id"],
+            manifest={"name": "User 1's Work", "content": "Illegally modified by user 2"},
+        )
+        raise AssertionError("User 2 should NOT be able to edit User 1's artifact!")
+    except Exception as e:
+        assert "Permission" in str(e) or "permission" in str(e), f"Expected permission error, got: {e}"
+        print(f"✅ User 2 correctly denied editing User 1's artifact: {e}")
+
+    # User 1 CAN edit User 2's artifact (owner has full control)
+    await artifact_manager1.edit(
+        artifact2["id"],
+        manifest={"name": "User 2's Work", "content": "Modified by owner (user 1)"},
+    )
+    print(f"✅ User 1 (owner) successfully edited User 2's artifact")
+
+    # User 2 CAN delete their own artifact
+    await artifact_manager2.delete(artifact2["id"])
+    print(f"✅ User 2 successfully deleted their own artifact")
+
+    # User 2 CANNOT delete User 1's artifact
+    try:
+        await artifact_manager2.delete(artifact1["id"])
+        raise AssertionError("User 2 should NOT be able to delete User 1's artifact!")
+    except Exception as e:
+        assert "Permission" in str(e) or "permission" in str(e), f"Expected permission error, got: {e}"
+        print(f"✅ User 2 correctly denied deleting User 1's artifact: {e}")
+
+    print("✅ All permission isolation tests passed!")
+
+
+async def test_set_parent_permissions(
+    minio_server, fastapi_server, test_user_token, test_user_token_2
+):
+    """Test permission checks when moving artifacts between collections using set_parent."""
+    
+    # Connect as user 1
+    api1 = await connect_to_server(
+        {"name": "test-client-1", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager1 = await api1.get_service("public/artifact-manager")
+    user1_info = api1.config["user"]
+    
+    # Connect as user 2
+    api2 = await connect_to_server(
+        {"name": "test-client-2", "server_url": SERVER_URL, "token": test_user_token_2}
+    )
+    artifact_manager2 = await api2.get_service("public/artifact-manager")
+    user2_info = api2.config["user"]
+    
+    # User 1 creates collections with different permissions
+    collection_a = await artifact_manager1.create(
+        type="collection",
+        alias="collection-a",
+        manifest={"name": "Collection A"},
+        config={
+            "permissions": {
+                user1_info["id"]: "*",  # User 1 has full control
+                user2_info["id"]: "rw",  # User 2 has read-write (includes detach)
+            }
+        },
+    )
+    
+    collection_b = await artifact_manager1.create(
+        type="collection",
+        alias="collection-b",
+        manifest={"name": "Collection B"},
+        config={
+            "permissions": {
+                user1_info["id"]: "*",  # User 1 has full control
+                user2_info["id"]: "r+",  # User 2 has read+ (includes attach)
+            }
+        },
+    )
+    
+    collection_c = await artifact_manager1.create(
+        type="collection",
+        alias="collection-c",
+        manifest={"name": "Collection C"},
+        config={
+            "permissions": {
+                user1_info["id"]: "*",  # User 1 has full control
+                user2_info["id"]: "r",  # User 2 has read only (no attach)
+            }
+        },
+    )
+    
+    # User 1 creates an artifact in collection A
+    artifact = await artifact_manager1.create(
+        parent_id=collection_a["id"],
+        alias="test-artifact",
+        manifest={"name": "Test Artifact"},
+    )
+    print(f"✅ Created artifact in collection A: {artifact['id']}")
+    
+    # Test 1: User 2 CAN move artifact from A to B (has detach from A, attach to B)
+    await artifact_manager2.set_parent(
+        artifact["id"],
+        new_parent_id=collection_b["id"]
+    )
+    print("✅ User 2 can move artifact from A to B (has detach and attach permissions)")
+    
+    # Test 2: User 2 CANNOT move artifact from B (no detach permission on B - only has r+)
+    with pytest.raises(Exception, match=r".*permission.*detach.*"):
+        await artifact_manager2.set_parent(
+            artifact["id"],
+            new_parent_id=collection_c["id"]
+        )
+    print("✅ User 2 cannot move artifact from B (no detach permission)")
+    
+    # Move artifact back to A for next test
+    await artifact_manager1.set_parent(
+        artifact["id"],
+        new_parent_id=collection_a["id"]
+    )
+    
+    # Create a collection with no detach permission for user 2
+    collection_d = await artifact_manager1.create(
+        type="collection",
+        alias="collection-d",
+        manifest={"name": "Collection D"},
+        config={
+            "permissions": {
+                user1_info["id"]: "*",
+                user2_info["id"]: "r+",  # Only attach, no detach
+            }
+        },
+    )
+    
+    # Move artifact to D first (as user 1)
+    await artifact_manager1.set_parent(
+        artifact["id"],
+        new_parent_id=collection_d["id"]
+    )
+    
+    # Test 3: User 2 CANNOT move artifact from D (no detach permission)
+    with pytest.raises(Exception, match=r".*permission.*detach.*"):
+        await artifact_manager2.set_parent(
+            artifact["id"],
+            new_parent_id=collection_b["id"]
+        )
+    print("✅ User 2 cannot move artifact from D (no detach permission)")
+    
+    # Test 4: Even artifact creators need detach permission
+    # User 2 creates an artifact in collection D (which only gives r+ permission)
+    user2_artifact = await artifact_manager2.create(
+        parent_id=collection_d["id"],
+        alias="user2-artifact",
+        manifest={"name": "User 2's Artifact"},
+    )
+    
+    # User 2 CANNOT move their own artifact from D (no detach permission, even as creator)
+    with pytest.raises(Exception, match=r".*permission.*detach.*"):
+        await artifact_manager2.set_parent(
+            user2_artifact["id"],
+            new_parent_id=collection_b["id"]
+        )
+    print("✅ Even artifact creators need detach permission to move artifacts")
+    
+    # Test 5: User 2 needs attach permission on target
+    # Move user2's artifact to collection A (where user2 has rw with detach permission)
+    await artifact_manager1.set_parent(
+        user2_artifact["id"],
+        new_parent_id=collection_a["id"]
+    )
+    
+    # Now user 2 can detach from A but cannot attach to C (no attach permission on C)
+    with pytest.raises(Exception, match=r".*permission.*attach.*"):
+        await artifact_manager2.set_parent(
+            user2_artifact["id"],
+            new_parent_id=collection_c["id"]  # No attach permission on C
+        )
+    print("✅ User 2 still needs attach permission on target collection")
+    
+    # Clean up
+    await artifact_manager1.delete(collection_a["id"], recursive=True)
+    await artifact_manager1.delete(collection_b["id"], recursive=True)
+    await artifact_manager1.delete(collection_c["id"], recursive=True)
+    await artifact_manager1.delete(collection_d["id"], recursive=True)
+    
+    await api1.disconnect()
+    await api2.disconnect()
+    
+    print("✅ set_parent permission tests completed successfully")
+
+
+async def test_controlled_collections(
+    minio_server, fastapi_server, test_user_token, test_user_token_2
+):
+    """Test controlled collections - public repos with strict membership and append-only collections."""
+    
+    # Connect as collection owner
+    api1 = await connect_to_server(
+        {"name": "test-client-1", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager1 = await api1.get_service("public/artifact-manager")
+    user1_info = api1.config["user"]
+    
+    # Connect as contributor
+    api2 = await connect_to_server(
+        {"name": "test-client-2", "server_url": SERVER_URL, "token": test_user_token_2}
+    )
+    artifact_manager2 = await api2.get_service("public/artifact-manager")
+    user2_info = api2.config["user"]
+    
+    # Test 1: Public repository with controlled membership
+    # Users can create drafts but cannot publish without approval
+    public_repo = await artifact_manager1.create(
+        type="collection",
+        alias="public-controlled-repo",
+        manifest={"name": "Public Controlled Repository"},
+        config={
+            "permissions": {
+                user1_info["id"]: "*",  # Owner has full control
+                "@": "l+",  # Authenticated users can list and draft only
+                # No attach permission - drafts cannot be committed without approval
+            }
+        },
+    )
+    
+    # User 2 can create a draft
+    draft = await artifact_manager2.create(
+        parent_id=public_repo["id"],
+        alias="user2-submission",
+        manifest={"name": "User 2 Submission"},
+        stage=True,
+    )
+    print("✅ User 2 can create draft in controlled repository")
+    
+    # User 2 CANNOT commit their draft (no attach permission)
+    with pytest.raises(Exception, match=r".*permission.*attach.*"):
+        await artifact_manager2.commit(draft["id"])
+    print("✅ User 2 cannot publish draft without approval (no attach permission)")
+    
+    # Owner can grant permission and then user can commit
+    # Update permissions to allow user2 to attach
+    await artifact_manager1.edit(
+        public_repo["id"],
+        config={
+            "permissions": {
+                user1_info["id"]: "*",
+                user2_info["id"]: "r+",  # Now has attach permission
+                "@": "l+",
+            }
+        },
+    )
+    
+    # Now user 2 can commit
+    await artifact_manager2.commit(draft["id"])
+    print("✅ User 2 can commit after being granted attach permission")
+    
+    # Test 2: Append-only collection
+    # Users can add but cannot delete anything
+    append_only = await artifact_manager1.create(
+        type="collection",
+        alias="append-only-collection",
+        manifest={"name": "Append Only Collection"},
+        config={
+            "permissions": {
+                user1_info["id"]: "*",  # Owner still has full control
+                "@": "r+",  # Can read and attach, but NOT detach
+            }
+        },
+    )
+    
+    # User 2 can add an artifact
+    artifact = await artifact_manager2.create(
+        parent_id=append_only["id"],
+        alias="permanent-record",
+        manifest={"name": "Permanent Record"},
+    )
+    print("✅ User 2 can add to append-only collection")
+    
+    # User 2 CANNOT delete their own artifact (no detach permission)
+    with pytest.raises(Exception, match=r".*permission.*detach.*"):
+        await artifact_manager2.delete(artifact["id"])
+    print("✅ User 2 cannot delete from append-only collection (no detach)")
+    
+    # Test 3: Test mutate permission - collection that allows adding but not modifying
+    no_mutate_collection = await artifact_manager1.create(
+        type="collection",
+        alias="no-mutate-collection",
+        manifest={"name": "No Mutate Collection"},
+        config={
+            "permissions": {
+                user1_info["id"]: "*",
+                "@": "r+",  # r+ has attach but NOT mutate
+            }
+        },
+    )
+    
+    # User 2 can create and commit an artifact
+    immutable_artifact = await artifact_manager2.create(
+        parent_id=no_mutate_collection["id"],
+        alias="immutable-artifact",
+        manifest={"name": "Immutable Artifact", "version": "1.0"},
+    )
+    print("✅ User 2 can create artifact in no-mutate collection")
+    
+    # User 2 CANNOT edit the committed version (no mutate permission)
+    with pytest.raises(Exception, match=r".*mutate.*"):
+        await artifact_manager2.edit(
+            immutable_artifact["id"],
+            manifest={"name": "Immutable Artifact", "version": "1.1"},
+        )
+    print("✅ User 2 cannot modify committed version without mutate permission")
+    
+    # User 2 CAN still create a new version by staging
+    await artifact_manager2.edit(
+        immutable_artifact["id"],
+        manifest={"name": "Immutable Artifact", "version": "2.0"},
+        stage=True,  # Enter staging mode for new version
+    )
+    await artifact_manager2.commit(immutable_artifact["id"])
+    print("✅ User 2 can create new versions even without mutate permission")
+    
+    # Test 4: Immutable published collection
+    # Once published, nothing can be changed
+    immutable = await artifact_manager1.create(
+        type="collection",
+        alias="immutable-collection",
+        manifest={"name": "Immutable Collection"},
+        config={
+            "permissions": {
+                user1_info["id"]: "*",  # Owner maintains control to manage collection
+                user2_info["id"]: "r",  # User 2 only has read
+                "@": "r",  # Everyone can read, nothing else
+            }
+        },
+    )
+    
+    # User 2 cannot add new artifacts (only has read permission)
+    with pytest.raises(Exception, match=r".*permission.*attach.*"):
+        await artifact_manager2.create(
+            parent_id=immutable["id"],
+            alias="should-fail",
+            manifest={"name": "Should Fail"},
+        )
+    print("✅ Immutable collection prevents modifications for non-owners")
+    
+    # Clean up
+    await artifact_manager1.delete(public_repo["id"], recursive=True)
+    await artifact_manager1.delete(append_only["id"], recursive=True)
+    await artifact_manager1.delete(no_mutate_collection["id"], recursive=True)
+    await artifact_manager1.delete(immutable["id"], recursive=True)
+    
+    await api1.disconnect()
+    await api2.disconnect()
+    
+    print("✅ Controlled collections test completed successfully")
 
 
 async def test_collection_permission_granularity(

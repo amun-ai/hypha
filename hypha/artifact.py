@@ -1641,6 +1641,7 @@ class ArtifactController:
                     "remove_file",
                     "remove_vectors",
                     "detach",  # Can detach from parent (for rw and higher)
+                    "mutate",  # Can modify existing committed versions
                 ],
                 "rd+": [
                     "read",
@@ -1675,6 +1676,7 @@ class ArtifactController:
                     "draft",  # Can create drafts
                     "attach",  # Can attach drafts to become children
                     "detach",  # Can detach from parent
+                    "mutate",  # Can modify existing committed versions
                 ],
                 "*": [
                     "read",
@@ -1694,6 +1696,7 @@ class ArtifactController:
                     "draft",  # Can create drafts
                     "attach",  # Can attach drafts to become children
                     "detach",  # Can detach from parent
+                    "mutate",  # Can modify existing committed versions
                     "reset_stats",
                     "publish",
                     "delete",
@@ -1779,11 +1782,24 @@ class ArtifactController:
         artifact_id: str,
         operation: Union[str, List[str]],
         session: AsyncSession,
+        artifact_permissions: List[str] = None,
+        parent_permissions: List[str] = None,
     ):
         """
         Check whether a user has the required permission to perform an operation on an artifact.
-        Fetches artifact and parent artifacts, checking permissions hierarchically.
-        If multiple operations are provided, all must be satisfied.
+        
+        This function checks permissions on both the artifact and its parent collection independently.
+        
+        Args:
+            user_info: User information
+            artifact_id: ID of the artifact to check
+            operation: Operation(s) to check permission for (for workspace fallback)
+            session: Database session
+            artifact_permissions: Specific permissions to check on the artifact itself
+            parent_permissions: Specific permissions to check on the parent collection
+        
+        If artifact_permissions or parent_permissions are not specified, the function will
+        determine them based on the operation type for backward compatibility.
         """
         # Map operation to permission level
         operation_map = {
@@ -1820,7 +1836,7 @@ class ArtifactController:
             if op not in operation_map:
                 raise ValueError(f"Operation '{op}' is not supported.")
 
-        # Get highest required permission level
+        # Get highest required permission level for workspace fallback
         required_perms = [operation_map[op] for op in operations]
         highest_required_perm = max(required_perms)
 
@@ -1831,35 +1847,85 @@ class ArtifactController:
         if not artifact:
             raise KeyError(f"Artifact with ID '{artifact_id}' does not exist.")
 
-        # Check permissions on the artifact itself - all operations must be allowed
-        artifact_permissions_satisfied = True
-        for op in operations:
-            if not await self._check_permissions(artifact, user_info, op):
-                artifact_permissions_satisfied = False
-                break
-        if artifact_permissions_satisfied:
-            return artifact, parent_artifact
-
-        # Check permissions on parent artifact (collection) if it exists - all operations must be allowed
-        if parent_artifact:
-            parent_permissions_satisfied = True
+        # If specific permissions are not provided, determine them based on operations
+        # This maintains backward compatibility
+        if artifact_permissions is None and parent_permissions is None:
+            # Default permission mapping for operations
+            operation_to_permissions = {
+                # Read operations - check both artifact and parent
+                "read": (["read"], ["read"]),
+                "list": (["list"], ["list"]),
+                "get_file": (["get_file"], ["get_file"]),
+                "list_files": (["list_files"], ["list_files"]),
+                "get_vector": (["get_vector"], ["get_vector"]),
+                "list_vectors": (["list_vectors"], ["list_vectors"]),
+                "search_vectors": (["search_vectors"], ["search_vectors"]),
+                
+                # Write operations - check artifact only
+                "edit": (["edit"], []),
+                "commit": (["commit"], []),
+                "put_file": (["put_file"], []),
+                "add_vectors": (["add_vectors"], []),
+                "remove_file": (["remove_file"], []),
+                "remove_vectors": (["remove_vectors"], []),
+                "set_secret": (["set_secret"], []),
+                "set_download_weight": (["set_download_weight"], []),
+                "delete": (["delete"], []),
+                "reset_stats": (["reset_stats"], []),
+                "publish": (["publish"], []),
+                "get_secret": (["get_secret"], []),
+                
+                # Parent-only operations
+                "draft": ([], ["draft"]),
+                "attach": ([], ["attach"]),
+                "detach": ([], ["detach"]),
+                "mutate": ([], ["mutate"]),
+                
+                # Legacy operation
+                "create": ([], ["draft", "attach"]),
+            }
+            
+            # Collect all required permissions
+            artifact_perms_set = set()
+            parent_perms_set = set()
             for op in operations:
-                if not await self._check_permissions(parent_artifact, user_info, op):
-                    parent_permissions_satisfied = False
-                    break
-            if parent_permissions_satisfied:
-                return artifact, parent_artifact
+                if op in operation_to_permissions:
+                    art_perms, par_perms = operation_to_permissions[op]
+                    artifact_perms_set.update(art_perms)
+                    parent_perms_set.update(par_perms)
+                else:
+                    # Unknown operation - check on artifact by default
+                    artifact_perms_set.add(op)
+            
+            artifact_permissions = list(artifact_perms_set) if artifact_perms_set else None
+            parent_permissions = list(parent_perms_set) if parent_perms_set else None
 
-        # Finally, check workspace-level permission using the highest required permission
-        if user_info.check_permission(artifact.workspace, highest_required_perm):
-            return artifact, parent_artifact
+        # Check artifact permissions
+        if artifact_permissions:
+            for perm in artifact_permissions:
+                if not await self._check_permissions(artifact, user_info, perm):
+                    # Try parent as fallback for read operations
+                    if perm in ["read", "list", "get_file", "list_files", "get_vector", "list_vectors", "search_vectors"]:
+                        if parent_artifact and await self._check_permissions(parent_artifact, user_info, perm):
+                            continue  # Permission granted through parent
+                    
+                    # Check workspace-level permission as final fallback
+                    if not user_info.check_permission(artifact.workspace, operation_map.get(perm, UserPermission.read_write)):
+                        raise PermissionError(
+                            f"User does not have permission '{perm}' on the artifact."
+                        )
 
-        operation_str = (
-            operation if isinstance(operation, str) else f"operations {operations}"
-        )
-        raise PermissionError(
-            f"User does not have permission to perform the operation '{operation_str}' on the artifact."
-        )
+        # Check parent permissions
+        if parent_permissions and parent_artifact:
+            for perm in parent_permissions:
+                if not await self._check_permissions(parent_artifact, user_info, perm):
+                    # Check workspace-level permission as fallback
+                    if not user_info.check_permission(artifact.workspace, operation_map.get(perm, UserPermission.read_write)):
+                        raise PermissionError(
+                            f"User does not have permission '{perm}' on the parent collection."
+                        )
+
+        return artifact, parent_artifact
 
     async def _increment_stat(self, session, artifact_id, field, increment=1.0):
         """
@@ -2277,16 +2343,10 @@ class ArtifactController:
                 parent_artifact = None
                 if parent_id:
                     parent_id = self._validate_artifact_id(parent_id, context)
-                    if stage:
-                        # For staged artifacts, check if user has "draft" permission
-                        parent_artifact, _ = await self._get_artifact_with_permission(
-                            user_info, parent_id, "draft", session
-                        )
-                    else:
-                        # For direct commit, check if user has "attach" permission
-                        parent_artifact, _ = await self._get_artifact_with_permission(
-                            user_info, parent_id, "attach", session
-                        )
+                    # Get parent artifact with list permission (minimum needed)
+                    parent_artifact, _ = await self._get_artifact_with_permission(
+                        user_info, parent_id, "list", session
+                    )
                     parent_id = parent_artifact.id
                     if workspace:
                         assert (
@@ -2408,7 +2468,26 @@ class ArtifactController:
                 permissions[user_info.id] = "*"
                 config["permissions"] = permissions
 
-                # Determine if we should be in staging mode
+                # Check permissions based on stage mode
+                if parent_artifact:
+                    if stage:
+                        # For draft creation, check draft permission on parent
+                        has_draft = await self._check_permissions(parent_artifact, user_info, "draft")
+                        if not has_draft:
+                            # Check workspace-level permission as fallback
+                            if not user_info.check_permission(workspace, UserPermission.read_write):
+                                raise PermissionError(
+                                    f"User does not have permission to create a draft in the collection '{parent_artifact.alias}'."
+                                )
+                    else:
+                        # For direct commit, check attach permission on parent
+                        has_attach = await self._check_permissions(parent_artifact, user_info, "attach")
+                        if not has_attach:
+                            # Check workspace-level permission as fallback
+                            if not user_info.check_permission(workspace, UserPermission.read_write):
+                                raise PermissionError(
+                                    f"User does not have permission to attach an artifact to the collection '{parent_artifact.alias}'."
+                                )
 
                 versions = []
                 if not stage:  # Only create initial version if not in staging mode
@@ -2418,13 +2497,6 @@ class ArtifactController:
                         "stage",
                     ]:  # Treat 'stage' as None if stage=False
                         version = "v0"  # Always start with v0 for new artifacts
-                    if parent_artifact:
-                        # Check for attach permission (new)
-                        has_attach = await self._check_permissions(parent_artifact, user_info, "attach")
-                        if not has_attach:
-                            raise PermissionError(
-                                f"User does not have permission to attach an artifact in the collection '{parent_artifact.alias}'."
-                            )
                     comment = comment or "Initial version"
                     versions.append(
                         {
@@ -2607,6 +2679,17 @@ class ArtifactController:
                             user_info, artifact_id, ["edit", "commit"], session
                         )
                     )
+                    
+                    # If editing a committed version (not staging), check mutate permission from parent
+                    # This allows collections to prevent modification of existing versions
+                    if parent_artifact and artifact.versions:
+                        has_mutate = await self._check_permissions(parent_artifact, user_info, "mutate")
+                        if not has_mutate:
+                            # Check workspace-level permission as fallback
+                            if not user_info.check_permission(artifact.workspace, UserPermission.admin):
+                                raise PermissionError(
+                                    f"Collection '{parent_artifact.alias}' does not allow modification of committed versions (no mutate permission)."
+                                )
 
                 # Validate version parameter - ONLY allow None (current version), "new" (create new), or "stage" (staging mode)
                 # Do NOT allow editing historical versions by specific version names
@@ -2887,24 +2970,23 @@ class ArtifactController:
         assert version != "stage", "Version cannot be 'stage' when committing."
         try:
             async with session.begin():
-                # Check if the artifact has a parent, and if so, check attach permission
-                # First get the artifact with basic permissions to check parent
+                # Get the artifact and check commit permission on it
                 artifact, parent_artifact = await self._get_artifact_with_permission(
                     user_info, artifact_id, "commit", session
                 )
                 
-                # If artifact has a parent and is being committed for the first time (from draft),
-                # also check if user has "attach" permission on the parent
-                # Only check parent permission if user doesn't own the artifact
+                # If this is a first commit (draft to version), check attach permission on parent
+                # Even artifact creators need attach permission to commit their drafts
                 if parent_artifact and len(artifact.versions or []) == 0:
-                    # This is a draft being attached to parent
-                    # If user owns the artifact (created it), they can commit it
-                    # Otherwise, check attach permission on parent
-                    if artifact.created_by != user_info.id:
-                        # User doesn't own the artifact, need attach permission from parent
-                        await self._get_artifact_with_permission(
-                            user_info, parent_artifact.id, "attach", session
-                        )
+                    # This is a draft being attached to parent as first version
+                    # Check attach permission on parent collection
+                    has_attach = await self._check_permissions(parent_artifact, user_info, "attach")
+                    if not has_attach:
+                        # Check workspace-level permission as fallback
+                        if not user_info.check_permission(artifact.workspace, UserPermission.read_write):
+                            raise PermissionError(
+                                f"User does not have permission to attach artifact to the collection '{parent_artifact.alias}'."
+                            )
 
                 assert (
                     artifact.staging is not None
@@ -3154,19 +3236,24 @@ class ArtifactController:
 
         try:
             session = await self._get_session()
-            # Get artifact first
+            # Get artifact first - check delete permission on the artifact itself
             artifact, parent_artifact = await self._get_artifact_with_permission(
                 user_info, artifact_id, "delete", session
             )
             
             # If artifact has a parent and is being detached (not fully deleted),
-            # check if user has "detach" permission on the artifact
+            # check if user has "detach" permission on the parent collection
+            # Even artifact creators need detach permission to remove from collection
             if parent_artifact and version is None and not recursive:
-                # This is a detach operation (removing child from parent)
-                # Check if user has detach permission on the artifact itself
-                await self._get_artifact_with_permission(
-                    user_info, artifact_id, "detach", session
-                )
+                # This is a detach operation (removing child from parent collection)
+                # Check detach permission on the parent collection
+                has_detach = await self._check_permissions(parent_artifact, user_info, "detach")
+                if not has_detach:
+                    # Check workspace-level permission as fallback
+                    if not user_info.check_permission(artifact.workspace, UserPermission.admin):
+                        raise PermissionError(
+                            f"User does not have permission to detach artifact from the collection '{parent_artifact.alias}'."
+                        )
 
             # Handle version="stage" - check if artifact is in staging and warn user to use discard instead
             if version == "stage":
@@ -5368,18 +5455,41 @@ class ArtifactController:
         session = await self._get_session()
         try:
             async with session.begin():
-                # Get the artifact with write permission
+                # Get the artifact - only need read permission to move it
+                # The actual permission check is on detach/attach
                 artifact, old_parent = await self._get_artifact_with_permission(
-                    user_info, artifact_id, "edit", session
+                    user_info, artifact_id, "read", session
                 )
                 
-                # If setting a new parent, validate it
+                # Check detach permission from old parent if it exists
+                if old_parent:
+                    # Check if user has detach permission on the old parent
+                    # Even artifact creators need detach permission
+                    has_detach = await self._check_permissions(old_parent, user_info, "detach")
+                    if not has_detach:
+                        # Check workspace-level permission as fallback
+                        if not user_info.check_permission(artifact.workspace, UserPermission.admin):
+                            raise PermissionError(
+                                f"User does not have permission to detach artifact from the collection '{old_parent.alias}'."
+                            )
+                
+                # If setting a new parent, validate it and check attach permission
                 new_parent = None
                 if new_parent_id:
                     new_parent_id = self._validate_artifact_id(new_parent_id, context)
+                    # First get the new parent with read permission
                     new_parent, _ = await self._get_artifact_with_permission(
-                        user_info, new_parent_id, "create", session
+                        user_info, new_parent_id, "read", session
                     )
+                    
+                    # Check attach permission on the new parent
+                    has_attach = await self._check_permissions(new_parent, user_info, "attach")
+                    if not has_attach:
+                        # Check workspace-level permission as fallback
+                        if not user_info.check_permission(artifact.workspace, UserPermission.read_write):
+                            raise PermissionError(
+                                f"User does not have permission to attach artifact to the collection '{new_parent.alias}'."
+                            )
                     
                     # Check that new parent is a collection
                     if new_parent.type != "collection":
