@@ -3,6 +3,7 @@
 import pytest
 import requests
 import os
+import time
 from hypha_rpc import connect_to_server
 from io import BytesIO
 from zipfile import ZipFile
@@ -8279,6 +8280,8 @@ async def test_set_parent_permissions(
     minio_server, fastapi_server, test_user_token, test_user_token_2
 ):
     """Test permission checks when moving artifacts between collections using set_parent."""
+    # Use timestamp to ensure unique aliases
+    unique_suffix = str(int(time.time() * 1000))[-6:]
     
     # Connect as user 1
     api1 = await connect_to_server(
@@ -8297,7 +8300,7 @@ async def test_set_parent_permissions(
     # User 1 creates collections with different permissions
     collection_a = await artifact_manager1.create(
         type="collection",
-        alias="collection-a",
+        alias=f"collection-a-{unique_suffix}",
         manifest={"name": "Collection A"},
         config={
             "permissions": {
@@ -8309,7 +8312,7 @@ async def test_set_parent_permissions(
     
     collection_b = await artifact_manager1.create(
         type="collection",
-        alias="collection-b",
+        alias=f"collection-b-{unique_suffix}",
         manifest={"name": "Collection B"},
         config={
             "permissions": {
@@ -8321,7 +8324,7 @@ async def test_set_parent_permissions(
     
     collection_c = await artifact_manager1.create(
         type="collection",
-        alias="collection-c",
+        alias=f"collection-c-{unique_suffix}",
         manifest={"name": "Collection C"},
         config={
             "permissions": {
@@ -8334,7 +8337,7 @@ async def test_set_parent_permissions(
     # User 1 creates an artifact in collection A
     artifact = await artifact_manager1.create(
         parent_id=collection_a["id"],
-        alias="test-artifact",
+        alias=f"test-artifact-{unique_suffix}",
         manifest={"name": "Test Artifact"},
     )
     print(f"✅ Created artifact in collection A: {artifact['id']}")
@@ -8363,7 +8366,7 @@ async def test_set_parent_permissions(
     # Create a collection with no detach permission for user 2
     collection_d = await artifact_manager1.create(
         type="collection",
-        alias="collection-d",
+        alias=f"collection-d-{unique_suffix}",
         manifest={"name": "Collection D"},
         config={
             "permissions": {
@@ -8391,7 +8394,7 @@ async def test_set_parent_permissions(
     # User 2 creates an artifact in collection D (which only gives r+ permission)
     user2_artifact = await artifact_manager2.create(
         parent_id=collection_d["id"],
-        alias="user2-artifact",
+        alias=f"user2-artifact-{unique_suffix}",
         manifest={"name": "User 2's Artifact"},
     )
     
