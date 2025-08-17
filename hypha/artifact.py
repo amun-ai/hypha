@@ -1910,6 +1910,7 @@ class ArtifactController:
                             continue  # Permission granted through parent
                     
                     # Check workspace-level permission as final fallback
+                    # Workspace owners always have highest permission
                     if not user_info.check_permission(artifact.workspace, operation_map.get(perm, UserPermission.read_write)):
                         raise PermissionError(
                             f"User does not have permission '{perm}' on the artifact."
@@ -1920,6 +1921,7 @@ class ArtifactController:
             for perm in parent_permissions:
                 if not await self._check_permissions(parent_artifact, user_info, perm):
                     # Check workspace-level permission as fallback
+                    # Workspace owners always have highest permission
                     if not user_info.check_permission(artifact.workspace, operation_map.get(perm, UserPermission.read_write)):
                         raise PermissionError(
                             f"User does not have permission '{perm}' on the parent collection."
@@ -2475,6 +2477,7 @@ class ArtifactController:
                         has_draft = await self._check_permissions(parent_artifact, user_info, "draft")
                         if not has_draft:
                             # Check workspace-level permission as fallback
+                            # Workspace owners always have highest permission
                             if not user_info.check_permission(workspace, UserPermission.read_write):
                                 raise PermissionError(
                                     f"User does not have permission to create a draft in the collection '{parent_artifact.alias}'."
@@ -2484,6 +2487,7 @@ class ArtifactController:
                         has_attach = await self._check_permissions(parent_artifact, user_info, "attach")
                         if not has_attach:
                             # Check workspace-level permission as fallback
+                            # Workspace owners always have highest permission
                             if not user_info.check_permission(workspace, UserPermission.read_write):
                                 raise PermissionError(
                                     f"User does not have permission to attach an artifact to the collection '{parent_artifact.alias}'."
@@ -2983,6 +2987,7 @@ class ArtifactController:
                     has_attach = await self._check_permissions(parent_artifact, user_info, "attach")
                     if not has_attach:
                         # Check workspace-level permission as fallback
+                        # Workspace owners always have highest permission
                         if not user_info.check_permission(artifact.workspace, UserPermission.read_write):
                             raise PermissionError(
                                 f"User does not have permission to attach artifact to the collection '{parent_artifact.alias}'."
@@ -5468,6 +5473,7 @@ class ArtifactController:
                     has_detach = await self._check_permissions(old_parent, user_info, "detach")
                     if not has_detach:
                         # Check workspace-level permission as fallback
+                        # Workspace owners always have highest permission
                         if not user_info.check_permission(artifact.workspace, UserPermission.admin):
                             raise PermissionError(
                                 f"User does not have permission to detach artifact from the collection '{old_parent.alias}'."
@@ -5486,6 +5492,7 @@ class ArtifactController:
                     has_attach = await self._check_permissions(new_parent, user_info, "attach")
                     if not has_attach:
                         # Check workspace-level permission as fallback
+                        # Workspace owners always have highest permission
                         if not user_info.check_permission(artifact.workspace, UserPermission.read_write):
                             raise PermissionError(
                                 f"User does not have permission to attach artifact to the collection '{new_parent.alias}'."

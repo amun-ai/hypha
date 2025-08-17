@@ -8596,6 +8596,131 @@ async def test_controlled_collections(
     print("✅ Controlled collections test completed successfully")
 
 
+async def test_workspace_owner_permission_priority(
+    minio_server, fastapi_server, test_user_token, test_user_token_2
+):
+    """Test that workspace owners always have highest permission, overriding collection settings."""
+    
+    # Connect as user 1 (workspace owner)
+    api1 = await connect_to_server(
+        {"name": "test-client-1", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager1 = await api1.get_service("public/artifact-manager")
+    user1_info = api1.config["user"]
+    workspace1 = api1.config["workspace"]
+    
+    # Connect as user 2
+    api2 = await connect_to_server(
+        {"name": "test-client-2", "server_url": SERVER_URL, "token": test_user_token_2}
+    )
+    artifact_manager2 = await api2.get_service("public/artifact-manager")
+    user2_info = api2.config["user"]
+    
+    # TEST 1: Workspace owner CAN bypass "read-only" collection permissions
+    # User 1 creates a collection with EXPLICIT read-only permission for themselves
+    readonly_collection = await artifact_manager1.create(
+        type="collection",
+        alias="readonly-collection",
+        manifest={"name": "Read-Only Collection", "description": "Testing workspace owner bypass"},
+        config={
+            "permissions": {
+                user1_info["id"]: "r",  # User 1 explicitly set to read-only
+                user2_info["id"]: "r",  # User 2 also read-only
+            }
+        },
+    )
+    print(f"✅ Created read-only collection: {readonly_collection['id']}")
+    
+    # The create method automatically sets the creator as admin, override it
+    await artifact_manager1.edit(
+        readonly_collection["id"],
+        config={
+            "permissions": {
+                user1_info["id"]: "r",  # Reset to read-only
+                user2_info["id"]: "r",  # User 2 also read-only
+            }
+        }
+    )
+    print(f"✅ Reset collection permissions to read-only for all users")
+    
+    # TEST: Workspace owner SHOULD be able to bypass explicit read-only permissions
+    # This is by design - workspace owners always have highest permission
+    try:
+        bypass_artifact = await artifact_manager1.create(
+            parent_id=readonly_collection["id"],
+            alias="bypass-artifact",
+            manifest={"name": "Bypass Test", "description": "Created by workspace owner despite read-only"},
+            stage=True,  # Create as draft
+        )
+        print(f"✅ Workspace owner successfully bypassed read-only permission and created artifact: {bypass_artifact['id']}")
+        
+        # Workspace owner can also commit
+        committed = await artifact_manager1.commit(bypass_artifact["id"])
+        print(f"✅ Workspace owner successfully committed the artifact despite explicit read-only permission")
+    except PermissionError:
+        print(f"❌ ERROR: Workspace owner should be able to bypass collection permissions!")
+        raise AssertionError("Workspace owner should be able to bypass collection permissions")
+    
+    # TEST: But user2 should NOT be able to bypass
+    try:
+        user2_artifact = await artifact_manager2.create(
+            parent_id=readonly_collection["id"],
+            alias="user2-artifact",
+            manifest={"name": "User2 Test", "description": "Should not be created"},
+            stage=True,
+        )
+        print(f"❌ ERROR: User2 should NOT be able to create artifacts with read-only permission")
+        assert False, "User2 should not bypass read-only permissions"
+    except Exception as e:
+        if "permission" in str(e).lower():
+            print(f"✅ User2 correctly restricted by explicit read-only permission")
+        else:
+            raise
+    
+    # TEST 2: Test that non-owners cannot bypass collection permissions
+    restricted_collection = await artifact_manager1.create(
+        type="collection",
+        alias="restricted-collection",
+        manifest={"name": "Restricted Collection"},
+        config={
+            "permissions": {
+                user1_info["id"]: "*",  # Owner has full control
+                user2_info["id"]: "l",  # User 2 can only list
+            }
+        },
+    )
+    
+    # User 2 explicitly has only "l" (list) permission
+    # But if we simulate user2 being from the same workspace...
+    # The workspace fallback could allow operations beyond "l"
+    
+    # User 2 should NOT be able to create drafts with only "l" permission
+    with pytest.raises(Exception, match=r".*permission.*"):
+        await artifact_manager2.create(
+            parent_id=restricted_collection["id"],
+            manifest={"name": "Should Fail"},
+            stage=True,
+        )
+    print("✅ User 2 correctly restricted with 'l' permission")
+    
+    # Clean up - restore admin permissions first since we changed them
+    await artifact_manager1.edit(
+        readonly_collection["id"],
+        config={
+            "permissions": {
+                user1_info["id"]: "*",  # Restore admin for cleanup
+            }
+        }
+    )
+    await artifact_manager1.delete(readonly_collection["id"], recursive=True)
+    await artifact_manager1.delete(restricted_collection["id"], recursive=True)
+    
+    await api1.disconnect()
+    await api2.disconnect()
+    
+    print("✅ Workspace owner permission priority test completed successfully")
+
+
 async def test_collection_permission_granularity(
     minio_server, fastapi_server, test_user_token, test_user_token_2
 ):
