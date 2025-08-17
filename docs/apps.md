@@ -114,6 +114,13 @@ worker = await server.get_service(started_app.worker_id)
 # Now you can interact with the worker directly
 # For example, get logs from the worker
 logs = await worker.get_logs(started_app.id)
+# Logs are returned in the format:
+# {
+#   "items": [{"type": "info", "content": "..."}, ...],
+#   "total": 10,
+#   "offset": 0,
+#   "limit": None
+# }
 
 # Or execute code in the session (for workers that support it)
 if hasattr(worker, 'execute'):
@@ -917,23 +924,46 @@ async def stop(session_id):
 
  
 
-async def get_logs(session_id, log_type=None, offset=0, limit=None):
-    """Get logs for a session."""
+async def get_logs(session_id, type=None, offset=0, limit=None):
+    """Get logs for a session.
+    
+    Returns a dictionary with:
+    - items: List of log events, each with 'type' and 'content' fields
+    - total: Total number of log items (before filtering/pagination)
+    - offset: The offset used for pagination
+    - limit: The limit used for pagination
+    """
     if session_id not in worker_sessions:
         raise Exception(f"Session {session_id} not found")
     
     logs = worker_sessions[session_id]["logs"]
     
-    # Apply offset and limit
-    if limit:
-        logs = logs[offset:offset+limit]
-    else:
-        logs = logs[offset:]
+    # Convert logs to items format
+    all_items = []
+    for log_type, log_entries in logs.items():
+        for entry in log_entries:
+            all_items.append({"type": log_type, "content": entry})
     
-    if log_type:
-        return logs
+    # Filter by type if specified
+    if type:
+        filtered_items = [item for item in all_items if item["type"] == type]
     else:
-        return {"log": logs, "error": []}
+        filtered_items = all_items
+    
+    total = len(filtered_items)
+    
+    # Apply pagination
+    if limit:
+        paginated_items = filtered_items[offset:offset+limit]
+    else:
+        paginated_items = filtered_items[offset:]
+    
+    return {
+        "items": paginated_items,
+        "total": total,
+        "offset": offset,
+        "limit": limit
+    }
 
 
 async def execute(session_id, script, config=None, progress_callback=None, context=None):
@@ -1206,7 +1236,7 @@ All custom workers must implement these core functions:
 
 - `start(config)`: Start an application session
 - `stop(session_id)`: Stop a session  
- - `get_logs(session_id, ...)`: Get session logs
+ - `get_logs(session_id, type, offset, limit)`: Get session logs in standardized format with items list
   (Workspace lifecycle is handled by the app controller; workers no longer implement these hooks.)
 
 **Optional functions for enhanced functionality:**

@@ -21,7 +21,7 @@ All workers must implement these core methods:
 
 - `start(config, context=None)` - Start a new session and return session_id
 - `stop(session_id, context=None)` - Stop a session
-- `get_logs(session_id, type, offset, limit, context=None)` - Get logs for a session
+- `get_logs(session_id, type, offset, limit, context=None)` - Get logs for a session. Returns a dictionary with `items` (list of log events with `type` and `content` fields), `total`, `offset`, and `limit`
 
 Optional methods:
 - `compile(manifest, files, config, context=None)` - Compile application files (for build-time processing)
@@ -459,24 +459,47 @@ class MyCustomWorker(BaseWorker):
         offset: int = 0,
         limit: Optional[int] = None,
         context: Optional[Dict[str, Any]] = None
-    ) -> Union[Dict[str, List[str]], List[str]]:
-        """Get logs for a session."""
+    ) -> Dict[str, Any]:
+        """Get logs for a session.
+        
+        Returns a dictionary with:
+        - items: List of log events, each with 'type' and 'content' fields
+        - total: Total number of log items (before filtering/pagination)
+        - offset: The offset used for pagination
+        - limit: The limit used for pagination
+        """
         if session_id not in self._sessions:
             raise SessionNotFoundError(f"Session {session_id} not found")
         
         session_data = self._session_data.get(session_id, {})
-        logs = session_data.get("logs", [])
+        logs = session_data.get("logs", {})
         
-        # Apply offset and limit
-        if limit:
-            logs = logs[offset:offset + limit]
-        else:
-            logs = logs[offset:]
+        # Convert logs to items format
+        all_items = []
+        for log_type, log_entries in logs.items():
+            for entry in log_entries:
+                all_items.append({"type": log_type, "content": entry})
         
+        # Filter by type if specified
         if type:
-            return logs
+            filtered_items = [item for item in all_items if item["type"] == type]
         else:
-            return {"log": logs, "error": []}
+            filtered_items = all_items
+        
+        total = len(filtered_items)
+        
+        # Apply pagination
+        if limit:
+            paginated_items = filtered_items[offset:offset + limit]
+        else:
+            paginated_items = filtered_items[offset:]
+        
+        return {
+            "items": paginated_items,
+            "total": total,
+            "offset": offset,
+            "limit": limit
+        }
     
     # Workspace lifecycle is handled by the app controller
 
@@ -568,19 +591,42 @@ async def stop(session_id, context=None):
         print(f"Session {session_id} stopped")
 
 async def get_logs(session_id, type=None, offset=0, limit=None, context=None):
-    """Get logs for a session."""
+    """Get logs for a session.
+    
+    Returns a dictionary with:
+    - items: List of log events, each with 'type' and 'content' fields
+    - total: Total number of log items (before filtering/pagination)
+    - offset: The offset used for pagination
+    - limit: The limit used for pagination
+    """
     if session_id not in session_data:
-        return [] if type else {"log": [], "error": []}
+        return {"items": [], "total": 0, "offset": offset, "limit": limit}
     
     logs = session_data[session_id].get("logs", [])
     
-    # Apply offset and limit
-    if limit:
-        logs = logs[offset:offset + limit]
-    else:
-        logs = logs[offset:]
+    # Convert logs to items format (assuming logs is a list of strings)
+    all_items = [{"type": "info", "content": log} for log in logs]
     
-    return logs if type else {"log": logs, "error": []}
+    # Filter by type if specified
+    if type:
+        filtered_items = [item for item in all_items if item["type"] == type]
+    else:
+        filtered_items = all_items
+    
+    total = len(filtered_items)
+    
+    # Apply pagination
+    if limit:
+        paginated_items = filtered_items[offset:offset + limit]
+    else:
+        paginated_items = filtered_items[offset:]
+    
+    return {
+        "items": paginated_items,
+        "total": total,
+        "offset": offset,
+        "limit": limit
+    }
 
 # Register the worker
 async def main():
@@ -839,16 +885,29 @@ class MyCustomWorker {
         }
 
         const sessionData = this.sessionData.get(sessionId) || {};
-        let logs = sessionData.logs || [];
-
-        // Apply offset and limit
-        if (limit) {
-            logs = logs.slice(offset, offset + limit);
-        } else {
-            logs = logs.slice(offset);
-        }
-
-        return type ? logs : {log: logs, error: []};
+        const logs = sessionData.logs || [];
+        
+        // Convert logs to items format (assuming logs is an array of strings)
+        const allItems = logs.map(log => ({ type: 'info', content: log }));
+        
+        // Filter by type if specified
+        const filteredItems = type 
+            ? allItems.filter(item => item.type === type)
+            : allItems;
+        
+        const total = filteredItems.length;
+        
+        // Apply pagination
+        const paginatedItems = limit 
+            ? filteredItems.slice(offset, offset + limit)
+            : filteredItems.slice(offset);
+        
+        return {
+            items: paginatedItems,
+            total: total,
+            offset: offset,
+            limit: limit
+        };
     }
 
     async prepareWorkspace(workspace, context = null) {
@@ -1009,19 +1068,32 @@ async function getSessionInfo(sessionId, context = null) {
 
 async function getLogs(sessionId, type = null, offset = 0, limit = null, context = null) {
     if (!sessionData.has(sessionId)) {
-        return type ? [] : {log: [], error: []};
+        return { items: [], total: 0, offset: offset, limit: limit };
     }
     
-    let logs = sessionData.get(sessionId).logs || [];
+    const logs = sessionData.get(sessionId).logs || [];
     
-    // Apply offset and limit
-    if (limit) {
-        logs = logs.slice(offset, offset + limit);
-    } else {
-        logs = logs.slice(offset);
-    }
+    // Convert logs to items format (assuming logs is an array of strings)
+    const allItems = logs.map(log => ({ type: 'info', content: log }));
     
-    return type ? logs : {log: logs, error: []};
+    // Filter by type if specified
+    const filteredItems = type 
+        ? allItems.filter(item => item.type === type)
+        : allItems;
+    
+    const total = filteredItems.length;
+    
+    // Apply pagination
+    const paginatedItems = limit 
+        ? filteredItems.slice(offset, offset + limit)
+        : filteredItems.slice(offset);
+    
+    return {
+        items: paginatedItems,
+        total: total,
+        offset: offset,
+        limit: limit
+    };
 }
 
 async function prepareWorkspace(workspace, context = null) {

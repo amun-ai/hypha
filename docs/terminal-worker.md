@@ -182,8 +182,8 @@ async def run_terminal_session():
         print("Raw output:", result["outputs"][0]["text"])
         
         # Get the current screen content (cleaned)
-        screen = await worker.get_logs(session_id, type="screen")
-        print("Current screen:", screen)
+        screen_log = await worker.get_logs(session_id, type="screen")
+        print("Current screen log:", screen_log)
     
     # Stop the session
     await controller.stop(session_id)
