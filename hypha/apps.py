@@ -2426,6 +2426,9 @@ class ServerAppController:
                 self.event_bus.on_local("client_connected", client_connected)
 
         try:
+            # Initialize session_data to None to ensure it's always defined for exception handling
+            session_data = None
+            
             # Get worker if worker_id is specified, otherwise use selection mode
             selected_worker = None
             if worker_id:

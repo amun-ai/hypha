@@ -1134,6 +1134,7 @@ class MCPClientRunner(BaseWorker):
 
             # Register the service
             service_info = await client.register_service(service_def, overwrite=True)
+            # Store the actual service ID that was returned by register_service
             session_data["services"].append(service_info.id)
             logger.info(
                 f"Registered unified MCP service: {service_info.id} with app_id: {service_def.get('app_id', 'NOT_SET')}"
@@ -1150,34 +1151,33 @@ class MCPClientRunner(BaseWorker):
     ) -> None:
         """Stop an MCP session."""
         if session_id not in self._sessions:
-            logger.warning(
-                f"MCP session {session_id} not found for stopping, may have already been cleaned up"
-            )
-            return
+            raise SessionNotFoundError(f"MCP session {session_id} not found for stopping")
 
         session_info = self._sessions[session_id]
         session_info.status = SessionStatus.STOPPING
 
         try:
             session_data = self._session_data.get(session_id)
-            if session_data:
-                # Get the client from session data, not self.server
-                client = session_data.get("client")
-                
-                # Unregister services
-                services = session_data.get("services", [])
-                for service_id in services:
-                    try:
-                        if client:
-                            await client.unregister_service(service_id)
-                            logger.info(f"Unregistered service: {service_id}")
-                        else:
-                            logger.warning(f"No client available to unregister service {service_id}")
-                    except Exception as e:
-                        logger.warning(f"Error unregistering service {service_id}: {e}")
+            if not session_data:
+                raise RuntimeError(f"No session data found for session {session_id}")
+            
+            # Get the client from session data
+            client = session_data.get("client")
+            if not client:
+                raise RuntimeError(f"No client found for session {session_id}")
+            
+            # Unregister services
+            services = session_data.get("services", [])
+            for service_id in services:
+                await client.unregister_service(service_id)
+                logger.info(f"Unregistered service: {service_id}")
 
-                # Log cleanup
-                logger.info(f"Cleaning up MCP connections for session {session_id}")
+            # Disconnect the Hypha client to prevent memory leak
+            await client.disconnect()
+            logger.info(f"Disconnected Hypha client for session {session_id}")
+            
+            # Log cleanup
+            logger.info(f"Cleaning up MCP connections for session {session_id}")
 
             session_info.status = SessionStatus.STOPPED
             logger.info(f"Stopped MCP session {session_id}")
@@ -1252,13 +1252,10 @@ class MCPClientRunner(BaseWorker):
         """Shutdown the MCP proxy worker."""
         logger.info("Shutting down MCP proxy worker...")
 
-        # Stop all sessions
+        # Stop all sessions - any failure should be propagated
         session_ids = list(self._sessions.keys())
         for session_id in session_ids:
-            try:
-                await self.stop(session_id)
-            except Exception as e:
-                logger.warning(f"Failed to stop MCP session {session_id}: {e}")
+            await self.stop(session_id)
 
         logger.info("MCP proxy worker shutdown complete")
 

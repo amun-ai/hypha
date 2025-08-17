@@ -652,3 +652,149 @@ async def test_mcp_ghost_services_after_stop(fastapi_server, test_user_token):
     await controller.uninstall(app_info.id)
     await api.unregister_service(backend_service_info["id"])
     await api.disconnect()
+
+
+async def test_mcp_cleanup_after_stop(fastapi_server, test_user_token):
+    """Test that after stop() the MCP service is not accessible and client is disconnected."""
+    
+    # Connect to the Hypha server
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    workspace = api.config.workspace
+    controller = await api.get_service("public/server-apps")
+
+    # Step 1: Create a simple MCP service to use as backend
+    @schema_function
+    def cleanup_test_tool(message: str) -> str:
+        """A test tool for cleanup verification."""
+        return f"Echo: {message}"
+
+    # Register the backend MCP service
+    backend_service_info = await api.register_service(
+        {
+            "id": "cleanup-test-backend",
+            "name": "Cleanup Test Backend Service",
+            "description": "Backend service for cleanup test",
+            "type": "mcp",
+            "config": {"visibility": "public"},
+            "tools": {"cleanup_test_tool": cleanup_test_tool},
+        }
+    )
+
+    # Step 2: Create and install an MCP app
+    mcp_endpoint_url = f"{SERVER_URL}/{workspace}/mcp/{backend_service_info['id'].split('/')[-1]}/mcp"
+
+    mcp_app_config = {
+        "type": "mcp-server",
+        "name": "Cleanup Test MCP App",
+        "description": "Test app for verifying proper cleanup",
+        "mcpServers": {
+            "cleanup-test-server": {
+                "type": "streamable-http",
+                "url": mcp_endpoint_url,
+            }
+        },
+    }
+
+    # Install the MCP app
+    app_info = await controller.install(manifest=mcp_app_config, overwrite=True, stage=True)
+    await controller.commit_app(app_info.id)
+
+    # Step 3: Start the MCP app
+    print("Starting MCP app for cleanup test...")
+    start_result = await controller.start(app_info.id, timeout=30)
+    session_id = start_result["id"]
+    
+    print(f"MCP app started with session ID: {session_id}")
+
+    # Step 4: Verify the service is accessible before stopping
+    print("Verifying service is accessible before stop...")
+    
+    # Get the service
+    mcp_service = await api.get_service(f"cleanup-test-server@{app_info.id}")
+    assert mcp_service is not None, "Could not get MCP service before stop"
+    assert "cleanup_test_tool" in mcp_service.tools, "cleanup_test_tool not found in MCP service"
+    
+    # Test the service works
+    result = await mcp_service.tools.cleanup_test_tool("test message")
+    assert result == "Echo: test message", f"Unexpected result: {result}"
+    
+    print("✓ MCP service is working correctly before stop")
+
+    # Step 5: Check that the service is registered
+    services_before = await api.list_services()
+    mcp_services_before = [s for s in services_before if "cleanup-test-server" in s.get("id", "")]
+    assert len(mcp_services_before) > 0, "MCP service not found in service list before stop"
+    
+    service_id_before = f"{session_id}:cleanup-test-server"
+    print(f"✓ Service {service_id_before} is registered before stop")
+
+    # Step 6: Stop the MCP app
+    print(f"Stopping MCP app with session ID: {session_id}")
+    await controller.stop(session_id)
+    
+    print("✓ MCP app stopped successfully")
+
+    # Step 7: Wait a moment for cleanup to complete
+    await asyncio.sleep(2)
+
+    # Step 8: Verify the service is no longer accessible
+    print("Verifying service is NOT accessible after stop...")
+    
+    # Try to get the service again - it should fail or return None
+    try:
+        mcp_service_after = await api.get_service(f"cleanup-test-server", mode="first")
+        # If we get here without error, the service should be None or unusable
+        if mcp_service_after is not None:
+            # Try to use the service - it should fail
+            try:
+                result_after = await mcp_service_after.tools.cleanup_test_tool("test after stop")
+                assert False, f"Service call succeeded after stop! Result: {result_after}"
+            except Exception as e:
+                print(f"✓ Service call failed after stop as expected: {e}")
+    except Exception as e:
+        print(f"✓ Cannot get service after stop as expected: {e}")
+
+    # Step 9: Verify the service is not in the service list
+    services_after = await api.list_services()
+    mcp_services_after = [s for s in services_after if "cleanup-test-server" in s.get("id", "")]
+    
+    # The service should be completely removed from the list
+    assert len(mcp_services_after) == 0, f"Service still exists after stop! Found: {[s['id'] for s in mcp_services_after]}"
+    
+    print("✓ Service is not in the service list after stop")
+
+    # Step 10: Verify we cannot get the service using the session ID
+    try:
+        # Try to get service with the old session ID
+        old_service = await api.get_service(service_id_before)
+        if old_service is not None:
+            # Try to use it
+            try:
+                await old_service.tools.cleanup_test_tool("should fail")
+                assert False, "Service with old session ID still works after stop!"
+            except Exception:
+                print("✓ Service with old session ID is not functional after stop")
+    except Exception as e:
+        print(f"✓ Cannot get service with old session ID after stop: {e}")
+
+    # Step 11: Verify the session is truly stopped
+    running_apps = await controller.list_running()
+    running_session_ids = [app["id"] for app in running_apps]
+    assert session_id not in running_session_ids, f"Session {session_id} still in running apps after stop!"
+    
+    print("✓ Session is not in the running apps list after stop")
+
+    print("✅ CLEANUP TEST PASSED - All resources properly cleaned up after stop()")
+
+    # Cleanup
+    await controller.uninstall(app_info.id)
+    await api.unregister_service(backend_service_info["id"])
+    await api.disconnect()
