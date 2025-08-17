@@ -1248,17 +1248,25 @@ class TerminalWorker(BaseWorker):
         offset: int = 0,
         limit: Optional[int] = None,
         context: Optional[Dict[str, Any]] = None,
-    ) -> Union[Dict[str, List[str]], List[str], str]:
+    ) -> Union[Dict[str, Any], str]:
         """Get logs for a terminal session.
         
-        Special type 'screen' returns the rendered screen content (cleaned of ANSI codes).
+        Returns a dictionary with:
+        - items: List of log events, each with 'type' and 'content' fields
+        - total: Total number of log items (before filtering/pagination)
+        - offset: The offset used for pagination
+        - limit: The limit used for pagination
+        
+        Special type 'screen' returns the rendered screen content (cleaned of ANSI codes) as a string.
         """
         if session_id not in self._sessions:
             raise SessionNotFoundError(f"Terminal session {session_id} not found")
 
         session_data = self._session_data.get(session_id)
         if not session_data:
-            return {} if type is None else [] if type != "screen" else ""
+            if type == "screen":
+                return ""
+            return {"items": [], "total": 0, "offset": offset, "limit": limit}
 
         # Handle special 'screen' type - return rendered/cleaned screen
         if type == "screen":
@@ -1268,25 +1276,33 @@ class TerminalWorker(BaseWorker):
             return self._screen_renderer.render_screen(raw_screen)
 
         logs = session_data.get("logs", {})
-
+        
+        # Convert logs to items format
+        all_items = []
+        for log_type, log_entries in logs.items():
+            for entry in log_entries:
+                all_items.append({"type": log_type, "content": entry})
+        
+        # Filter by type if specified (excluding 'screen' which is handled above)
         if type:
-            target_logs = logs.get(type, [])
-            end_idx = (
-                len(target_logs)
-                if limit is None
-                else min(offset + limit, len(target_logs))
-            )
-            return target_logs[offset:end_idx]
+            filtered_items = [item for item in all_items if item["type"] == type]
         else:
-            result = {}
-            for log_type_key, log_entries in logs.items():
-                end_idx = (
-                    len(log_entries)
-                    if limit is None
-                    else min(offset + limit, len(log_entries))
-                )
-                result[log_type_key] = log_entries[offset:end_idx]
-            return result
+            filtered_items = all_items
+        
+        total = len(filtered_items)
+        
+        # Apply pagination
+        if limit is None:
+            paginated_items = filtered_items[offset:]
+        else:
+            paginated_items = filtered_items[offset:offset + limit]
+        
+        return {
+            "items": paginated_items,
+            "total": total,
+            "offset": offset,
+            "limit": limit
+        }
 
     async def resize_terminal(
         self,

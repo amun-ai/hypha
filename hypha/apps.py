@@ -2736,7 +2736,7 @@ class ServerAppController:
             description="Additional context information including user and workspace details. Usually provided automatically by the system.",
         ),
     ) -> Dict[str, Any]:
-        """Get server app instance logs.
+        """Get server app session logs.
         
         Returns a dictionary with:
         - items: List of log events, each with 'type' and 'content' fields

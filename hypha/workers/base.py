@@ -127,7 +127,16 @@ class WorkerProtocol(Protocol):
         limit: Optional[int] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Get logs for a session."""
+        """Get logs for a session.
+        
+        Returns a dictionary with:
+        - items: List of log events, each with 'type' and 'content' fields
+        - total: Total number of log items (before filtering/pagination)
+        - offset: The offset used for pagination
+        - limit: The limit used for pagination
+        
+        If type is specified, only items matching that type will be returned.
+        """
         ...
 
 
@@ -245,8 +254,17 @@ class BaseWorker(ABC):
         offset: int = 0,
         limit: Optional[int] = None,
         context: Optional[Dict[str, Any]] = None,
-    ) -> Union[Dict[str, List[str]], List[str]]:
-        """Get logs for a session."""
+    ) -> Dict[str, Any]:
+        """Get logs for a session.
+        
+        Returns a dictionary with:
+        - items: List of log events, each with 'type' and 'content' fields
+        - total: Total number of log items (before filtering/pagination)
+        - offset: The offset used for pagination
+        - limit: The limit used for pagination
+        
+        If type is specified, only items matching that type will be returned.
+        """
         pass
 
 

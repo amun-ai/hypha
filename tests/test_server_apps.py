@@ -279,7 +279,8 @@ async def run(context):
 
     # Get logs to verify execution
     logs = await controller.get_logs(app_id)
-    log_text = "\n".join(logs.get("logs", []))
+    log_items = logs.get("items", [])
+    log_text = "\n".join([item["content"] for item in log_items if item["type"] == "logs"])
     print("App logs:", log_text)
 
     # Verify setup was called
@@ -452,11 +453,12 @@ async def test_terminal_app(minio_server, fastapi_server, test_user_token):
 
     # Get logs - use the session ID from the started app
     logs = await controller.get_logs(started_app["id"])
-    log_text = "\n".join(logs.get("logs", []))
+    log_items = logs.get("items", [])
+    log_text = "\n".join([item["content"] for item in log_items])
     print("Terminal app logs:", log_text)
 
-    # Verify execution
-    assert "Terminal session started" in log_text or len(logs.get("info", [])) > 0
+    # Verify execution - check if there are log items or specific content
+    assert len(log_items) > 0 or "Terminal session started" in log_text
 
     # Stop the terminal session
     await controller.stop(started_app["id"])
