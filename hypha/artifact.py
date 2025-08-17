@@ -1595,17 +1595,17 @@ class ArtifactController:
                 "l": [
                     "list",
                 ],
-                "l+": ["list", "create", "edit"],
+                "l+": ["list", "draft"],  # Can list and create drafts
                 "lv": ["list", "list_vectors"],
                 "lv+": [
                     "list",
                     "list_vectors",
-                    "create",
-                    "commit",
+                    "draft",  # Can create drafts
+                    "attach",  # Can attach drafts to become children
                     "add_vectors",
                 ],
                 "lf": ["list", "list_files"],
-                "lf+": ["list", "list_files", "create", "commit", "put_file"],
+                "lf+": ["list", "list_files", "draft", "attach", "put_file"],
                 "r": [
                     "read",
                     "get_file",
@@ -1622,7 +1622,8 @@ class ArtifactController:
                     "list",
                     "search_vectors",
                     "get_vector",
-                    "create",
+                    "draft",  # Can create drafts
+                    "attach",  # Can attach drafts to become children
                     "add_vectors",
                 ],
                 "rw": [
@@ -1639,6 +1640,7 @@ class ArtifactController:
                     "add_vectors",
                     "remove_file",
                     "remove_vectors",
+                    "detach",  # Can detach from parent (for rw and higher)
                 ],
                 "rd+": [
                     "read",
@@ -1649,12 +1651,12 @@ class ArtifactController:
                     "list_vectors",
                     "list",
                     "edit",
-                    # "commit", can create but not commit
+                    # "commit", can create draft but not commit
                     "put_file",
                     "add_vectors",
                     "remove_file",
                     "remove_vectors",
-                    "create",
+                    "draft",  # Can create drafts
                 ],
                 "rw+": [
                     "read",
@@ -1670,7 +1672,9 @@ class ArtifactController:
                     "add_vectors",
                     "remove_file",
                     "remove_vectors",
-                    "create",
+                    "draft",  # Can create drafts
+                    "attach",  # Can attach drafts to become children
+                    "detach",  # Can detach from parent
                 ],
                 "*": [
                     "read",
@@ -1686,7 +1690,10 @@ class ArtifactController:
                     "add_vectors",
                     "remove_file",
                     "remove_vectors",
-                    "create",
+                    "create",  # Full create permission (legacy, includes draft+attach)
+                    "draft",  # Can create drafts
+                    "attach",  # Can attach drafts to become children
+                    "detach",  # Can detach from parent
                     "reset_stats",
                     "publish",
                     "delete",
@@ -1788,6 +1795,9 @@ class ArtifactController:
             "list_vectors": UserPermission.read,
             "search_vectors": UserPermission.read,
             "create": UserPermission.read_write,
+            "draft": UserPermission.read_write,  # Creating drafts
+            "attach": UserPermission.read_write,  # Attaching drafts as children
+            "detach": UserPermission.read_write,  # Detaching from parent
             "edit": UserPermission.read_write,
             "commit": UserPermission.read_write,
             "add_vectors": UserPermission.read_write,
@@ -2268,13 +2278,14 @@ class ArtifactController:
                 if parent_id:
                     parent_id = self._validate_artifact_id(parent_id, context)
                     if stage:
+                        # For staged artifacts, check if user has "draft" permission
                         parent_artifact, _ = await self._get_artifact_with_permission(
-                            user_info, parent_id, "create", session
+                            user_info, parent_id, "draft", session
                         )
                     else:
-                        # if not staging, we need to check if the user has both create and commit permissions
+                        # For direct commit, check if user has "attach" permission
                         parent_artifact, _ = await self._get_artifact_with_permission(
-                            user_info, parent_id, ["create", "commit"], session
+                            user_info, parent_id, "attach", session
                         )
                     parent_id = parent_artifact.id
                     if workspace:
@@ -2393,8 +2404,8 @@ class ArtifactController:
                     parent_artifact.config["permissions"] if parent_artifact else {}
                 )
                 permissions = config.get("permissions", {}) if config else {}
+                # Set creator as admin (this should override parent permission for the creator)
                 permissions[user_info.id] = "*"
-                permissions.update(parent_permissions)
                 config["permissions"] = permissions
 
                 # Determine if we should be in staging mode
@@ -2407,12 +2418,13 @@ class ArtifactController:
                         "stage",
                     ]:  # Treat 'stage' as None if stage=False
                         version = "v0"  # Always start with v0 for new artifacts
-                    if parent_artifact and not await self._check_permissions(
-                        parent_artifact, user_info, "commit"
-                    ):
-                        raise PermissionError(
-                            f"User does not have permission to commit an artifact in the collection '{parent_artifact.alias}'."
-                        )
+                    if parent_artifact:
+                        # Check for attach permission (new)
+                        has_attach = await self._check_permissions(parent_artifact, user_info, "attach")
+                        if not has_attach:
+                            raise PermissionError(
+                                f"User does not have permission to attach an artifact in the collection '{parent_artifact.alias}'."
+                            )
                     comment = comment or "Initial version"
                     versions.append(
                         {
@@ -2875,9 +2887,24 @@ class ArtifactController:
         assert version != "stage", "Version cannot be 'stage' when committing."
         try:
             async with session.begin():
+                # Check if the artifact has a parent, and if so, check attach permission
+                # First get the artifact with basic permissions to check parent
                 artifact, parent_artifact = await self._get_artifact_with_permission(
                     user_info, artifact_id, "commit", session
                 )
+                
+                # If artifact has a parent and is being committed for the first time (from draft),
+                # also check if user has "attach" permission on the parent
+                # Only check parent permission if user doesn't own the artifact
+                if parent_artifact and len(artifact.versions or []) == 0:
+                    # This is a draft being attached to parent
+                    # If user owns the artifact (created it), they can commit it
+                    # Otherwise, check attach permission on parent
+                    if artifact.created_by != user_info.id:
+                        # User doesn't own the artifact, need attach permission from parent
+                        await self._get_artifact_with_permission(
+                            user_info, parent_artifact.id, "attach", session
+                        )
 
                 assert (
                     artifact.staging is not None
@@ -3131,6 +3158,15 @@ class ArtifactController:
             artifact, parent_artifact = await self._get_artifact_with_permission(
                 user_info, artifact_id, "delete", session
             )
+            
+            # If artifact has a parent and is being detached (not fully deleted),
+            # check if user has "detach" permission on the artifact
+            if parent_artifact and version is None and not recursive:
+                # This is a detach operation (removing child from parent)
+                # Check if user has detach permission on the artifact itself
+                await self._get_artifact_with_permission(
+                    user_info, artifact_id, "detach", session
+                )
 
             # Handle version="stage" - check if artifact is in staging and warn user to use discard instead
             if version == "stage":

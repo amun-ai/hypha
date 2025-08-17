@@ -361,23 +361,33 @@ In the `Artifact Manager`, permissions allow users to control access to artifact
 
 Permissions can be set both at the artifact level and the workspace level. In the absence of explicit artifact-level permissions, workspace-level permissions are checked to determine access. Here's how permissions work in detail:
 
+**Key Permission Operations:**
+
+The permission system includes three important operations for fine-grained control over collections:
+
+- **draft**: Allows creating draft (staged) artifacts as children of a collection
+- **attach**: Allows committing drafts to become permanent children of a collection  
+- **detach**: Allows removing artifacts from their parent collection
+
+These operations enable collection owners to control who can contribute content and how permanently artifacts are attached to collections.
+
 **Permission Levels:**
 
 The following permission levels are supported:
 
 - **n**: No access to the artifact.
 - **l**: List-only access (includes `list`).
-- **l+**: List and create access (includes `list`, `create`, and `commit`).
+- **l+**: List and draft access (includes `list` and `draft` - can create staged artifacts only).
 - **lv**: List and list vectors access (includes `list` and `list_vectors`).
-- **lv+**: List, list vectors, create, and commit access (includes `list`, `list_vectors`, `create`, `commit`, `add_vectors`, and `add_documents`).
+- **lv+**: List, list vectors, draft, and attach access (includes `list`, `list_vectors`, `draft`, `attach`, `add_vectors`, and `add_documents`).
 - **lf**: List and list files access (includes `list` and `list_files`).
-- **lf+**: List, list files, create, and commit access (includes `list`, `list_files`, `create`, `commit`, and `put_file`).
+- **lf+**: List, list files, draft, and attach access (includes `list`, `list_files`, `draft`, `attach`, and `put_file`).
 - **r**: Read-only access (includes `read`, `get_file`, `list_files`, `list`, `search_vectors`, and `get_vector`).
-- **r+**: Read, write, and create access (includes `read`, `get_file`, `put_file`, `list_files`, `list`, `search_vectors`, `get_vector`, `create`, `commit`, `add_vectors`, and `add_documents`).
-- **rw**: Read, write, and create access with file management (includes `read`, `get_file`, `get_vector`, `search_vectors`, `list_files`, `list_vectors`, `list`, `edit`, `commit`, `put_file`, `add_vectors`, `add_documents`, `remove_file`, and `remove_vectors`).
-- **rd+**: Read, write, create draft, and manage access (includes `read`, `get_file`, `get_vector`, `search_vectors`, `list_files`, `list_vectors`, `list`, `edit`, `put_file`, `add_vectors`, `add_documents`, `remove_file`, `remove_vectors`, and `create`), but cannot commit.
-- **rw+**: Read, write, create, and manage access (includes `read`, `get_file`, `get_vector`, `search_vectors`, `list_files`, `list_vectors`, `list`, `edit`, `commit`, `put_file`, `add_vectors`, `add_documents`, `remove_file`, `remove_vectors`, and `create`).
-- **\***: Full access to all operations (includes `read`, `get_file`, `get_vector`, `search_vectors`, `list_files`, `list_vectors`, `list`, `edit`, `commit`, `put_file`, `add_vectors`, `add_documents`, `remove_file`, `remove_vectors`, `create`, and `reset_stats`).
+- **r+**: Read with draft and attach access (includes `read`, `get_file`, `put_file`, `list_files`, `list`, `search_vectors`, `get_vector`, `draft`, `attach`, `add_vectors`, and `add_documents`).
+- **rw**: Read, write with detach access (includes `read`, `get_file`, `get_vector`, `search_vectors`, `list_files`, `list_vectors`, `list`, `edit`, `commit`, `put_file`, `add_vectors`, `add_documents`, `remove_file`, `remove_vectors`, and `detach`).
+- **rd+**: Read, write, and draft access (includes `read`, `get_file`, `get_vector`, `search_vectors`, `list_files`, `list_vectors`, `list`, `edit`, `put_file`, `add_vectors`, `add_documents`, `remove_file`, `remove_vectors`, and `draft`), but cannot attach/commit to parent.
+- **rw+**: Full read, write, draft, attach, and detach access (includes `read`, `get_file`, `get_vector`, `search_vectors`, `list_files`, `list_vectors`, `list`, `edit`, `commit`, `put_file`, `add_vectors`, `add_documents`, `remove_file`, `remove_vectors`, `draft`, `attach`, `detach`, and `create` for backward compatibility).
+- **\***: Full admin access to all operations (includes all permissions plus `reset_stats`, `publish`, `delete`, and `get_secret`).
 
 **Shortcut Permission Notation:**
 
@@ -399,25 +409,53 @@ When multiple notations are used together, the most specific permission takes pr
    ```
    This grants read-only access to everyone, including anonymous users.
 
-2. **Read, Write and Create Access for Logged-In Users:**
+2. **Draft-Only Contributors:**
    ```json
    {
      "permissions": {
-       "@": "rw+"
+       "*": "r",
+       "@": "l+"
      }
    }
    ```
-   This allows all authenticated users to read, write and create, but restricts access for anonymous users.
+   This allows anyone to read, but only authenticated users can create drafts. Drafts must be approved by someone with higher permissions.
 
-3. **Full Access for a Specific User:**
+3. **Full Contribution Rights:**
    ```json
    {
      "permissions": {
-       "user_id_1": "rw+"
+       "@": "r+"
      }
    }
    ```
-   This grants a specific user full access to the artifact, including reading, writing, creating, and managing files.
+   This allows authenticated users to read and fully contribute (create drafts and commit them).
+
+4. **Controlled Collection with Review Process:**
+   ```json
+   {
+     "permissions": {
+       "owner_id": "*",
+       "reviewer_id": "rw+",
+       "@": "l+"
+     }
+   }
+   ```
+   This creates a review workflow where:
+   - The owner has full admin control
+   - A reviewer can approve and manage artifacts
+   - Other authenticated users can only submit drafts for review
+
+5. **Granular Permission Control:**
+   ```json
+   {
+     "permissions": {
+       "user_id_1": "rw+",  // Can create, attach, and detach
+       "user_id_2": "r+",   // Can create and attach, but not detach
+       "user_id_3": "l+"    // Can only create drafts
+     }
+   }
+   ```
+   This grants different levels of contribution rights to specific users.
 
 **Permission Hierarchy:**
 
@@ -432,10 +470,27 @@ Permissions can be expanded to cover multiple operations. For example, a permiss
 The following list shows how permission expansions work:
 
 - `"n"`: No operations allowed.
-- `"r"`: Includes `read`, `get_file`, `list_files`, and `list`.
-- `"r+"`: Includes all operations in `"r"`, plus `put_file`, `create`, and `commit`.
-- `"rw"`: Includes all operations in `"r+"`, plus `edit`, `commit`, and `remove_file`.
-- `"rw+"`: Includes all operations in `"rw"`, plus `reset_stats`.
+- `"l"`: List only - can browse collections but not read content.
+- `"l+"`: List plus draft - can browse and create draft artifacts.
+- `"r"`: Read access - includes `read`, `get_file`, `list_files`, and `list`.
+- `"r+"`: Read plus contribute - includes all operations in `"r"`, plus `draft`, `attach`, `put_file`, and `add_vectors`.
+- `"rd+"`: Read and draft - includes all operations in `"r"`, plus `draft`, `edit`, and file management, but cannot attach to parent.
+- `"rw"`: Read-write with detach - includes all operations in `"r+"`, plus `edit`, `commit`, `remove_file`, and `detach`.
+- `"rw+"`: Full contribution access - includes all operations in `"rw"`, plus `create` (for backward compatibility).
+- `"*"`: Admin access - includes all operations plus `reset_stats`, `publish`, `delete`, and `get_secret`.
+
+**Important Notes on the New Permission Model:**
+
+1. **Artifact Ownership**: When a user creates an artifact (whether staged or committed), they automatically receive admin (`*`) permission on that specific artifact. This ensures creators can always manage their own content.
+
+2. **Draft vs Attach**: The separation of `draft` and `attach` permissions enables review workflows:
+   - `draft` permission allows creating staged artifacts
+   - `attach` permission allows committing drafts to become permanent children
+   - Users with only `draft` permission can create content for review
+
+3. **Detach Permission**: The `detach` permission controls who can remove artifacts from collections. This solves the previous issue where artifact creators could always remove their content regardless of collection owner preferences.
+
+4. **Backward Compatibility**: The system maintains backward compatibility with existing permission codes. Legacy permissions like `create` are mapped to the new `draft` and `attach` permissions automatically.
 
 ---
 

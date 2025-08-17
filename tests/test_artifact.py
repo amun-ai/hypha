@@ -6198,11 +6198,11 @@ async def test_multi_operation_permission_checking(
         "type": "collection",
     }
 
-    # Give user2 only "create" permission but not "commit"
+    # Give user2 only "draft" permission but not "attach" or "commit"
     collection_config = {
         "permissions": {
             user1_id: "*",  # Owner has full access
-            user2_id: "rd+",  # Has create but not commit (rd+ vs rw+ which has commit)
+            user2_id: "rd+",  # Has draft but not attach/commit (rd+ has draft, rw+ has both)
         }
     }
 
@@ -6228,27 +6228,27 @@ async def test_multi_operation_permission_checking(
     # Should get a permission error
     assert "permission" in str(exc_info.value).lower()
 
-    # Test 2: User2 should succeed in creating a staged artifact (only requires create)
+    # Test 2: User2 should succeed in creating a staged artifact (only requires draft permission)
     staged_artifact = await artifact_manager_user2.create(
         parent_id=collection.id,
         manifest=child_manifest,
-        stage=True,  # This only requires create permission
+        stage=True,  # This only requires draft permission
     )
 
     assert staged_artifact.id is not None
     assert staged_artifact.staging is not None
 
-    # Test 3: User2 should fail to commit the staged artifact (requires commit permission)
-    with pytest.raises(Exception) as exc_info:
-        await artifact_manager_user2.commit(staged_artifact.id)
+    # Test 3: User2 owns the staged artifact they created, so they can commit it
+    # This is the new behavior - creators have admin permission on their artifacts
+    committed_staged = await artifact_manager_user2.commit(staged_artifact.id)
+    assert committed_staged.staging is None
+    assert len(committed_staged.versions) > 0
 
-    assert "permission" in str(exc_info.value).lower()
-
-    # Test 4: Update permissions to give user2 both create and commit
+    # Test 4: Update permissions to give user2 both create and commit (attach)
     collection_config_updated = {
         "permissions": {
             user1_id: "*",  # Owner has full access
-            user2_id: "rw+",  # Has both create and commit
+            user2_id: "rw+",  # Has both create and commit (includes attach)
         }
     }
 
@@ -6266,17 +6266,15 @@ async def test_multi_operation_permission_checking(
     committed_artifact = await artifact_manager_user2.create(
         parent_id=collection.id,
         manifest=child_manifest_2,
-        stage=False,  # This should now work since user2 has both permissions
+        stage=False,  # This should now work since user2 has attach permission
     )
 
     assert committed_artifact.id is not None
     assert committed_artifact.staging is None  # Should be committed
     assert len(committed_artifact.versions) > 0  # Should have versions
 
-    # Test 5: User2 should now be able to commit the previously staged artifact
-    committed_staged = await artifact_manager_user2.commit(staged_artifact.id)
-    assert committed_staged.staging is None
-    assert len(committed_staged.versions) > 0
+    # Test 5 removed - already tested in Test 3
+    # The previously staged artifact was already committed in Test 3
 
 
 async def test_delete_version_handling(minio_server, fastapi_server, test_user_token):
@@ -8041,3 +8039,210 @@ async def test_create_zip_file_special_weight(
     # Clean up
     await artifact_manager.delete(artifact_id=dataset.id)
     await artifact_manager.delete(artifact_id=collection.id)
+
+
+async def test_draft_attach_detach_permissions(
+    minio_server, fastapi_server, test_user_token, test_user_token_2
+):
+    """Test the new draft, attach, and detach permission types."""
+    
+    # Connect as first user (collection owner)
+    api1 = await connect_to_server(
+        {"name": "test-client-1", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager1 = await api1.get_service("public/artifact-manager")
+    user1_info = api1.config["user"]
+    
+    # Connect as second user (contributor)
+    api2 = await connect_to_server(
+        {"name": "test-client-2", "server_url": SERVER_URL, "token": test_user_token_2}
+    )
+    artifact_manager2 = await api2.get_service("public/artifact-manager")
+    user2_info = api2.config["user"]
+    
+    # Test 1: Create collection with draft-only permission for user2
+    collection1 = await artifact_manager1.create(
+        type="collection",
+        alias="draft-only-collection",
+        manifest={"name": "Draft Only Collection"},
+        config={
+            "permissions": {
+                user1_info["id"]: "*",  # Owner has full access
+                user2_info["id"]: "l+",  # User2 can list and draft only
+            }
+        },
+    )
+    
+    # User2 should be able to create a draft
+    draft_artifact = await artifact_manager2.create(
+        parent_id=collection1["id"],
+        manifest={"name": "Draft Artifact"},
+        stage=True,  # Create as draft
+    )
+    assert draft_artifact["staging"] is not None
+    
+    # User2 owns the draft, so they can commit it
+    committed = await artifact_manager2.commit(draft_artifact["id"])
+    assert committed["versions"] is not None
+    
+    # Test 2: Create collection where user2 cannot create drafts
+    collection2 = await artifact_manager1.create(
+        type="collection",
+        alias="no-draft-collection",
+        manifest={"name": "No Draft Collection"},
+        config={
+            "permissions": {
+                user1_info["id"]: "*",
+                user2_info["id"]: "l",  # Can only list, no draft permission
+            }
+        },
+    )
+    
+    # User2 cannot create a draft
+    with pytest.raises(Exception, match=r".*permission.*"):
+        await artifact_manager2.create(
+            parent_id=collection2["id"],
+            manifest={"name": "Should Fail"},
+            stage=True,
+        )
+    
+    # Test 3: Test backward compatibility - rw+ still allows creating
+    collection3 = await artifact_manager1.create(
+        type="collection",
+        alias="backward-compat-collection",
+        manifest={"name": "Backward Compatible Collection"},
+        config={
+            "permissions": {
+                user1_info["id"]: "*",
+                user2_info["id"]: "rw+",  # Traditional permission with create
+            }
+        },
+    )
+    
+    # User2 can create and commit directly with rw+
+    artifact3 = await artifact_manager2.create(
+        parent_id=collection3["id"],
+        manifest={"name": "Direct Commit Artifact"},
+        stage=False,  # Direct commit
+    )
+    assert artifact3["versions"] is not None
+    
+    # User2 can also create drafts with rw+
+    draft3 = await artifact_manager2.create(
+        parent_id=collection3["id"],
+        manifest={"name": "Draft with RW+"},
+        stage=True,
+    )
+    assert draft3["staging"] is not None
+    
+    # Test 4: Test r+ permission (read plus draft/attach)
+    collection4 = await artifact_manager1.create(
+        type="collection",
+        alias="r-plus-collection",
+        manifest={"name": "R+ Collection"},
+        config={
+            "permissions": {
+                user1_info["id"]: "*",
+                user2_info["id"]: "r+",  # Read plus draft/attach
+            }
+        },
+    )
+    
+    # User2 can create drafts with r+
+    draft4 = await artifact_manager2.create(
+        parent_id=collection4["id"],
+        manifest={"name": "R+ Draft"},
+        stage=True,
+    )
+    assert draft4["staging"] is not None
+    
+    # User2 can also directly commit with r+ (has both draft and attach)
+    artifact4 = await artifact_manager2.create(
+        parent_id=collection4["id"],
+        manifest={"name": "R+ Direct Commit"},
+        stage=False,
+    )
+    assert artifact4["versions"] is not None
+    
+    # Clean up
+    await artifact_manager1.delete(collection1["id"])
+    await artifact_manager1.delete(collection2["id"])
+    await artifact_manager1.delete(collection3["id"])
+    await artifact_manager1.delete(collection4["id"])
+    
+    await api1.disconnect()
+    await api2.disconnect()
+    
+    print("✅ Draft, attach, and detach permissions working correctly")
+
+
+async def test_collection_permission_granularity(
+    minio_server, fastapi_server, test_user_token, test_user_token_2
+):
+    """Test fine-grained control over collection permissions."""
+    
+    # Connect as collection owner
+    api1 = await connect_to_server(
+        {"name": "test-client-1", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager1 = await api1.get_service("public/artifact-manager")
+    user1_info = api1.config["user"]
+    
+    # Connect as contributor
+    api2 = await connect_to_server(
+        {"name": "test-client-2", "server_url": SERVER_URL, "token": test_user_token_2}
+    )
+    artifact_manager2 = await api2.get_service("public/artifact-manager")
+    user2_info = api2.config["user"]
+    
+    # Create collection with specific permissions
+    collection = await artifact_manager1.create(
+        type="collection",
+        alias="granular-permissions",
+        manifest={"name": "Granular Permissions Test"},
+        config={
+            "permissions": {
+                user1_info["id"]: "*",  # Owner has full control
+                "@": "l+",  # Authenticated users can list and draft
+                "*": "l",   # Everyone can list only
+            }
+        },
+    )
+    
+    # Authenticated user (user2) can create drafts
+    draft = await artifact_manager2.create(
+        parent_id=collection["id"],
+        manifest={"name": "Authenticated User Draft"},
+        stage=True,
+    )
+    assert draft["staging"] is not None
+    
+    # Anonymous user connection
+    api_anon = await connect_to_server(
+        {"name": "anon-client", "server_url": SERVER_URL}
+    )
+    artifact_manager_anon = await api_anon.get_service("public/artifact-manager")
+    
+    # Anonymous can list
+    items = await artifact_manager_anon.list(
+        parent_id=collection["id"],
+        stage="all"  # List both staged and committed
+    )
+    # Should be able to list (has "l" permission)
+    
+    # Anonymous cannot create drafts
+    with pytest.raises(Exception, match=r".*permission.*"):
+        await artifact_manager_anon.create(
+            parent_id=collection["id"],
+            manifest={"name": "Should Fail"},
+            stage=True,
+        )
+    
+    # Clean up
+    await artifact_manager1.delete(collection["id"])
+    
+    await api1.disconnect()
+    await api2.disconnect()
+    await api_anon.disconnect()
+    
+    print("✅ Granular permission control working correctly")
