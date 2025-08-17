@@ -753,14 +753,18 @@ class BrowserWorker(BaseWorker):
                 final_config["source_hash"] = manifest.get("source_hash", "")
                 entry_point = template_config.get("entry_point", "index.html")
                 final_config["entry_point"] = entry_point
+                
+                # Map hypha type to window type for template selection
+                template_type = "window" if final_config["type"] == "hypha" else final_config["type"]
+                
                 # check if the template file exists
-                template_file = safe_join("apps", final_config["type"] + "." + entry_point)
+                template_file = safe_join("apps", template_type + "." + entry_point)
                 if template_file not in self.jinja_env.loader.list_templates():
                     raise ValueError(f"Application type {final_config['type']} is not supported by any existing application worker.")
                 
                 try:
                     template = self.jinja_env.get_template(
-                        safe_join("apps", final_config["type"] + "." + entry_point)
+                        safe_join("apps", template_type + "." + entry_point)
                     )
 
                     # Get server URL from config or use fallback
@@ -780,8 +784,8 @@ class BrowserWorker(BaseWorker):
                         hypha_hypha_rpc_version=hypha_rpc_version,
                         hypha_rpc_websocket_mjs=f"{server_url}/assets/hypha-rpc-websocket.mjs",
                         config=template_config,
-                        script=final_config["script"],
-                        requirements=final_config["requirements"],
+                        script=final_config.get("script", ""),
+                        requirements=final_config.get("requirements", []),
                         local_base_url=server_url,
                     )
 

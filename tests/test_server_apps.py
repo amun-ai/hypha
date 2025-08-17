@@ -279,7 +279,7 @@ async def run(context):
         await controller.stop(started_app["id"])
 
     # Get logs to verify execution
-    logs = await controller.get_log(app_id)
+    logs = await controller.get_logs(app_id)
     log_text = "\n".join(logs.get("logs", []))
     print("App logs:", log_text)
 
@@ -362,29 +362,26 @@ async def test_web_python_app(minio_server, fastapi_server, test_user_token):
 import js
 from hypha_rpc import api
 
-async def setup():
-    print("Web Python app is setting up...")
-    
-    # Define a service
-    def calculate(x, y):
-        return x + y
-    
-    def get_info():
-        return {
-            "platform": "pyodide",
-            "message": "Running Python in the browser!"
-        }
-    
-    # Export service
-    await api.export({
-        "calculate": calculate,
-        "get_info": get_info
-    })
-    
-    return {"status": "ready"}
+print("Web Python app is setting up...")
 
-# Run the setup
-await setup()
+# Define a service
+def calculate(x, y):
+    return x + y
+
+def get_info():
+    return {
+        "platform": "pyodide",
+        "message": "Running Python in the browser!"
+    }
+
+# Export service
+api.export({
+    "calculate": calculate,
+    "get_info": get_info
+})
+    
+
+
 </script>
     """
 
@@ -454,8 +451,8 @@ async def test_terminal_app(minio_server, fastapi_server, test_user_token):
     # Give it time to execute
     await asyncio.sleep(2)
 
-    # Get logs
-    logs = await controller.get_log(terminal_app_info["id"])
+    # Get logs - use the session ID from the started app
+    logs = await controller.get_logs(started_app["id"])
     log_text = "\n".join(logs.get("logs", []))
     print("Terminal app logs:", log_text)
 
