@@ -126,7 +126,7 @@ class WorkerProtocol(Protocol):
         offset: int = 0,
         limit: Optional[int] = None,
         context: Optional[Dict[str, Any]] = None,
-    ) -> Union[Dict[str, List[str]], List[str]]:
+    ) -> Dict[str, Any]:
         """Get logs for a session."""
         ...
 

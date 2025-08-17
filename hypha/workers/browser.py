@@ -93,7 +93,7 @@ class BrowserWorker(BaseWorker):
     @property
     def supported_types(self) -> List[str]:
         """Return list of supported application types."""
-        return ["web-python", "web-worker", "window", "iframe", "hypha", "web-app"]
+        return ["web-python", "web-worker", "window", "iframe", "web-app"]
 
     @property
     def name(self) -> str:

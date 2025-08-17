@@ -1128,7 +1128,7 @@ print(f"Number of links: {result['linkCount']}")
 #### `take_screenshot(session_id: str, format: str = "png") -> bytes`
 Take a screenshot of a browser session.
 
-#### `get_logs(session_id: str, type: str = None) -> Dict[str, List[str]]`
+#### `get_logs(session_id: str, type: str = None) -> Dict[str, Any]`
 Get logs for a browser session.
 
 #### `clear_app_cache(workspace: str, app_id: str) -> Dict[str, Any]`

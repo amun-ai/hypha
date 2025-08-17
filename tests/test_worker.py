@@ -1196,8 +1196,8 @@ async def test_worker_lifecycle_management(fastapi_server, test_user_token):
 
     # 4. Get logs
     logs = await controller.get_logs(session_info["id"])
-    assert "log" in logs
-    assert len(logs["log"]) > 0
+    assert "console" in logs
+    assert len(logs["console"]) > 0
     print("✓ Logs retrieved successfully")
 
     # 5. Stop app

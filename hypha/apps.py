@@ -2735,8 +2735,17 @@ class ServerAppController:
             None,
             description="Additional context information including user and workspace details. Usually provided automatically by the system.",
         ),
-    ) -> Union[Dict[str, List[str]], List[str]]:
-        """Get server app instance logs."""
+    ) -> Dict[str, Any]:
+        """Get server app instance logs.
+        
+        Returns a dictionary with:
+        - items: List of log events, each with 'type' and 'content' fields
+        - total: Total number of log items (before filtering/pagination)
+        - offset: The offset used for pagination
+        - limit: The limit used for pagination
+        
+        If type is specified, only items matching that type will be returned.
+        """
         user_info = UserInfo.from_context(context)
         workspace = context["ws"]
         if not user_info.check_permission(workspace, UserPermission.read):
@@ -3307,13 +3316,6 @@ class ServerAppController:
             if app.get("workspace") == workspace_info.id:
                 await self._stop(app["id"], raise_exception=False, context=context)
 
-    async def launch(self, *args, **kwargs):
-        """Launch an application."""
-        # launch is deprecated, use install then start instead
-        raise NotImplementedError(
-            "Launch is deprecated, use install then start instead"
-        )
-
     async def _select_worker_by_load(
         self, workers: List[dict], criteria: str = "min"
     ) -> dict:
@@ -3442,7 +3444,6 @@ class ServerAppController:
             "config": {"visibility": "public", "require_context": True},
             "install": self.install,
             "uninstall": self.uninstall,
-            "launch": self.launch,
             "start": self.start,
             "stop": self.stop,
             "list_apps": self.list_apps,

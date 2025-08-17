@@ -399,7 +399,7 @@ Execute a command in the terminal session.
 #### `stop(session_id: str) -> None`
 Stop a terminal session and clean up resources.
 
-#### `get_logs(session_id: str, type: str = None) -> Union[Dict, List, str]`
+#### `get_logs(session_id: str, type: str = None) -> dict`
 Get logs for a terminal session.
 
 **Parameters:**

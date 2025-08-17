@@ -766,7 +766,7 @@ Execute Python code in the conda environment session, similar to a Jupyter noteb
 #### `stop(session_id: str) -> None`
 Stop a conda environment session and clean up resources.
 
-#### `get_logs(session_id: str, type: str = None, offset: int = 0, limit: int = None) -> Union[Dict[str, List[str]], List[str]]`
+#### `get_logs(session_id: str, type: str = None, offset: int = 0, limit: int = None) -> Dict[str, Any]`
 Get logs for a conda environment session.
 
 **Parameters:**

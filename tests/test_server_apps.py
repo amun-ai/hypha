@@ -193,7 +193,6 @@ async def test_lazy_loading_with_get_service(
     await api.disconnect()
 
 
-# Keep existing tests below...
 async def test_hypha_app(minio_server, fastapi_server, test_user_token):
     """Test hypha app with setup and run functions."""
     api = await connect_to_server(
@@ -205,7 +204,7 @@ async def test_hypha_app(minio_server, fastapi_server, test_user_token):
 <config lang="json">
 {
     "name": "Hypha App",
-    "type": "hypha",
+    "type": "web-python",
     "version": "0.1.0"
 }
 </config>
