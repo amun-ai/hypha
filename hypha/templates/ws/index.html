@@ -747,22 +747,22 @@
                                             </div>
                                             
                                             <div className="text-sm text-gray-300 mb-2">
-                                                <code className="bg-gray-800 px-1 rounded text-xs break-all">{service.id}</code>
+                                                <code className="bg-gray-800 px-1 rounded text-xs break-all">{service.id}@{app.id}</code>
                                             </div>
                                             
                                             <div className="flex flex-wrap gap-2">
                                                 {/* Copy Service ID Button */}
                                                 <button
-                                                    onClick={() => copyServiceId(service.id)}
+                                                    onClick={() => copyServiceId(`${service.id}@${app.id}`)}
                                                     className={`text-xs px-2 py-1 rounded transition duration-300 ${
-                                                        copiedServiceId === service.id
+                                                        copiedServiceId === `${service.id}@${app.id}`
                                                             ? 'bg-green-600 hover:bg-green-500 text-white'
                                                             : 'bg-gray-600 hover:bg-gray-500 text-white'
                                                     }`}
                                                     title="Copy service ID"
                                                 >
-                                                    <i className={`fas ${copiedServiceId === service.id ? 'fa-check' : 'fa-copy'} mr-1`}></i>
-                                                    {copiedServiceId === service.id ? 'Copied!' : 'Copy ID'}
+                                                    <i className={`fas ${copiedServiceId === `${service.id}@${app.id}` ? 'fa-check' : 'fa-copy'} mr-1`}></i>
+                                                    {copiedServiceId === `${service.id}@${app.id}` ? 'Copied!' : 'Copy ID'}
                                                 </button>
                                                 
                                                 {/* Service URL Link */}
@@ -1003,11 +1003,6 @@
                                 <span className="bg-blue-600 text-white px-2 py-1 rounded text-xs">
                                     Workspace: {app.workspace}
                                 </span>
-                                {app.service_id && (
-                                    <span className="bg-purple-600 text-white px-2 py-1 rounded text-xs">
-                                        Service: {app.service_id.split('@')[0]}
-                                    </span>
-                                )}
                                 {services.length > 0 && (
                                     <span className="bg-orange-600 text-white px-2 py-1 rounded text-xs">
                                         {services.length} Service{services.length > 1 ? 's' : ''}
@@ -1055,22 +1050,22 @@
                                             </div>
                                             
                                             <div className="text-sm text-gray-300 mb-2">
-                                                <code className="bg-gray-800 px-1 rounded text-xs break-all">{service.id}</code>
+                                                <code className="bg-gray-800 px-1 rounded text-xs break-all">{service.id}@{app.app_id}</code>
                                             </div>
                                             
                                             <div className="flex flex-wrap gap-2">
                                                 {/* Copy Service ID Button */}
                                                 <button
-                                                    onClick={() => copyServiceId(service.id)}
+                                                    onClick={() => copyServiceId(`${service.id}@${app.app_id}`)}
                                                     className={`text-xs px-2 py-1 rounded transition duration-300 ${
-                                                        copiedServiceId === service.id
+                                                        copiedServiceId === `${service.id}@${app.app_id}`
                                                             ? 'bg-green-600 hover:bg-green-500 text-white'
                                                             : 'bg-gray-600 hover:bg-gray-500 text-white'
                                                     }`}
                                                     title="Copy service ID"
                                                 >
-                                                    <i className={`fas ${copiedServiceId === service.id ? 'fa-check' : 'fa-copy'} mr-1`}></i>
-                                                    {copiedServiceId === service.id ? 'Copied!' : 'Copy ID'}
+                                                    <i className={`fas ${copiedServiceId === `${service.id}@${app.app_id}` ? 'fa-check' : 'fa-copy'} mr-1`}></i>
+                                                    {copiedServiceId === `${service.id}@${app.app_id}` ? 'Copied!' : 'Copy ID'}
                                                 </button>
                                                 
                                                 {/* Service URL Link */}
