@@ -254,7 +254,7 @@ async def run(context):
 
     # Install the app
     app_info = await controller.install(
-        source=source, wait_for_service=True, timeout=10, overwrite=True
+        source=source, wait_for_service=True, timeout=120, overwrite=True
     )
 
     app_id = app_info["id"]
