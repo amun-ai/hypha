@@ -193,6 +193,96 @@ asyncio.run(main())
 
 ---
 
+## Staging and Draft Mode
+
+The Artifact Manager provides a powerful staging system that allows you to create and modify artifacts in a draft state before committing them permanently. This enables review workflows, quality control, and collaborative content creation.
+
+### Understanding Draft vs Committed Artifacts
+
+1. **Draft (Staged) Artifacts**: 
+   - Created with `stage=True` parameter
+   - Temporary and can be modified multiple times before committing
+   - Not visible in normal artifact listings unless explicitly requested
+   - Can be reviewed and approved before becoming permanent
+   - Automatically cleaned up if not committed within a certain timeframe
+
+2. **Committed Artifacts**:
+   - Permanent artifacts in the system
+   - Visible in artifact listings
+   - Cannot be deleted by non-owners (only with proper permissions)
+   - Form part of the collection's permanent record
+
+### Creating Draft Artifacts
+
+```python
+# Create a draft artifact for review
+draft_artifact = await artifact_manager.create(
+    parent_id="collection-id",
+    alias="my-draft",
+    manifest={"name": "Draft Content", "description": "For review"},
+    stage=True  # This creates a draft
+)
+
+# The draft can be modified multiple times
+await artifact_manager.edit(
+    draft_artifact.id,
+    manifest={"name": "Updated Draft", "description": "Ready for review"}
+)
+
+# Add files to the draft
+put_url = await artifact_manager.put_file(draft_artifact.id, "data.csv")
+# Upload file to put_url...
+```
+
+### Review Workflow Example
+
+```python
+# Step 1: Contributor creates a draft (requires 'draft' permission)
+draft = await artifact_manager.create(
+    parent_id="curated-collection",
+    alias="contribution-1",
+    manifest={"name": "New Dataset", "author": "contributor"},
+    stage=True
+)
+
+# Step 2: Reviewer lists drafts for review
+drafts = await artifact_manager.list("curated-collection", stage=True)
+
+# Step 3: Reviewer examines the draft
+draft_content = await artifact_manager.read(draft.id)
+
+# Step 4: Reviewer approves and commits (requires 'attach' permission)
+await artifact_manager.commit(draft.id)
+```
+
+### Permission-Based Staging Workflows
+
+Different permission levels enable different staging workflows:
+
+1. **Open Contribution** (`"@": "r+"`):
+   - Any authenticated user can create and commit drafts
+   - Suitable for open collaborative projects
+
+2. **Moderated Contribution** (`"@": "l+", "reviewer": "rw+"`):
+   - Authenticated users can only create drafts
+   - Designated reviewers can commit drafts
+   - Ensures quality control
+
+3. **Restricted Contribution** (`"contributor": "l+", "reviewer": "rw+"`):
+   - Only specific contributors can create drafts
+   - Reviewers manage the approval process
+   - Maximum control over content
+
+### Best Practices for Staging
+
+1. **Use Staging for User-Generated Content**: Always stage user contributions before making them permanent
+2. **Implement Review Processes**: Use permission separation to ensure proper review
+3. **Set Expiration for Drafts**: Configure automatic cleanup of uncommitted drafts
+4. **Version Control**: Use staging with version management for controlled updates
+5. **Atomic Operations**: Commit related changes together for consistency
+
+---
+
 ## Advanced Usage: Version Management and Performance Optimization
 
 ### Understanding the New Version Control System
@@ -355,142 +445,216 @@ Creates a new artifact or collection with the specified manifest. The artifact i
 await artifact_manager.create(artifact_id="dataset-gallery", alias="example-dataset", manifest=dataset_manifest, stage=True)
 ```
 
-### Permissions
+## Permissions and Access Control
 
-In the `Artifact Manager`, permissions allow users to control access to artifacts and collections. The system uses a flexible permission model that supports assigning different levels of access to individual users, authenticated users, or all users. Permissions are stored in the `permissions` field of an artifact manifest, and they define which operations a user can perform, such as reading, writing, creating, or committing changes.
+The Artifact Manager provides a comprehensive permission system that enables fine-grained access control over artifacts and collections. This system balances security with flexibility, allowing both strict isolation for sensitive data and open collaboration for public resources.
 
-Permissions can be set both at the artifact level and the workspace level. In the absence of explicit artifact-level permissions, workspace-level permissions are checked to determine access. Here's how permissions work in detail:
+### Core Concepts
 
-**Key Permission Operations:**
+#### Permission Hierarchy
 
-The permission system includes three important operations for fine-grained control over collections:
+The permission system follows a clear hierarchy that determines how access is granted:
 
-- **draft**: Allows creating draft (staged) artifacts as children of a collection
-- **attach**: Allows committing drafts to become permanent children of a collection  
-- **detach**: Allows removing artifacts from their parent collection
+1. **Workspace Owner Supremacy**
+   - Workspace owners always have ultimate control over ALL resources in their workspace
+   - They can bypass collection-level restrictions through workspace permission fallback
+   - This is a deliberate design choice to prevent owners from being locked out of their own data
+   - Example: Even if a collection is set to read-only, the workspace owner can still modify it
 
-These operations enable collection owners to control who can contribute content and how permanently artifacts are attached to collections.
+2. **Collection-Level Isolation**
+   - For non-owners, collections provide strict access boundaries
+   - Collection permissions completely control what external users can do
+   - Non-owners CANNOT bypass collection permissions through workspace access
+   - This ensures proper data isolation between different user groups
 
-**Permission Levels:**
+3. **Permission Resolution Order**
+   - First: Check explicit artifact-level permissions
+   - Second: Check parent collection permissions (inheritance)
+   - Third: For workspace owners ONLY, check workspace-level permissions as fallback
+   - This order ensures predictable permission behavior
 
-The following permission levels are supported:
+#### Key Permission Operations
 
-- **n**: No access to the artifact.
-- **l**: List-only access (includes `list`).
-- **l+**: List and draft access (includes `list` and `draft` - can create staged artifacts only).
-- **lv**: List and list vectors access (includes `list` and `list_vectors`).
-- **lv+**: List, list vectors, draft, and attach access (includes `list`, `list_vectors`, `draft`, `attach`, `add_vectors`, and `add_documents`).
-- **lf**: List and list files access (includes `list` and `list_files`).
-- **lf+**: List, list files, draft, and attach access (includes `list`, `list_files`, `draft`, `attach`, and `put_file`).
-- **r**: Read-only access (includes `read`, `get_file`, `list_files`, `list`, `search_vectors`, and `get_vector`).
-- **r+**: Read with draft and attach access (includes `read`, `get_file`, `put_file`, `list_files`, `list`, `search_vectors`, `get_vector`, `draft`, `attach`, `add_vectors`, and `add_documents`).
-- **rw**: Read, write with detach access (includes `read`, `get_file`, `get_vector`, `search_vectors`, `list_files`, `list_vectors`, `list`, `edit`, `commit`, `put_file`, `add_vectors`, `add_documents`, `remove_file`, `remove_vectors`, and `detach`).
-- **rd+**: Read, write, and draft access (includes `read`, `get_file`, `get_vector`, `search_vectors`, `list_files`, `list_vectors`, `list`, `edit`, `put_file`, `add_vectors`, `add_documents`, `remove_file`, `remove_vectors`, and `draft`), but cannot attach/commit to parent.
-- **rw+**: Full read, write, draft, attach, and detach access (includes `read`, `get_file`, `get_vector`, `search_vectors`, `list_files`, `list_vectors`, `list`, `edit`, `commit`, `put_file`, `add_vectors`, `add_documents`, `remove_file`, `remove_vectors`, `draft`, `attach`, `detach`, and `create` for backward compatibility).
-- **\***: Full admin access to all operations (includes all permissions plus `reset_stats`, `publish`, `delete`, and `get_secret`).
+The system includes four critical operations that enable sophisticated access control:
 
-**Shortcut Permission Notation:**
+| Operation | Purpose | Use Case |
+|-----------|---------|----------|
+| **draft** | Create staged artifacts in a collection | Users submit content for review |
+| **attach** | Commit drafts to make them permanent | Reviewers approve submissions |
+| **detach** | Remove artifacts from their parent | Curators reorganize collections |
+| **mutate** | Modify already-committed artifacts | Maintainers update existing content |
 
-- **\***: Refers to all users, both authenticated and anonymous. For example, `{"*": "r+"}` gives read and create access to everyone.
-- **@**: Refers to authenticated (logged-in) users only. For instance, `{"@": "rw"}` allows all logged-in users to read and write, but restricts anonymous users.
-- **user_id**: Specifies permissions for a specific user, identified by their `user_id`. For example, `{"user_id_1": "r+"}` grants read and create permissions to the user with ID `user_id_1`.
+### Permission Levels
 
-When multiple notations are used together, the most specific permission takes precedence. For example, if a user has both `{"*": "r"}` and `{"user_id_1": "n"}` permissions, the user will have no access because the specific permission `{"user_id_1": "n"}` overrides the general permission `{"*": "r"}`.
+Permission levels are shortcuts that expand to sets of allowed operations:
 
-**Example Permissions:**
+| Level | Description | Key Operations | Use Case |
+|-------|-------------|----------------|----------|
+| **n** | No access | None | Explicitly deny access |
+| **l** | List only | `list` | Browse collections without reading content |
+| **l+** | List + Draft | `list`, `draft` | Submit content for review |
+| **r** | Read only | `read`, `list`, `get_file` | View content without modifications |
+| **r+** | Read + Contribute | All read ops + `draft`, `attach` | Full contribution rights |
+| **rd+** | Read + Draft only | All read ops + `draft`, `edit` | Create drafts but can't commit |
+| **rw** | Read-Write | All r+ ops + `mutate`, `detach` | Manage existing content |
+| **rw+** | Full Access | All rw ops + `create` | Complete content control |
+| **\*** | Admin | All operations | Full administrative access |
 
-1. **Public Read-Only Access:**
-   ```json
-   {
-     "permissions": {
-       "*": "r"
-     }
-   }
-   ```
-   This grants read-only access to everyone, including anonymous users.
+**Special List Levels** (for specific content types):
+- **lv/lv+**: List vectors (for vector databases)
+- **lf/lf+**: List files (for file collections)
 
-2. **Draft-Only Contributors:**
-   ```json
-   {
-     "permissions": {
-       "*": "r",
-       "@": "l+"
-     }
-   }
-   ```
-   This allows anyone to read, but only authenticated users can create drafts. Drafts must be approved by someone with higher permissions.
+### User Specification
 
-3. **Full Contribution Rights:**
-   ```json
-   {
-     "permissions": {
-       "@": "r+"
-     }
-   }
-   ```
-   This allows authenticated users to read and fully contribute (create drafts and commit them).
+Permissions can be assigned to different user categories:
 
-4. **Controlled Collection with Review Process:**
-   ```json
-   {
-     "permissions": {
-       "owner_id": "*",
-       "reviewer_id": "rw+",
-       "@": "l+"
-     }
-   }
-   ```
-   This creates a review workflow where:
-   - The owner has full admin control
-   - A reviewer can approve and manage artifacts
-   - Other authenticated users can only submit drafts for review
+| Notation | Applies To | Example | Description |
+|----------|------------|---------|-------------|
+| **\*** | All users (public) | `{"*": "r"}` | Everyone can read |
+| **@** | Authenticated users | `{"@": "rw"}` | Logged-in users can read/write |
+| **user_id** | Specific user | `{"alice": "rw+"}` | Alice has full access |
 
-5. **Granular Permission Control:**
-   ```json
-   {
-     "permissions": {
-       "user_id_1": "rw+",  // Can create, attach, and detach
-       "user_id_2": "r+",   // Can create and attach, but not detach
-       "user_id_3": "l+"    // Can only create drafts
-     }
-   }
-   ```
-   This grants different levels of contribution rights to specific users.
+**Priority Rule**: More specific permissions override general ones:
+- User-specific > Authenticated users > All users
+- Example: If `{"*": "r", "alice": "n"}`, Alice has no access despite public read
 
-**Permission Hierarchy:**
+### Common Use Cases and Recommendations
 
-1. **Artifact-Level Permissions:** If permissions are explicitly defined for an artifact, those will take precedence over workspace-level permissions.
-2. **Workspace-Level Permissions:** If no artifact-specific permissions are set, the system checks the workspace-level permissions.
-3. **Parent Artifact Permissions:** If an artifact does not define permissions explicitly, the permissions of its parent artifact in the collection hierarchy are checked.
+#### 1. Public Repository Accepting Contributions
 
-**Permission Expansion:**
+**Use Case**: Open-source datasets or models where anyone can contribute
 
-Permissions can be expanded to cover multiple operations. For example, a permission of `"r"` will automatically include operations like reading files, listing contents, and performing searches. Similarly, a permission of `"rw+"` covers all operations, including creating, editing, committing, and managing files.
+```json
+{
+  "permissions": {
+    "*": "r",      // Everyone can read
+    "@": "r+"      // Authenticated users can contribute
+  }
+}
+```
 
-The following list shows how permission expansions work:
+**Why**: Allows public viewing while requiring login for contributions, preventing spam
 
-- `"n"`: No operations allowed.
-- `"l"`: List only - can browse collections but not read content.
-- `"l+"`: List plus draft - can browse and create draft artifacts.
-- `"r"`: Read access - includes `read`, `get_file`, `list_files`, and `list`.
-- `"r+"`: Read plus contribute - includes all operations in `"r"`, plus `draft`, `attach`, `put_file`, and `add_vectors`.
-- `"rd+"`: Read and draft - includes all operations in `"r"`, plus `draft`, `edit`, and file management, but cannot attach to parent.
-- `"rw"`: Read-write with detach - includes all operations in `"r+"`, plus `edit`, `commit`, `remove_file`, and `detach`.
-- `"rw+"`: Full contribution access - includes all operations in `"rw"`, plus `create` (for backward compatibility).
-- `"*"`: Admin access - includes all operations plus `reset_stats`, `publish`, `delete`, and `get_secret`.
+#### 2. Moderated Community Collection
 
-**Important Notes on the New Permission Model:**
+**Use Case**: Curated collections requiring quality control
 
-1. **Artifact Ownership**: When a user creates an artifact (whether staged or committed), they automatically receive admin (`*`) permission on that specific artifact. This ensures creators can always manage their own content.
+```json
+{
+  "permissions": {
+    "*": "r",                    // Public can view
+    "@": "l+",                   // Users submit drafts
+    "moderator_team": "rw+",     // Moderators approve/reject
+    "owner": "*"                 // Owner has full control
+  }
+}
+```
 
-2. **Draft vs Attach**: The separation of `draft` and `attach` permissions enables review workflows:
-   - `draft` permission allows creating staged artifacts
-   - `attach` permission allows committing drafts to become permanent children
-   - Users with only `draft` permission can create content for review
+**Why**: Creates a review workflow ensuring quality while encouraging contributions
 
-3. **Detach Permission**: The `detach` permission controls who can remove artifacts from collections. This solves the previous issue where artifact creators could always remove their content regardless of collection owner preferences.
+#### 3. Immutable Publications Archive
 
-4. **Backward Compatibility**: The system maintains backward compatibility with existing permission codes. Legacy permissions like `create` are mapped to the new `draft` and `attach` permissions automatically.
+**Use Case**: Published papers, official releases, permanent records
+
+```json
+{
+  "permissions": {
+    "*": "r",                    // Public read access
+    "archive_admin": "*"         // Only admin can manage
+    // No write/mutate permissions for others
+  }
+}
+```
+
+**Why**: Ensures content integrity - once published, cannot be modified
+
+#### 4. Team Collaboration Workspace
+
+**Use Case**: Internal team projects with external visibility
+
+```json
+{
+  "permissions": {
+    "*": "l",                    // Public can browse
+    "team_member_1": "rw+",      // Team has full access
+    "team_member_2": "rw+",
+    "external_reviewer": "r"     // Reviewer can only read
+  }
+}
+```
+
+**Why**: Balances transparency with controlled access
+
+#### 5. Staging Environment for Production
+
+**Use Case**: Test changes before deploying to production
+
+```json
+{
+  "permissions": {
+    "*": "n",                    // No public access to staging
+    "developers": "rd+",         // Devs can draft but not deploy
+    "release_manager": "rw+",    // Manager approves deployments
+    "ci_bot": "r+"              // CI can create and attach artifacts
+  }
+}
+```
+
+**Why**: Enforces deployment approval process
+
+#### 6. Personal Sandbox with Sharing
+
+**Use Case**: Individual workspace with selective sharing
+
+```json
+{
+  "permissions": {
+    "*": "n",                    // Private by default
+    "owner": "*",                // Owner has full control
+    "collaborator_1": "rw",      // Specific people can edit
+    "viewer_1": "r"              // Some can only view
+  }
+}
+```
+
+**Why**: Maintains privacy while enabling collaboration
+
+#### 7. Append-Only Audit Log
+
+**Use Case**: Compliance logs, transaction records
+
+```json
+{
+  "permissions": {
+    "*": "n",                    // No public access
+    "auditor": "r",              // Auditors can read
+    "system": "r+",              // System can add new entries
+    // No mutate or detach permissions
+  }
+}
+```
+
+**Why**: Ensures audit trail integrity - entries can be added but never modified/deleted
+
+### Best Practices
+
+1. **Start Restrictive**: Begin with minimal permissions and add as needed
+2. **Use Draft Mode**: For user-generated content, always use draft/attach workflow
+3. **Separate Concerns**: Different permissions for reading, contributing, and managing
+4. **Document Permissions**: Include comments explaining permission choices
+5. **Regular Audits**: Periodically review and update permissions
+6. **Test Permissions**: Verify permissions work as expected before going live
+
+### Technical Notes
+
+**Permission Inheritance**: Artifacts inherit permissions from their parent collection if not explicitly defined. This cascades through the collection hierarchy.
+
+**Artifact Creator Rights**: Creators automatically receive admin (`*`) permission on artifacts they create, ensuring they maintain control over their content.
+
+**Backward Compatibility**: Legacy permission codes are automatically mapped:
+
+- `create` → `draft` + `attach`
+- Existing permission levels remain functional
 
 ---
 
