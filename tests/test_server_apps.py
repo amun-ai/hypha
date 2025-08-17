@@ -232,29 +232,19 @@ async def setup():
     await api.export({"test": test_function})
     return {"initialized": True}
 
-async def run(context):
-    assert state["setup_called"], "Setup should be called before run"
-    state["run_count"] += 1
-    
-    print(f"Running Hypha app (count: {state['run_count']})...")
-    
-    # Access context
-    print(f"Context: {context}")
-    
-    # Test that we can use the api
-    services = await api.list_services()
-    
-    return {
-        "message": "App is running",
-        "run_count": state["run_count"],
-        "services_found": len(services)
-    }
+async def test(a):
+    return a * 2
+
+api.export({
+    "setup": setup,
+    "test": test
+})
 </script>
     """
 
     # Install the app
     app_info = await controller.install(
-        source=source, wait_for_service=True, timeout=120, overwrite=True
+        source=source, wait_for_service="default", timeout=80, overwrite=True
     )
 
     app_id = app_info["id"]
@@ -265,27 +255,25 @@ async def run(context):
         print(f"Started app (iteration {i+1}):", started_app)
 
         # Check that the service was registered
-        try:
-            service = await api.get_service(
-                f"{api.config.workspace}/{started_app['id'].split('/')[-1]}:default"
-            )
-            result = await service.test(5)
-            assert result == 10, f"Test function should return 10, got {result}"
-        except Exception as e:
-            print(f"Could not get service on iteration {i+1}: {e}")
+        service = await api.get_service(
+            f"{api.config.workspace}/{started_app['id'].split('/')[-1]}:default"
+        )
+        result = await service.test(5)
+        assert result == 10, f"Test function should return 10, got {result}"
+        # Get logs to verify execution
+        logs = await controller.get_logs(started_app["id"])
+        log_items = logs.get("items", [])
+        log_text = "\n".join([item["content"] for item in log_items if item["type"] == "logs"])
+        print("App logs:", log_text)
+
+        # Verify setup was called
+        assert "Setting up Hypha app" in log_text
+        assert "Running Hypha app" in log_text
 
         # Stop the app
         await controller.stop(started_app["id"])
 
-    # Get logs to verify execution
-    logs = await controller.get_logs(app_id)
-    log_items = logs.get("items", [])
-    log_text = "\n".join([item["content"] for item in log_items if item["type"] == "logs"])
-    print("App logs:", log_text)
 
-    # Verify setup was called
-    assert "Setting up Hypha app" in log_text
-    assert "Running Hypha app" in log_text
 
     # Uninstall the app
     await controller.uninstall(app_id)
