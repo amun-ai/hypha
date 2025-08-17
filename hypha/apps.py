@@ -443,7 +443,7 @@ class ServerAppController:
             session_data = await self._get_session_from_redis(full_client_id)
             if session_data:
                 # Get worker from cache
-                worker = self._get_worker_from_cache(session_data.get("worker_id"))
+                worker = self._get_worker_from_cache(session_data["worker_id"])
                 if worker:
                     # Create context for worker call
                     context = {
@@ -461,8 +461,8 @@ class ServerAppController:
             worker_sessions_to_cleanup = []
             
             for session in all_sessions:
-                worker_id = session.get("worker_id")
-                if worker_id and client_id in worker_id:
+                worker_id = session["worker_id"]
+                if client_id in worker_id:
                     # This session was running on the disconnected worker
                     worker_sessions_to_cleanup.append(session)
             
@@ -672,9 +672,8 @@ class ServerAppController:
             worker_ids = set()
             
             for session in all_sessions:
-                worker_id = session.get("worker_id")
-                if worker_id:
-                    worker_ids.add(worker_id)
+                worker_id = session["worker_id"]
+                worker_ids.add(worker_id)
             
             # Check each worker's health
             dead_workers = []
@@ -717,7 +716,9 @@ class ServerAppController:
         if context:
             try:
                 workspace_svcs = await self.store._workspace_manager.list_services(
-                    {"type": "server-app-worker"}, context=context
+                    {"type": "server-app-worker"}, 
+                    include_app_services=True,  # Include workers from app manifests
+                    context=context
                 )
                 logger.info(
                     f"Found {len(workspace_svcs)} server-app-worker services in workspace {workspace}: {[svc['id'] for svc in workspace_svcs]}"
@@ -778,7 +779,10 @@ class ServerAppController:
         # Fallback to public workers if no workspace workers found
         if not selected_svcs:
             server = await self.store.get_public_api()
-            public_svcs = await server.list_services({"type": "server-app-worker"})
+            public_svcs = await server.list_services(
+                {"type": "server-app-worker"},
+                include_app_services=True  # Include workers from app manifests
+            )
             logger.info(
                 f"Found {len(public_svcs)} server-app-worker services in public workspace: {[svc['id'] for svc in public_svcs]}"
             )
@@ -948,7 +952,7 @@ class ServerAppController:
             # Stop all sessions using this worker
             all_sessions = await self._get_all_sessions()
             for session in all_sessions:
-                if session.get("worker_id") == worker_id and session.get("id", "").startswith(f"{workspace}/"):
+                if session["worker_id"] == worker_id and session.get("id", "").startswith(f"{workspace}/"):
                     try:
                         await self._stop(session["id"], raise_exception=False, context=context)
                     except Exception:
@@ -990,7 +994,9 @@ class ServerAppController:
         if context:
             try:
                 workspace_svcs = await self.store._workspace_manager.list_services(
-                    {"type": "server-app-worker"}, context=context
+                    {"type": "server-app-worker"}, 
+                    include_app_services=True,  # Include workers from app manifests
+                    context=context
                 )
                 logger.info(
                     f"Found {len(workspace_svcs)} server-app-worker services in workspace {workspace}"
@@ -1035,7 +1041,10 @@ class ServerAppController:
         # Always fetch public workers to allow frontend filtering
         try:
             server = await self.store.get_public_api()
-            public_svcs = await server.list_services({"type": "server-app-worker"})
+            public_svcs = await server.list_services(
+                {"type": "server-app-worker"},
+                include_app_services=True  # Include workers from app manifests
+            )
             logger.info(
                 f"Found {len(public_svcs)} server-app-worker services in public workspace"
             )
@@ -1325,13 +1334,12 @@ class ServerAppController:
             if not _allowed_characters.match(app_id):
                 raise ValueError(f"App id {app_id} is not a valid string, only alphanumeric characters, -, and _ are allowed")
 
-        # Simplified installation: Convert source to files and use worker compilation
 
         # Initialize artifact object from manifest or create default
         if manifest:
-            artifact_obj = manifest.copy()
+            artifact_manifest = manifest.copy()
         else:
-            artifact_obj = {
+            artifact_manifest = {
                 "name": "Untitled App",
                 "version": "0.1.0",
                 "type": "hypha",  # Default type
@@ -1353,13 +1361,13 @@ class ServerAppController:
             mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
             mhash = mhash.encode("base58").decode("ascii")
             # Verify the source code if hash provided
-            if "source_hash" in artifact_obj:
-                source_hash = artifact_obj["source_hash"]
+            if "source_hash" in artifact_manifest:
+                source_hash = artifact_manifest["source_hash"]
                 target_mhash = multihash.decode(source_hash.encode("ascii"), "base58")
                 assert target_mhash.verify(
                     source.encode("utf-8")
                 ), f"App source code verification failed (source_hash: {source_hash})."
-            artifact_obj["source_hash"] = mhash
+            artifact_manifest["source_hash"] = mhash
 
         # Handle URL downloads
         if source and source.startswith("http"):
@@ -1381,27 +1389,27 @@ class ServerAppController:
                     source = response.text
             else:
                 # For other HTTP sources, treat as external URLs
-                artifact_obj["entry_point"] = source.split("?")[0].split("/")[-1]
+                artifact_manifest["entry_point"] = source.split("?")[0].split("/")[-1]
                 source = None
 
         # Handle raw HTML content - convert type to window if needed
         elif source and is_raw_html_content(source):
-            if artifact_obj.get("type") == "hypha":
-                artifact_obj["type"] = "window"
+            if artifact_manifest.get("type") == "hypha":
+                artifact_manifest["type"] = "window"
             # Set default name if not provided or is default "Untitled App"
-            if artifact_obj.get("name") in [None, "Untitled App"]:
-                artifact_obj["name"] = "Raw HTML App"
-            artifact_obj["entry_point"] = "index.html"
+            if artifact_manifest.get("name") in [None, "Untitled App"]:
+                artifact_manifest["name"] = "Raw HTML App"
+            artifact_manifest["entry_point"] = "index.html"
 
         # Convert source to files list with enhanced XML parsing
         app_files = []
         if source and source.strip().startswith("<"):
             # Try to extract files from XML source (ImJoy/Hypha format)
             extracted_files, remaining_source = extract_files_from_source(source)
-            # let's load config.json/yaml and update the artifact_obj
+            # let's load config.json/yaml and update the artifact_manifest
             for file in extracted_files:
                 if file["name"] == "manifest.json":
-                    artifact_obj.update(file["content"])
+                    artifact_manifest.update(file["content"])
             # now remove the manifest.json from the extracted_files
             extracted_files = [
                 file for file in extracted_files if file["name"] != "manifest.json"
@@ -1415,7 +1423,7 @@ class ServerAppController:
             if script_files:
                 # Use the first script file as entry point
                 script_file = script_files[0]
-                artifact_obj["entry_point"] = script_file["name"]
+                artifact_manifest["entry_point"] = script_file["name"]
                 # Update the path in app_files to match entry_point
                 for f in app_files:
                     if f.get("name") == script_file["name"]:
@@ -1424,7 +1432,7 @@ class ServerAppController:
             # If there's remaining source content, add it as source file
             if remaining_source and remaining_source.strip():
                 # Use entry_point from manifest if available, otherwise default to "source"
-                source_file_path = artifact_obj.get("entry_point", "source")
+                source_file_path = artifact_manifest.get("entry_point", "source")
                 # Only add remaining source if we haven't already set an entry point from extracted scripts
                 if not script_files:
                     app_files.append(
@@ -1436,7 +1444,7 @@ class ServerAppController:
                     )
         elif source:
             # Use entry_point from manifest if available, otherwise default to "source"
-            source_file_path = artifact_obj.get("entry_point", "source")
+            source_file_path = artifact_manifest.get("entry_point", "source")
             app_files.append(
                 {"path": source_file_path, "content": source, "format": "text"}
             )
@@ -1445,8 +1453,14 @@ class ServerAppController:
         if files:
             app_files.extend(files)
 
+
+        if "services" in artifact_manifest or "service_ids" in artifact_manifest:
+            raise ValueError(
+                "Services and service_ids fields are not allowed in the app manifest."
+            )
+
         # Always try to get a worker for compilation - this ensures all browser apps are handled consistently
-        app_type = artifact_obj.get("type", "hypha")
+        app_type = artifact_manifest.get("type", "hypha")
         worker = None
 
         if app_type in ["application", None]:
@@ -1456,8 +1470,8 @@ class ServerAppController:
             assert source is not None, "Source is missing"
             # Ensure source is in top level xml format with tags such as <config> <script>
 
-        if "entry_point" not in artifact_obj:
-            artifact_obj["entry_point"] = "source"
+        if "entry_point" not in artifact_manifest:
+            artifact_manifest["entry_point"] = "source"
 
         # Try to get worker that supports this app type
         if worker_id:
@@ -1518,18 +1532,18 @@ class ServerAppController:
                         worker_id, context, from_workspace=None
                     ) as active_worker:
                         compiled_manifest, app_files = await active_worker.compile(
-                            artifact_obj, app_files, config=compile_config, context=context
+                            artifact_manifest, app_files, config=compile_config, context=context
                         )
-                        # merge the compiled manifest into the artifact_obj
-                        artifact_obj.update(compiled_manifest)
+                        # merge the compiled manifest into the artifact_manifest
+                        artifact_manifest.update(compiled_manifest)
                 else:
                     # Fallback to using the original worker (may fail with connection closed error)
                     logger.warning("Could not determine worker_id, using original worker (may fail)")
                     compiled_manifest, app_files = await worker.compile(
-                        artifact_obj, app_files, config=compile_config, context=context
+                        artifact_manifest, app_files, config=compile_config, context=context
                     )
-                    # merge the compiled manifest into the artifact_obj
-                    artifact_obj.update(compiled_manifest)
+                    # merge the compiled manifest into the artifact_manifest
+                    artifact_manifest.update(compiled_manifest)
 
                 logger.info(f"Worker compiled app with type {app_type}")
             except Exception as e:
@@ -1545,7 +1559,7 @@ class ServerAppController:
             }
         )
         # Store startup_context with workspace and user info from installation time
-        artifact_obj["startup_context"] = {"ws": context["ws"], "user": context["user"]}
+        artifact_manifest["startup_context"] = {"ws": context["ws"], "user": context["user"]}
 
         # Merge startup_config with proper priority: kwargs > manifest
         # Note: progress_callback is excluded from stored config as it's not serializable
@@ -1556,25 +1570,30 @@ class ServerAppController:
             stop_after_inactive=stop_after_inactive,
         )
 
-        existing_startup_config = artifact_obj.get("startup_config", {})
+        existing_startup_config = artifact_manifest.get("startup_config", {})
         merged_startup_config = merge_startup_config(
             existing_startup_config, **startup_config_kwargs
         )
 
         if merged_startup_config:
-            artifact_obj["startup_config"] = merged_startup_config
+            artifact_manifest["startup_config"] = merged_startup_config
 
         if mhash:
             # Store source hash for singleton checking
-            artifact_obj["source_hash"] = mhash
+            artifact_manifest["source_hash"] = mhash
 
-        assert artifact_obj.get("type") not in [
+        assert artifact_manifest.get("type") not in [
             "application",
             None,
         ], "Application type should not be application or None"
 
-        ApplicationManifest.model_validate(artifact_obj)
-
+        ApplicationManifest.model_validate(artifact_manifest)
+        
+        # Extract service IDs for searchability - store full service IDs
+        if "services" in artifact_manifest:
+            artifact_manifest["service_ids"] = [svc.get("id") for svc in artifact_manifest["services"] if svc.get("id")]
+        else:
+            artifact_manifest["service_ids"] = []
         try:
             artifact = await self.artifact_manager.read("applications", context=context)
             collection_id = artifact["id"]
@@ -1592,7 +1611,7 @@ class ServerAppController:
                 type="application",
                 alias=app_id,
                 parent_id=collection_id,
-                manifest=artifact_obj,
+                manifest=artifact_manifest,
                 overwrite=overwrite,
                 version="stage",
                 context=context,
@@ -1605,13 +1624,13 @@ class ServerAppController:
             app_id = artifact["alias"]
 
             # Update the artifact object with the correct app_id
-            artifact_obj["id"] = app_id
+            artifact_manifest["id"] = app_id
 
             # Update the artifact with the compiled manifest
             await self.artifact_manager.edit(
                 artifact["id"],
                 stage=True,
-                manifest=artifact_obj,
+                manifest=artifact_manifest,
                 context=context,
             )
 
@@ -1723,14 +1742,14 @@ class ServerAppController:
                         "message": "Installation complete!",
                     }
                 )
-                return updated_artifact_info.get("manifest", artifact_obj)
+                return updated_artifact_info.get("manifest", artifact_manifest)
             _progress_callback(
                 {
                     "type": "success",
                     "message": "Installation complete!",
                 }
             )
-            return artifact_obj
+            return artifact_manifest
         
         except Exception as e:
             # Clean up the created artifact if installation failed
@@ -2129,7 +2148,7 @@ class ServerAppController:
             context=context,
         )
 
-        # Store session info in Redis for horizontal scaling
+        # Create session data to be returned (not stored in Redis yet)
         session_data = {
             "id": full_client_id,
             "app_id": app_id_for_registration,  # Store the alias for consistency
@@ -2146,14 +2165,15 @@ class ServerAppController:
             "worker_id": worker.get("id"),  # Store worker service ID
             "_worker": worker,  # Keep for local caching
         }
-        await self._store_session_in_redis(full_client_id, session_data)
         
-        # Cache the worker instance by its service ID
+        # Cache the worker instance by its service ID (still do this here for immediate availability)
         worker_id = worker.get("id")
         if worker_id:
             self._worker_cache[worker_id] = worker
 
-        return full_client_id
+        # Return session_data instead of just the client_id
+        # The caller (start method) will store it in Redis after adding services
+        return session_data
 
     def _extract_core_error(self, error, logs=None):
         """Extract the core error message from worker logs or exception."""
@@ -2341,15 +2361,7 @@ class ServerAppController:
 
         # collecting services registered during the startup of the script
         collected_services: List[ServiceInfo] = []
-        app_info = {
-            "id": full_client_id,
-            "app_id": app_id,
-            "workspace": workspace,
-            "client_id": client_id,
-            "config": {},
-            "session_id": None,  # Will be updated after start_by_type
-        }
-
+        _collected_config = {}  # To collect config from default service
         # Only set up event waiting if not in detached mode
         event_future = None
         if not detached:
@@ -2373,7 +2385,7 @@ class ServerAppController:
                 if info["id"] == full_client_id + ":default":
                     for key in ["config", "name", "description"]:
                         if info.get(key):
-                            app_info[key] = info[key]
+                            _collected_config[key] = info[key]
                     _progress_callback(
                         {"type": "success", "message": "Default service configured"}
                     )
@@ -2414,6 +2426,9 @@ class ServerAppController:
                 self.event_bus.on_local("client_connected", client_connected)
 
         try:
+            # Initialize session_data to None to ensure it's always defined for exception handling
+            session_data = None
+            
             # Get worker if worker_id is specified, otherwise use selection mode
             selected_worker = None
             if worker_id:
@@ -2442,7 +2457,7 @@ class ServerAppController:
             logger.debug(
                 f"Starting app with server_url: {server_url} (local_base_url: {self.local_base_url}, port: {self.port})"
             )
-            session_id = await self.start_by_type(
+            session_data = await self.start_by_type(
                 app_id=app_id,
                 app_type=app_type,
                 client_id=client_id,
@@ -2458,9 +2473,10 @@ class ServerAppController:
                 worker_selection_mode=worker_selection_mode if not selected_worker else None,
                 context=context,
             )
-
-            # Update app_info with session data
-            app_info["session_id"] = session_id
+            
+            # Store the initial session data in Redis immediately after starting
+            # This ensures the session is tracked even if something goes wrong later
+            await self._store_session_in_redis(full_client_id, session_data)
 
             # Progress update after worker starts but before waiting for services
             if not detached:
@@ -2533,9 +2549,10 @@ class ServerAppController:
             _progress_callback(
                 {"type": "info", "message": "Updating application manifest..."}
             )
-            manifest.name = manifest.name or app_info.get("name", "Untitled App")
-            manifest.description = manifest.description or app_info.get(
-                "description", ""
+            # Update manifest with collected config if available
+            manifest.name = manifest.name or _collected_config.get("name", session_data.get("name", "Untitled App"))
+            manifest.description = manifest.description or _collected_config.get(
+                "description", session_data.get("description", "")
             )
 
             # Replace client ID with * in service IDs for manifest storage
@@ -2552,6 +2569,8 @@ class ServerAppController:
                     service_name = ":".join(
                         service_id_parts[1:]
                     )  # Get service name part
+                    # Don't include @app_id in the service ID within the manifest
+                    # The app_id is already known from the manifest context
                     manifest_svc.id = f"{workspace_part}/*:{service_name}"
                 manifest_services.append(manifest_svc)
 
@@ -2577,7 +2596,7 @@ class ServerAppController:
         except (asyncio.TimeoutError, Exception) as exp:
             # Get worker logs for debugging
             logs = None
-            session_data = await self._get_session_from_redis(full_client_id)
+            # Use the session_data we already have (from start_by_type)
             if session_data and "worker_id" in session_data:
                 worker = self._get_worker_from_cache(session_data["worker_id"])
                 if worker:
@@ -2590,8 +2609,10 @@ class ServerAppController:
             # Remove from Redis
             await self._remove_session_from_redis(full_client_id)
 
+            # Extract meaningful error message
+            error_msg = self._extract_core_error(exp, logs)
             raise Exception(
-                f"Failed to start app '{app_id}', error: {exp}, logs:\n{logs}"
+                f"Failed to start app '{app_id}', error: {error_msg}, logs:\n{logs}"
             ) from None
         finally:
             # Clean up event listeners
@@ -2600,20 +2621,23 @@ class ServerAppController:
                 if not wait_for_service:
                     self.event_bus.off_local("client_connected", client_connected)
 
+        # Merge session_data with collected services and config
+        # session_data already exists from start_by_type, now we add the collected info
         if wait_for_service:
-            app_info["service_id"] = (
+            session_data["service_id"] = (
                 full_client_id + ":" + wait_for_service + "@" + app_id
             )
-        app_info["services"] = [
+        session_data["services"] = [
             svc.model_dump(mode="json") for svc in collected_services
         ]
-        # Update session in Redis with services and final metadata
-        session_data = await self._get_session_from_redis(full_client_id)
-        if session_data:
-            session_data["services"] = app_info["services"]
-            session_data["name"] = manifest.name
-            session_data["description"] = manifest.description
-            await self._store_session_in_redis(full_client_id, session_data)
+        # Update with final manifest values and collected config
+        session_data["name"] = manifest.name
+        session_data["description"] = manifest.description
+        session_data["config"] = _collected_config.get("config", {})  # Use collected config if available
+        session_data["session_id"] = full_client_id  # Add session_id which is same as id
+        
+        # Store the final updated session data back to Redis
+        await self._store_session_in_redis(full_client_id, session_data)
 
         # Start autoscaling if enabled
         if manifest.autoscaling and manifest.autoscaling.enabled:
@@ -2628,7 +2652,10 @@ class ServerAppController:
             {"type": "success", "message": "Application startup completed successfully"}
         )
 
-        return app_info
+        # Remove _worker from the response as it cannot be serialized
+        # Create a copy without the _worker field
+        response_data = {k: v for k, v in session_data.items() if not k.startswith('_')}
+        return response_data
 
     @schema_method
     async def stop(
@@ -2667,7 +2694,7 @@ class ServerAppController:
         if session_data:
             try:
                 # Get worker from cache and stop session
-                worker = self._get_worker_from_cache(session_data.get("worker_id"))
+                worker = self._get_worker_from_cache(session_data["worker_id"])
                 if worker:
                     await worker.stop(session_id, context=context)
             except Exception as exp:
@@ -2713,8 +2740,17 @@ class ServerAppController:
             None,
             description="Additional context information including user and workspace details. Usually provided automatically by the system.",
         ),
-    ) -> Union[Dict[str, List[str]], List[str]]:
-        """Get server app instance logs."""
+    ) -> Dict[str, Any]:
+        """Get server app session logs.
+        
+        Returns a dictionary with:
+        - items: List of log events, each with 'type' and 'content' fields
+        - total: Total number of log items (before filtering/pagination)
+        - offset: The offset used for pagination
+        - limit: The limit used for pagination
+        
+        If type is specified, only items matching that type will be returned.
+        """
         user_info = UserInfo.from_context(context)
         workspace = context["ws"]
         if not user_info.check_permission(workspace, UserPermission.read):
@@ -2724,111 +2760,11 @@ class ServerAppController:
             )
         session_data = await self._get_session_from_redis(session_id)
         if session_data:
-            worker = self._get_worker_from_cache(session_data.get("worker_id"))
+            worker = self._get_worker_from_cache(session_data["worker_id"])
             if worker:
                 return await worker.get_logs(
                     session_id, type=type, offset=offset, limit=limit, context=context
                 )
-            else:
-                raise Exception(f"Worker not found for session: {session_id}")
-        else:
-            raise Exception(f"Server app instance not found: {session_id}")
-
-    @schema_method
-    async def take_screenshot(
-        self,
-        session_id: str = Field(
-            ...,
-            description="The session ID of the running application instance. This is typically in the format 'workspace/client_id'.",
-        ),
-        format: str = Field(
-            "png",
-            description="Screenshot format: 'png' or 'jpeg'. Returns base64 encoded image data.",
-        ),
-        context: Optional[dict] = Field(
-            None,
-            description="Additional context information including user and workspace details. Usually provided automatically by the system.",
-        ),
-    ) -> str:
-        """Take a screenshot of a running server app instance."""
-        user_info = UserInfo.from_context(context)
-        workspace = context["ws"]
-        if not user_info.check_permission(workspace, UserPermission.read):
-            raise Exception(
-                f"User {user_info.id} does not have permission"
-                f" to take screenshot of app {session_id} in workspace {workspace}."
-            )
-        session_data = await self._get_session_from_redis(session_id)
-        if session_data:
-            worker = self._get_worker_from_cache(session_data.get("worker_id"))
-            if worker:
-                return await worker.take_screenshot(
-                    session_id, format=format, context=context
-                )
-            else:
-                raise Exception(f"Worker not found for session: {session_id}")
-        else:
-            raise Exception(f"Server app instance not found: {session_id}")
-
-    @schema_method
-    async def execute(
-        self,
-        session_id: str = Field(
-            ...,
-            description="The session ID of the running application instance. This is typically in the format 'workspace/client_id'.",
-        ),
-        script: str = Field(
-            ...,
-            description="The script/code to execute in the session. For Python sessions, this is Python code. For browser sessions, this is JavaScript code.",
-        ),
-        config: Optional[Dict[str, Any]] = Field(
-            None,
-            description="Optional execution configuration specific to the worker type.",
-        ),
-        progress_callback: Any = Field(
-            None,
-            description="Callback function to receive progress updates during execution.",
-        ),
-        context: Optional[dict] = Field(
-            None,
-            description="Additional context information including user and workspace details. Usually provided automatically by the system.",
-        ),
-    ) -> Any:
-        """Execute a script in a running server app instance.
-        
-        This method allows you to interact with running application sessions by executing scripts.
-        The behavior depends on the worker type:
-        - Conda worker: Executes Python code via Jupyter kernel
-        - Browser worker: Executes JavaScript code via Playwright
-        - Other workers: May not support this method
-        
-        Returns the execution results in a format specific to the worker implementation.
-        """
-        user_info = UserInfo.from_context(context)
-        workspace = context["ws"]
-        if not user_info.check_permission(workspace, UserPermission.read_write):
-            raise Exception(
-                f"User {user_info.id} does not have permission"
-                f" to execute scripts in app {session_id} in workspace {workspace}."
-            )
-        session_data = await self._get_session_from_redis(session_id)
-        if session_data:
-            _progress_callback = partial(call_progress_callback, progress_callback)
-
-            worker = self._get_worker_from_cache(session_data.get("worker_id"))
-            if worker:
-                if hasattr(worker, "execute"):
-                    return await worker.execute(
-                        session_id, 
-                        script=script, 
-                        config=config,
-                        progress_callback=_progress_callback,
-                        context=context
-                    )
-                else:
-                    raise NotImplementedError(
-                        f"Worker for session {session_id} does not support the execute method"
-                    )
             else:
                 raise Exception(f"Worker not found for session: {session_id}")
         else:
@@ -2919,6 +2855,48 @@ class ServerAppController:
             return artifact_info
         except Exception as exp:
             raise Exception(f"Failed to get app info for {app_id}: {exp}") from exp
+
+    @schema_method
+    async def get_session_info(
+        self,
+        session_id: str = Field(
+            ...,
+            description="The unique identifier of the session to inspect.",
+        ),
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system.",
+        ),
+    ) -> dict:
+        """Get detailed information about a specific session.
+
+        This method returns comprehensive information about a session:
+        1. Validates permissions and session existence
+        2. Retrieves the session metadata
+        3. Returns detailed configuration and service information
+
+        Returns a dictionary containing:
+        - id: The session ID
+        - workspace: The workspace ID
+        - user: The user ID
+        - app: The application ID
+        - status: The current status of the session
+        - created_at: Creation timestamp
+        - updated_at: Last update timestamp
+        - worker_id: The worker service ID
+        """
+        user_info = UserInfo.from_context(context)
+        workspace = context["ws"]
+        if not user_info.check_permission(workspace, UserPermission.read):
+            raise Exception(
+                f"User {user_info.id} does not have permission"
+                f" to get session info for {session_id} in workspace {workspace}."
+            )
+        session_data = await self._get_session_from_redis(session_id)
+        if session_data:
+            return session_data
+        else:
+            raise Exception(f"Session not found: {session_id}")
 
     @schema_method
     async def read_file(
@@ -3343,13 +3321,6 @@ class ServerAppController:
             if app.get("workspace") == workspace_info.id:
                 await self._stop(app["id"], raise_exception=False, context=context)
 
-    async def launch(self, *args, **kwargs):
-        """Launch an application."""
-        # launch is deprecated, use install then start instead
-        raise NotImplementedError(
-            "Launch is deprecated, use install then start instead"
-        )
-
     async def _select_worker_by_load(
         self, workers: List[dict], criteria: str = "min"
     ) -> dict:
@@ -3478,7 +3449,6 @@ class ServerAppController:
             "config": {"visibility": "public", "require_context": True},
             "install": self.install,
             "uninstall": self.uninstall,
-            "launch": self.launch,
             "start": self.start,
             "stop": self.stop,
             "list_apps": self.list_apps,
@@ -3486,13 +3456,12 @@ class ServerAppController:
             "list_workers": self.list_workers,
             "edit_worker": self.edit_worker,
             "get_logs": self.get_logs,
-            "take_screenshot": self.take_screenshot,
-            "execute": self.execute,
             "edit_file": self.edit_file,
             "remove_file": self.remove_file,
             "list_files": self.list_files,
             "commit_app": self.commit_app,
             "get_app_info": self.get_app_info,
+            "get_session_info": self.get_session_info,
             "read_file": self.read_file,
             "validate_app_manifest": self.validate_app_manifest,
             "edit_app": self.edit_app,

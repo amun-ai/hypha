@@ -49,27 +49,11 @@ logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("mcp_proxy")
 logger.setLevel(LOGLEVEL)
 
-# Try to import MCP SDK
-try:
-    import mcp.types as mcp_types
-    from mcp.client.streamable_http import streamablehttp_client
-    from mcp.client.session import ClientSession
-
-    MCP_SDK_AVAILABLE = True
-
-    # Try to import SSE client
-    try:
-        from mcp.client.sse import sse_client
-
-        SSE_CLIENT_AVAILABLE = True
-    except ImportError:
-        logger.warning("SSE client not available. Install with: pip install mcp[sse]")
-        SSE_CLIENT_AVAILABLE = False
-
-except ImportError:
-    logger.warning("MCP SDK not available. Install with: pip install mcp")
-    MCP_SDK_AVAILABLE = False
-    SSE_CLIENT_AVAILABLE = False
+# Import MCP SDK - let it fail directly if not available
+import mcp.types as mcp_types
+from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.session import ClientSession
+from mcp.client.sse import sse_client
 
 
 class MCPClientRunner(BaseWorker):
@@ -191,9 +175,6 @@ class MCPClientRunner(BaseWorker):
         context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Start a new MCP client session."""
-        if not MCP_SDK_AVAILABLE:
-            raise WorkerError("MCP SDK not available. Install with: pip install mcp")
-
         # Handle both pydantic model and dict input for RPC compatibility
         if isinstance(config, dict):
             config = WorkerConfig(**config)
@@ -238,9 +219,6 @@ class MCPClientRunner(BaseWorker):
 
     async def _start_mcp_session(self, config: WorkerConfig) -> Dict[str, Any]:
         """Start MCP client session and connect to configured servers."""
-        if not MCP_SDK_AVAILABLE:
-            raise Exception("MCP SDK not available. Install with: pip install mcp")
-
         # Call progress callback if provided
         await safe_call_callback(config.progress_callback,
             {"type": "info", "message": "Initializing MCP proxy worker..."}
@@ -442,15 +420,12 @@ class MCPClientRunner(BaseWorker):
         config: WorkerConfig = None,
     ):
         """Connect to MCP server using SSE transport."""
-        if not SSE_CLIENT_AVAILABLE:
-            raise RuntimeError(
-                "SSE client not available. Install with: pip install mcp[sse]"
-            )
-
         server_url = server_config.get("url")
         headers = server_config.get("headers", {})
 
         logger.debug(f"Connecting to SSE server {server_name} at {server_url}")
+        if headers:
+            logger.debug(f"Using custom headers for {server_name}: {list(headers.keys())}")
 
         # Store session info for later use
         session_data["mcp_clients"][server_name] = {
@@ -458,6 +433,7 @@ class MCPClientRunner(BaseWorker):
             "session_id": f"sse-{uuid.uuid4().hex[:8]}",
             "url": server_url,
             "transport": "sse",
+            "headers": headers,  # Store headers for later use
         }
 
         # Collect and register server capabilities
@@ -490,10 +466,6 @@ class MCPClientRunner(BaseWorker):
             if transport == "streamable-http":
                 client_context = streamablehttp_client(server_url)
             elif transport == "sse":
-                if not SSE_CLIENT_AVAILABLE:
-                    raise RuntimeError(
-                        "SSE client not available. Install with: pip install mcp[sse]"
-                    )
                 client_context = sse_client(url=server_url)
             else:
                 raise ValueError(f"Unsupported transport type: {transport}")
@@ -699,15 +671,13 @@ class MCPClientRunner(BaseWorker):
         server_config = session_data["mcp_clients"][server_name]["config"]
         server_url = server_config.get("url")
         transport = session_data["mcp_clients"][server_name]["transport"]
+        headers = session_data["mcp_clients"][server_name].get("headers", {})
 
         if transport == "streamable-http":
             return streamablehttp_client(server_url)
         elif transport == "sse":
-            if not SSE_CLIENT_AVAILABLE:
-                raise RuntimeError(
-                    "SSE client not available. Install with: pip install mcp[sse]"
-                )
-            return sse_client(url=server_url)
+            # Pass headers to SSE client for authentication
+            return sse_client(url=server_url, headers=headers if headers else None)
         else:
             raise ValueError(f"Unsupported transport type: {transport}")
 
@@ -1142,9 +1112,9 @@ class MCPClientRunner(BaseWorker):
             # Register the service with correct structure
             service_def = {
                 "id": server_name,
-                "name": f"MCP Server: {server_name}",
-                "description": f"Unified service exposing tools, resources, and prompts from MCP server {server_name}",
-                "type": "mcp-server-proxy",
+                "name": f"MCP Server for {server_name}",
+                "description": f"Tools, resources, and prompts from MCP server {server_name}",
+                "type": "mcp",
                 "config": {"visibility": "public"},
                 "tools": tools,
                 "resources": resources,
@@ -1164,6 +1134,7 @@ class MCPClientRunner(BaseWorker):
 
             # Register the service
             service_info = await client.register_service(service_def, overwrite=True)
+            # Store the actual service ID that was returned by register_service
             session_data["services"].append(service_info.id)
             logger.info(
                 f"Registered unified MCP service: {service_info.id} with app_id: {service_def.get('app_id', 'NOT_SET')}"
@@ -1180,34 +1151,33 @@ class MCPClientRunner(BaseWorker):
     ) -> None:
         """Stop an MCP session."""
         if session_id not in self._sessions:
-            logger.warning(
-                f"MCP session {session_id} not found for stopping, may have already been cleaned up"
-            )
-            return
+            raise SessionNotFoundError(f"MCP session {session_id} not found for stopping")
 
         session_info = self._sessions[session_id]
         session_info.status = SessionStatus.STOPPING
 
         try:
             session_data = self._session_data.get(session_id)
-            if session_data:
-                # Get the client from session data, not self.server
-                client = session_data.get("client")
-                
-                # Unregister services
-                services = session_data.get("services", [])
-                for service_id in services:
-                    try:
-                        if client:
-                            await client.unregister_service(service_id)
-                            logger.info(f"Unregistered service: {service_id}")
-                        else:
-                            logger.warning(f"No client available to unregister service {service_id}")
-                    except Exception as e:
-                        logger.warning(f"Error unregistering service {service_id}: {e}")
+            if not session_data:
+                raise RuntimeError(f"No session data found for session {session_id}")
+            
+            # Get the client from session data
+            client = session_data.get("client")
+            if not client:
+                raise RuntimeError(f"No client found for session {session_id}")
+            
+            # Unregister services
+            services = session_data.get("services", [])
+            for service_id in services:
+                await client.unregister_service(service_id)
+                logger.info(f"Unregistered service: {service_id}")
 
-                # Log cleanup
-                logger.info(f"Cleaning up MCP connections for session {session_id}")
+            # Disconnect the Hypha client to prevent memory leak
+            await client.disconnect()
+            logger.info(f"Disconnected Hypha client for session {session_id}")
+            
+            # Log cleanup
+            logger.info(f"Cleaning up MCP connections for session {session_id}")
 
             session_info.status = SessionStatus.STOPPED
             logger.info(f"Stopped MCP session {session_id}")
@@ -1231,35 +1201,50 @@ class MCPClientRunner(BaseWorker):
         offset: int = 0,
         limit: Optional[int] = None,
         context: Optional[Dict[str, Any]] = None,
-    ) -> Union[Dict[str, List[str]], List[str]]:
-        """Get logs for an MCP session."""
+    ) -> Dict[str, Any]:
+        """Get logs for an MCP session.
+        
+        Returns a dictionary with:
+        - items: List of log events, each with 'type' and 'content' fields
+        - total: Total number of log items (before filtering/pagination)
+        - offset: The offset used for pagination
+        - limit: The limit used for pagination
+        """
         if session_id not in self._sessions:
             raise SessionNotFoundError(f"MCP session {session_id} not found")
 
         session_data = self._session_data.get(session_id)
         if not session_data:
-            return {} if type is None else []
+            return {"items": [], "total": 0, "offset": offset, "limit": limit}
 
         logs = session_data.get("logs", {})
-
+        
+        # Convert logs to items format
+        all_items = []
+        for log_type, log_entries in logs.items():
+            for entry in log_entries:
+                all_items.append({"type": log_type, "content": entry})
+        
+        # Filter by type if specified
         if type:
-            target_logs = logs.get(type, [])
-            end_idx = (
-                len(target_logs)
-                if limit is None
-                else min(offset + limit, len(target_logs))
-            )
-            return target_logs[offset:end_idx]
+            filtered_items = [item for item in all_items if item["type"] == type]
         else:
-            result = {}
-            for log_type_key, log_entries in logs.items():
-                end_idx = (
-                    len(log_entries)
-                    if limit is None
-                    else min(offset + limit, len(log_entries))
-                )
-                result[log_type_key] = log_entries[offset:end_idx]
-            return result
+            filtered_items = all_items
+        
+        total = len(filtered_items)
+        
+        # Apply pagination
+        if limit is None:
+            paginated_items = filtered_items[offset:]
+        else:
+            paginated_items = filtered_items[offset:offset + limit]
+        
+        return {
+            "items": paginated_items,
+            "total": total,
+            "offset": offset,
+            "limit": limit
+        }
 
     
 
@@ -1267,36 +1252,26 @@ class MCPClientRunner(BaseWorker):
         """Shutdown the MCP proxy worker."""
         logger.info("Shutting down MCP proxy worker...")
 
-        # Stop all sessions
+        # Stop all sessions - any failure should be propagated
         session_ids = list(self._sessions.keys())
         for session_id in session_ids:
-            try:
-                await self.stop(session_id)
-            except Exception as e:
-                logger.warning(f"Failed to stop MCP session {session_id}: {e}")
+            await self.stop(session_id)
 
         logger.info("MCP proxy worker shutdown complete")
 
 
 async def hypha_startup(server):
     """Hypha startup function to initialize MCP client."""
-    if MCP_SDK_AVAILABLE:
-        worker = MCPClientRunner()
-        await worker.register_worker_service(server)
-        logger.info("MCP client worker initialized and registered")
-    else:
-        logger.warning("MCP library not available, skipping MCP client worker")
+    worker = MCPClientRunner()
+    await worker.register_worker_service(server)
+    logger.info("MCP client worker initialized and registered")
 
 
 async def start_worker(server_url, workspace, token):
     """Start MCP worker standalone."""
     from hypha_rpc import connect
 
-    if not MCP_SDK_AVAILABLE:
-        logger.error("MCP library not available")
-        return
-
-    server = await connect(server_url, workspace=workspace, token=token)
+    await connect(server_url, workspace=workspace, token=token)
     worker = MCPClientRunner()
     logger.info(f"MCP worker started, server: {server_url}, workspace: {workspace}")
 

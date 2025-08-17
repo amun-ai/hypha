@@ -202,6 +202,7 @@ class A2AClientRunner(BaseWorker):
             logger.error(f"Failed to start A2A session {session_id}: {e}")
             # Clean up failed session
             self._sessions.pop(session_id, None)
+            self._session_data.pop(session_id, None)  # Also clean up session data if it exists
             raise
 
     async def _start_a2a_session(self, config: WorkerConfig) -> Dict[str, Any]:
@@ -581,8 +582,9 @@ class A2AClientRunner(BaseWorker):
             }
 
             # Register the service
-            await client.register_service(service_def, overwrite=True)
-            session_data["services"].append(service_def["name"])
+            service_info = await client.register_service(service_def, overwrite=True)
+            # Store the actual service ID that was returned by register_service
+            session_data["services"].append(service_info.id)
             logger.info(
                 f"Registered unified A2A service: {service_def['name']} with ID: {agent_name}"
             )
@@ -598,10 +600,7 @@ class A2AClientRunner(BaseWorker):
     ) -> None:
         """Stop an A2A session."""
         if session_id not in self._sessions:
-            logger.warning(
-                f"A2A session {session_id} not found for stopping, may have already been cleaned up"
-            )
-            return
+            raise SessionNotFoundError(f"A2A session {session_id} not found for stopping")
 
         session_info = self._sessions[session_id]
         session_info.status = SessionStatus.STOPPING
@@ -609,34 +608,36 @@ class A2AClientRunner(BaseWorker):
         try:
             session_data = self._session_data.get(session_id)
             if session_data:
-                # Get the client from session data, not self.server
+                # Get the client from session data
                 client = session_data.get("client")
-                
-                # Unregister services
-                services = session_data.get("services", [])
-                for service_name in services:
-                    try:
-                        if client:
+                if client:
+                    # Unregister services
+                    services = session_data.get("services", [])
+                    for service_name in services:
+                        try:
                             await client.unregister_service(service_name)
                             logger.info(f"Unregistered service: {service_name}")
-                        else:
-                            logger.warning(f"No client available to unregister service {service_name}")
+                        except Exception as e:
+                            logger.warning(f"Failed to unregister service {service_name}: {e}")
+
+                    # Disconnect the Hypha client to prevent memory leak
+                    try:
+                        await client.disconnect()
+                        logger.info(f"Disconnected Hypha client for session {session_id}")
                     except Exception as e:
-                        logger.warning(
-                            f"Error unregistering service {service_name}: {e}"
-                        )
+                        logger.warning(f"Failed to disconnect client for session {session_id}: {e}")
 
                 # Close all HTTP clients
                 a2a_clients = session_data.get("a2a_clients", {})
                 for agent_name, agent_info in a2a_clients.items():
-                    try:
-                        if "client" in agent_info:
+                    if "client" in agent_info:
+                        try:
                             await agent_info["client"].aclose()
                             logger.info(f"Closed HTTP client for agent: {agent_name}")
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to close HTTP client for agent {agent_name}: {e}"
-                        )
+                        except Exception as e:
+                            logger.warning(f"Failed to close HTTP client for {agent_name}: {e}")
+            else:
+                logger.warning(f"No session data found for session {session_id}, skipping cleanup")
 
             session_info.status = SessionStatus.STOPPED
             logger.info(f"Stopped A2A session {session_id}")
@@ -659,35 +660,50 @@ class A2AClientRunner(BaseWorker):
         offset: int = 0,
         limit: Optional[int] = None,
         context: Optional[Dict[str, Any]] = None,
-    ) -> Union[Dict[str, List[str]], List[str]]:
-        """Get logs for an A2A session."""
+    ) -> Dict[str, Any]:
+        """Get logs for an A2A session.
+        
+        Returns a dictionary with:
+        - items: List of log events, each with 'type' and 'content' fields
+        - total: Total number of log items (before filtering/pagination)
+        - offset: The offset used for pagination
+        - limit: The limit used for pagination
+        """
         if session_id not in self._sessions:
             raise SessionNotFoundError(f"A2A session {session_id} not found")
 
         session_data = self._session_data.get(session_id)
         if not session_data:
-            return {} if type is None else []
+            return {"items": [], "total": 0, "offset": offset, "limit": limit}
 
         logs = session_data.get("logs", {})
-
+        
+        # Convert logs to items format
+        all_items = []
+        for log_type, log_entries in logs.items():
+            for entry in log_entries:
+                all_items.append({"type": log_type, "content": entry})
+        
+        # Filter by type if specified
         if type:
-            target_logs = logs.get(type, [])
-            end_idx = (
-                len(target_logs)
-                if limit is None
-                else min(offset + limit, len(target_logs))
-            )
-            return target_logs[offset:end_idx]
+            filtered_items = [item for item in all_items if item["type"] == type]
         else:
-            result = {}
-            for log_type_key, log_entries in logs.items():
-                end_idx = (
-                    len(log_entries)
-                    if limit is None
-                    else min(offset + limit, len(log_entries))
-                )
-                result[log_type_key] = log_entries[offset:end_idx]
-            return result
+            filtered_items = all_items
+        
+        total = len(filtered_items)
+        
+        # Apply pagination
+        if limit is None:
+            paginated_items = filtered_items[offset:]
+        else:
+            paginated_items = filtered_items[offset:offset + limit]
+        
+        return {
+            "items": paginated_items,
+            "total": total,
+            "offset": offset,
+            "limit": limit
+        }
 
     
 
@@ -695,13 +711,10 @@ class A2AClientRunner(BaseWorker):
         """Shutdown the A2A proxy worker."""
         logger.info("Shutting down A2A proxy worker...")
 
-        # Stop all sessions
+        # Stop all sessions - any failure should be propagated
         session_ids = list(self._sessions.keys())
         for session_id in session_ids:
-            try:
-                await self.stop(session_id)
-            except Exception as e:
-                logger.warning(f"Failed to stop A2A session {session_id}: {e}")
+            await self.stop(session_id)
 
         logger.info("A2A proxy worker shutdown complete")
 

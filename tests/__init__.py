@@ -35,13 +35,19 @@ POSTGRES_DB = "postgres"
 POSTGRES_URI = f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@localhost:{POSTGRES_PORT}/{POSTGRES_DB}"
 
 
-def find_item(items, key, value):
-    """Find an item with key or attributes in an object list."""
-    filtered = [
-        item
-        for item in items
-        if (item[key] if isinstance(item, dict) else getattr(item, key)) == value
-    ]
+def find_item(items, key_or_predicate, value=None):
+    """Find an item with key or attributes in an object list, or using a predicate function."""
+    if callable(key_or_predicate):
+        # If it's a function, use it as a predicate
+        filtered = [item for item in items if key_or_predicate(item)]
+    else:
+        # Original behavior with key and value
+        key = key_or_predicate
+        filtered = [
+            item
+            for item in items
+            if (item[key] if isinstance(item, dict) else getattr(item, key)) == value
+        ]
     if len(filtered) == 0:
         return None
 
@@ -49,13 +55,22 @@ def find_item(items, key, value):
 
 
 async def wait_for_workspace_ready(api, timeout=30):
-    """Wait for workspace to be ready."""
+    """Wait for workspace to be ready without errors."""
     start_time = time.time()
     while True:
         status = await api.check_status()
         if status["status"] == "ready":
+            # Check if there are any errors
+            if status.get("errors"):
+                # Workspace has errors, keep waiting or fail
+                if time.time() - start_time > timeout:
+                    raise TimeoutError(f"Workspace ready but with errors: {status['errors']}")
+                # Continue waiting to see if errors get resolved
+                await asyncio.sleep(0.5)
+                continue
+            # Ready without errors
             break
         if time.time() - start_time > timeout:
-            raise TimeoutError("Workspace failed to become ready")
+            raise TimeoutError(f"Workspace failed to become ready, current status: {status}")
         await asyncio.sleep(0.1)
     return status

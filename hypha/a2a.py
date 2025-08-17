@@ -17,52 +17,18 @@ import json
 
 logger = logging.getLogger(__name__)
 
-try:
-    from a2a.types import AgentCard
-    from a2a.server.apps.jsonrpc.starlette_app import A2AStarletteApplication
-    from a2a.server.request_handlers.default_request_handler import (
-        DefaultRequestHandler,
-        AgentExecutor,
-        RequestContext,
-        EventQueue,
-    )
-    from a2a.server.tasks.inmemory_task_store import InMemoryTaskStore
-    from a2a.types import Message
-    from a2a.utils import new_agent_text_message
 
-    A2A_SDK_AVAILABLE = True
-except ImportError as exp:
-    logger.warning(f"A2A SDK not available. Install with: pip install a2a-sdk. Error: {exp}")
-    A2A_SDK_AVAILABLE = False
-
-    # Define dummy classes for type hints
-    class AgentExecutor:
-        pass
-
-    class AgentCard:
-        pass
-
-    class A2AStarletteApplication:
-        pass
-
-    class Message:
-        pass
-
-    class Task:
-        pass
-
-    class TaskStatus:
-        pass
-
-    class TaskState:
-        pass
-
-    class RequestContext:
-        pass
-
-    class EventQueue:
-        pass
-
+from a2a.types import AgentCard
+from a2a.server.apps.jsonrpc.starlette_app import A2AStarletteApplication
+from a2a.server.request_handlers.default_request_handler import (
+    DefaultRequestHandler,
+    AgentExecutor,
+    RequestContext,
+    EventQueue,
+)
+from a2a.server.tasks.inmemory_task_store import InMemoryTaskStore
+from a2a.types import Message
+from a2a.utils import new_agent_text_message
 
 class HyphaAgentExecutor(AgentExecutor):
     """AgentExecutor that adapts Hypha services to A2A SDK interface."""
@@ -204,8 +170,6 @@ async def create_a2a_app_from_service(service, service_info):
     Returns:
         ASGI application that can be called with (scope, receive, send)
     """
-
-    assert A2A_SDK_AVAILABLE, "A2A SDK is not available. Install with: pip install a2a-sdk"
 
     logger.info(
         f"create_a2a_app_from_service called with service type: {type(service)}"

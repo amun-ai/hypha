@@ -6,12 +6,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Hypha Workspace Management</title>
     <!-- External Scripts -->
-    <script src="./assets/hypha-rpc-websocket.js"></script>
+    <script src="../assets/hypha-rpc-websocket.js"></script>
     <script>
         // Extract base path from current URL
         const pathSegments = window.location.pathname.split('/');
         // Remove the workspace segment and any trailing empty segments
-        const basePath = pathSegments.slice(0, pathSegments.length - 1).join('/') || '';
+        const basePath = pathSegments.slice(0, pathSegments.length - 2).join('/') || '';
         window.HYPHA_BASE_PATH = basePath;
     </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/react/17.0.2/umd/react.production.min.js"></script>
@@ -747,22 +747,22 @@
                                             </div>
                                             
                                             <div className="text-sm text-gray-300 mb-2">
-                                                <code className="bg-gray-800 px-1 rounded text-xs break-all">{service.id}</code>
+                                                <code className="bg-gray-800 px-1 rounded text-xs break-all">{service.id}@{app.id}</code>
                                             </div>
                                             
                                             <div className="flex flex-wrap gap-2">
                                                 {/* Copy Service ID Button */}
                                                 <button
-                                                    onClick={() => copyServiceId(service.id)}
+                                                    onClick={() => copyServiceId(`${service.id}@${app.id}`)}
                                                     className={`text-xs px-2 py-1 rounded transition duration-300 ${
-                                                        copiedServiceId === service.id
+                                                        copiedServiceId === `${service.id}@${app.id}`
                                                             ? 'bg-green-600 hover:bg-green-500 text-white'
                                                             : 'bg-gray-600 hover:bg-gray-500 text-white'
                                                     }`}
                                                     title="Copy service ID"
                                                 >
-                                                    <i className={`fas ${copiedServiceId === service.id ? 'fa-check' : 'fa-copy'} mr-1`}></i>
-                                                    {copiedServiceId === service.id ? 'Copied!' : 'Copy ID'}
+                                                    <i className={`fas ${copiedServiceId === `${service.id}@${app.id}` ? 'fa-check' : 'fa-copy'} mr-1`}></i>
+                                                    {copiedServiceId === `${service.id}@${app.id}` ? 'Copied!' : 'Copy ID'}
                                                 </button>
                                                 
                                                 {/* Service URL Link */}
@@ -975,15 +975,16 @@
             };
             
             const getServiceUrl = (service) => {
-                // For running apps: [workspace]/apps/[client_id]:[service_id]/
+                // For running apps: [workspace]/services/[client_id]:[service_id]@[app_id]/
                 const serviceName = service.id.split('@')[0];
                 
-                return `${serverUrl}/${workspace}/services/${serviceName.split("/")[1]}`;
+                return `${serverUrl}/${workspace}/services/${serviceName.split("/")[1]}@${app.app_id}`;
                 
             };
             
             const getAppUrl = (service) => {
-                return `${serverUrl}/${workspace}/apps/${service.id.split("/")[1]}/`;
+                // For ASGI apps: [workspace]/apps/[client_id]:[service_id]@[app_id]/
+                return `${serverUrl}/${workspace}/apps/${service.id.split("/")[1]}@${app.app_id}/`;
             };
             
             return (
@@ -1002,11 +1003,6 @@
                                 <span className="bg-blue-600 text-white px-2 py-1 rounded text-xs">
                                     Workspace: {app.workspace}
                                 </span>
-                                {app.service_id && (
-                                    <span className="bg-purple-600 text-white px-2 py-1 rounded text-xs">
-                                        Service: {app.service_id.split('@')[0]}
-                                    </span>
-                                )}
                                 {services.length > 0 && (
                                     <span className="bg-orange-600 text-white px-2 py-1 rounded text-xs">
                                         {services.length} Service{services.length > 1 ? 's' : ''}
@@ -1054,22 +1050,22 @@
                                             </div>
                                             
                                             <div className="text-sm text-gray-300 mb-2">
-                                                <code className="bg-gray-800 px-1 rounded text-xs break-all">{service.id}</code>
+                                                <code className="bg-gray-800 px-1 rounded text-xs break-all">{service.id}@{app.app_id}</code>
                                             </div>
                                             
                                             <div className="flex flex-wrap gap-2">
                                                 {/* Copy Service ID Button */}
                                                 <button
-                                                    onClick={() => copyServiceId(service.id)}
+                                                    onClick={() => copyServiceId(`${service.id}@${app.app_id}`)}
                                                     className={`text-xs px-2 py-1 rounded transition duration-300 ${
-                                                        copiedServiceId === service.id
+                                                        copiedServiceId === `${service.id}@${app.app_id}`
                                                             ? 'bg-green-600 hover:bg-green-500 text-white'
                                                             : 'bg-gray-600 hover:bg-gray-500 text-white'
                                                     }`}
                                                     title="Copy service ID"
                                                 >
-                                                    <i className={`fas ${copiedServiceId === service.id ? 'fa-check' : 'fa-copy'} mr-1`}></i>
-                                                    {copiedServiceId === service.id ? 'Copied!' : 'Copy ID'}
+                                                    <i className={`fas ${copiedServiceId === `${service.id}@${app.app_id}` ? 'fa-check' : 'fa-copy'} mr-1`}></i>
+                                                    {copiedServiceId === `${service.id}@${app.app_id}` ? 'Copied!' : 'Copy ID'}
                                                 </button>
                                                 
                                                 {/* Service URL Link */}
@@ -2154,7 +2150,7 @@
                                             className="bg-green-600 hover:bg-green-500 text-white font-bold py-1 px-3 rounded text-sm transition duration-300"
                                             onClick={() => {
                                                 // Navigate to the view page for this artifact
-                                                window.location.href = `./${artifact.id.split('/')[0]}/view/${artifact.alias}`;
+                                                window.location.href = `../${artifact.id.split('/')[0]}/view/${artifact.alias}`;
                                             }}
                                             title="View artifact"
                                         >
@@ -4163,6 +4159,7 @@ license: "MIT"`);
             const [serverName, setServerName] = React.useState('my-server');
             const [serverUrl, setServerUrl] = React.useState('');
             const [serverType, setServerType] = React.useState('streamable-http');
+            const [appId, setAppId] = React.useState('mcp-server');
             const [appName, setAppName] = React.useState('My MCP Server');
             const [appDescription, setAppDescription] = React.useState('Integration with external MCP servers');
             const [authHeaders, setAuthHeaders] = React.useState('');
@@ -4172,6 +4169,7 @@ license: "MIT"`);
                 
                 const mcpConfig = {
                     type: "mcp-server",
+                    id: appId,
                     name: appName,
                     version: "1.0.0",
                     description: appDescription,
@@ -4208,14 +4206,34 @@ license: "MIT"`);
                         <div className="modal-body">
                             <form onSubmit={handleSubmit}>
                                 <div className="mb-4">
-                                    <label className="block text-sm font-medium text-gray-200">App Name</label>
+                                    <label className="block text-sm font-medium text-gray-200">App ID</label>
+                                    <input
+                                        type="text"
+                                        value={appId}
+                                        onChange={(e) => setAppId(e.target.value)}
+                                        className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        pattern="[a-z0-9-]+"
+                                        title="App ID should contain only lowercase letters, numbers, and hyphens"
+                                        placeholder="mcp-server"
+                                        required
+                                    />
+                                    <p className="text-gray-500 text-xs mt-1">
+                                        Unique identifier for this app (lowercase, numbers, hyphens only)
+                                    </p>
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">Display Name</label>
                                     <input
                                         type="text"
                                         value={appName}
                                         onChange={(e) => setAppName(e.target.value)}
                                         className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        placeholder="My MCP Server"
                                         required
                                     />
+                                    <p className="text-gray-500 text-xs mt-1">
+                                        Human-readable name for the app
+                                    </p>
                                 </div>
                                 <div className="mb-4">
                                     <label className="block text-sm font-medium text-gray-200">Description</label>
@@ -5735,6 +5753,7 @@ license: "MIT"`);
                     
                     window.addProgressLog('Installing MCP server with progress tracking...', 'info');
                     const appInfo = await controller.install({
+                        app_id: mcpConfig.id,
                         config: mcpConfig,
                         overwrite: true,
                         progress_callback: progressCallback,
@@ -7097,7 +7116,20 @@ license: "MIT"`);
                         throw new Error('WebSocket connection not ready. Please wait for the connection to be established.');
                     }
                     const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
-                    const screenshotBytes = await controller.takeScreenshot(sessionId);
+                    
+                    // First get the session info to find the worker_id
+                    const runningApps = await controller.listRunning();
+                    const sessionInfo = runningApps.find(app => app.id === sessionId);
+                    
+                    if (!sessionInfo || !sessionInfo.worker_id) {
+                        throw new Error('Could not find worker_id for this session');
+                    }
+                    
+                    // Get the worker service using the worker_id
+                    const worker = await ws.getService(sessionInfo.worker_id, { case_conversion: 'camel' });
+                    
+                    // Call take_screenshot from the worker
+                    const screenshotBytes = await worker.takeScreenshot(sessionId);
                     
                     // Convert bytes to base64
                     let screenshotBase64;
