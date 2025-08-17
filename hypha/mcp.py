@@ -545,11 +545,42 @@ class HyphaMCPAdapter:
     def _setup_auto_wrapped_handlers(self):
         """Auto-wrap all service functions as MCP tools."""
         
-        # Collect all callable functions from the service
-        tools = {}
-        for key, value in self.service.items():
-            if callable(value) and not key.startswith("_"):
-                tools[key] = value
+        def collect_tools(obj, prefix=""):
+            """Recursively collect callable functions from nested structures."""
+            collected = {}
+            
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    if key.startswith("_"):
+                        continue
+                    
+                    new_key = f"{prefix}_{key}" if prefix else key
+                    
+                    if callable(value):
+                        # Direct callable at this level
+                        collected[new_key] = value
+                    elif isinstance(value, (dict, list)):
+                        # Nested structure - recurse
+                        nested = collect_tools(value, new_key)
+                        collected.update(nested)
+                    # Skip non-callable, non-container values
+                    
+            elif isinstance(obj, list):
+                for i, item in enumerate(obj):
+                    new_key = f"{prefix}_{i}" if prefix else str(i)
+                    
+                    if callable(item):
+                        collected[new_key] = item
+                    elif isinstance(item, (dict, list)):
+                        # Nested structure - recurse
+                        nested = collect_tools(item, new_key)
+                        collected.update(nested)
+                    # Skip non-callable, non-container values
+                    
+            return collected
+        
+        # Collect all callable functions from the service (including nested)
+        tools = collect_tools(self.service)
         
         if not tools:
             return

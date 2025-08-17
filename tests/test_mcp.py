@@ -1734,4 +1734,144 @@ async def test_mcp_real_client_integration(fastapi_server, test_user_token):
             assert "Tokyo" in prompt_result.messages[0].content.text
             assert "7-day" in prompt_result.messages[0].content.text
 
+
+async def test_mcp_nested_services(fastapi_server, test_user_token):
+    """Test that services with nested callable functions are properly exposed via MCP when converted."""
+    from mcp.client.streamable_http import streamablehttp_client
+    from mcp.client.session import ClientSession
+    
+    # Connect to the Hypha server
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+    
+    workspace = api.config.workspace
+    
+    # Create a service with nested structure containing callable functions
+    @schema_function
+    def add(a: float, b: float) -> float:
+        """Add two numbers."""
+        return a + b
+    
+    @schema_function
+    def multiply(a: float, b: float) -> float:
+        """Multiply two numbers."""
+        return a * b
+    
+    @schema_function
+    def format_result(value: float, prefix: str = "Result") -> str:
+        """Format a result with a prefix."""
+        return f"{prefix}: {value}"
+    
+    @schema_function
+    def power(x: float, n: float) -> float:
+        """Raise x to the power of n."""
+        return x ** n
+    
+    @schema_function
+    def uppercase(text: str) -> str:
+        """Convert text to uppercase."""
+        return text.upper()
+    
+    @schema_function  
+    def lowercase(text: str) -> str:
+        """Convert text to lowercase."""
+        return text.lower()
+    
+    # Register a service that will be converted to MCP with nested structure
+    # When this service is exposed via MCP, the nested functions should be flattened
+    # The recursive flattening happens in _setup_auto_wrapped_handlers for inline config services
+    nested_service_info = await api.register_service(
+        {
+            "id": "nested-mcp-service",
+            "name": "Nested MCP Service",
+            "description": "Test service with nested callable functions for MCP",
+            "type": "mcp",  # This will trigger MCP conversion with flattening
+            "config": {"visibility": "public"},
+            # For inline config, we put nested structure directly in service dict
+            # The tools will be collected recursively from nested structures
+            "math": {
+                "basic": {
+                    "add": add,
+                    "multiply": multiply,
+                },
+                "advanced": {
+                    "power": power,
+                }
+            },
+            "formatting": {
+                "text": format_result,
+                "utils": {
+                    "uppercase": uppercase,
+                    "lowercase": lowercase,
+                }
+            }
+        }
+    )
+    
+    # Construct the MCP endpoint URL
+    mcp_endpoint_url = f"{SERVER_URL}/{workspace}/mcp/{nested_service_info['id'].split('/')[-1]}/mcp"
+    
+    # Connect using the MCP client to the Hypha MCP endpoint
+    async with streamablehttp_client(mcp_endpoint_url) as (
+        read_stream,
+        write_stream,
+        get_session_id,
+    ):
+        async with ClientSession(read_stream, write_stream) as session:
+            # Initialize the session
+            await session.initialize()
+            
+            # List available tools - should include flattened nested functions
+            tools_result = await session.list_tools()
+            assert tools_result is not None
+            assert hasattr(tools_result, "tools")
+            
+            # Check that nested functions are properly flattened with underscore-separated names
+            tool_names = {tool.name for tool in tools_result.tools}
+            
+            # Verify expected flattened tool names
+            expected_tools = {
+                "math_basic_add",
+                "math_basic_multiply",
+                "math_advanced_power",
+                "formatting_text",
+                "formatting_utils_uppercase",
+                "formatting_utils_lowercase",
+            }
+            
+            for expected_tool in expected_tools:
+                assert expected_tool in tool_names, f"Missing tool: {expected_tool}. Available tools: {tool_names}"
+            
+            # Test calling a deeply nested function
+            result = await session.call_tool(
+                name="math_basic_add",
+                arguments={"a": 5, "b": 3}
+            )
+            assert result is not None
+            assert result.content[0].text == "8" or "8" in str(result.content[0].text)
+            
+            # Test another nested function
+            result = await session.call_tool(
+                name="formatting_text",
+                arguments={"value": 42, "prefix": "Answer"}
+            )
+            assert result is not None
+            assert "Answer: 42" in str(result.content[0].text)
+            
+            # Test power function
+            result = await session.call_tool(
+                name="math_advanced_power",
+                arguments={"x": 2, "n": 3}
+            )
+            assert result is not None
+            assert "8" in str(result.content[0].text)
+    
+    # Clean up
+    await api.unregister_service(nested_service_info["id"])
     await api.disconnect()
