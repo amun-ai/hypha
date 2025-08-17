@@ -1345,39 +1345,87 @@ async def test_mcp_helpful_404_message(fastapi_server, test_user_token):
     await api.disconnect()
 
 
-async def test_mcp_sse_not_implemented(fastapi_server, test_user_token):
-    """Test that SSE endpoint returns not implemented message."""
+async def test_mcp_sse_transport(fastapi_server, test_user_token):
+    """Test MCP SSE transport functionality."""
     api = await connect_to_server(
         {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
     )
 
     workspace = api.config.workspace
 
-    # Register a simple MCP service
-    await api.register_service(
+    # Define MCP service functions
+    async def list_tools() -> List[types.Tool]:
+        return [
+            types.Tool(
+                name="sse_echo",
+                description="Echo back the input text via SSE",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "description": "Text to echo"}
+                    },
+                    "required": ["text"],
+                },
+            )
+        ]
+
+    async def call_tool(
+        name: str, arguments: Dict[str, Any]
+    ) -> List[types.ContentBlock]:
+        if name == "sse_echo":
+            text = arguments.get("text", "")
+            return [types.TextContent(type="text", text=f"SSE Echo: {text}")]
+        else:
+            raise ValueError(f"Unknown tool: {name}")
+
+    # Register MCP service
+    service = await api.register_service(
         {
-            "id": "test-service",
+            "id": "sse-test-service",
             "type": "mcp",
             "config": {
                 "visibility": "public",
             },
+            "list_tools": list_tools,
+            "call_tool": call_tool,
         }
     )
 
-    async with httpx.AsyncClient() as client:
-        # Try to access SSE endpoint
-        response = await client.get(
-            f"{SERVER_URL}/{workspace}/mcp/test-service/sse",
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/event-stream"
-            },
-        )
+    assert service["type"] == "mcp"
+    assert "sse-test-service" in service["id"]
 
-        assert response.status_code == 501
-        data = response.json()
-        assert "error" in data
-        assert "not yet implemented" in data["error"]
+    # Now test using the actual MCP SSE client
+    from mcp.client.sse import sse_client
+    from mcp.client.session import ClientSession
+
+    # Create MCP SSE client session
+    base_url = f"{SERVER_URL}/{workspace}/mcp/sse-test-service/sse"
+
+    async with sse_client(base_url) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
+            # Initialize the session
+            await session.initialize()
+
+            # Test 1: List tools
+            tools_result = await session.list_tools()
+            assert tools_result is not None
+            assert hasattr(tools_result, "tools")
+            assert len(tools_result.tools) == 1
+            assert tools_result.tools[0].name == "sse_echo"
+            assert tools_result.tools[0].description == "Echo back the input text via SSE"
+
+            # Test 2: Call tool
+            tool_result = await session.call_tool(
+                name="sse_echo",
+                arguments={"text": "Hello SSE"}
+            )
+            assert tool_result is not None
+            assert hasattr(tool_result, "content")
+            assert len(tool_result.content) == 1
+            assert tool_result.content[0].type == "text"
+            assert tool_result.content[0].text == "SSE Echo: Hello SSE"
+
+    print("✓ MCP SSE transport tested successfully")
 
     await api.disconnect()
 

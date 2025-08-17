@@ -25,6 +25,7 @@ logger.setLevel(logging.DEBUG)
 
 import mcp.types as types
 from mcp.server.lowlevel import Server
+from mcp.server.sse import SseServerTransport
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.streamable_http import (
     EventCallback,
@@ -226,6 +227,10 @@ class HyphaMCPAdapter:
             stateless=True,
             json_response=True  # Enable JSON responses for better compatibility
         )
+        
+        # Create SSE transport for SSE endpoint support
+        # The endpoint path will be relative to the SSE endpoint itself
+        self.sse_transport = SseServerTransport("/messages/")
         
         # Track if session manager is running
         self._session_manager_context = None
@@ -789,6 +794,21 @@ class HyphaMCPAdapter:
         # Just handle the request directly
         await self.session_manager.handle_request(scope, receive, send)
     
+    async def handle_sse_request(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Handle incoming SSE request."""
+        # Connect SSE and run the server with the provided streams
+        async with self.sse_transport.connect_sse(scope, receive, send) as (read_stream, write_stream):
+            # Run the MCP server with the SSE streams
+            await self.server.run(
+                read_stream,
+                write_stream,
+                self.server.create_initialization_options()
+            )
+    
+    async def handle_sse_message(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Handle incoming SSE message POST request."""
+        await self.sse_transport.handle_post_message(scope, receive, send)
+    
     def get_asgi_app(self) -> ASGIApp:
         """Get ASGI application for this MCP service."""
         async def app(scope: Scope, receive: Receive, send: Send) -> None:
@@ -920,14 +940,21 @@ class MCPRoutingMiddleware:
         info_route = self.base_path.rstrip("/") + "/{workspace}/mcp/{service_id:path}"
         self.info_route = Route(info_route, endpoint=None)
         
-        # Future SSE route: /{workspace}/mcp/{service_id}/sse
+        # SSE routes: /{workspace}/mcp/{service_id}/sse and /sse/messages/
         sse_route = (
             self.base_path.rstrip("/") + "/{workspace}/mcp/{service_id:path}/sse"
         )
         self.sse_route = Route(sse_route, endpoint=None)
         
+        # SSE message route for POST messages
+        sse_message_route = (
+            self.base_path.rstrip("/") + "/{workspace}/mcp/{service_id:path}/sse/messages/"
+        )
+        self.sse_message_route = Route(sse_message_route, endpoint=None)
+        
         logger.info(f"MCP middleware initialized with route patterns:")
         logger.info(f"  - Streamable HTTP: {self.mcp_route.path}")
+        logger.info(f"  - SSE: {self.sse_route.path}")
     
     def _get_authorization_header(self, scope):
         """Extract the Authorization header from the scope."""
@@ -963,7 +990,24 @@ class MCPRoutingMiddleware:
             # Check if the current request path matches any MCP route
             from starlette.routing import Match
             
-            # Check SSE route first (/{workspace}/mcp/{service_id}/sse) - most specific
+            # Check SSE message route first (/{workspace}/mcp/{service_id}/sse/messages/) - most specific
+            sse_message_match, sse_message_params = self.sse_message_route.matches(scope)
+            if sse_message_match == Match.FULL:
+                path_params = sse_message_params.get("path_params", {})
+                workspace = path_params["workspace"]
+                service_id = path_params["service_id"]
+                
+                logger.debug(
+                    f"MCP Middleware: SSE message route match - workspace='{workspace}', service_id='{service_id}'"
+                )
+                
+                # Handle SSE message POST request
+                await self._handle_sse_message_request(
+                    scope, receive, send, workspace, service_id
+                )
+                return
+            
+            # Check SSE route (/{workspace}/mcp/{service_id}/sse) - specific
             sse_match, sse_params = self.sse_route.matches(scope)
             if sse_match == Match.FULL:
                 path_params = sse_params.get("path_params", {})
@@ -974,9 +1018,9 @@ class MCPRoutingMiddleware:
                     f"MCP Middleware: SSE route match - workspace='{workspace}', service_id='{service_id}'"
                 )
                 
-                # Return not implemented for now
-                await self._send_error_response(
-                    send, 501, "SSE transport not yet implemented"
+                # Handle SSE request
+                await self._handle_sse_request(
+                    scope, receive, send, workspace, service_id
                 )
                 return
             
@@ -1022,7 +1066,7 @@ class MCPRoutingMiddleware:
             "message": f"The MCP service '{service_id}' endpoint was not found at this path.",
             "available_endpoints": {
                 "streamable_http": f"/{workspace}/mcp/{service_id}/mcp",
-                "sse": f"/{workspace}/mcp/{service_id}/sse (not yet implemented)",
+                "sse": f"/{workspace}/mcp/{service_id}/sse",
             },
             "help": "Use the streamable HTTP endpoint for MCP communication.",
         }
@@ -1175,3 +1219,149 @@ class MCPRoutingMiddleware:
                 "body": response_body,
             }
         )
+    
+    async def _handle_sse_request(self, scope, receive, send, workspace, service_id):
+        """Handle MCP SSE requests."""
+        try:
+            # Prepare scope for the MCP service
+            scope = {
+                k: scope[k]
+                for k in scope
+                if isinstance(
+                    scope[k],
+                    (str, int, float, bool, tuple, list, dict, bytes),
+                )
+            }
+            # Set path to root for MCP SSE service
+            scope["path"] = "/"
+            scope["raw_path"] = b"/"
+            # Set root_path to include the full SSE endpoint prefix
+            # This allows the SSE transport to correctly construct the message endpoint
+            scope["root_path"] = f"/{workspace}/mcp/{service_id}/sse"
+            
+            # Get authentication info
+            access_token = self._get_access_token_from_cookies(scope)
+            authorization = self._get_authorization_header(scope)
+            
+            # Login and get user info
+            user_info = await self.store.login_optional(
+                authorization=authorization, access_token=access_token
+            )
+            
+            # Check if we have a cached MCP app for this service
+            cache_key = f"{workspace}/{service_id}"
+            
+            if cache_key in self._mcp_cache:
+                # Use cached MCP app
+                mcp_app, api_context, api_task = self._mcp_cache[cache_key]
+                adapter = mcp_app.adapter if hasattr(mcp_app, 'adapter') else mcp_app
+                try:
+                    # Handle the SSE request with the cached MCP app
+                    await adapter.handle_sse_request(scope, receive, send)
+                except Exception as e:
+                    # If the cached connection failed, clean it up and retry
+                    logger.warning(f"Cached MCP app failed for SSE, recreating: {e}")
+                    
+                    # Clean up old context
+                    try:
+                        if api_context:
+                            await api_context.__aexit__(None, None, None)
+                    except:
+                        pass
+                    del self._mcp_cache[cache_key]
+                    
+                    # Retry with fresh connection
+                    await self._handle_sse_request(scope, receive, send, workspace, service_id)
+            else:
+                # Create new MCP app with persistent API connection
+                api_context_manager = self.store.get_workspace_interface(user_info, workspace)
+                api_context = api_context_manager.__aenter__()
+                api = await api_context
+                
+                try:
+                    service_info = await api.get_service_info(
+                        service_id, {"mode": None}
+                    )
+                    logger.debug(
+                        f"MCP Middleware: Found service '{service_id}' of type '{service_info.type}'"
+                    )
+                except (KeyError, Exception) as e:
+                    # Clean up on error
+                    await api_context_manager.__aexit__(None, None, None)
+                    logger.error(f"MCP Middleware: Service lookup failed: {e}")
+                    if "Service not found" in str(e):
+                        await self._send_error_response(
+                            send, 404, f"Service {service_id} not found"
+                        )
+                        return
+                    else:
+                        raise
+                
+                if service_info.type != "mcp":
+                    await api_context_manager.__aexit__(None, None, None)
+                    await self._send_error_response(
+                        send, 400, f"Service {service_id} is not MCP compatible"
+                    )
+                    return
+                
+                service = await api.get_service(service_info.id)
+                
+                # Check if it's MCP compatible
+                if not is_mcp_compatible_service(service):
+                    await api_context_manager.__aexit__(None, None, None)
+                    await self._send_error_response(
+                        send, 400, f"Service {service_id} is not MCP compatible"
+                    )
+                    return
+                
+                # Create MCP app with the service
+                mcp_app = await create_mcp_app_from_service(
+                    service, service_info, self.store.get_redis()
+                )
+                
+                # Cache the MCP app and API connection
+                self._mcp_cache[cache_key] = (mcp_app, api_context_manager, api)
+                
+                # Handle the SSE request with the MCP app
+                adapter = mcp_app.adapter if hasattr(mcp_app, 'adapter') else mcp_app
+                await adapter.handle_sse_request(scope, receive, send)
+        
+        except Exception as exp:
+            logger.exception(f"Error in MCP SSE service: {exp}")
+            await self._send_error_response(send, 500, f"Internal Server Error: {exp}")
+    
+    async def _handle_sse_message_request(self, scope, receive, send, workspace, service_id):
+        """Handle MCP SSE message POST requests."""
+        try:
+            # Get authentication info
+            access_token = self._get_access_token_from_cookies(scope)
+            authorization = self._get_authorization_header(scope)
+            
+            # Login and get user info
+            user_info = await self.store.login_optional(
+                authorization=authorization, access_token=access_token
+            )
+            
+            # Check if we have a cached MCP app for this service
+            cache_key = f"{workspace}/{service_id}"
+            
+            if cache_key not in self._mcp_cache:
+                await self._send_error_response(
+                    send, 404, f"SSE session not found for service {service_id}"
+                )
+                return
+            
+            # Use cached MCP app
+            mcp_app, api_context, api_task = self._mcp_cache[cache_key]
+            adapter = mcp_app.adapter if hasattr(mcp_app, 'adapter') else mcp_app
+            
+            try:
+                # Handle the SSE message POST request
+                await adapter.handle_sse_message(scope, receive, send)
+            except Exception as e:
+                logger.error(f"Error handling SSE message: {e}")
+                await self._send_error_response(send, 500, f"Error processing message: {e}")
+        
+        except Exception as exp:
+            logger.exception(f"Error in MCP SSE message service: {exp}")
+            await self._send_error_response(send, 500, f"Internal Server Error: {exp}")
