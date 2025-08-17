@@ -77,6 +77,7 @@ started_app = await controller.start(
 )
 
 print(f"App started with session ID: {started_app.id}")
+print(f"Using worker: {started_app.worker_id}")
 
 # Get the app service and use it
 app_service = await api.get_service(f"default@{app_info.id}")
@@ -85,56 +86,6 @@ print(f"5 + 3 = {result}")
 
 echo_result = await app_service.echo("Hello, World!")
 print(f"Echo result: {echo_result}")
-```
-
-### Step 3.5: Interactive Code Execution (For Supported Apps)
-
-Some application types support **interactive code execution**, allowing you to execute scripts in already-running sessions. This is particularly useful for applications with conda environments, Python interpreters, or other execution contexts.
-
-```python
-# For apps that support interactive execution (e.g., conda environments)
-# You can execute code in running sessions using the server apps controller
-
-# Execute Python code in a running conda session
-result = await controller.execute(
-    session_id=started_app.id,  # Use the running session ID
-    script="""
-import numpy as np
-import matplotlib.pyplot as plt
-
-# Generate some data
-x = np.linspace(0, 10, 100)
-y = np.sin(x)
-
-# Perform calculation
-mean_y = np.mean(y)
-max_y = np.max(y)
-
-print(f"Mean value: {mean_y:.3f}")
-print(f"Maximum value: {max_y:.3f}")
-print("Calculation completed successfully!")
-""",
-    config={"timeout": 30.0}  # Optional execution timeout
-)
-
-# Check execution results
-if result["status"] == "ok":
-    print("Code executed successfully!")
-    # Print outputs (stdout, stderr, display data, etc.)
-    for output in result.get("outputs", []):
-        if output["type"] == "stream" and output["name"] == "stdout":
-            print("Output:", output["text"])
-else:
-    print("Execution failed:")
-    error_info = result.get("error", {})
-    print(f"Error: {error_info.get('evalue', 'Unknown error')}")
-    
-# You can execute multiple code blocks in the same session
-result2 = await controller.execute(
-    session_id=started_app.id,
-    script="print(f'Previous mean value was: {mean_y:.3f}')",  # Variables persist
-    config={"timeout": 10.0}
-)
 ```
 
 **Execute Method Features:**
@@ -148,6 +99,42 @@ result2 = await controller.execute(
 - **Conda Environments**: Execute Python code in isolated conda environments (see [Conda Worker Documentation](conda-worker.md))
 - **Python Interpreters**: Run Python scripts in various Python contexts
 - **Custom Workers**: Any worker that implements the execute method (see [Worker API Documentation](workers.md))
+
+### Step 3.6: Interacting with the Worker Directly
+
+After starting a session, you can interact directly with the worker that is running your application. The `worker_id` returned in the start response allows you to get a reference to the worker service:
+
+```python
+# Start an app session
+started_app = await controller.start(app_info.id, wait_for_service="default")
+
+# Get the worker service directly using the worker_id
+worker = await server.get_service(started_app.worker_id)
+
+# Now you can interact with the worker directly
+# For example, get logs from the worker
+logs = await worker.get_logs(started_app.id)
+# Logs are returned in the format:
+# {
+#   "items": [{"type": "info", "content": "..."}, ...],
+#   "total": 10,
+#   "offset": 0,
+#   "limit": None
+# }
+
+# Or execute code in the session (for workers that support it)
+if hasattr(worker, 'execute'):
+    result = await worker.execute(
+        started_app.id,
+        "print('Executing directly on the worker!')",
+        config={"timeout": 30.0}
+    )
+```
+
+This is particularly useful for:
+- **Terminal workers**: Execute commands and get screen output
+- **Conda workers**: Run Python code in specific environments
+- **Custom workers**: Access worker-specific functionality not exposed through the controller
 
 ### Step 4: Managing Apps
 
@@ -937,23 +924,46 @@ async def stop(session_id):
 
  
 
-async def get_logs(session_id, log_type=None, offset=0, limit=None):
-    """Get logs for a session."""
+async def get_logs(session_id, type=None, offset=0, limit=None):
+    """Get logs for a session.
+    
+    Returns a dictionary with:
+    - items: List of log events, each with 'type' and 'content' fields
+    - total: Total number of log items (before filtering/pagination)
+    - offset: The offset used for pagination
+    - limit: The limit used for pagination
+    """
     if session_id not in worker_sessions:
         raise Exception(f"Session {session_id} not found")
     
     logs = worker_sessions[session_id]["logs"]
     
-    # Apply offset and limit
-    if limit:
-        logs = logs[offset:offset+limit]
-    else:
-        logs = logs[offset:]
+    # Convert logs to items format
+    all_items = []
+    for log_type, log_entries in logs.items():
+        for entry in log_entries:
+            all_items.append({"type": log_type, "content": entry})
     
-    if log_type:
-        return logs
+    # Filter by type if specified
+    if type:
+        filtered_items = [item for item in all_items if item["type"] == type]
     else:
-        return {"log": logs, "error": []}
+        filtered_items = all_items
+    
+    total = len(filtered_items)
+    
+    # Apply pagination
+    if limit:
+        paginated_items = filtered_items[offset:offset+limit]
+    else:
+        paginated_items = filtered_items[offset:]
+    
+    return {
+        "items": paginated_items,
+        "total": total,
+        "offset": offset,
+        "limit": limit
+    }
 
 
 async def execute(session_id, script, config=None, progress_callback=None, context=None):
@@ -1226,7 +1236,7 @@ All custom workers must implement these core functions:
 
 - `start(config)`: Start an application session
 - `stop(session_id)`: Stop a session  
- - `get_logs(session_id, ...)`: Get session logs
+ - `get_logs(session_id, type, offset, limit)`: Get session logs in standardized format with items list
   (Workspace lifecycle is handled by the app controller; workers no longer implement these hooks.)
 
 **Optional functions for enhanced functionality:**
@@ -1262,15 +1272,6 @@ app_info = await controller.install(
 
 # Start the app - will automatically use your custom worker
 session = await controller.start(app_info.id)
-
-# If your custom worker supports the execute method, you can run scripts interactively
-if hasattr(your_custom_worker, 'execute'):
-    result = await controller.execute(
-        session_id=session.id,
-        script="your_custom_script_or_command",
-        config={"timeout": 30.0}
-    )
-    print("Execution result:", result)
 ```
 
 ---
