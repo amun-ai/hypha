@@ -217,6 +217,8 @@ async def test_artifact_vector_collection(
             "workspace": "my-vector-test-workspace",
         }
     ) as api:
+        # Wait for workspace to be ready before proceeding
+        await wait_for_workspace_ready(api, timeout=30)
         artifact_manager = await api.get_service("public/artifact-manager")
 
         # Create a vector-collection artifact

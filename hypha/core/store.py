@@ -35,7 +35,6 @@ from sqlalchemy.ext.asyncio import (
 from hypha.core.auth import (
     create_scope,
     parse_auth_token,
-    generate_anonymous_user,
     create_login_service,
     UserPermission,
     AUTH0_CLIENT_ID,
@@ -174,12 +173,12 @@ class RedisStore:
         # Create a fixed HTTP anonymous user. Grant read on public; set current to public
         # so we can use it to create a workspace interface safely.
         self._http_anonymous_user = UserInfo(
-            id="http-anonymous",
+            id="anonymouz-http",
             is_anonymous=True,
             email=None,
             parent=None,
             roles=["anonymous"],
-            scope=create_scope("public#r", current_workspace="public"),
+            scope=create_scope("ws-anonymous#r", current_workspace="ws-anonymous"),
             expires_at=None,
         )
         self._anonymous_workspace_info = None
@@ -798,16 +797,15 @@ class RedisStore:
             return user_info
         else:
             # Use a fixed anonymous user
-            if not hasattr(self, "_http_anonymous_user"):
-                self._http_anonymous_user = UserInfo(
-                    id="http-anonymous",
-                    is_anonymous=True,
-                    email=None,
-                    parent=None,
-                    roles=["anonymous"],
-                    scope=create_scope("public#r", current_workspace="public"),
-                    expires_at=None,
-                )
+            self._http_anonymous_user = UserInfo(
+                id="anonymouz-http",  # Use anonymouz- prefix for consistency
+                is_anonymous=True,
+                email=None,
+                parent=None,
+                roles=["anonymous"],
+                scope=create_scope("ws-anonymous#r", current_workspace="ws-anonymous"),
+                expires_at=None,
+            )
             return self._http_anonymous_user
 
     async def get_all_workspace(self):
@@ -982,6 +980,9 @@ class RedisStore:
     def set_artifact_manager(self, controller):
         """Set the artifact controller."""
         self._artifact_manager = controller
+        # Also update the workspace manager's reference if it exists
+        if hasattr(self, '_workspace_manager') and self._workspace_manager:
+            self._workspace_manager._artifact_manager = controller
 
     def register_public_service(self, service: dict):
         """Register a service."""
@@ -1111,21 +1112,31 @@ class RedisStore:
                 self._store = store
                 self._interface = None
                 self._interface_cm = None
+                self._default_workspace = None  # Cache the workspace to use
 
             def __call__(self, user_info=None, workspace=None):
                 """Support both wm() and wm(context) syntax for context manager."""
+                # If workspace is explicitly provided, remember it for future direct calls
+                if workspace is not None:
+                    self._default_workspace = workspace
+                
+                # Use the cached workspace or default to root user's workspace
+                effective_workspace = workspace or self._default_workspace or "public"
+
                 return WorkspaceManagerContextManager(
                     self._store,
                     user_info or self._store._root_user.model_dump(),
-                    workspace or "public",
+                    effective_workspace,
                 )
 
             async def _ensure_interface(self):
                 """Ensure we have an active interface, creating one if needed."""
                 if self._interface is None:
+                    # Use the cached workspace or default to root user's workspace
+                    workspace = self._default_workspace or "public"
                     self._interface_cm = self._store.get_workspace_interface(
                         self._store._root_user,
-                        "public",
+                        workspace,
                         client_id=None,
                         silent=True,
                     )

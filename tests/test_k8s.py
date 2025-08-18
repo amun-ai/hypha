@@ -602,12 +602,15 @@ class TestKubernetesWorker:
         
         # Test getting all logs
         logs = await worker.get_logs(worker_config.id)
-        assert "stdout" in logs
-        assert len(logs["stdout"]) >= 2  # Original logs plus k8s logs
+        assert "items" in logs
+        stdout_items = [item for item in logs["items"] if item["type"] == "stdout"]
+        assert len(stdout_items) >= 2  # Original logs plus k8s logs
         
         # Test getting specific log type
         stdout_logs = await worker.get_logs(worker_config.id, type="stdout", limit=1)
-        assert len(stdout_logs) == 1
+        assert "items" in stdout_logs
+        assert len(stdout_logs["items"]) == 1
+        assert stdout_logs["items"][0]["type"] == "stdout"
 
     @pytest.mark.asyncio
     async def test_get_logs_not_found(self, mock_k8s_config, mock_k8s_client):

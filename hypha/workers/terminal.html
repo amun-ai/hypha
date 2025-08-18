@@ -1,0 +1,1540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hypha Terminal</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.64/dist/hypha-rpc-websocket.min.js"></script>
+    
+    <!-- xterm.js -->
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+    
+    <!-- Tailwind Config -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        terminal: {
+                            bg: '#0d1117',
+                            surface: '#161b22',
+                            border: '#30363d',
+                            text: '#c9d1d9',
+                            accent: '#58a6ff',
+                            success: '#238636',
+                            error: '#da3633',
+                            warning: '#f85149'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <style>
+        .terminal-container {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            overflow: hidden;
+            padding: 4px;
+        }
+        .xterm-screen {
+            background-color: #0d1117 !important;
+        }
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .glass-effect {
+            backdrop-filter: blur(10px);
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+    </style>
+</head>
+<body class="bg-terminal-bg text-terminal-text min-h-screen overflow-hidden">
+    <!-- Login Screen -->
+    <div id="loginScreen" class="fixed inset-0 gradient-bg flex items-center justify-center">
+        <div class="glass-effect rounded-2xl p-8 w-96 max-w-md mx-4 shadow-2xl">
+            <div class="text-center mb-8">
+                <h1 class="text-3xl font-bold text-white mb-2">Hypha Terminal</h1>
+                <p class="text-gray-200">Secure cloud-based terminal access</p>
+            </div>
+            
+            <div class="space-y-4">
+                <button id="loginBtn" class="w-full bg-white bg-opacity-20 hover:bg-opacity-30 text-white font-semibold py-3 px-6 rounded-lg transition-all duration-200 border border-white border-opacity-30">
+                    <span class="flex items-center justify-center">
+                        <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M3 3a1 1 0 011 1v12a1 1 0 11-2 0V4a1 1 0 011-1zm7.707 3.293a1 1 0 010 1.414L9.414 9H17a1 1 0 110 2H9.414l1.293 1.293a1 1 0 01-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0z" clip-rule="evenodd"></path>
+                        </svg>
+                        Connect to Hypha
+                    </span>
+                </button>
+                
+                <div id="loginStatus" class="text-center text-sm text-gray-300 hidden">
+                    <div class="flex items-center justify-center">
+                        <div class="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                        Connecting...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main App -->
+    <div id="mainApp" class="hidden h-screen flex flex-col">
+        <!-- Header -->
+        <header class="bg-terminal-surface border-b border-terminal-border px-6 py-3 flex items-center justify-between">
+            <div class="flex items-center space-x-4">
+                <h1 class="text-xl font-bold text-terminal-accent">Hypha Terminal</h1>
+                <div id="userInfo" class="text-sm text-gray-400"></div>
+            </div>
+            
+            <div class="flex items-center space-x-2">
+                <!-- Terminal Management Menu -->
+                <div class="relative">
+                    <button id="terminalMenuBtn" class="bg-terminal-accent hover:bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center space-x-2 transition-colors">
+                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M3 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 10a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 15a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z" clip-rule="evenodd"></path>
+                        </svg>
+                        <span>Terminals</span>
+                    </button>
+                    
+                    <div id="terminalMenu" class="absolute right-0 mt-2 w-80 bg-terminal-surface border border-terminal-border rounded-lg shadow-lg z-50 hidden overflow-y-auto max-h-96">
+                        <div class="py-2">
+                            <button id="newTerminalBtn" class="w-full text-left px-4 py-2 hover:bg-terminal-border text-terminal-success flex items-center space-x-2">
+                                <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clip-rule="evenodd"></path>
+                                </svg>
+                                <span>New Terminal</span>
+                            </button>
+                            <div class="border-t border-terminal-border my-1"></div>
+                            <div id="terminalList" class="max-h-32 overflow-y-auto">
+                                <!-- Terminal list will be populated here -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- User Menu -->
+                <div class="relative">
+                    <button id="userMenuBtn" class="bg-terminal-surface hover:bg-terminal-border text-white p-2 rounded-lg flex items-center space-x-2 transition-colors border border-terminal-border">
+                        <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-6-3a2 2 0 11-4 0 2 2 0 014 0zm-2 4a5 5 0 00-4.546 2.916A5.986 5.986 0 0010 16a5.986 5.986 0 004.546-2.084A5 5 0 0010 11z" clip-rule="evenodd"></path>
+                        </svg>
+                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"></path>
+                        </svg>
+                    </button>
+                    
+                    <div id="userMenu" class="absolute right-0 mt-2 w-64 bg-terminal-surface border border-terminal-border rounded-lg shadow-lg z-50 hidden">
+                        <div class="py-2">
+                            <div class="px-4 py-2 border-b border-terminal-border">
+                                <div class="text-sm text-gray-400">Signed in as</div>
+                                <div id="userEmail" class="text-sm font-medium text-terminal-text truncate">
+                                    <!-- User email will be populated here -->
+                                </div>
+                            </div>
+                            <button id="logoutBtn" class="w-full text-left px-4 py-2 hover:bg-terminal-border text-terminal-error flex items-center space-x-2">
+                                <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd" d="M3 3a1 1 0 00-1 1v12a1 1 0 102 0V4a1 1 0 00-1-1zm10.293 9.293a1 1 0 001.414 1.414l3-3a1 1 0 000-1.414l-3-3a1 1 0 10-1.414 1.414L14.586 9H7a1 1 0 100 2h7.586l-1.293 1.293z" clip-rule="evenodd"></path>
+                                </svg>
+                                <span>Logout</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Terminal Tabs -->
+        <div id="terminalTabs" class="bg-terminal-surface border-b border-terminal-border px-6 py-0 hidden">
+            <div class="flex space-x-1 overflow-x-auto">
+                <!-- Tabs will be added here -->
+            </div>
+        </div>
+
+        <!-- Status Bar -->
+        <div id="statusBar" class="bg-terminal-surface border-b border-terminal-border px-6 py-2 text-sm">
+            <div class="flex items-center justify-between">
+                <div id="connectionStatus" class="flex items-center space-x-2">
+                    <div class="w-2 h-2 bg-terminal-success rounded-full"></div>
+                    <span class="text-terminal-text">Connected</span>
+                </div>
+                <div id="activeTerminalInfo" class="text-gray-400">
+                    No active terminal
+                </div>
+            </div>
+        </div>
+
+        <!-- Terminal Area -->
+        <div class="flex-1 flex">
+            <!-- Welcome Screen -->
+            <div id="welcomeScreen" class="flex-1 flex items-center justify-center bg-terminal-bg">
+                <div class="text-center">
+                    <div class="text-6xl mb-4">💻</div>
+                    <h2 class="text-2xl font-bold mb-4">Welcome to Hypha Terminal</h2>
+                    <p class="text-gray-400 mb-6">Create a new terminal to get started</p>
+                    <button id="welcomeNewTerminal" class="bg-terminal-accent hover:bg-blue-600 text-white px-6 py-3 rounded-lg transition-colors">
+                        Create New Terminal
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Terminal Container -->
+            <div id="terminalContainer" class="flex-1 terminal-container m-4 hidden">
+                <div id="terminal" class="h-full"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class HyphaTerminalApp {
+            constructor() {
+                this.server = null;
+                this.terminalService = null;
+                this.terminalServiceId = "{{TERMINAL_SERVICE_ID}}";
+                this.serverUrl = "{{SERVER_URL}}";
+                this.workspace = "{{WORKSPACE}}";
+                this.user = null;
+                this.terminals = new Map(); // Map of terminal_id -> {term, process_id, name}
+                this.activeTerminalId = null;
+                this.currentTerm = null;
+                this.fitAddon = null;
+                this.connectionRetryInterval = null;
+                this.isReconnecting = false;
+                this.isLoggedIn = false; // Track login state
+                this.attachableSessions = new Set(); // Track sessions that can be attached to
+                
+                this.initializeElements();
+                this.setupEventListeners();
+                this.loadPersistedTerminals();
+                
+                // Disable terminal creation buttons initially
+                this.disableTerminalCreation();
+                
+                // Get session ID from URL if present and store it
+                this.urlSessionId = this.getSessionIdFromUrl();
+                console.log('URL session ID on init:', this.urlSessionId);
+            }
+            
+            getSessionIdFromUrl() {
+                const urlParams = new URLSearchParams(window.location.search);
+                return urlParams.get('session');
+            }
+            
+            updateUrlWithSession(sessionId) {
+                // Only update the URL if it's different from current session
+                const currentSessionId = this.getSessionIdFromUrl();
+                if (currentSessionId !== sessionId) {
+                    const url = new URL(window.location);
+                    if (sessionId) {
+                        url.searchParams.set('session', sessionId);
+                    } else {
+                        url.searchParams.delete('session');
+                    }
+                    window.history.replaceState({}, '', url);
+                }
+            }
+            
+            // Helper function to get cookie value
+            getCookie(name) {
+                const value = `; ${document.cookie}`;
+                const parts = value.split(`; ${name}=`);
+                if (parts.length === 2) return parts.pop().split(';').shift();
+                return null;
+            }
+            
+            async tryAutoLogin() {
+                // Check for existing token from various sources
+                let token = null;
+                
+                // 1. First check cookies (set by login_template.html)
+                const cookieToken = this.getCookie('access_token');
+                if (cookieToken && !this.isTokenExpired(cookieToken)) {
+                    token = cookieToken;
+                    console.log('Found valid token in cookie');
+                }
+                
+                // 2. Check Auth0's localStorage cache
+                if (!token) {
+                    const auth0Keys = Object.keys(localStorage).filter(key => key.includes('@@auth0spajs@@'));
+                    for (const key of auth0Keys) {
+                        try {
+                            const auth0Data = JSON.parse(localStorage.getItem(key));
+                            if (auth0Data && auth0Data.body && auth0Data.body.access_token) {
+                                const candidateToken = auth0Data.body.access_token;
+                                if (!this.isTokenExpired(candidateToken)) {
+                                    token = candidateToken;
+                                    console.log('Found valid token in Auth0 cache');
+                                    break;
+                                }
+                            }
+                        } catch (e) {
+                            console.warn('Failed to parse Auth0 cache entry:', e);
+                        }
+                    }
+                }
+                
+                // 3. Check our own localStorage
+                if (!token) {
+                    const storedToken = localStorage.getItem("hypha_terminal_token");
+                    if (storedToken && !this.isTokenExpired(storedToken)) {
+                        token = storedToken;
+                        console.log('Found valid token in localStorage');
+                    }
+                }
+                
+                // If we found a valid token, attempt automatic login
+                if (token) {
+                    try {
+                        // Hide login screen and show loading state
+                        this.elements.loginScreen.classList.add('hidden');
+                        this.elements.mainApp.classList.remove('hidden');
+                        this.updateConnectionStatus('Connecting...', false);
+                        
+                        // Connect to Hypha server with token
+                        const serverUrl = this.serverUrl || "https://hypha.aicell.io";
+                        this.server = await hyphaWebsocketClient.connectToServer({
+                            server_url: serverUrl,
+                            token: token
+                        });
+                        
+                        // Validate server connection
+                        if (!this.server) {
+                            throw new Error('Failed to establish server connection');
+                        }
+                        
+                        // Get user information with safe config access
+                        const serverConfig = this.server.config || {};
+                        this.user = {
+                            id: serverConfig.user?.id || serverConfig.user_id || 'anonymous',
+                            email: serverConfig.user?.email || serverConfig.user_email || 'anonymous@example.com',
+                            workspace: serverConfig.workspace || this.workspace
+                        };
+                        
+                        // Store token for future use
+                        localStorage.setItem("hypha_terminal_token", token);
+                        
+                        // Connect to terminal service
+                        await this.connectToTerminalService();
+                        
+                        // Mark as logged in before showing main app
+                        this.isLoggedIn = true;
+                        
+                        // Show main app
+                        this.showMainApp();
+                        
+                        // Check if we have a session ID from URL to restore
+                        if (this.urlSessionId) {
+                            console.log('Restoring session from URL:', this.urlSessionId);
+                            try {
+                                await this.attachToSession(this.urlSessionId);
+                            } catch (error) {
+                                console.error('Failed to restore session from URL:', error);
+                                // Clear invalid session from URL
+                                this.updateUrlWithSession(null);
+                            }
+                        }
+                        
+                        console.log('Auto-login successful');
+                    } catch (error) {
+                        console.error('Auto-login failed:', error);
+                        
+                        // Clear invalid token
+                        if (error.message.includes('token') || error.message.includes('auth')) {
+                            localStorage.removeItem("hypha_terminal_token");
+                            // Don't clear cookie as it might still be valid for other services
+                        }
+                        
+                        // Show login screen
+                        this.elements.mainApp.classList.add('hidden');
+                        this.elements.loginScreen.classList.remove('hidden');
+                    }
+                } else {
+                    console.log('No valid token found for auto-login');
+                }
+            }
+
+            disableTerminalCreation() {
+                // Disable terminal creation buttons until login is complete
+                if (this.elements && this.elements.newTerminalBtn) {
+                    this.elements.newTerminalBtn.disabled = true;
+                }
+                if (this.elements && this.elements.welcomeNewTerminal) {
+                    this.elements.welcomeNewTerminal.disabled = true;
+                }
+            }
+            
+            enableTerminalCreation() {
+                // Enable terminal creation buttons after successful login
+                if (this.elements && this.elements.newTerminalBtn) {
+                    this.elements.newTerminalBtn.disabled = false;
+                }
+                if (this.elements && this.elements.welcomeNewTerminal) {
+                    this.elements.welcomeNewTerminal.disabled = false;
+                }
+            }
+
+            initializeElements() {
+                this.elements = {
+                    loginScreen: document.getElementById('loginScreen'),
+                    mainApp: document.getElementById('mainApp'),
+                    loginBtn: document.getElementById('loginBtn'),
+                    loginStatus: document.getElementById('loginStatus'),
+                    logoutBtn: document.getElementById('logoutBtn'),
+                    userInfo: document.getElementById('userInfo'),
+                    userMenuBtn: document.getElementById('userMenuBtn'),
+                    userMenu: document.getElementById('userMenu'),
+                    userEmail: document.getElementById('userEmail'),
+                    terminalMenuBtn: document.getElementById('terminalMenuBtn'),
+                    terminalMenu: document.getElementById('terminalMenu'),
+                    newTerminalBtn: document.getElementById('newTerminalBtn'),
+                    welcomeNewTerminal: document.getElementById('welcomeNewTerminal'),
+                    terminalList: document.getElementById('terminalList'),
+                    terminalTabs: document.getElementById('terminalTabs'),
+                    welcomeScreen: document.getElementById('welcomeScreen'),
+                    terminalContainer: document.getElementById('terminalContainer'),
+                    terminal: document.getElementById('terminal'),
+                    connectionStatus: document.getElementById('connectionStatus'),
+                    activeTerminalInfo: document.getElementById('activeTerminalInfo')
+                };
+            }
+
+            setupEventListeners() {
+                this.elements.loginBtn.addEventListener('click', () => this.login());
+                this.elements.logoutBtn.addEventListener('click', () => this.logout());
+                this.elements.newTerminalBtn.addEventListener('click', () => {
+                    if (!this.isLoggedIn) {
+                        this.showError('Please wait for login to complete');
+                        return;
+                    }
+                    this.createNewTerminal();
+                });
+                this.elements.welcomeNewTerminal.addEventListener('click', () => {
+                    if (!this.isLoggedIn) {
+                        this.showError('Please wait for login to complete');
+                        return;
+                    }
+                    this.createNewTerminal();
+                });
+                
+                // Terminal menu toggle
+                this.elements.terminalMenuBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.elements.terminalMenu.classList.toggle('hidden');
+                    this.elements.userMenu.classList.add('hidden');
+                });
+                
+                // User menu toggle
+                this.elements.userMenuBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.elements.userMenu.classList.toggle('hidden');
+                    this.elements.terminalMenu.classList.add('hidden');
+                });
+                
+                // Close menus when clicking outside
+                document.addEventListener('click', () => {
+                    this.elements.terminalMenu.classList.add('hidden');
+                    this.elements.userMenu.classList.add('hidden');
+                });
+                
+                // Handle window resize
+                window.addEventListener('resize', () => {
+                    if (this.fitAddon && this.currentTerm) {
+                        setTimeout(() => this.fitAddon.fit(), 100);
+                    }
+                });
+                
+                // Handle connection loss
+                window.addEventListener('beforeunload', () => {
+                    this.persistTerminals();
+                });
+                
+                // Remove auto-reconnect on visibility change - it's too aggressive
+                // Users can manually refresh if needed
+            }
+
+            // Helper function to decode JWT token
+            parseJwt(token) {
+                try {
+                    const base64Url = token.split('.')[1];
+                    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+                    const jsonPayload = decodeURIComponent(atob(base64).split('').map(function(c) {
+                        return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+                    }).join(''));
+                    return JSON.parse(jsonPayload);
+                } catch (e) {
+                    console.error('Failed to parse JWT:', e);
+                    return null;
+                }
+            }
+
+            isTokenExpired(token) {
+                const decoded = this.parseJwt(token);
+                if (!decoded || !decoded.exp) return true;
+                
+                // JWT exp is in seconds, convert to milliseconds
+                const expiryTime = decoded.exp * 1000;
+                const now = Date.now();
+                
+                // Consider token expired if it expires within 1 minute
+                return now >= (expiryTime - 60000);
+            }
+
+            async login() {
+                this.elements.loginBtn.disabled = true;
+                this.elements.loginStatus.classList.remove('hidden');
+                
+                try {
+                    // Try to get token from Auth0's cache first (stored by login_template.html)
+                    let token = null;
+                    
+                    // Check Auth0's localStorage cache for existing tokens
+                    // Auth0 SPA SDK stores tokens with keys like: @@auth0spajs@@::CLIENT_ID::AUDIENCE::openid profile email
+                    const auth0Keys = Object.keys(localStorage).filter(key => key.includes('@@auth0spajs@@'));
+                    
+                    for (const key of auth0Keys) {
+                        try {
+                            const auth0Data = JSON.parse(localStorage.getItem(key));
+                            if (auth0Data && auth0Data.body && auth0Data.body.access_token) {
+                                const candidateToken = auth0Data.body.access_token;
+                                
+                                // Check if token is still valid by decoding JWT
+                                if (!this.isTokenExpired(candidateToken)) {
+                                    token = candidateToken;
+                                    console.log('Found valid token in Auth0 cache');
+                                    break;
+                                }
+                            }
+                        } catch (e) {
+                            console.warn('Failed to parse Auth0 cache entry:', e);
+                        }
+                    }
+                    
+                    // Fallback to our own localStorage if no Auth0 token found
+                    if (!token) {
+                        const storedToken = localStorage.getItem("hypha_terminal_token");
+                        
+                        // Check if our stored token is expired
+                        if (storedToken && !this.isTokenExpired(storedToken)) {
+                            token = storedToken;
+                        } else if (storedToken) {
+                            // Remove expired token
+                            localStorage.removeItem("hypha_terminal_token");
+                        }
+                    }
+                    
+                    // Login if no valid token exists
+                    if (!token) {
+                        const loginCallback = (context) => {
+                            window.open(context.login_url, '_blank');
+                        };
+                        
+                        token = await hyphaWebsocketClient.login({
+                            "server_url": "https://hypha.aicell.io",
+                            "login_callback": loginCallback,
+                        });
+                        
+                        // Store token with prefix to avoid conflicts with Auth0's cache
+                        localStorage.setItem("hypha_terminal_token", token);
+                    }
+                    
+                    // Connect to Hypha server with token
+                    const serverUrl = this.serverUrl || "https://hypha.aicell.io";
+                    this.server = await hyphaWebsocketClient.connectToServer({
+                        server_url: serverUrl,
+                        token: token
+                    });
+                    
+                    // Validate server connection
+                    if (!this.server) {
+                        throw new Error('Failed to establish server connection');
+                    }
+                    
+                    // Get user information with safe config access
+                    const serverConfig = this.server.config || {};
+                    this.user = {
+                        id: serverConfig.user?.id || serverConfig.user_id || 'anonymous',
+                        email: serverConfig.user?.email || serverConfig.user_email || 'anonymous@example.com',
+                        workspace: serverConfig.workspace || this.workspace
+                    };
+                    
+                    // Connect to terminal service
+                    await this.connectToTerminalService();
+                    
+                    // Mark as logged in before showing main app
+                    this.isLoggedIn = true;
+                    
+                    // Switch to main app
+                    this.showMainApp();
+                    
+                } catch (error) {
+                    console.error('Login failed:', error);
+                    
+                    // Handle token expiration specifically
+                    if (error.message.includes('token has expired') || 
+                        error.message.includes('Authentication error') ||
+                        error.message.includes('ConnectionAbortedError')) {
+                        // Clear expired token (our custom keys only)
+                        localStorage.removeItem("hypha_terminal_token");
+                        
+                        // Show message and reload page
+                        this.showError('Session expired. Reloading page...');
+                        setTimeout(() => {
+                            window.location.reload();
+                        }, 2000);
+                        return;
+                    }
+                    
+                    this.showError('Login failed: ' + error.message);
+                    this.elements.loginBtn.disabled = false;
+                    this.elements.loginStatus.classList.add('hidden');
+                }
+            }
+
+            async connectToTerminalService() {
+                if (this.terminalServiceId && !this.terminalServiceId.includes("TERMINAL_SERVICE_ID")) {
+                    this.terminalService = await this.server.getService(this.terminalServiceId);
+                } else {
+                    // Fallback service discovery for worker service
+                    const services = await this.server.list_services();
+                    const terminalServices = services.filter(s => 
+                        s.id.includes('terminal-worker') || 
+                        s.id.includes('terminal-service') ||
+                        (s.config && s.config.supported_types && s.config.supported_types.includes('terminal'))
+                    );
+                    if (terminalServices.length > 0) {
+                        this.terminalService = await this.server.getService(terminalServices[0].id);
+                    } else {
+                        throw new Error('Terminal worker service not found');
+                    }
+                }
+                
+                // Load existing sessions
+                await this.loadExistingSessions();
+            }
+
+            async loadExistingSessions() {
+                try {
+                    // Get list of existing sessions from worker
+                    console.log('Loading existing sessions...');
+                    const result = await this.terminalService.list_sessions();
+                    console.log('List sessions result:', result);
+                    
+                    if (result && result.sessions && result.sessions.length > 0) {
+                        console.log(`Found ${result.sessions.length} existing sessions:`, result.sessions);
+                        
+                        // Show existing sessions in terminal list with attach option
+                        for (const session of result.sessions) {
+                            // Session is an object with session_id property
+                            const sessionId = typeof session === 'string' ? session : (session.session_id || session.id);
+                            if (sessionId) {
+                                console.log(`Adding attachable session: ${sessionId}`, session);
+                                this.showAttachableSession(sessionId);
+                            }
+                        }
+                        
+                        // Update UI to show sessions are available
+                        this.updateTerminalList();
+                        
+                        // If there are existing sessions but no active terminal, show notification
+                        if (this.terminals.size === 0 && result.sessions.length > 0) {
+                            this.showExistingSessionsNotification(result.sessions.length);
+                        }
+                    } else {
+                        console.log('No existing sessions found');
+                    }
+                } catch (error) {
+                    console.error('Failed to load existing sessions:', error);
+                }
+            }
+            
+            showAttachableSession(sessionId) {
+                // Add a placeholder entry for attachable session
+                if (!this.attachableSessions) {
+                    this.attachableSessions = new Set();
+                }
+                this.attachableSessions.add(sessionId);
+            }
+            
+            showExistingSessionsNotification(count) {
+                // Update welcome screen to show existing sessions
+                const welcomeScreen = this.elements.welcomeScreen;
+                if (welcomeScreen) {
+                    // Build session list HTML
+                    let sessionListItems = '';
+                    if (this.attachableSessions && this.attachableSessions.size > 0) {
+                        const sessionsArray = Array.from(this.attachableSessions);
+                        for (const sessionId of sessionsArray.slice(0, 5)) {  // Show first 5 sessions
+                            const shortId = sessionId.substring(0, 8);
+                            sessionListItems += `
+                                <button onclick="app.attachToSession('${sessionId}')" 
+                                        class="w-full text-left px-3 py-2 hover:bg-terminal-border rounded transition-colors flex items-center justify-between group">
+                                    <span class="text-terminal-text">Session ${shortId}</span>
+                                    <span class="text-xs text-gray-500 group-hover:text-terminal-accent">Attach →</span>
+                                </button>
+                            `;
+                        }
+                        if (sessionsArray.length > 5) {
+                            sessionListItems += `
+                                <div class="px-3 py-2 text-xs text-gray-500 text-center">
+                                    ... and ${sessionsArray.length - 5} more
+                                </div>
+                            `;
+                        }
+                    }
+                    
+                    const existingSessionsHtml = `
+                        <div class="mt-6 p-4 bg-terminal-surface border border-terminal-border rounded-lg">
+                            <h3 class="text-lg font-semibold mb-2 text-terminal-accent">Existing Sessions Found</h3>
+                            <p class="text-gray-400 mb-3">${count} session(s) are still running:</p>
+                            ${sessionListItems ? `<div class="mb-3 max-h-48 overflow-y-auto">${sessionListItems}</div>` : ''}
+                            <button onclick="app.showSessionPicker()" class="w-full bg-terminal-border hover:bg-terminal-accent text-white px-4 py-2 rounded-lg transition-colors">
+                                View All Sessions in Menu
+                            </button>
+                        </div>
+                    `;
+                    
+                    // Insert after the main welcome content
+                    const welcomeContent = welcomeScreen.querySelector('.text-center');
+                    if (welcomeContent && !welcomeScreen.querySelector('.existing-sessions-notice')) {
+                        const div = document.createElement('div');
+                        div.className = 'existing-sessions-notice';
+                        div.innerHTML = existingSessionsHtml;
+                        welcomeContent.appendChild(div);
+                    }
+                }
+                
+                // Also update the terminal menu button to show count
+                const menuBtn = this.elements.terminalMenuBtn;
+                if (menuBtn) {
+                    const badge = menuBtn.querySelector('.session-badge') || document.createElement('span');
+                    badge.className = 'session-badge ml-1 bg-terminal-accent text-white text-xs rounded-full px-2';
+                    badge.textContent = count;
+                    if (!menuBtn.querySelector('.session-badge')) {
+                        menuBtn.appendChild(badge);
+                    }
+                }
+            }
+            
+            async showSessionPicker() {
+                // First update the terminal list to show available sessions
+                await this.updateTerminalList();
+                // Open the terminal menu to show attachable sessions
+                this.elements.terminalMenu.classList.remove('hidden');
+            }
+
+            // Alias for compatibility
+            async attachToExistingSession(sessionId, sessionName) {
+                return this.attachToSession(sessionId, sessionName);
+            }
+            
+            async attachToSession(sessionId, sessionName) {
+                try {
+                    this.updateConnectionStatus('Attaching to session...', true);
+                    
+                    // Create xterm instance for existing session
+                    const term = new Terminal({
+                        cursorBlink: true,
+                        cursorStyle: 'block',
+                        fontSize: 14,
+                        fontFamily: 'JetBrains Mono, Consolas, Monaco, monospace',
+                        theme: {
+                            background: '#0d1117',
+                            foreground: '#c9d1d9',
+                            cursor: '#58a6ff',
+                            cursorAccent: '#0d1117',
+                            black: '#484f58',
+                            red: '#ff7b72',
+                            green: '#7ee787',
+                            yellow: '#f2cc60',
+                            blue: '#58a6ff',
+                            magenta: '#bc8cff',
+                            cyan: '#39c5cf',
+                            white: '#b1bac4',
+                            brightBlack: '#6e7681',
+                            brightRed: '#ffa198',
+                            brightGreen: '#56d364',
+                            brightYellow: '#e3b341',
+                            brightBlue: '#79c0ff',
+                            brightMagenta: '#d2a8ff',
+                            brightCyan: '#56d4dd',
+                            brightWhite: '#f0f6fc'
+                        },
+                        allowTransparency: false,
+                        scrollback: 1000,
+                        tabStopWidth: 4
+                    });
+
+                    // Add addons
+                    const fitAddon = new FitAddon.FitAddon();
+                    term.loadAddon(fitAddon);
+                    term.loadAddon(new WebLinksAddon.WebLinksAddon());
+
+                    // Store terminal data
+                    this.terminals.set(sessionId, {
+                        term,
+                        fitAddon,
+                        name: sessionName || `Session ${sessionId.substring(0, 8)}`,
+                        created: new Date(),
+                        attached: true
+                    });
+                    
+                    // Attach to the session with optimized callback for real-time updates
+                    this.terminalService.attach(sessionId, async (data) => {
+                        await this.handleTerminalUpdate(sessionId, data);
+                    }).then(result => {
+                        console.log('Detached from session:', result);
+                        if (result.detached) {
+                            console.log(`Session ${sessionId} has been detached`);
+                        }
+                    }).catch(error => {
+                        console.error('Attach error:', error);
+                    });
+
+                    // Set up terminal event handlers - send data immediately without buffering
+                    term.onData((data) => {
+                        if (this.activeTerminalId === sessionId) {
+                            // Send data immediately for better responsiveness
+                            this.sendToTerminal(sessionId, data);
+                        }
+                    });
+
+                    term.onResize((size) => {
+                        if (this.activeTerminalId === sessionId) {
+                            this.terminalService.resize_terminal(sessionId, size.rows, size.cols);
+                        }
+                    });
+
+                    // Remove from attachable sessions since it's now attached
+                    if (this.attachableSessions) {
+                        this.attachableSessions.delete(sessionId);
+                    }
+                    
+                    // Switch to this terminal
+                    this.switchToTerminal(sessionId);
+                    this.updateTerminalList();
+                    this.updateConnectionStatus('Connected', true);
+                    
+                } catch (error) {
+                    console.error('Failed to attach to session:', error);
+                    this.showError('Failed to attach to session: ' + error.message);
+                    this.updateConnectionStatus('Connected', true);
+                }
+            }
+
+            showMainApp() {
+                this.elements.loginScreen.classList.add('hidden');
+                this.elements.mainApp.classList.remove('hidden');
+                this.elements.userInfo.textContent = `${this.user.email} @ ${this.user.workspace}`;
+                this.elements.userEmail.textContent = this.user.email;
+                
+                // Mark as logged in and enable terminal creation
+                this.isLoggedIn = true;
+                this.enableTerminalCreation();
+                
+                // Preserve URL query parameters when showing main app
+                // The URL should not be modified here
+                this.updateConnectionStatus('Connected', true);
+            }
+
+            logout() {
+                // Persist terminals before logout
+                this.persistTerminals();
+                
+                // Close all terminals
+                for (const [terminalId, terminalData] of this.terminals) {
+                    this.closeTerminal(terminalId, false);
+                }
+                
+                // Clear stored token (our custom keys only, preserve Auth0's cache)
+                localStorage.removeItem("hypha_terminal_token");
+                
+                // Stop reconnection attempts
+                if (this.connectionRetryInterval) {
+                    clearInterval(this.connectionRetryInterval);
+                    this.connectionRetryInterval = null;
+                }
+                
+                // Reset state
+                this.terminals.clear();
+                this.activeTerminalId = null;
+                this.currentTerm = null;
+                this.server = null;
+                this.terminalService = null;
+                this.user = null;
+                this.isReconnecting = false;
+                this.isLoggedIn = false; // Mark as logged out
+                
+                // Disable terminal creation buttons
+                this.disableTerminalCreation();
+                
+                // Show login screen
+                this.elements.mainApp.classList.add('hidden');
+                this.elements.loginScreen.classList.remove('hidden');
+                this.elements.loginBtn.disabled = false;
+                this.elements.loginStatus.classList.add('hidden');
+            }
+
+            async createNewTerminal() {
+                // Double-check login state
+                if (!this.isLoggedIn || !this.server || !this.terminalService) {
+                    this.showError('Cannot create terminal: Not fully connected to server');
+                    return;
+                }
+                
+                try {
+                    this.updateConnectionStatus('Creating terminal...', true);
+                    
+                    // Generate a unique session ID
+                    const sessionId = `term-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                    
+                    // Create config for worker start method with safe config access
+                    const serverConfig = this.server.config || {};
+                    const config = {
+                        id: sessionId,
+                        app_id: `terminal-app-${sessionId}`,
+                        artifact_id: `terminal-artifact-${sessionId}`,
+                        server_url: this.serverUrl || "https://hypha.aicell.io",
+                        workspace: this.workspace || serverConfig.workspace,
+                        client_id: serverConfig.client_id,
+                        token: serverConfig.token,
+                        manifest: {
+                            type: "terminal",
+                            startup_command: "/bin/bash"
+                        },
+                        entry_point: "main.sh"
+                    };
+                    
+                    // Start terminal session using worker API
+                    const result = await this.terminalService.start(config);
+                    
+                    const terminalId = result; // start returns the session ID
+                    const terminalName = `Terminal ${this.terminals.size + 1}`;
+                    
+                    // Create xterm instance first
+                    const term = new Terminal({
+                        cursorBlink: true,
+                        cursorStyle: 'block',
+                        fontSize: 14,
+                        fontFamily: 'JetBrains Mono, Consolas, Monaco, monospace',
+                        theme: {
+                            background: '#0d1117',
+                            foreground: '#c9d1d9',
+                            cursor: '#58a6ff',
+                            cursorAccent: '#0d1117',
+                            black: '#484f58',
+                            red: '#ff7b72',
+                            green: '#7ee787',
+                            yellow: '#f2cc60',
+                            blue: '#58a6ff',
+                            magenta: '#bc8cff',
+                            cyan: '#39c5cf',
+                            white: '#b1bac4',
+                            brightBlack: '#6e7681',
+                            brightRed: '#ffa198',
+                            brightGreen: '#56d364',
+                            brightYellow: '#e3b341',
+                            brightBlue: '#79c0ff',
+                            brightMagenta: '#d2a8ff',
+                            brightCyan: '#56d4dd',
+                            brightWhite: '#f0f6fc'
+                        },
+                        allowTransparency: false,
+                        scrollback: 1000,
+                        tabStopWidth: 4
+                    });
+
+                    // Add addons
+                    const fitAddon = new FitAddon.FitAddon();
+                    term.loadAddon(fitAddon);
+                    term.loadAddon(new WebLinksAddon.WebLinksAddon());
+
+                    // Store terminal data
+                    this.terminals.set(terminalId, {
+                        term,
+                        fitAddon,
+                        name: terminalName,
+                        created: new Date()
+                    });
+                    
+                    // Attach to the session with optimized callback for real-time updates
+                    this.terminalService.attach(terminalId, async (data) => {
+                        await this.handleTerminalUpdate(terminalId, data);
+                    }).then(result => {
+                        console.log('Detached from session:', result);
+                        if (result.detached) {
+                            console.log(`Session ${terminalId} has been detached`);
+                        }
+                    }).catch(error => {
+                        console.error('Attach error:', error);
+                    });
+
+                    // Set up terminal event handlers - send data immediately without buffering
+                    term.onData((data) => {
+                        if (this.activeTerminalId === terminalId) {
+                            // Send data immediately for better responsiveness
+                            this.sendToTerminal(terminalId, data);
+                        }
+                    });
+
+                    term.onResize((size) => {
+                        if (this.activeTerminalId === terminalId) {
+                            this.terminalService.resize_terminal(terminalId, size.rows, size.cols);
+                        }
+                    });
+
+                    // Switch to this terminal
+                    this.switchToTerminal(terminalId);
+                    this.updateTerminalList();
+                    this.updateConnectionStatus('Connected', true);
+                    
+                } catch (error) {
+                    console.error('Failed to create terminal:', error);
+                    if (error.message.includes('not in authorized users list') || error.message.includes('No user email found')) {
+                        this.showError('Access denied: You are not authorized to use this terminal service.');
+                        this.logout(); // Force logout on authorization error
+                    } else {
+                        this.showError('Failed to create terminal: ' + error.message);
+                    }
+                    this.updateConnectionStatus('Connected', true);
+                }
+            }
+
+            switchToTerminal(terminalId) {
+                if (!this.terminals.has(terminalId)) return;
+                
+                // Hide welcome screen
+                this.elements.welcomeScreen.classList.add('hidden');
+                this.elements.terminalContainer.classList.remove('hidden');
+                
+                // Switch active terminal
+                this.activeTerminalId = terminalId;
+                const terminalData = this.terminals.get(terminalId);
+                
+                // Update URL with session ID
+                this.updateUrlWithSession(terminalId);
+                
+                // Clear container and mount new terminal
+                this.elements.terminal.innerHTML = '';
+                terminalData.term.open(this.elements.terminal);
+                
+                // Store references
+                this.currentTerm = terminalData.term;
+                this.fitAddon = terminalData.fitAddon;
+                
+                // Fit terminal to container
+                setTimeout(() => {
+                    if (this.fitAddon && this.currentTerm) {
+                        this.fitAddon.fit();
+                        // Set terminal size on backend
+                        const size = { rows: this.currentTerm.rows, cols: this.currentTerm.cols };
+                        this.terminalService.resize_terminal(terminalId, size.rows, size.cols).catch(e => {
+                            console.warn('Failed to resize terminal:', e);
+                        });
+                    }
+                }, 100);
+                
+                // Focus the terminal so user can type
+                if (this.currentTerm) {
+                    this.currentTerm.focus();
+                }
+                
+                // Update UI
+                this.elements.activeTerminalInfo.textContent = `Active: ${terminalData.name}`;
+                this.updateTerminalTabs();
+            }
+
+            async sendToTerminal(terminalId, data) {
+                if (!this.terminalService || !data) return;
+                
+                try {
+                    // For large pastes, send in chunks to prevent overwhelming the backend
+                    // Optimized for speed: larger chunks and minimal delay
+                    const CHUNK_SIZE = 4096; // 4KB chunks for faster throughput
+                    const CHUNK_DELAY = 2; // 2ms minimal delay, just enough to prevent blocking
+                    
+                    if (data.length <= CHUNK_SIZE) {
+                        // Small data, send directly
+                        const result = await this.terminalService.write_to_terminal(terminalId, data);
+                        if (!result.success) {
+                            console.error('Terminal write failed:', result.error);
+                            // Don't show error to user for individual keystrokes unless it's serious
+                            if (result.error.includes('not found')) {
+                                this.showError('Terminal session lost. Please create a new terminal.');
+                                this.closeTerminal(terminalId, false);
+                            }
+                        }
+                    } else {
+                        // Large data, send in chunks with adaptive delay
+                        console.log(`Sending large input (${data.length} chars) in ${Math.ceil(data.length / CHUNK_SIZE)} chunks`);
+                        
+                        // Send chunks with minimal delay for speed
+                        const chunks = [];
+                        for (let i = 0; i < data.length; i += CHUNK_SIZE) {
+                            chunks.push(data.substring(i, i + CHUNK_SIZE));
+                        }
+                        
+                        // Process chunks with optimized batching
+                        for (let i = 0; i < chunks.length; i++) {
+                            const chunk = chunks[i];
+                            
+                            const result = await this.terminalService.write_to_terminal(terminalId, chunk);
+                            if (!result.success) {
+                                console.error('Terminal write failed:', result.error);
+                                if (result.error.includes('not found')) {
+                                    this.showError('Terminal session lost. Please create a new terminal.');
+                                    this.closeTerminal(terminalId, false);
+                                    break;
+                                }
+                            }
+                            
+                            // Use adaptive delay: shorter delays for smaller remaining data
+                            if (i + 1 < chunks.length) {
+                                // Only yield control briefly to prevent UI freezing
+                                // Use 0 delay for microtask scheduling when we have few chunks left
+                                const delay = chunks.length - i > 5 ? CHUNK_DELAY : 0;
+                                if (delay > 0) {
+                                    await new Promise(resolve => setTimeout(resolve, delay));
+                                } else {
+                                    // Yield control to microtask queue without delay
+                                    await Promise.resolve();
+                                }
+                            }
+                        }
+                    }
+                } catch (error) {
+                    console.error('Failed to send data to terminal:', error);
+                    if (error.message.includes('not in authorized users list') || error.message.includes('No user email found')) {
+                        this.showError('Access denied: You are not authorized to use this terminal service.');
+                        this.logout(); // Force logout on authorization error
+                    } else if (error.message.includes('connection') || error.message.includes('network')) {
+                        this.updateConnectionStatus('Connection error', false);
+                    }
+                }
+            }
+
+            async writeToTerminalChunked(terminal, content) {
+                // Optimized chunked writing to prevent xterm.js from being overwhelmed
+                const CHUNK_SIZE = 8192; // 8KB chunks for better performance
+                const CHUNK_DELAY = 5; // 5ms delay between chunks
+                
+                if (content.length <= CHUNK_SIZE) {
+                    terminal.write(content);
+                    return;
+                }
+                
+                console.log(`Writing large content (${content.length} chars) in ${Math.ceil(content.length / CHUNK_SIZE)} chunks`);
+                
+                // Process chunks with minimal delay
+                for (let i = 0; i < content.length; i += CHUNK_SIZE) {
+                    const chunk = content.substring(i, i + CHUNK_SIZE);
+                    terminal.write(chunk);
+                    
+                    // Only delay if there are more chunks to process
+                    if (i + CHUNK_SIZE < content.length) {
+                        await new Promise(resolve => setTimeout(resolve, CHUNK_DELAY));
+                    }
+                }
+            }
+
+            async handleTerminalUpdate(sessionId, data) {
+                // Centralized handler for all terminal updates
+                const terminalData = this.terminals.get(sessionId);
+                if (!terminalData) return;
+                
+                try {
+                    if (data.type === 'initial') {
+                        // Initial screen content - use chunked writing for large content
+                        if (data.content) {
+                            await this.writeToTerminalChunked(terminalData.term, data.content);
+                        }
+                        // Restore terminal size if provided
+                        if (data.terminal_size) {
+                            const { rows, cols } = data.terminal_size;
+                            console.log(`Restoring terminal size to ${rows}x${cols}`);
+                            terminalData.term.resize(cols, rows);
+                            // Sync size with backend
+                            this.terminalService.resize_terminal(sessionId, rows, cols).catch(e => {
+                                console.warn('Failed to sync terminal size:', e);
+                            });
+                        }
+                    } else if (data.type === 'refresh') {
+                        // Full screen refresh - clear and write new content
+                        if (data.content) {
+                            terminalData.term.clear();
+                            await this.writeToTerminalChunked(terminalData.term, data.content);
+                        }
+                    } else if (data.type === 'update') {
+                        // Incremental update - write directly for better performance
+                        if (data.content) {
+                            terminalData.term.write(data.content);
+                        }
+                    }
+                } catch (error) {
+                    console.error(`Failed to handle terminal update for ${sessionId}:`, error);
+                }
+            }
+
+
+            updateTerminalList() {
+                const listElement = this.elements.terminalList;
+                listElement.innerHTML = '';
+                
+                // Show attachable sessions first
+                if (this.attachableSessions && this.attachableSessions.size > 0) {
+                    const header = document.createElement('div');
+                    header.className = 'px-4 py-1 text-xs text-gray-500 uppercase tracking-wider';
+                    header.textContent = 'Available Sessions';
+                    listElement.appendChild(header);
+                    
+                    for (const sessionId of this.attachableSessions) {
+                        // Skip if already attached
+                        if (this.terminals.has(sessionId)) continue;
+                        
+                        const item = document.createElement('div');
+                        item.className = 'px-4 py-2 hover:bg-terminal-border cursor-pointer flex items-center justify-between';
+                        
+                        // Safely get a short version of the ID
+                        const sessionIdStr = String(sessionId);
+                        const shortId = sessionIdStr.length > 8 ? sessionIdStr.substring(0, 8) : sessionIdStr;
+                        item.innerHTML = `
+                            <span class="text-sm text-gray-400">Session ${shortId}...</span>
+                            <button class="text-terminal-accent hover:text-blue-400 ml-2" onclick="app.attachToSession('${sessionIdStr}')">
+                                Attach
+                            </button>
+                        `;
+                        
+                        listElement.appendChild(item);
+                    }
+                    
+                    if (this.terminals.size > 0) {
+                        const divider = document.createElement('div');
+                        divider.className = 'border-t border-terminal-border my-1';
+                        listElement.appendChild(divider);
+                        
+                        const activeHeader = document.createElement('div');
+                        activeHeader.className = 'px-4 py-1 text-xs text-gray-500 uppercase tracking-wider';
+                        activeHeader.textContent = 'Active Terminals';
+                        listElement.appendChild(activeHeader);
+                    }
+                }
+                
+                // Show active terminals
+                for (const [terminalId, terminalData] of this.terminals) {
+                    const item = document.createElement('div');
+                    item.className = `px-4 py-2 hover:bg-terminal-border cursor-pointer flex items-center justify-between ${
+                        terminalId === this.activeTerminalId ? 'bg-terminal-border' : ''
+                    }`;
+                    
+                    item.innerHTML = `
+                        <span class="text-sm">${terminalData.name}</span>
+                        <button class="text-terminal-error hover:text-red-400 ml-2" onclick="app.closeTerminal('${terminalId}')">×</button>
+                    `;
+                    
+                    item.addEventListener('click', (e) => {
+                        if (e.target.tagName !== 'BUTTON') {
+                            this.switchToTerminal(terminalId);
+                            this.elements.terminalMenu.classList.add('hidden');
+                        }
+                    });
+                    
+                    listElement.appendChild(item);
+                }
+                
+                // If no sessions at all
+                if ((!this.attachableSessions || this.attachableSessions.size === 0) && this.terminals.size === 0) {
+                    const empty = document.createElement('div');
+                    empty.className = 'px-4 py-2 text-sm text-gray-500 italic';
+                    empty.textContent = 'No terminals available';
+                    listElement.appendChild(empty);
+                }
+            }
+
+            updateTerminalTabs() {
+                // Show/hide tabs based on terminal count
+                if (this.terminals.size > 1) {
+                    this.elements.terminalTabs.classList.remove('hidden');
+                    // Implementation for tabs can be added here
+                } else {
+                    this.elements.terminalTabs.classList.add('hidden');
+                }
+            }
+
+            async closeTerminal(terminalId, switchToAnother = true) {
+                if (!this.terminals.has(terminalId)) return;
+                
+                try {
+                    // Stop session on backend using worker API
+                    // This will also cause any attached callbacks to stop
+                    await this.terminalService.stop(terminalId);
+                } catch (error) {
+                    console.error('Failed to close terminal on backend:', error);
+                    if (`${error}`.includes('not in authorized users list') || error.message.includes('No user email found')) {
+                        this.showError('Access denied: You are not authorized to use this terminal service.');
+                        this.logout(); // Force logout on authorization error
+                        return;
+                    }
+                }
+                
+                // Clean up frontend
+                const terminalData = this.terminals.get(terminalId);
+                if (terminalData.term) {
+                    terminalData.term.dispose();
+                }
+                
+                this.terminals.delete(terminalId);
+                
+                // Also remove from attachable sessions if it's there
+                if (this.attachableSessions) {
+                    this.attachableSessions.delete(terminalId);
+                }
+                
+                // Switch to another terminal or show welcome screen
+                if (terminalId === this.activeTerminalId) {
+                    this.activeTerminalId = null;
+                    this.currentTerm = null;
+                    this.fitAddon = null;
+                    
+                    if (switchToAnother && this.terminals.size > 0) {
+                        const nextTerminalId = this.terminals.keys().next().value;
+                        this.switchToTerminal(nextTerminalId);
+                    } else {
+                        this.elements.terminalContainer.classList.add('hidden');
+                        this.elements.welcomeScreen.classList.remove('hidden');
+                        this.elements.activeTerminalInfo.textContent = 'No active terminal';
+                        // Clear URL when no terminal is active
+                        this.updateUrlWithSession(null);
+                    }
+                }
+                
+                this.updateTerminalList();
+                this.updateTerminalTabs();
+            }
+
+            updateConnectionStatus(message, isConnected) {
+                const statusElement = this.elements.connectionStatus;
+                const dot = statusElement.querySelector('.w-2');
+                const text = statusElement.querySelector('span');
+                
+                if (isConnected) {
+                    dot.className = 'w-2 h-2 bg-terminal-success rounded-full';
+                } else {
+                    dot.className = 'w-2 h-2 bg-terminal-error rounded-full';
+                }
+                
+                text.textContent = message;
+            }
+
+            showError(message) {
+                // Simple error display - could be enhanced with a proper modal
+                alert(message);
+            }
+            
+            persistTerminals() {
+                if (!this.user) return;
+                
+                const persistData = {
+                    userId: this.user.id,
+                    terminals: Array.from(this.terminals.entries()).map(([id, data]) => ({
+                        id,
+                        name: data.name,
+                        created: data.created.toISOString()
+                    })),
+                    activeTerminalId: this.activeTerminalId
+                };
+                
+                localStorage.setItem('hyphaTerminals', JSON.stringify(persistData));
+            }
+            
+            loadPersistedTerminals() {
+                try {
+                    const persistData = localStorage.getItem('hyphaTerminals');
+                    if (persistData) {
+                        this.persistedTerminals = JSON.parse(persistData);
+                    }
+                } catch (error) {
+                    console.warn('Failed to load persisted terminals:', error);
+                    localStorage.removeItem('hyphaTerminals');
+                }
+            }
+            
+            async checkConnection() {
+                // Disabled auto-reconnect to prevent aggressive reconnection on refocus
+                // Users can manually refresh the page if connection is lost
+                return;
+            }
+            
+            async attemptReconnect() {
+                if (this.isReconnecting) return;
+                
+                this.isReconnecting = true;
+                this.updateConnectionStatus('Reconnecting...', false);
+                
+                try {
+                    const token = localStorage.getItem('hypha_terminal_token');
+                    
+                    if (!token) {
+                        throw new Error('No valid token found');
+                    }
+                    
+                    // Check if token is still valid by decoding JWT
+                    if (this.isTokenExpired(token)) {
+                        throw new Error('Token expired');
+                    }
+                    
+                    // Attempt to reconnect
+                    this.server = await hyphaWebsocketClient.connectToServer({
+                        server_url: "https://hypha.aicell.io",
+                        token: token
+                    });
+                    
+                    await this.connectToTerminalService();
+                    
+                    // Restore terminals if they were persisted and match current user
+                    if (this.persistedTerminals && this.persistedTerminals.userId === this.user.id) {
+                        await this.restoreTerminals();
+                    }
+                    
+                    this.updateConnectionStatus('Connected', true);
+                    this.isReconnecting = false;
+                    
+                } catch (error) {
+                    console.error('Reconnection failed:', error);
+                    
+                    // Handle token expiration during reconnection
+                    if (error.message.includes('token has expired') || 
+                        error.message.includes('Authentication error') ||
+                        error.message.includes('ConnectionAbortedError')) {
+                        // Clear expired token and force logout
+                        localStorage.removeItem("hypha_terminal_token");
+                        
+                        this.showError('Session expired. Please log in again.');
+                        this.logout();
+                        return;
+                    }
+                    
+                    this.updateConnectionStatus('Connection lost', false);
+                    
+                    // Retry connection every 5 seconds
+                    this.connectionRetryInterval = setTimeout(() => {
+                        this.isReconnecting = false;
+                        this.attemptReconnect();
+                    }, 5000);
+                }
+            }
+            
+            async restoreTerminals() {
+                if (!this.persistedTerminals || !this.persistedTerminals.terminals) return;
+                
+                const terminalPromises = this.persistedTerminals.terminals.map(async (terminalInfo) => {
+                    try {
+                        // Check if terminal still exists on server
+                        const result = await this.terminalService.read_from_terminal(terminalInfo.id);
+                        if (result.success || result.error.includes('No output available')) {
+                            // Terminal exists, restore it
+                            await this.recreateTerminalInstance(terminalInfo);
+                            return terminalInfo.id;
+                        }
+                    } catch (error) {
+                        console.warn(`Terminal ${terminalInfo.id} no longer exists on server`);
+                    }
+                    return null;
+                });
+                
+                const restoredIds = (await Promise.all(terminalPromises)).filter(id => id !== null);
+                
+                // Switch to the previously active terminal if it was restored
+                if (restoredIds.includes(this.persistedTerminals.activeTerminalId)) {
+                    this.switchToTerminal(this.persistedTerminals.activeTerminalId);
+                } else if (restoredIds.length > 0) {
+                    this.switchToTerminal(restoredIds[0]);
+                }
+                
+                this.updateTerminalList();
+                
+                // Clear persisted data after successful restore
+                this.persistedTerminals = null;
+                localStorage.removeItem('hyphaTerminals');
+            }
+            
+            async recreateTerminalInstance(terminalInfo) {
+                // Create xterm instance (same as in createNewTerminal)
+                const term = new Terminal({
+                    cursorBlink: true,
+                    cursorStyle: 'block',
+                    fontSize: 14,
+                    fontFamily: 'JetBrains Mono, Consolas, Monaco, monospace',
+                    theme: {
+                        background: '#0d1117',
+                        foreground: '#c9d1d9',
+                        cursor: '#58a6ff',
+                        cursorAccent: '#0d1117',
+                        black: '#484f58',
+                        red: '#ff7b72',
+                        green: '#7ee787',
+                        yellow: '#f2cc60',
+                        blue: '#58a6ff',
+                        magenta: '#bc8cff',
+                        cyan: '#39c5cf',
+                        white: '#b1bac4',
+                        brightBlack: '#6e7681',
+                        brightRed: '#ffa198',
+                        brightGreen: '#56d364',
+                        brightYellow: '#e3b341',
+                        brightBlue: '#79c0ff',
+                        brightMagenta: '#d2a8ff',
+                        brightCyan: '#56d4dd',
+                        brightWhite: '#f0f6fc'
+                    },
+                    allowTransparency: false,
+                    scrollback: 1000,
+                    tabStopWidth: 4
+                });
+
+                // Add addons
+                const fitAddon = new FitAddon.FitAddon();
+                term.loadAddon(fitAddon);
+                term.loadAddon(new WebLinksAddon.WebLinksAddon());
+
+                // Store terminal data
+                this.terminals.set(terminalInfo.id, {
+                    term,
+                    fitAddon,
+                    name: terminalInfo.name,
+                    created: new Date(terminalInfo.created)
+                });
+
+                // Set up terminal event handlers - send data immediately without buffering  
+                term.onData((data) => {
+                    if (this.activeTerminalId === terminalInfo.id) {
+                        // Send data immediately for better responsiveness
+                        this.sendToTerminal(terminalInfo.id, data);
+                    }
+                });
+
+                term.onResize((size) => {
+                    if (this.activeTerminalId === terminalInfo.id) {
+                        this.terminalService.resize_terminal(terminalInfo.id, size.rows, size.cols);
+                    }
+                });
+            }
+        }
+
+        // Initialize the app
+        let app;
+        document.addEventListener('DOMContentLoaded', () => {
+            app = new HyphaTerminalApp();
+            // Make app globally accessible for onclick handlers
+            window.app = app;
+            // Automatically attempt login on page load
+            app.tryAutoLogin();
+        });
+    </script>
+</body>
+</html>

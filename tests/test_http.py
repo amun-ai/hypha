@@ -519,7 +519,7 @@ async def test_http_auth_context(minio_server, fastapi_server, test_user_token):
 
         # Without token, user should be anonymous or None
         if result.get("user_id"):
-            assert result.get("user_id") == "http-anonymous"
+            assert result.get("user_id") == "anonymouz-http"
         print("✓ Anonymous access works correctly")
     else:
         # For now, let's allow the test to continue even if this fails
@@ -551,7 +551,7 @@ async def test_http_auth_context(minio_server, fastapi_server, test_user_token):
 
         # With token, user should NOT be anonymous
         if result.get("user_id"):
-            assert result.get("user_id") != "http-anonymous"
+            assert result.get("user_id") != "anonymouz-http"
         print("✓ Authenticated access works correctly")
     else:
         print("⚠ Authenticated access returned non-200 status")
@@ -595,7 +595,7 @@ async def test_http_auth_context(minio_server, fastapi_server, test_user_token):
 
         # Should succeed with authenticated user
         if result.get("user_id"):
-            assert result.get("user_id") != "http-anonymous"
+            assert result.get("user_id") != "anonymouz-http"
         print("✓ Protected service accepts authenticated access")
     else:
         print("⚠ Protected service with token returned non-200 status")

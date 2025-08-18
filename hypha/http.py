@@ -570,6 +570,13 @@ class HTTPProxy:
                 )
 
         @app.get(norm_url("/{workspace}/services"))
+        async def get_workspace_services_redirect(
+            workspace: str,
+            user_info: store.login_optional = Depends(store.login_optional),
+        ):
+            return RedirectResponse(url=norm_url(f"/{workspace}/services/"))
+
+        @app.get(norm_url("/{workspace}/services/"))
         async def get_workspace_services(
             workspace: str,
             user_info: store.login_optional = Depends(store.login_optional),
@@ -904,6 +911,9 @@ class HTTPProxy:
             """
             try:
                 workspace, service_id, function_key = function_info
+                # The workspace should always be the user's current workspace
+                # derived from the token
+                # We should never trust the workspace specified in the url or query
                 async with self.store.get_workspace_interface(
                     user_info, user_info.scope.current_workspace
                 ) as api:
@@ -1135,6 +1145,11 @@ class HTTPProxy:
                             "detail": f"File not found: {inner_path}",
                         },
                     )
+                else:
+                    # redirect /{workspace} to /{workspace}/
+                    if not page.endswith("/") and inner_path == "index.html":
+                        # redirect it to the version with trailing slash
+                        return RedirectResponse(norm_url(f"/{dir_path}/"))
                 return FileResponse(safe_join(str(self.ws_apps_dir), inner_path))
             file_path = safe_join(str(self.templates_dir), page)
             if not is_safe_path(str(self.templates_dir), file_path):

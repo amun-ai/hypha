@@ -571,9 +571,9 @@ async def test_asgi_auth_context(fastapi_server, test_user_token):
 
         # Without token, user should be anonymous but context should still be available
         # Public services run in the public workspace, not the user's workspace
-        assert result.get("user_id") == "http-anonymous"
+        assert result.get("user_id") == "anonymouz-http"
         assert result.get("has_context") == True
-        assert result.get("workspace") == "public"
+        assert result.get("workspace") == "ws-anonymous"
         print("✓ Anonymous ASGI access works with context")
 
     # Test 2: Public ASGI service WITH token
@@ -593,11 +593,11 @@ async def test_asgi_auth_context(fastapi_server, test_user_token):
 
         # With token, user should NOT be anonymous
         # With authentication, the context reflects the user's workspace
-        assert result.get("user_id") != "http-anonymous"
+        assert result.get("user_id") != "anonymouz-http"
         assert result.get("has_context") == True
         assert result.get("workspace") == workspace
         user_info = result.get("user_info", {})
-        assert user_info.get("id") != "http-anonymous"
+        assert user_info.get("id") != "anonymouz-http"
         print("✓ Authenticated ASGI access works with context")
 
     # Test 3: Protected ASGI service WITHOUT token - should fail or show anonymous
@@ -613,7 +613,7 @@ async def test_asgi_auth_context(fastapi_server, test_user_token):
             print(f"User ID: {result.get('user_id')}")
             print(f"Has context: {result.get('has_context')}")
             # For protected services, anonymous access might still work but with limited context
-            assert result.get("user_id") == "http-anonymous"
+            assert result.get("user_id") == "anonymouz-http"
             assert result.get("has_context") == True
         else:
             print("Protected service correctly rejects anonymous access")
@@ -634,7 +634,7 @@ async def test_asgi_auth_context(fastapi_server, test_user_token):
 
         # Should succeed with authenticated user
         # Protected services run in the user's workspace
-        assert result.get("user_id") != "http-anonymous"
+        assert result.get("user_id") != "anonymouz-http"
         assert result.get("has_context") == True
         assert result.get("workspace") == workspace
         print("✓ Protected ASGI service accepts authenticated access")

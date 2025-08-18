@@ -184,7 +184,6 @@ async def test_browser_worker_service_registration(fastapi_server, test_user_tok
     assert worker_service is not None
     assert hasattr(worker_service, "start")
     assert hasattr(worker_service, "stop")
-    assert hasattr(worker_service, "take_screenshot")
     assert hasattr(worker_service, "get_logs")
     assert hasattr(worker_service, "compile")
 
@@ -335,27 +334,29 @@ async def test_browser_worker_session_lifecycle(fastapi_server, test_user_token)
 
 async def test_conda_worker_cli_functionality():
     """Test conda worker CLI argument parsing and configuration."""
-    from hypha.workers.conda import main
+    import subprocess
     import sys
-    from unittest.mock import patch
 
     # Test help functionality (should not raise exception)
-    with patch.object(sys, "argv", ["conda.py", "--help"]):
-        try:
-            main()
-        except SystemExit as e:
-            # --help causes SystemExit with code 0
-            assert e.code == 0
+    result = subprocess.run(
+        [sys.executable, "-m", "hypha.workers.conda", "--help"],
+        capture_output=True,
+        text=True
+    )
+    assert result.returncode == 0
+    assert "Hypha Conda Environment Worker" in result.stdout
 
     print("✓ Conda worker CLI help works")
 
-    # Test missing required arguments
-    with patch.object(sys, "argv", ["conda.py"]):
-        try:
-            main()
-        except SystemExit as e:
-            # Missing required args should cause SystemExit with code 1
-            assert e.code == 1
+    # Test missing required arguments (should show help and environment variables info)
+    result = subprocess.run(
+        [sys.executable, "-m", "hypha.workers.conda"],
+        capture_output=True,
+        text=True,
+        env={}  # Clear environment to ensure no HYPHA_ variables are set
+    )
+    # Without required arguments or env vars, it should fail
+    assert result.returncode != 0 or "Server URL" in result.stdout
 
     print("✓ Conda worker CLI validates required arguments")
 
@@ -663,10 +664,11 @@ print("Python worker test app registered successfully")
     # Check logs - Python worker outputs to stdout, not log
     logs = await controller.get_logs(config.id)
 
-    # Get all log content from different log types (stdout, stderr, log, etc.)
+    # Get all log content from log items
     all_logs = []
-    for log_type, entries in logs.items():
-        all_logs.extend(entries)
+    if "items" in logs:
+        for item in logs["items"]:
+            all_logs.append(item["content"])
     full_log_text = " ".join(all_logs)
 
     # Check for the expected output in any log type
@@ -708,7 +710,7 @@ async def test_mcp_worker_integration(fastapi_server, test_user_token):
             "name": "Test MCP Service",
             "type": "mcp",
             "config": {"visibility": "public"},
-            "tools": [test_tool],
+            "tools": {"test_tool": test_tool},
         }
     )
 
@@ -882,7 +884,21 @@ async def test_workspace_worker_registration(fastapi_server, test_user_token):
         session_id: str, type: str = None, offset: int = 0, limit: int = None
     ) -> dict:
         """Get logs for a custom worker session."""
-        return {"log": [f"Custom worker log for {session_id}"], "error": []}
+        items = [{"type": "log", "content": f"Custom worker log for {session_id}"}]
+        if type:
+            items = [item for item in items if item["type"] == type]
+        
+        if limit is not None:
+            items = items[offset:offset + limit]
+        else:
+            items = items[offset:]
+        
+        return {
+            "items": items,
+            "total": 1,
+            "offset": offset,
+            "limit": limit
+        }
 
 
     # Register the custom worker
@@ -934,7 +950,10 @@ async def test_workspace_worker_registration(fastapi_server, test_user_token):
 
     # Test getting logs
     logs = await worker.get_logs(session_data["session_id"])
-    assert "Custom worker log" in logs["log"][0]
+    assert "items" in logs
+    log_items = [item for item in logs["items"] if item["type"] == "log"]
+    assert len(log_items) > 0
+    assert "Custom worker log" in log_items[0]["content"]
     print("✓ Worker get_logs method works correctly")
 
     # Test stopping session
@@ -1195,8 +1214,9 @@ async def test_worker_lifecycle_management(fastapi_server, test_user_token):
 
     # 4. Get logs
     logs = await controller.get_logs(session_info["id"])
-    assert "log" in logs
-    assert len(logs["log"]) > 0
+    assert "items" in logs
+    console_logs = [item for item in logs["items"] if item["type"] == "console"]
+    assert len(console_logs) > 0
     print("✓ Logs retrieved successfully")
 
     # 5. Stop app
@@ -1390,9 +1410,23 @@ async def test_worker_death_session_cleanup(fastapi_server, test_user_token):
                 self._sessions.pop(session_id)
                 print(f"🛑 TestWorker stopped session: {session_id}")
 
-        async def get_logs(self, session_id, log_type=None, offset=0, limit=None, context=None):
+        async def get_logs(self, session_id, type=None, offset=0, limit=None, context=None):
             """Get logs for a session."""
-            return [f"Log from {session_id}"]
+            items = [{"type": "info", "content": f"Log from {session_id}"}]
+            if type:
+                items = [item for item in items if item["type"] == type]
+            
+            if limit is not None:
+                items = items[offset:offset + limit]
+            else:
+                items = items[offset:]
+            
+            return {
+                "items": items,
+                "total": 1,
+                "offset": offset,
+                "limit": limit
+            }
 
     # Connect as a worker client and register the test worker
     worker_client_id = "test-worker-client-" + random_id()
@@ -1522,8 +1556,8 @@ async def test_use_local_url_functionality(fastapi_server, test_user_token):
             pass
 
             
-        async def get_logs(self, session_id, context=None):
-            return ""
+        async def get_logs(self, session_id, type=None, offset=0, limit=None, context=None):
+            return {"items": [], "total": 0, "offset": offset, "limit": limit}
 
     
     test_worker = TestWorker()

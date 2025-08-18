@@ -184,8 +184,21 @@ def generate_anonymous_user(scope=None) -> UserInfo:
     )
 
 
-def _parse_token(authorization: str):
-    """Parse the token."""
+def parse_token(authorization: str, expected_workspace: str = None):
+    """Parse the token with optional workspace validation.
+    
+    Args:
+        authorization: The authorization token string
+        expected_workspace: If provided, will validate that the token's current_workspace matches
+                          this value before performing full token validation. This prevents
+                          validating tokens for unauthorized workspaces.
+    
+    Returns:
+        UserInfo object if token is valid and workspace matches (if specified)
+    
+    Raises:
+        HTTPException: If token is invalid or workspace doesn't match
+    """
     assert authorization, "Authorization is required"
     if authorization.startswith("Bearer ") or authorization.startswith("bearer "):
         parts = authorization.split()
@@ -204,6 +217,27 @@ def _parse_token(authorization: str):
     else:
         token = authorization
 
+    # If expected_workspace is provided, extract and verify workspace before full validation
+    if expected_workspace:
+        try:
+            # Decode without verification to get the payload
+            unverified_payload = jwt.get_unverified_claims(token)
+            
+            # Extract the current workspace from the scope
+            scope_str = unverified_payload.get("scope", "")
+            scope_info = parse_scope(scope_str)
+            
+            # Check if current workspace matches expected
+            if scope_info.current_workspace != expected_workspace:
+                raise HTTPException(
+                    status_code=403, 
+                    detail=f"Token is not authorized for workspace '{expected_workspace}'"
+                )
+        except jwt.JWTError as err:
+            # If we can't even decode the token structure, it's invalid
+            raise HTTPException(status_code=401, detail=f"Invalid token structure: {str(err)}") from err
+
+    # Now perform full validation
     payload = valid_token(token)
     return get_user_info(payload)
 
