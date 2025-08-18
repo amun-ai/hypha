@@ -992,6 +992,21 @@ class WorkspaceManager:
         return type_info
 
     @schema_method
+    async def parse_token(
+        self,
+        token: str = Field(..., description="token to be parsed"),
+        context: dict = None,
+    ):
+        """Parse a token."""
+        assert context is not None
+        self.validate_context(context, UserPermission.read)
+        # We need to extract unverified information about the user's current workspace before parse it
+        # unverified_header = jwt.get_unverified_header(authorization)
+        # alg = unverified_header.get("alg")
+        user_info = await parse_token(token)
+        return user_info.model_dump(mode="json")
+
+    @schema_method
     async def revoke_token(
         self,
         token: str = Field(..., description="token to be revoked"),
@@ -2863,6 +2878,7 @@ class WorkspaceManager:
             "get_service": self.get_service,
             "generate_token": self.generate_token,
             "revoke_token": self.revoke_token,
+            "parse_token": self.parse_token,
             "create_workspace": self.create_workspace,
             "delete_workspace": self.delete_workspace,
             "bookmark": self.bookmark,
