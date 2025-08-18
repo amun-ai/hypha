@@ -1340,7 +1340,7 @@ async def test_workspace_status_and_overwrite(fastapi_server, test_user_token):
 
 async def test_parse_token_workspace_validation(fastapi_server, test_user_token):
     """Test the parse_token function with workspace validation security feature."""
-    from hypha.core.auth import parse_token, generate_presigned_token, create_scope
+    from hypha.core.auth import _parse_token as parse_token, generate_auth_token, create_scope
     from hypha.core import UserPermission
     from fastapi import HTTPException
     
@@ -1380,7 +1380,7 @@ async def test_parse_token_workspace_validation(fastapi_server, test_user_token)
         workspaces={test_workspace_name: UserPermission.admin},
         current_workspace=test_workspace_name
     )
-    token_test_ws = generate_presigned_token(user_info_test_ws, 3600)
+    token_test_ws = generate_auth_token(user_info_test_ws, 3600)
     
     # Token for the original workspace  
     user_info_orig_ws = user_info.model_copy()
@@ -1388,7 +1388,7 @@ async def test_parse_token_workspace_validation(fastapi_server, test_user_token)
         workspaces={current_workspace: UserPermission.admin},
         current_workspace=current_workspace
     )
-    token_orig_ws = generate_presigned_token(user_info_orig_ws, 3600)
+    token_orig_ws = generate_auth_token(user_info_orig_ws, 3600)
     
     # Test 1: Token with matching workspace should succeed
     print("Test 1: Validating token with matching workspace...")

@@ -41,7 +41,7 @@ from hypha.core import (
     VisibilityEnum,
 )
 from hypha.vectors import VectorSearchEngine
-from hypha.core.auth import generate_auth_token, create_scope, parse_auth_token
+from hypha.core.auth import generate_auth_token, create_scope, _parse_token
 from hypha.utils import EventBus, random_id
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
@@ -1000,10 +1000,7 @@ class WorkspaceManager:
         """Parse a token."""
         assert context is not None
         self.validate_context(context, UserPermission.read)
-        # We need to extract unverified information about the user's current workspace before parse it
-        # unverified_header = jwt.get_unverified_header(authorization)
-        # alg = unverified_header.get("alg")
-        user_info = await parse_token(token)
+        user_info = await _parse_token(token, context["ws"])
         return user_info.model_dump(mode="json")
 
     @schema_method
@@ -1023,17 +1020,6 @@ class WorkspaceManager:
             await self._redis.setex("revoked_token:" + token, expiration, "revoked")
         else:
             raise ValueError("Token has already expired")
-
-    @schema_method
-    async def parse_token(
-        self,
-        token: str = Field(..., description="token to be parsed"),
-        context: dict = None,
-    ):
-        """Parse a token."""
-        assert context is not None
-        user_info = await parse_auth_token(token)
-        return user_info.model_dump(mode="json")
 
     @schema_method
     async def get_service_type(

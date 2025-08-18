@@ -184,7 +184,7 @@ def generate_anonymous_user(scope=None) -> UserInfo:
     )
 
 
-def parse_token(authorization: str, expected_workspace: str = None):
+def _parse_token(authorization: str, expected_workspace: str = None):
     """Parse the token with optional workspace validation.
     
     Args:
