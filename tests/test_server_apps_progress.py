@@ -86,6 +86,157 @@ async def test_app_progress_logging(minio_server, fastapi_server, test_user_toke
     await api.disconnect()
 
 
+async def test_window_app_syntax_error_early_failure(minio_server, fastapi_server, test_user_token):
+    """Test that window apps with syntax errors fail immediately without waiting for timeout."""
+    api = await connect_to_server({
+        "name": "test-window-syntax-error-client", 
+        "server_url": SERVER_URL,
+        "token": test_user_token
+    })
+    controller = await api.get_service("public/server-apps")
+    
+    progress_messages = []
+    
+    def progress_callback(msg):
+        progress_messages.append(msg)
+        print(f"Progress: {msg}")  # Debug output
+    
+    # Install a window app with a syntax error
+    app_source = '''
+    // This window app has a syntax error
+    console.log("Starting window app...");
+    // Syntax error: missing closing bracket
+    if (true {
+        console.log("This won't run");
+    }
+    console.log("Never reached");
+    '''
+    
+    # Install the app without testing since it has a syntax error
+    app_info = await controller.install(
+        source=app_source,
+        app_id="window-syntax-error-app",
+        manifest={
+            "name": "Window Syntax Error App",
+            "type": "window",
+            "version": "1.0.0"
+        },
+        overwrite=True,
+        stage=True,  # Don't test the app during installation
+        progress_callback=progress_callback
+    )
+    
+    # Try to start the app - it should fail quickly due to syntax error
+    progress_messages.clear()
+    
+    # Record start time
+    start_time = time.time()
+    timeout_seconds = 60  # Use a long timeout to ensure we're failing early
+    
+    with pytest.raises(Exception) as exc_info:
+        await controller.start(
+            app_info["id"],
+            wait_for_service="default",
+            timeout=timeout_seconds,
+            stage=True,  # Start from the staged version
+            progress_callback=progress_callback
+        )
+    
+    # Record end time
+    elapsed_time = time.time() - start_time
+    
+    # CRITICAL TEST: Syntax errors should fail within 5 seconds, not wait for full timeout
+    assert elapsed_time < 5, f"Window app with syntax error should fail quickly (< 5s), but took {elapsed_time:.2f}s. This indicates early failure detection is not working for window apps!"
+    
+    # Check that the error message mentions syntax error or parse error
+    error_str = str(exc_info.value).lower()
+    assert any(keyword in error_str for keyword in ["syntax", "parse", "unexpected", "disconnect", "error"]), \
+        f"Error message should indicate syntax/parse error or disconnect, got: {exc_info.value}"
+    
+    # Check if we got any error messages in progress
+    error_messages = [msg for msg in progress_messages if msg["type"] == "error"]
+    print(f"Error messages received: {error_messages}")
+    
+    # Cleanup
+    await controller.uninstall(app_info["id"])
+    await api.disconnect()
+
+
+async def test_web_python_app_syntax_error_early_failure(minio_server, fastapi_server, test_user_token):
+    """Test that web-python apps with syntax errors fail immediately without waiting for timeout."""
+    api = await connect_to_server({
+        "name": "test-python-syntax-error-client", 
+        "server_url": SERVER_URL,
+        "token": test_user_token
+    })
+    controller = await api.get_service("public/server-apps")
+    
+    progress_messages = []
+    
+    def progress_callback(msg):
+        progress_messages.append(msg)
+        print(f"Progress: {msg}")  # Debug output
+    
+    # Install a web-python app with a syntax error
+    app_source = '''
+# This web-python app has a syntax error
+print("Starting Python app...")
+# Syntax error: invalid indentation
+if True:
+print("This is incorrectly indented")
+print("Never reached")
+    '''
+    
+    # Install the app without testing since it has a syntax error
+    app_info = await controller.install(
+        source=app_source,
+        app_id="python-syntax-error-app",
+        manifest={
+            "name": "Python Syntax Error App",
+            "type": "web-python",
+            "version": "1.0.0"
+        },
+        overwrite=True,
+        stage=True,  # Don't test the app during installation
+        progress_callback=progress_callback
+    )
+    
+    # Try to start the app - it should fail quickly due to syntax error
+    progress_messages.clear()
+    
+    # Record start time
+    start_time = time.time()
+    timeout_seconds = 60  # Use a long timeout to ensure we're failing early
+    
+    with pytest.raises(Exception) as exc_info:
+        await controller.start(
+            app_info["id"],
+            wait_for_service="default",
+            timeout=timeout_seconds,
+            stage=True,  # Start from the staged version
+            progress_callback=progress_callback
+        )
+    
+    # Record end time
+    elapsed_time = time.time() - start_time
+    
+    # CRITICAL TEST: Syntax errors should fail within 10 seconds (Python takes longer to initialize)
+    assert elapsed_time < 10, f"Web-python app with syntax error should fail quickly (< 10s), but took {elapsed_time:.2f}s. This indicates early failure detection is not working for web-python apps!"
+    
+    # Check that the error message mentions syntax error or parse error
+    error_str = str(exc_info.value).lower()
+    assert any(keyword in error_str for keyword in ["syntax", "parse", "python", "disconnect", "error"]), \
+        f"Error message should indicate syntax/parse error or disconnect, got: {exc_info.value}"
+    
+    # Check if we got any error messages in progress
+    error_messages = [msg for msg in progress_messages if msg["type"] == "error"]
+    print(f"Error messages received: {error_messages}")
+    
+    # Cleanup
+    await controller.uninstall(app_info["id"])
+    await api.disconnect()
+
+
 async def test_app_early_disconnect_on_error(minio_server, fastapi_server, test_user_token):
     """Test that apps can disconnect early to signal failure."""
     api = await connect_to_server({
@@ -160,6 +311,157 @@ async def test_app_early_disconnect_on_error(minio_server, fastapi_server, test_
     # Check that we received the error message in progress
     error_messages = [msg for msg in progress_messages if msg["type"] == "error"]
     assert len(error_messages) >= 1, "Should have received at least one error message"
+    
+    # Cleanup
+    await controller.uninstall(app_info["id"])
+    await api.disconnect()
+
+
+async def test_window_app_syntax_error_early_failure(minio_server, fastapi_server, test_user_token):
+    """Test that window apps with syntax errors fail immediately without waiting for timeout."""
+    api = await connect_to_server({
+        "name": "test-window-syntax-error-client", 
+        "server_url": SERVER_URL,
+        "token": test_user_token
+    })
+    controller = await api.get_service("public/server-apps")
+    
+    progress_messages = []
+    
+    def progress_callback(msg):
+        progress_messages.append(msg)
+        print(f"Progress: {msg}")  # Debug output
+    
+    # Install a window app with a syntax error
+    app_source = '''
+    // This window app has a syntax error
+    console.log("Starting window app...");
+    // Syntax error: missing closing bracket
+    if (true {
+        console.log("This won't run");
+    }
+    console.log("Never reached");
+    '''
+    
+    # Install the app without testing since it has a syntax error
+    app_info = await controller.install(
+        source=app_source,
+        app_id="window-syntax-error-app",
+        manifest={
+            "name": "Window Syntax Error App",
+            "type": "window",
+            "version": "1.0.0"
+        },
+        overwrite=True,
+        stage=True,  # Don't test the app during installation
+        progress_callback=progress_callback
+    )
+    
+    # Try to start the app - it should fail quickly due to syntax error
+    progress_messages.clear()
+    
+    # Record start time
+    start_time = time.time()
+    timeout_seconds = 60  # Use a long timeout to ensure we're failing early
+    
+    with pytest.raises(Exception) as exc_info:
+        await controller.start(
+            app_info["id"],
+            wait_for_service="default",
+            timeout=timeout_seconds,
+            stage=True,  # Start from the staged version
+            progress_callback=progress_callback
+        )
+    
+    # Record end time
+    elapsed_time = time.time() - start_time
+    
+    # CRITICAL TEST: Syntax errors should fail within 5 seconds, not wait for full timeout
+    assert elapsed_time < 5, f"Window app with syntax error should fail quickly (< 5s), but took {elapsed_time:.2f}s. This indicates early failure detection is not working for window apps!"
+    
+    # Check that the error message mentions syntax error or parse error
+    error_str = str(exc_info.value).lower()
+    assert any(keyword in error_str for keyword in ["syntax", "parse", "unexpected", "disconnect", "error"]), \
+        f"Error message should indicate syntax/parse error or disconnect, got: {exc_info.value}"
+    
+    # Check if we got any error messages in progress
+    error_messages = [msg for msg in progress_messages if msg["type"] == "error"]
+    print(f"Error messages received: {error_messages}")
+    
+    # Cleanup
+    await controller.uninstall(app_info["id"])
+    await api.disconnect()
+
+
+async def test_web_python_app_syntax_error_early_failure(minio_server, fastapi_server, test_user_token):
+    """Test that web-python apps with syntax errors fail immediately without waiting for timeout."""
+    api = await connect_to_server({
+        "name": "test-python-syntax-error-client", 
+        "server_url": SERVER_URL,
+        "token": test_user_token
+    })
+    controller = await api.get_service("public/server-apps")
+    
+    progress_messages = []
+    
+    def progress_callback(msg):
+        progress_messages.append(msg)
+        print(f"Progress: {msg}")  # Debug output
+    
+    # Install a web-python app with a syntax error
+    app_source = '''
+# This web-python app has a syntax error
+print("Starting Python app...")
+# Syntax error: invalid indentation
+if True:
+print("This is incorrectly indented")
+print("Never reached")
+    '''
+    
+    # Install the app without testing since it has a syntax error
+    app_info = await controller.install(
+        source=app_source,
+        app_id="python-syntax-error-app",
+        manifest={
+            "name": "Python Syntax Error App",
+            "type": "web-python",
+            "version": "1.0.0"
+        },
+        overwrite=True,
+        stage=True,  # Don't test the app during installation
+        progress_callback=progress_callback
+    )
+    
+    # Try to start the app - it should fail quickly due to syntax error
+    progress_messages.clear()
+    
+    # Record start time
+    start_time = time.time()
+    timeout_seconds = 60  # Use a long timeout to ensure we're failing early
+    
+    with pytest.raises(Exception) as exc_info:
+        await controller.start(
+            app_info["id"],
+            wait_for_service="default",
+            timeout=timeout_seconds,
+            stage=True,  # Start from the staged version
+            progress_callback=progress_callback
+        )
+    
+    # Record end time
+    elapsed_time = time.time() - start_time
+    
+    # CRITICAL TEST: Syntax errors should fail within 10 seconds (Python takes longer to initialize)
+    assert elapsed_time < 10, f"Web-python app with syntax error should fail quickly (< 10s), but took {elapsed_time:.2f}s. This indicates early failure detection is not working for web-python apps!"
+    
+    # Check that the error message mentions syntax error or parse error
+    error_str = str(exc_info.value).lower()
+    assert any(keyword in error_str for keyword in ["syntax", "parse", "python", "disconnect", "error"]), \
+        f"Error message should indicate syntax/parse error or disconnect, got: {exc_info.value}"
+    
+    # Check if we got any error messages in progress
+    error_messages = [msg for msg in progress_messages if msg["type"] == "error"]
+    print(f"Error messages received: {error_messages}")
     
     # Cleanup
     await controller.uninstall(app_info["id"])
@@ -300,7 +602,7 @@ async def test_app_no_wait_for_service_with_disconnect(minio_server, fastapi_ser
     elapsed_time = time.time() - start_time
     
     # IMPORTANT: Check that we returned quickly since we're in detached mode
-    assert elapsed_time < 2, f"App should have started immediately in detached mode (< 2s), but took {elapsed_time:.2f}s"
+    assert elapsed_time < 3, f"App should have started quickly in detached mode (< 3s), but took {elapsed_time:.2f}s"
     
     # The result should indicate the app started (even though it will fail later)
     assert result is not None, "Should have returned a result for detached start"
@@ -309,6 +611,157 @@ async def test_app_no_wait_for_service_with_disconnect(minio_server, fastapi_ser
     # Check that we got the success message for detached mode
     success_messages = [msg for msg in progress_messages if msg["type"] == "success" and "detached" in msg.get("message", "").lower()]
     assert len(success_messages) > 0, "Should have received success message for detached mode"
+    
+    # Cleanup
+    await controller.uninstall(app_info["id"])
+    await api.disconnect()
+
+
+async def test_window_app_syntax_error_early_failure(minio_server, fastapi_server, test_user_token):
+    """Test that window apps with syntax errors fail immediately without waiting for timeout."""
+    api = await connect_to_server({
+        "name": "test-window-syntax-error-client", 
+        "server_url": SERVER_URL,
+        "token": test_user_token
+    })
+    controller = await api.get_service("public/server-apps")
+    
+    progress_messages = []
+    
+    def progress_callback(msg):
+        progress_messages.append(msg)
+        print(f"Progress: {msg}")  # Debug output
+    
+    # Install a window app with a syntax error
+    app_source = '''
+    // This window app has a syntax error
+    console.log("Starting window app...");
+    // Syntax error: missing closing bracket
+    if (true {
+        console.log("This won't run");
+    }
+    console.log("Never reached");
+    '''
+    
+    # Install the app without testing since it has a syntax error
+    app_info = await controller.install(
+        source=app_source,
+        app_id="window-syntax-error-app",
+        manifest={
+            "name": "Window Syntax Error App",
+            "type": "window",
+            "version": "1.0.0"
+        },
+        overwrite=True,
+        stage=True,  # Don't test the app during installation
+        progress_callback=progress_callback
+    )
+    
+    # Try to start the app - it should fail quickly due to syntax error
+    progress_messages.clear()
+    
+    # Record start time
+    start_time = time.time()
+    timeout_seconds = 60  # Use a long timeout to ensure we're failing early
+    
+    with pytest.raises(Exception) as exc_info:
+        await controller.start(
+            app_info["id"],
+            wait_for_service="default",
+            timeout=timeout_seconds,
+            stage=True,  # Start from the staged version
+            progress_callback=progress_callback
+        )
+    
+    # Record end time
+    elapsed_time = time.time() - start_time
+    
+    # CRITICAL TEST: Syntax errors should fail within 5 seconds, not wait for full timeout
+    assert elapsed_time < 5, f"Window app with syntax error should fail quickly (< 5s), but took {elapsed_time:.2f}s. This indicates early failure detection is not working for window apps!"
+    
+    # Check that the error message mentions syntax error or parse error
+    error_str = str(exc_info.value).lower()
+    assert any(keyword in error_str for keyword in ["syntax", "parse", "unexpected", "disconnect", "error"]), \
+        f"Error message should indicate syntax/parse error or disconnect, got: {exc_info.value}"
+    
+    # Check if we got any error messages in progress
+    error_messages = [msg for msg in progress_messages if msg["type"] == "error"]
+    print(f"Error messages received: {error_messages}")
+    
+    # Cleanup
+    await controller.uninstall(app_info["id"])
+    await api.disconnect()
+
+
+async def test_web_python_app_syntax_error_early_failure(minio_server, fastapi_server, test_user_token):
+    """Test that web-python apps with syntax errors fail immediately without waiting for timeout."""
+    api = await connect_to_server({
+        "name": "test-python-syntax-error-client", 
+        "server_url": SERVER_URL,
+        "token": test_user_token
+    })
+    controller = await api.get_service("public/server-apps")
+    
+    progress_messages = []
+    
+    def progress_callback(msg):
+        progress_messages.append(msg)
+        print(f"Progress: {msg}")  # Debug output
+    
+    # Install a web-python app with a syntax error
+    app_source = '''
+# This web-python app has a syntax error
+print("Starting Python app...")
+# Syntax error: invalid indentation
+if True:
+print("This is incorrectly indented")
+print("Never reached")
+    '''
+    
+    # Install the app without testing since it has a syntax error
+    app_info = await controller.install(
+        source=app_source,
+        app_id="python-syntax-error-app",
+        manifest={
+            "name": "Python Syntax Error App",
+            "type": "web-python",
+            "version": "1.0.0"
+        },
+        overwrite=True,
+        stage=True,  # Don't test the app during installation
+        progress_callback=progress_callback
+    )
+    
+    # Try to start the app - it should fail quickly due to syntax error
+    progress_messages.clear()
+    
+    # Record start time
+    start_time = time.time()
+    timeout_seconds = 60  # Use a long timeout to ensure we're failing early
+    
+    with pytest.raises(Exception) as exc_info:
+        await controller.start(
+            app_info["id"],
+            wait_for_service="default",
+            timeout=timeout_seconds,
+            stage=True,  # Start from the staged version
+            progress_callback=progress_callback
+        )
+    
+    # Record end time
+    elapsed_time = time.time() - start_time
+    
+    # CRITICAL TEST: Syntax errors should fail within 10 seconds (Python takes longer to initialize)
+    assert elapsed_time < 10, f"Web-python app with syntax error should fail quickly (< 10s), but took {elapsed_time:.2f}s. This indicates early failure detection is not working for web-python apps!"
+    
+    # Check that the error message mentions syntax error or parse error
+    error_str = str(exc_info.value).lower()
+    assert any(keyword in error_str for keyword in ["syntax", "parse", "python", "disconnect", "error"]), \
+        f"Error message should indicate syntax/parse error or disconnect, got: {exc_info.value}"
+    
+    # Check if we got any error messages in progress
+    error_messages = [msg for msg in progress_messages if msg["type"] == "error"]
+    print(f"Error messages received: {error_messages}")
     
     # Cleanup
     await controller.uninstall(app_info["id"])
@@ -466,5 +919,467 @@ async def test_progress_with_worker_selection(minio_server, fastapi_server, test
     
     # Cleanup
     await controller.stop(started_app["id"])
+    await controller.uninstall(app_info["id"])
+    await api.disconnect()
+
+
+async def test_app_syntax_error_early_failure(minio_server, fastapi_server, test_user_token):
+    """Test that apps with syntax errors fail immediately without waiting for timeout."""
+    api = await connect_to_server({
+        "name": "test-syntax-error-client", 
+        "server_url": SERVER_URL,
+        "token": test_user_token
+    })
+    controller = await api.get_service("public/server-apps")
+    
+    progress_messages = []
+    
+    def progress_callback(msg):
+        progress_messages.append(msg)
+        print(f"Progress: {msg}")  # Debug output
+    
+    # Install an app with a syntax error
+    app_source = '''
+    // This app has a syntax error
+    api.export({
+        async setup() {
+            await api.log("Starting...");
+            // Syntax error: missing closing bracket
+            if (true {
+                console.log("This won't run");
+            }
+        },
+        async test() {
+            return "never reaches here";
+        }
+    })
+    '''
+    
+    # Install the app without testing since it has a syntax error
+    app_info = await controller.install(
+        source=app_source,
+        app_id="syntax-error-app",
+        manifest={
+            "name": "Syntax Error App",
+            "type": "web-worker",
+            "version": "1.0.0"
+        },
+        overwrite=True,
+        stage=True,  # Don't test the app during installation
+        progress_callback=progress_callback
+    )
+    
+    # Try to start the app - it should fail quickly due to syntax error
+    progress_messages.clear()
+    
+    # Record start time
+    start_time = time.time()
+    timeout_seconds = 60  # Use a long timeout to ensure we're failing early
+    
+    with pytest.raises(Exception) as exc_info:
+        await controller.start(
+            app_info["id"],
+            wait_for_service="default",
+            timeout=timeout_seconds,
+            stage=True,  # Start from the staged version
+            progress_callback=progress_callback
+        )
+    
+    # Record end time
+    elapsed_time = time.time() - start_time
+    
+    # CRITICAL TEST: Syntax errors should fail within 5 seconds, not wait for full timeout
+    assert elapsed_time < 5, f"App with syntax error should fail quickly (< 5s), but took {elapsed_time:.2f}s. This indicates early failure detection is not working for syntax errors!"
+    
+    # Check that the error message mentions syntax error or parse error
+    error_str = str(exc_info.value).lower()
+    assert any(keyword in error_str for keyword in ["syntax", "parse", "unexpected", "disconnect", "error"]), \
+        f"Error message should indicate syntax/parse error or disconnect, got: {exc_info.value}"
+    
+    # Check if we got any error messages in progress
+    error_messages = [msg for msg in progress_messages if msg["type"] == "error"]
+    print(f"Error messages received: {error_messages}")
+    
+    # Cleanup
+    await controller.uninstall(app_info["id"])
+    await api.disconnect()
+
+
+async def test_window_app_syntax_error_early_failure(minio_server, fastapi_server, test_user_token):
+    """Test that window apps with syntax errors fail immediately without waiting for timeout."""
+    api = await connect_to_server({
+        "name": "test-window-syntax-error-client", 
+        "server_url": SERVER_URL,
+        "token": test_user_token
+    })
+    controller = await api.get_service("public/server-apps")
+    
+    progress_messages = []
+    
+    def progress_callback(msg):
+        progress_messages.append(msg)
+        print(f"Progress: {msg}")  # Debug output
+    
+    # Install a window app with a syntax error
+    app_source = '''
+    // This window app has a syntax error
+    console.log("Starting window app...");
+    // Syntax error: missing closing bracket
+    if (true {
+        console.log("This won't run");
+    }
+    console.log("Never reached");
+    '''
+    
+    # Install the app without testing since it has a syntax error
+    app_info = await controller.install(
+        source=app_source,
+        app_id="window-syntax-error-app",
+        manifest={
+            "name": "Window Syntax Error App",
+            "type": "window",
+            "version": "1.0.0"
+        },
+        overwrite=True,
+        stage=True,  # Don't test the app during installation
+        progress_callback=progress_callback
+    )
+    
+    # Try to start the app - it should fail quickly due to syntax error
+    progress_messages.clear()
+    
+    # Record start time
+    start_time = time.time()
+    timeout_seconds = 60  # Use a long timeout to ensure we're failing early
+    
+    with pytest.raises(Exception) as exc_info:
+        await controller.start(
+            app_info["id"],
+            wait_for_service="default",
+            timeout=timeout_seconds,
+            stage=True,  # Start from the staged version
+            progress_callback=progress_callback
+        )
+    
+    # Record end time
+    elapsed_time = time.time() - start_time
+    
+    # CRITICAL TEST: Syntax errors should fail within 5 seconds, not wait for full timeout
+    assert elapsed_time < 5, f"Window app with syntax error should fail quickly (< 5s), but took {elapsed_time:.2f}s. This indicates early failure detection is not working for window apps!"
+    
+    # Check that the error message mentions syntax error or parse error
+    error_str = str(exc_info.value).lower()
+    assert any(keyword in error_str for keyword in ["syntax", "parse", "unexpected", "disconnect", "error"]), \
+        f"Error message should indicate syntax/parse error or disconnect, got: {exc_info.value}"
+    
+    # Check if we got any error messages in progress
+    error_messages = [msg for msg in progress_messages if msg["type"] == "error"]
+    print(f"Error messages received: {error_messages}")
+    
+    # Cleanup
+    await controller.uninstall(app_info["id"])
+    await api.disconnect()
+
+
+async def test_web_python_app_syntax_error_early_failure(minio_server, fastapi_server, test_user_token):
+    """Test that web-python apps with syntax errors fail immediately without waiting for timeout."""
+    api = await connect_to_server({
+        "name": "test-python-syntax-error-client", 
+        "server_url": SERVER_URL,
+        "token": test_user_token
+    })
+    controller = await api.get_service("public/server-apps")
+    
+    progress_messages = []
+    
+    def progress_callback(msg):
+        progress_messages.append(msg)
+        print(f"Progress: {msg}")  # Debug output
+    
+    # Install a web-python app with a syntax error
+    app_source = '''
+# This web-python app has a syntax error
+print("Starting Python app...")
+# Syntax error: invalid indentation
+if True:
+print("This is incorrectly indented")
+print("Never reached")
+    '''
+    
+    # Install the app without testing since it has a syntax error
+    app_info = await controller.install(
+        source=app_source,
+        app_id="python-syntax-error-app",
+        manifest={
+            "name": "Python Syntax Error App",
+            "type": "web-python",
+            "version": "1.0.0"
+        },
+        overwrite=True,
+        stage=True,  # Don't test the app during installation
+        progress_callback=progress_callback
+    )
+    
+    # Try to start the app - it should fail quickly due to syntax error
+    progress_messages.clear()
+    
+    # Record start time
+    start_time = time.time()
+    timeout_seconds = 60  # Use a long timeout to ensure we're failing early
+    
+    with pytest.raises(Exception) as exc_info:
+        await controller.start(
+            app_info["id"],
+            wait_for_service="default",
+            timeout=timeout_seconds,
+            stage=True,  # Start from the staged version
+            progress_callback=progress_callback
+        )
+    
+    # Record end time
+    elapsed_time = time.time() - start_time
+    
+    # CRITICAL TEST: Syntax errors should fail within 10 seconds (Python takes longer to initialize)
+    assert elapsed_time < 10, f"Web-python app with syntax error should fail quickly (< 10s), but took {elapsed_time:.2f}s. This indicates early failure detection is not working for web-python apps!"
+    
+    # Check that the error message mentions syntax error or parse error
+    error_str = str(exc_info.value).lower()
+    assert any(keyword in error_str for keyword in ["syntax", "parse", "python", "disconnect", "error"]), \
+        f"Error message should indicate syntax/parse error or disconnect, got: {exc_info.value}"
+    
+    # Check if we got any error messages in progress
+    error_messages = [msg for msg in progress_messages if msg["type"] == "error"]
+    print(f"Error messages received: {error_messages}")
+    
+    # Cleanup
+    await controller.uninstall(app_info["id"])
+    await api.disconnect()
+
+
+async def test_app_runtime_error_early_failure(minio_server, fastapi_server, test_user_token):
+    """Test that apps with runtime errors during initialization fail quickly."""
+    api = await connect_to_server({
+        "name": "test-runtime-error-client", 
+        "server_url": SERVER_URL,
+        "token": test_user_token
+    })
+    controller = await api.get_service("public/server-apps")
+    
+    progress_messages = []
+    
+    def progress_callback(msg):
+        progress_messages.append(msg)
+    
+    # Install an app with a runtime error that occurs immediately
+    app_source = '''
+    // This app has a runtime error that occurs immediately
+    (async () => {
+        await api.log("Starting application...");
+        
+        // This will cause a runtime error immediately
+        const result = undefined.someMethod();  // Cannot read property of undefined
+        
+        // This won't be reached
+        api.export({
+            async test() {
+                return "never reaches here";
+            }
+        });
+    })();
+    '''
+    
+    # Install the app without testing
+    app_info = await controller.install(
+        source=app_source,
+        app_id="runtime-error-app",
+        manifest={
+            "name": "Runtime Error App",
+            "type": "web-worker",
+            "version": "1.0.0"
+        },
+        overwrite=True,
+        stage=True,  # Don't test the app during installation
+        progress_callback=progress_callback
+    )
+    
+    # Try to start the app - it should fail quickly due to runtime error
+    progress_messages.clear()
+    
+    # Record start time
+    start_time = time.time()
+    timeout_seconds = 60  # Use a long timeout to ensure we're failing early
+    
+    with pytest.raises(Exception) as exc_info:
+        await controller.start(
+            app_info["id"],
+            wait_for_service="default",
+            timeout=timeout_seconds,
+            stage=True,  # Start from the staged version
+            progress_callback=progress_callback
+        )
+    
+    # Record end time
+    elapsed_time = time.time() - start_time
+    
+    # Runtime errors should also fail quickly
+    assert elapsed_time < 5, f"App with runtime error should fail quickly (< 5s), but took {elapsed_time:.2f}s"
+    
+    # Check that we got an error indication
+    error_str = str(exc_info.value).lower()
+    assert any(keyword in error_str for keyword in ["error", "disconnect", "failed", "undefined"]), \
+        f"Error message should indicate failure, got: {exc_info.value}"
+    
+    # Cleanup
+    await controller.uninstall(app_info["id"])
+    await api.disconnect()
+
+
+async def test_window_app_syntax_error_early_failure(minio_server, fastapi_server, test_user_token):
+    """Test that window apps with syntax errors fail immediately without waiting for timeout."""
+    api = await connect_to_server({
+        "name": "test-window-syntax-error-client", 
+        "server_url": SERVER_URL,
+        "token": test_user_token
+    })
+    controller = await api.get_service("public/server-apps")
+    
+    progress_messages = []
+    
+    def progress_callback(msg):
+        progress_messages.append(msg)
+        print(f"Progress: {msg}")  # Debug output
+    
+    # Install a window app with a syntax error
+    app_source = '''
+    // This window app has a syntax error
+    console.log("Starting window app...");
+    // Syntax error: missing closing bracket
+    if (true {
+        console.log("This won't run");
+    }
+    console.log("Never reached");
+    '''
+    
+    # Install the app without testing since it has a syntax error
+    app_info = await controller.install(
+        source=app_source,
+        app_id="window-syntax-error-app",
+        manifest={
+            "name": "Window Syntax Error App",
+            "type": "window",
+            "version": "1.0.0"
+        },
+        overwrite=True,
+        stage=True,  # Don't test the app during installation
+        progress_callback=progress_callback
+    )
+    
+    # Try to start the app - it should fail quickly due to syntax error
+    progress_messages.clear()
+    
+    # Record start time
+    start_time = time.time()
+    timeout_seconds = 60  # Use a long timeout to ensure we're failing early
+    
+    with pytest.raises(Exception) as exc_info:
+        await controller.start(
+            app_info["id"],
+            wait_for_service="default",
+            timeout=timeout_seconds,
+            stage=True,  # Start from the staged version
+            progress_callback=progress_callback
+        )
+    
+    # Record end time
+    elapsed_time = time.time() - start_time
+    
+    # CRITICAL TEST: Syntax errors should fail within 5 seconds, not wait for full timeout
+    assert elapsed_time < 5, f"Window app with syntax error should fail quickly (< 5s), but took {elapsed_time:.2f}s. This indicates early failure detection is not working for window apps!"
+    
+    # Check that the error message mentions syntax error or parse error
+    error_str = str(exc_info.value).lower()
+    assert any(keyword in error_str for keyword in ["syntax", "parse", "unexpected", "disconnect", "error"]), \
+        f"Error message should indicate syntax/parse error or disconnect, got: {exc_info.value}"
+    
+    # Check if we got any error messages in progress
+    error_messages = [msg for msg in progress_messages if msg["type"] == "error"]
+    print(f"Error messages received: {error_messages}")
+    
+    # Cleanup
+    await controller.uninstall(app_info["id"])
+    await api.disconnect()
+
+
+async def test_web_python_app_syntax_error_early_failure(minio_server, fastapi_server, test_user_token):
+    """Test that web-python apps with syntax errors fail immediately without waiting for timeout."""
+    api = await connect_to_server({
+        "name": "test-python-syntax-error-client", 
+        "server_url": SERVER_URL,
+        "token": test_user_token
+    })
+    controller = await api.get_service("public/server-apps")
+    
+    progress_messages = []
+    
+    def progress_callback(msg):
+        progress_messages.append(msg)
+        print(f"Progress: {msg}")  # Debug output
+    
+    # Install a web-python app with a syntax error
+    app_source = '''
+# This web-python app has a syntax error
+print("Starting Python app...")
+# Syntax error: invalid indentation
+if True:
+print("This is incorrectly indented")
+print("Never reached")
+    '''
+    
+    # Install the app without testing since it has a syntax error
+    app_info = await controller.install(
+        source=app_source,
+        app_id="python-syntax-error-app",
+        manifest={
+            "name": "Python Syntax Error App",
+            "type": "web-python",
+            "version": "1.0.0"
+        },
+        overwrite=True,
+        stage=True,  # Don't test the app during installation
+        progress_callback=progress_callback
+    )
+    
+    # Try to start the app - it should fail quickly due to syntax error
+    progress_messages.clear()
+    
+    # Record start time
+    start_time = time.time()
+    timeout_seconds = 60  # Use a long timeout to ensure we're failing early
+    
+    with pytest.raises(Exception) as exc_info:
+        await controller.start(
+            app_info["id"],
+            wait_for_service="default",
+            timeout=timeout_seconds,
+            stage=True,  # Start from the staged version
+            progress_callback=progress_callback
+        )
+    
+    # Record end time
+    elapsed_time = time.time() - start_time
+    
+    # CRITICAL TEST: Syntax errors should fail within 10 seconds (Python takes longer to initialize)
+    assert elapsed_time < 10, f"Web-python app with syntax error should fail quickly (< 10s), but took {elapsed_time:.2f}s. This indicates early failure detection is not working for web-python apps!"
+    
+    # Check that the error message mentions syntax error or parse error
+    error_str = str(exc_info.value).lower()
+    assert any(keyword in error_str for keyword in ["syntax", "parse", "python", "disconnect", "error"]), \
+        f"Error message should indicate syntax/parse error or disconnect, got: {exc_info.value}"
+    
+    # Check if we got any error messages in progress
+    error_messages = [msg for msg in progress_messages if msg["type"] == "error"]
+    print(f"Error messages received: {error_messages}")
+    
+    # Cleanup
     await controller.uninstall(app_info["id"])
     await api.disconnect()

@@ -22,7 +22,10 @@ try {
     self.env.set("HYPHA_TOKEN", config.token)
     self.env.set("HYPHA_APP_ID", config.app_id)
     const api = await hyphaWebsocketClient.connectToServer(config)
-    await hyphaWebsocketClient.loadRequirements([{% for req in requirements %}"{{req}}", {% endfor %}])
+    // Load requirements if the function exists
+    if (hyphaWebsocketClient.loadRequirements) {
+        await hyphaWebsocketClient.loadRequirements([{% for req in requirements %}"{{req}}", {% endfor %}])
+    }
     {{ script | safe }}
 } catch (error) {
     console.error("Failed to initialize app:", error);
@@ -40,16 +43,38 @@ try {
 </script>
 <script>
 window.onload = function() {
-    const blob = new Blob([
-        document.querySelector('#worker').textContent
-    ], { type: "text/javascript" })
-    const worker = new Worker(window.URL.createObjectURL(blob), {type: "module"});
-    worker.onerror = console.error
-    worker.onmessage = console.log
-    const config = {{ config | tojson(indent=2) }}
-    const cfg = Object.assign(config, Object.fromEntries(new URLSearchParams(window.location.search)));
-    if(!cfg.server_url) cfg.server_url = window.location.origin;
-    worker.postMessage(cfg); 
+    try {
+        const workerScript = document.querySelector('#worker').textContent;
+        
+        // Validate script syntax before creating worker
+        // This helps detect syntax errors early
+        try {
+            // Try to parse the script to detect syntax errors
+            // We wrap in async function since the worker script uses await
+            new Function('return (async function() {' + workerScript + '})');
+        } catch (syntaxError) {
+            console.error("CRITICAL: Syntax error in worker script:", syntaxError.message);
+            console.error("Worker failed to start due to syntax error");
+            return; // Don't try to create the worker
+        }
+        
+        const blob = new Blob([workerScript], { type: "text/javascript" })
+        const worker = new Worker(window.URL.createObjectURL(blob), {type: "module"});
+        
+        // Set up error handler to catch worker runtime errors
+        worker.onerror = function(error) {
+            console.error("Worker error:", error);
+            console.error("CRITICAL: Worker failed to initialize");
+        };
+        
+        worker.onmessage = console.log
+        const config = {{ config | tojson(indent=2) }}
+        const cfg = Object.assign(config, Object.fromEntries(new URLSearchParams(window.location.search)));
+        if(!cfg.server_url) cfg.server_url = window.location.origin;
+        worker.postMessage(cfg);
+    } catch (error) {
+        console.error("Failed to create worker:", error.message || error);
+    }
 }
 </script>
 </body>

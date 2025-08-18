@@ -1645,17 +1645,20 @@ class WorkspaceManager:
                 if app_id != "*":
                     artifact_filters["alias"] = app_id
                 
-                # Query applications collection for the current workspace only
+                # Query applications collection for the specified workspace
                 # Use the workspace from the query, not from context
                 app_context = dict(context)
                 if workspace != "*":
                     app_context["workspace"] = workspace
                 
+                # Determine which workspace to query for applications
+                query_workspace = workspace if workspace != "*" else cws
+                
                 try:
                     # List children artifacts (installed apps) with filters
                     # Only query committed artifacts (stage=False)
                     all_artifacts = await self._artifact_manager.list_children(
-                        parent_id=f"{cws}/applications",
+                        parent_id=f"{query_workspace}/applications",
                         filters=artifact_filters,
                         limit=1000,  # Reasonable limit for apps
                         stage=False,  # Only query committed artifacts, not staged

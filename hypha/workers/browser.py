@@ -243,15 +243,14 @@ class BrowserWorker(BaseWorker):
         logs = {"console": [], "error": []}
 
         def log_console(msg):
-            logs["console"].append(
-                f"[{msg.type}] {msg.text}"
-                if msg.text
-                else (
-                    f"[{msg.type}] JSHandle@{msg.args[0]}"
-                    if msg.args
-                    else f"[{msg.type}]"
-                )
+            msg_text = f"[{msg.type}] {msg.text}" if msg.text else (
+                f"[{msg.type}] JSHandle@{msg.args[0]}" if msg.args else f"[{msg.type}]"
             )
+            logs["console"].append(msg_text)
+            
+            # Check if this is a critical error logged to console.error
+            if msg.type == "error" and msg.text:
+                logs["error"].append(msg.text)
 
         def log_error(error):
             logs["error"].append(str(error))
@@ -359,6 +358,23 @@ class BrowserWorker(BaseWorker):
             # This gives time for the api.export() call to complete
             await page.wait_for_timeout(1000)  # Wait 1 second for JS initialization
             logger.info("JavaScript initialization wait completed")
+            
+            # Check if there were any errors during initialization
+            # Use a simple approach: if there are any errors logged, the app likely failed
+            logger.info(f"Checking for errors after initialization. Error log: {logs.get('error', [])}")
+            logger.info(f"Console log entries: {len(logs.get('console', []))}")
+            
+            if logs.get("error") and len(logs["error"]) > 0:
+                # Any errors during the critical initialization period indicate failure
+                error_messages = logs["error"]
+                error_msg = f"Application failed during initialization: {'; '.join(error_messages[:3])}"  # Limit to first 3 errors
+                logger.error(error_msg)
+                # Report error via progress callback before failing
+                await safe_call_callback(config.progress_callback,
+                    {"type": "error", "message": error_msg}
+                )
+                await context.close()
+                raise Exception(error_msg)
             
             # Execute startup script if specified in manifest
             startup_script_path = config.manifest.get("startup_script")
