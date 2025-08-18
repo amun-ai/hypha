@@ -1336,3 +1336,115 @@ async def test_workspace_status_and_overwrite(fastapi_server, test_user_token):
     await api.disconnect()
     
     print("✅ Workspace status and overwrite functionality works correctly")
+
+
+async def test_parse_token_workspace_validation(fastapi_server, test_user_token):
+    """Test the parse_token function with workspace validation security feature."""
+    from hypha.core.auth import parse_token, generate_presigned_token, create_scope
+    from hypha.core import UserPermission
+    from fastapi import HTTPException
+    
+    # Connect to the server with the test user
+    api = await connect_to_server(
+        {
+            "client_id": "test-parse-token",
+            "name": "Test Parse Token",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 20,
+            "token": test_user_token,
+        }
+    )
+    
+    # Get the current workspace from the API
+    current_workspace = api.config.workspace
+    print(f"Current workspace: {current_workspace}")
+    
+    # Parse the test token to get user info
+    user_info = parse_token(test_user_token)
+    
+    # Create a new workspace for testing
+    test_workspace_name = f"test-parse-token-{uuid.uuid4().hex[:8]}"
+    ws_info = await api.create_workspace(
+        {
+            "name": test_workspace_name,
+            "description": "Test workspace for parse_token validation",
+            "persistent": False,
+        }
+    )
+    print(f"Created test workspace: {test_workspace_name}")
+    
+    # Create tokens with different workspace scopes
+    # Token for the test workspace
+    user_info_test_ws = user_info.model_copy()
+    user_info_test_ws.scope = create_scope(
+        workspaces={test_workspace_name: UserPermission.admin},
+        current_workspace=test_workspace_name
+    )
+    token_test_ws = generate_presigned_token(user_info_test_ws, 3600)
+    
+    # Token for the original workspace  
+    user_info_orig_ws = user_info.model_copy()
+    user_info_orig_ws.scope = create_scope(
+        workspaces={current_workspace: UserPermission.admin},
+        current_workspace=current_workspace
+    )
+    token_orig_ws = generate_presigned_token(user_info_orig_ws, 3600)
+    
+    # Test 1: Token with matching workspace should succeed
+    print("Test 1: Validating token with matching workspace...")
+    try:
+        result = parse_token(token_test_ws, expected_workspace=test_workspace_name)
+        assert result.scope.current_workspace == test_workspace_name
+        print("✓ Success: Token validated for correct workspace")
+    except Exception as e:
+        print(f"✗ Failed: {e}")
+        raise
+    
+    # Test 2: Token with non-matching workspace should fail
+    print("Test 2: Validating token with non-matching workspace...")
+    try:
+        result = parse_token(token_orig_ws, expected_workspace=test_workspace_name)
+        print(f"✗ Should have failed but got user {result.id}")
+        raise AssertionError("Token validation should have failed for mismatched workspace")
+    except HTTPException as e:
+        assert e.status_code == 403
+        assert "not authorized for workspace" in e.detail
+        print(f"✓ Expected failure: {e.detail}")
+    
+    # Test 3: Token without workspace check should succeed for any valid token
+    print("Test 3: Validating token without workspace check...")
+    try:
+        result1 = parse_token(token_test_ws)
+        assert result1.scope.current_workspace == test_workspace_name
+        
+        result2 = parse_token(token_orig_ws)
+        assert result2.scope.current_workspace == current_workspace
+        print("✓ Success: Both tokens validated without workspace check")
+    except Exception as e:
+        print(f"✗ Failed: {e}")
+        raise
+    
+    # Test 4: Invalid token should fail regardless of workspace check
+    print("Test 4: Validating invalid token...")
+    invalid_token = "invalid.token.here"
+    try:
+        result = parse_token(invalid_token, expected_workspace=test_workspace_name)
+        print(f"✗ Should have failed but got result")
+        raise AssertionError("Invalid token should have failed")
+    except (HTTPException, AssertionError) as e:
+        if isinstance(e, HTTPException):
+            assert e.status_code in [401, 403]
+            print(f"✓ Expected failure for invalid token: {e.detail}")
+        else:
+            raise
+    
+    # Clean up
+    try:
+        await api.delete_workspace(test_workspace_name)
+        print(f"Cleaned up test workspace: {test_workspace_name}")
+    except Exception:
+        pass  # Workspace might not exist if test failed early
+    
+    await api.disconnect()
+    
+    print("✅ parse_token workspace validation tests passed successfully")
