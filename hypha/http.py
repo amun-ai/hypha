@@ -911,6 +911,9 @@ class HTTPProxy:
             """
             try:
                 workspace, service_id, function_key = function_info
+                # The workspace should always be the user's current workspace
+                # derived from the token
+                # We should never trust the workspace specified in the url or query
                 async with self.store.get_workspace_interface(
                     user_info, user_info.scope.current_workspace
                 ) as api:
