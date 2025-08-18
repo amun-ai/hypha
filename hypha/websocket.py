@@ -86,13 +86,17 @@ class WebsocketServer:
                     )
                 else:
                     user_info = generate_anonymous_user()
+                    # Each anonymous user gets their own workspace based on their ID
+                    user_workspace = user_info.get_workspace()
+                    # Use the requested workspace if specified, otherwise use the user's own workspace
+                    workspace = workspace or user_workspace
+                    # Anonymous users get admin permission for their own workspace
                     user_info.scope = create_scope(
-                        current_workspace=user_info.get_workspace(),
-                        workspaces={user_info.get_workspace(): UserPermission.admin},
+                        current_workspace=workspace,
+                        workspaces={user_workspace: UserPermission.admin},
                         client_id=client_id,
                     )
-                    workspace = workspace or user_info.get_workspace()
-                    logger.info(f"Created anonymous user {user_info.id}")
+                    logger.info(f"Created anonymous user {user_info.id} with workspace {user_workspace}")
 
                 workspace_info = await self.store.load_or_create_workspace(
                     user_info, workspace

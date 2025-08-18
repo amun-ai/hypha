@@ -252,16 +252,29 @@ class HyphaMCPAdapter:
         logger.debug(f"Has inline config: {self._has_inline_config()}")
         logger.debug(f"Service keys: {list(self.service.keys()) if isinstance(self.service, dict) else 'Not a dict'}")
         
-        if service_type == "mcp" and self._is_mcp_native_service():
+        # If service explicitly declares type="mcp", validate it follows MCP structure
+        if service_type == "mcp":
+            if not (self._is_mcp_native_service() or self._has_inline_config()):
+                raise ValueError(
+                    f"Service '{self.service_info.id}' has type='mcp' but does not follow valid MCP structure. "
+                    "Services with type='mcp' must either:\n"
+                    "1. Have MCP protocol functions (list_tools, call_tool, etc.), OR\n"
+                    "2. Have inline configuration with 'tools', 'resources', or 'prompts' dictionaries.\n"
+                    "If your service has arbitrary nested functions, do not specify type='mcp'."
+                )
+        
+        # Check if it's a native MCP service (has MCP protocol functions)
+        if self._is_mcp_native_service():
             # Native MCP service - use provided protocol functions
             logger.info("Setting up native MCP handlers")
             self._setup_native_mcp_handlers()
-        elif service_type == "mcp" and self._has_inline_config():
-            # MCP service with inline configuration
+        elif self._has_inline_config():
+            # Service with inline configuration (tools/resources/prompts dicts)
             logger.info("Setting up inline config handlers")
             self._setup_inline_config_handlers()
         else:
             # Auto-wrap regular Hypha service functions as MCP tools
+            # This handles any service type, including nested structures
             logger.info("Setting up auto-wrapped handlers")
             self._setup_auto_wrapped_handlers()
     
@@ -913,40 +926,11 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
 def is_mcp_compatible_service(service) -> bool:
     """Check if a service is MCP compatible.
     
-    A service is MCP compatible if:
-    1. It has type="mcp", OR
-    2. It has MCP protocol functions (list_tools, call_tool, etc.)
+    Any service can be MCP compatible - we'll auto-wrap its functions as MCP tools.
+    Services with explicit type="mcp" or MCP protocol functions get special handling.
     """
-    # Check for explicit MCP type in service
-    if hasattr(service, "type") and service.type == "mcp":
-        return True
-    
-    # Check for MCP protocol functions
-    mcp_functions = [
-        "list_tools",
-        "call_tool", 
-        "list_prompts",
-        "get_prompt",
-        "list_resource_templates",
-        "list_resources",
-        "read_resource",
-    ]
-    
-    if isinstance(service, dict):
-        # Check if any MCP function exists
-        has_mcp_function = any(func in service for func in mcp_functions)
-        
-        # For dict services, also check if they have a type field
-        service_type = service.get("type", "")
-        if service_type == "mcp":
-            return True
-        
-        return has_mcp_function
-    
-    # For object services, check attributes
-    has_mcp_functions = any(hasattr(service, func) for func in mcp_functions)
-    
-    return has_mcp_functions
+    # All services are MCP compatible - we can auto-wrap any service
+    return True
 
 
 class MCPRoutingMiddleware:
@@ -1198,9 +1182,10 @@ class MCPRoutingMiddleware:
                         return
                     else:
                         raise
+
+                # No longer require explicit type="mcp" - any service can be exposed as MCP
+                # Services with type="mcp" get special handling, others are auto-wrapped
                 
-                # Remove the strict type check - any service can be converted to MCP
-                # The HyphaMCPAdapter will handle auto-wrapping if needed
                 service = await api.get_service(service_info.id)
                 
                 # We don't need to check is_mcp_compatible_service either
@@ -1317,9 +1302,10 @@ class MCPRoutingMiddleware:
                         return
                     else:
                         raise
+
+                # No longer require explicit type="mcp" - any service can be exposed as MCP
+                # Services with type="mcp" get special handling, others are auto-wrapped
                 
-                # Remove the strict type check - any service can be converted to MCP
-                # The HyphaMCPAdapter will handle auto-wrapping if needed
                 service = await api.get_service(service_info.id)
                 
                 # We don't need to check is_mcp_compatible_service either
