@@ -1735,6 +1735,165 @@ async def test_mcp_real_client_integration(fastapi_server, test_user_token):
             assert "7-day" in prompt_result.messages[0].content.text
 
 
+async def test_non_mcp_service_conversion(fastapi_server, test_user_token):
+    """Test that regular non-MCP services can be converted and accessed via both MCP and SSE endpoints."""
+    from mcp.client.streamable_http import streamablehttp_client
+    from mcp.client.sse import sse_client
+    from mcp.client.session import ClientSession
+    
+    # Connect to the Hypha server
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "token": test_user_token,
+        }
+    )
+    
+    workspace = api.config.workspace
+    
+    # Create schema functions for a regular service (NOT marked as MCP)
+    @schema_function
+    def calculate_sum(a: float, b: float) -> float:
+        """Calculate the sum of two numbers."""
+        return a + b
+    
+    @schema_function
+    def reverse_string(text: str) -> str:
+        """Reverse a string."""
+        return text[::-1]
+    
+    @schema_function
+    def get_info(name: str = "World") -> str:
+        """Get information message."""
+        return f"Hello, {name}!"
+    
+    # Register a regular service WITHOUT type="mcp"
+    # This service should still be accessible via MCP endpoint through auto-wrapping
+    regular_service_info = await api.register_service(
+        {
+            "id": "regular-service",
+            "name": "Regular Service",
+            "description": "A regular Hypha service that should be auto-wrapped for MCP",
+            # Note: NO type="mcp" here - this is a regular service
+            "config": {"visibility": "public"},
+            "calculate_sum": calculate_sum,
+            "reverse_string": reverse_string,
+            "get_info": get_info,
+        }
+    )
+    
+    # Verify the service was registered (not as MCP type)
+    assert regular_service_info["type"] != "mcp"
+    assert "regular-service" in regular_service_info["id"]
+    
+    # Extract service ID for use in endpoints
+    service_id = regular_service_info['id'].split('/')[-1]
+    
+    # TEST 1: Access via streamable HTTP endpoint (/mcp)
+    print("Testing non-MCP service via streamable HTTP endpoint...")
+    mcp_endpoint_url = f"{SERVER_URL}/{workspace}/mcp/{service_id}/mcp"
+    
+    async with streamablehttp_client(mcp_endpoint_url) as (
+        read_stream,
+        write_stream,
+        get_session_id,
+    ):
+        async with ClientSession(read_stream, write_stream) as session:
+            # Initialize the session
+            await session.initialize()
+            
+            # List available tools - regular functions should be exposed as tools
+            tools_result = await session.list_tools()
+            assert tools_result is not None
+            assert hasattr(tools_result, "tools")
+            
+            # Check that all functions are exposed as tools
+            tool_names = {tool.name for tool in tools_result.tools}
+            expected_tools = {"calculate_sum", "reverse_string", "get_info"}
+            
+            for expected_tool in expected_tools:
+                assert expected_tool in tool_names, f"Missing tool: {expected_tool}. Available tools: {tool_names}"
+            
+            # Test calling calculate_sum
+            result = await session.call_tool(
+                name="calculate_sum",
+                arguments={"a": 10, "b": 15}
+            )
+            assert result is not None
+            assert "25" in str(result.content[0].text)
+            
+            # Test calling reverse_string
+            result = await session.call_tool(
+                name="reverse_string",
+                arguments={"text": "hello"}
+            )
+            assert result is not None
+            assert "olleh" in str(result.content[0].text)
+            
+            # Test calling get_info
+            result = await session.call_tool(
+                name="get_info",
+                arguments={"name": "MCP"}
+            )
+            assert result is not None
+            assert "Hello, MCP!" in str(result.content[0].text)
+    
+    print("✓ Non-MCP service successfully accessed via streamable HTTP endpoint")
+    
+    # TEST 2: Access via SSE endpoint (/sse)
+    print("Testing non-MCP service via SSE endpoint...")
+    sse_endpoint_url = f"{SERVER_URL}/{workspace}/mcp/{service_id}/sse"
+    
+    async with sse_client(sse_endpoint_url) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
+            # Initialize the session
+            await session.initialize()
+            
+            # List available tools - regular functions should be exposed as tools
+            tools_result = await session.list_tools()
+            assert tools_result is not None
+            assert hasattr(tools_result, "tools")
+            
+            # Check that all functions are exposed as tools
+            tool_names = {tool.name for tool in tools_result.tools}
+            expected_tools = {"calculate_sum", "reverse_string", "get_info"}
+            
+            for expected_tool in expected_tools:
+                assert expected_tool in tool_names, f"Missing tool: {expected_tool}. Available tools: {tool_names}"
+            
+            # Test calling calculate_sum via SSE
+            result = await session.call_tool(
+                name="calculate_sum",
+                arguments={"a": 20, "b": 30}
+            )
+            assert result is not None
+            assert "50" in str(result.content[0].text)
+            
+            # Test calling reverse_string via SSE
+            result = await session.call_tool(
+                name="reverse_string",
+                arguments={"text": "world"}
+            )
+            assert result is not None
+            assert "dlrow" in str(result.content[0].text)
+            
+            # Test calling get_info via SSE
+            result = await session.call_tool(
+                name="get_info",
+                arguments={"name": "SSE"}
+            )
+            assert result is not None
+            assert "Hello, SSE!" in str(result.content[0].text)
+    
+    print("✓ Non-MCP service successfully accessed via SSE endpoint")
+    print("✓ Non-MCP service successfully auto-wrapped and accessed via both MCP and SSE endpoints")
+    
+    # Clean up
+    await api.unregister_service(regular_service_info["id"])
+    await api.disconnect()
+
+
 async def test_mcp_nested_services(fastapi_server, test_user_token):
     """Test that services with nested callable functions are properly exposed via MCP when converted."""
     from mcp.client.streamable_http import streamablehttp_client

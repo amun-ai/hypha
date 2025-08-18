@@ -12,18 +12,30 @@
 <script id="worker" type="javascript/worker">
 
 self.onmessage = async function(e) {
-const hyphaWebsocketClient = await import("{{ hypha_rpc_websocket_mjs }}");
-const config = e.data
-self.env = new Map()
-self.env.set("HYPHA_SERVER_URL", config.server_url)
-self.env.set("HYPHA_WORKSPACE", config.workspace)
-self.env.set("HYPHA_CLIENT_ID", config.client_id)
-self.env.set("HYPHA_TOKEN", config.token)
-self.env.set("HYPHA_APP_ID", config.app_id)
-const api = await hyphaWebsocketClient.connectToServer(config)
-await hyphaWebsocketClient.loadRequirements([{% for req in requirements %}"{{req}}", {% endfor %}])
-{{ script | safe }}
-
+try {
+    const hyphaWebsocketClient = await import("{{ hypha_rpc_websocket_mjs }}");
+    const config = e.data
+    self.env = new Map()
+    self.env.set("HYPHA_SERVER_URL", config.server_url)
+    self.env.set("HYPHA_WORKSPACE", config.workspace)
+    self.env.set("HYPHA_CLIENT_ID", config.client_id)
+    self.env.set("HYPHA_TOKEN", config.token)
+    self.env.set("HYPHA_APP_ID", config.app_id)
+    const api = await hyphaWebsocketClient.connectToServer(config)
+    await hyphaWebsocketClient.loadRequirements([{% for req in requirements %}"{{req}}", {% endfor %}])
+    {{ script | safe }}
+} catch (error) {
+    console.error("Failed to initialize app:", error);
+    // Try to log error and disconnect if api is available
+    if (typeof api !== 'undefined' && api) {
+        try {
+            await api.log({type: "error", content: "Failed to initialize app: " + error.toString()});
+            await api.disconnect();
+        } catch (e) {
+            console.error("Failed to report error:", e);
+        }
+    }
+}
 }
 </script>
 <script>

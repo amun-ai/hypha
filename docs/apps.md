@@ -88,6 +88,101 @@ echo_result = await app_service.echo("Hello, World!")
 print(f"Echo result: {echo_result}")
 ```
 
+#### Progress Monitoring and Error Handling
+
+The app installation and startup process now supports enhanced progress monitoring and early failure detection:
+
+**Progress Callbacks:**
+Apps can send progress updates during initialization using `api.log()`:
+
+```javascript
+// In your app code (JavaScript example)
+api.log("Initializing application...");
+api.log({type: "progress", content: "Loading dependencies..."});
+api.log({type: "success", content: "Dependencies loaded"});
+
+// Report errors
+api.log({type: "error", content: "Failed to connect to database"});
+```
+
+```python
+# In your app code (Python example)
+await api.log("Starting up...")
+await api.log({"type": "progress", "content": "Configuring services..."})
+await api.log({"type": "success", "content": "Services configured"})
+
+# Report errors
+await api.log({"type": "error", "content": "Configuration error: missing API key"})
+```
+
+**Early Failure Detection:**
+Apps can disconnect early to signal failure:
+
+```javascript
+// JavaScript app example
+api.export({
+    async setup() {
+        try {
+            // Initialization code
+            await api.log("Connecting to database...");
+            await connectDatabase();
+        } catch (error) {
+            await api.log({type: "error", content: `Initialization failed: ${error.message}`});
+            await api.disconnect(); // Signal failure by disconnecting
+            return;
+        }
+        await api.log({type: "success", content: "Application ready"});
+    }
+});
+```
+
+```python
+# Python app example
+from hypha_rpc import api
+
+async def setup():
+    try:
+        # Initialization code
+        await api.log("Loading configuration...")
+        config = load_config()
+    except Exception as e:
+        await api.log({"type": "error", "content": f"Failed to load config: {str(e)}"})
+        await api.disconnect()  # Signal failure by disconnecting
+        return
+    
+    await api.log({"type": "success", "content": "Setup complete"})
+
+api.export({"setup": setup})
+```
+
+**Monitoring Installation Progress:**
+When installing or starting apps, you can provide a progress callback to receive real-time updates:
+
+```python
+def progress_handler(message):
+    print(f"[{message['type']}] {message['message']}")
+
+# Install with progress monitoring
+app_info = await controller.install(
+    source=app_source,
+    manifest={"name": "My App", "type": "web-worker", "version": "1.0.0"},
+    progress_callback=progress_handler
+)
+
+# Start with progress monitoring
+started_app = await controller.start(
+    app_info.id,
+    wait_for_service="default",
+    progress_callback=progress_handler
+)
+```
+
+The controller will automatically:
+- Listen for app disconnection events to detect early failures
+- Subscribe to the app's log channel to receive progress messages
+- Fail fast if the app disconnects with error logs
+- Provide detailed progress updates throughout the installation/startup process
+
 **Execute Method Features:**
 - **Session Persistence**: Variables and state persist between executions in the same session
 - **Jupyter-Compatible Output**: Returns structured output including stdout, stderr, and display data

@@ -1199,22 +1199,12 @@ class MCPRoutingMiddleware:
                     else:
                         raise
                 
-                if service_info.type != "mcp":
-                    await api_context_manager.__aexit__(None, None, None)
-                    await self._send_error_response(
-                        send, 400, f"Service {service_id} is not MCP compatible"
-                    )
-                    return
-                
+                # Remove the strict type check - any service can be converted to MCP
+                # The HyphaMCPAdapter will handle auto-wrapping if needed
                 service = await api.get_service(service_info.id)
                 
-                # Check if it's MCP compatible
-                if not is_mcp_compatible_service(service):
-                    await api_context_manager.__aexit__(None, None, None)
-                    await self._send_error_response(
-                        send, 400, f"Service {service_id} is not MCP compatible"
-                    )
-                    return
+                # We don't need to check is_mcp_compatible_service either
+                # The adapter will auto-wrap any service with callable functions
                 
                 # Create MCP app with the service
                 mcp_app = await create_mcp_app_from_service(
@@ -1328,22 +1318,12 @@ class MCPRoutingMiddleware:
                     else:
                         raise
                 
-                if service_info.type != "mcp":
-                    await api_context_manager.__aexit__(None, None, None)
-                    await self._send_error_response(
-                        send, 400, f"Service {service_id} is not MCP compatible"
-                    )
-                    return
-                
+                # Remove the strict type check - any service can be converted to MCP
+                # The HyphaMCPAdapter will handle auto-wrapping if needed
                 service = await api.get_service(service_info.id)
                 
-                # Check if it's MCP compatible
-                if not is_mcp_compatible_service(service):
-                    await api_context_manager.__aexit__(None, None, None)
-                    await self._send_error_response(
-                        send, 400, f"Service {service_id} is not MCP compatible"
-                    )
-                    return
+                # We don't need to check is_mcp_compatible_service either
+                # The adapter will auto-wrap any service with callable functions
                 
                 # Create MCP app with the service
                 mcp_app = await create_mcp_app_from_service(

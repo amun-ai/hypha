@@ -23,9 +23,32 @@
 
   const hyphaWebsocketClient = await import(cfg.server_url + '/assets/hypha-rpc-websocket.mjs');
   hyphaWebsocketClient.connectToServer(cfg).then(async (api)=>{
-      await hyphaWebsocketClient.loadRequirements([{% for req in requirements %}"{{req}}", {% endfor %}])
-      {{ script | safe }}
-  }).catch(console.error)
+      window.api = api; // Make api available globally for error handling
+      try {
+          await hyphaWebsocketClient.loadRequirements([{% for req in requirements %}"{{req}}", {% endfor %}])
+          {{ script | safe }}
+      } catch (error) {
+          console.error("Failed to initialize app:", error);
+          // Log error and disconnect to signal failure
+          try {
+              await api.log({type: "error", content: "Failed to initialize app: " + error.toString()});
+              await api.disconnect();
+          } catch (e) {
+              console.error("Failed to report error:", e);
+          }
+      }
+  }).catch(async (error) => {
+      console.error("Failed to connect to server:", error);
+      // If we have api available, try to log and disconnect
+      if (window.api) {
+          try {
+              await window.api.log({type: "error", content: "Connection error: " + error.toString()});
+              await window.api.disconnect();
+          } catch (e) {
+              console.error("Failed to report connection error:", e);
+          }
+      }
+  })
 
 </script>
 </body>

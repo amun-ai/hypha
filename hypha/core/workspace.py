@@ -455,6 +455,42 @@ class WorkspaceManager:
             await session.close()
 
     @schema_method
+    async def log(
+        self,
+        message: Union[str, dict] = Field(..., description="Log message as string or dict with 'type' and 'content' fields"),
+        context: dict = None,
+    ):
+        """Simplified logging method for apps to send progress/error messages.
+        
+        The log messages will be emitted to `log>[client-id]` channel.
+        Message format can be:
+        - A string: Will be wrapped as {"type": "info", "content": message}
+        - A dict with 'type' and 'content': Will be used as-is
+        - A dict with other fields: Will be passed through with type defaulting to "info"
+        
+        Types can be: "info", "success", "warning", "error", "progress"
+        """
+        workspace = context["ws"]
+        client_id = context.get("from", "")
+        
+        # Format the message
+        if isinstance(message, str):
+            log_data = {"type": "info", "content": message}
+        elif isinstance(message, dict):
+            log_data = message.copy()
+            if "type" not in log_data:
+                log_data["type"] = "info"
+        else:
+            log_data = {"type": "info", "content": str(message)}
+        
+        # Remove workspace prefix from client_id if present
+        if "/" in client_id:
+            client_id = client_id.split("/")[-1]
+        # Broadcast to the log channel
+        await self._event_bus.broadcast(workspace, f"log>{client_id}", log_data)
+        logger.info(f"Log message from {workspace}/{client_id}: {log_data}")
+
+    @schema_method
     async def get_event_stats(
         self,
         event_type: Optional[str] = Field(None, description="Event type"),
@@ -1639,29 +1675,35 @@ class WorkspaceManager:
                     
                     # Process all services from this app
                     for app_service in app_services:
-                        # Format service ID as <service_id>@<app-id> for lazy loading
-                        original_service_id = app_service.get("id")
-                        if original_service_id:
-                            # Extract the service name part and append @app-id
-                            parts = original_service_id.split(":")
-                            if len(parts) >= 2:
-                                service_name = parts[-1]
-                                # Reconstruct as workspace/client:service@app-id
-                                service_id_with_app = f"{':'.join(parts[:-1])}:{service_name}@{artifact_app_id}"
-                            else:
-                                service_id_with_app = f"{original_service_id}@{artifact_app_id}"
-                        else:
-                            continue  # Skip if no service ID
+                        # Use ServiceInfo to validate and get a complete model
+                        try:
+                            # Convert app_service to ServiceInfo for validation
+                            service_info = ServiceInfo.model_validate(app_service)
                             
-                        service_dict = {
-                            "id": service_id_with_app,
-                            "name": app_service.get("name"),
-                            "type": app_service.get("type"),
-                            "description": app_service.get("description"),
-                            "config": app_service.get("config", {}),
-                            "app_id": artifact_app_id,
-                            "_source": "app_manifest"
-                        }
+                            # Format service ID as <service_id>@<app-id> for lazy loading
+                            original_service_id = service_info.id
+                            if original_service_id:
+                                # Extract the service name part and append @app-id
+                                parts = original_service_id.split(":")
+                                if len(parts) >= 2:
+                                    service_name = parts[-1]
+                                    # Reconstruct as workspace/client:service@app-id
+                                    service_id_with_app = f"{':'.join(parts[:-1])}:{service_name}@{artifact_app_id}"
+                                else:
+                                    service_id_with_app = f"{original_service_id}@{artifact_app_id}"
+                            else:
+                                continue  # Skip if no service ID
+                            
+                            # Update the service_info with the new ID and app_id
+                            service_info.id = service_id_with_app
+                            service_info.app_id = artifact_app_id
+                            
+                            # Convert to dict and add source marker
+                            service_dict = service_info.model_dump()
+                            service_dict["_source"] = "app_manifest"
+                        except Exception as e:
+                            logger.warning(f"Failed to validate service from app manifest: {e}")
+                            continue
                         
                         # Skip if service ID is missing or already running
                         if not service_dict["id"] or service_dict["id"] in existing_service_ids:
@@ -2216,12 +2258,6 @@ class WorkspaceManager:
         self.validate_context(context, permission=UserPermission.read)
         return data
 
-    @schema_method
-    async def log(
-        self, msg: str = Field(..., description="log a message"), context=None
-    ):
-        """Log a app message."""
-        await self.log_event("log", msg, context=context)
 
     async def load_workspace_info(
         self, workspace: str, load=True, increment_counter=True
