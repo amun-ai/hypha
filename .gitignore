@@ -1,3 +1,4 @@
+.serena
 examples/
 minio-data/
 helm-charts/*.tgz
