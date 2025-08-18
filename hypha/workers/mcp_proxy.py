@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import uuid
 from contextlib import asynccontextmanager
@@ -49,8 +50,6 @@ logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("mcp_proxy")
 logger.setLevel(LOGLEVEL)
 
-# Import MCP SDK - let it fail directly if not available
-import mcp.types as mcp_types
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.client.session import ClientSession
 from mcp.client.sse import sse_client
@@ -766,10 +765,16 @@ class MCPClientRunner(BaseWorker):
                 )
                 raise
 
-        tool_wrapper.__name__ = tool_name
+        # Sanitize tool name for Python attribute access
+        sanitized_name = re.sub(r'[^a-zA-Z0-9_]', '_', tool_name)
+        if sanitized_name and sanitized_name[0].isdigit():
+            sanitized_name = f"_{sanitized_name}"
+        
+        tool_wrapper.__name__ = sanitized_name  # Use sanitized name for attribute access
+        tool_wrapper.__original_name__ = tool_name  # Keep original name for reference
         tool_wrapper.__doc__ = tool_description or ""
         tool_wrapper.__schema__ = {
-            "name": tool_name,
+            "name": tool_name,  # Keep original name in schema for MCP calls
             "description": tool_description or "",
             "parameters": tool_schema,
         }
@@ -1000,11 +1005,19 @@ class MCPClientRunner(BaseWorker):
                 tool_wrapper = self._wrap_tool(
                     session_data, server_name, tool_name, tool_description, tool_schema
                 )
-                tool_wrappers[tool_name] = tool_wrapper
+                
+                # Convert tool name to valid Python variable name
+                # Replace invalid characters with underscore
+                sanitized_name = re.sub(r'[^a-zA-Z0-9_]', '_', tool_name)
+                # Ensure it doesn't start with a number
+                if sanitized_name and sanitized_name[0].isdigit():
+                    sanitized_name = f"_{sanitized_name}"
+                
+                tool_wrappers[sanitized_name] = tool_wrapper
 
-                logger.info(f"Created tool wrapper: {server_name}.{tool_name}")
+                logger.info(f"Created tool wrapper: {server_name}.{tool_name} (as {sanitized_name})")
                 session_data["logs"]["info"].append(
-                    f"Created tool wrapper: {server_name}.{tool_name}"
+                    f"Created tool wrapper: {server_name}.{tool_name} (as {sanitized_name})"
                 )
 
             except Exception as e:

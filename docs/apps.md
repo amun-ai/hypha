@@ -88,6 +88,101 @@ echo_result = await app_service.echo("Hello, World!")
 print(f"Echo result: {echo_result}")
 ```
 
+#### Progress Monitoring and Error Handling
+
+The app installation and startup process now supports enhanced progress monitoring and early failure detection:
+
+**Progress Callbacks:**
+Apps can send progress updates during initialization using `api.log()`:
+
+```javascript
+// In your app code (JavaScript example)
+api.log("Initializing application...");
+api.log({type: "progress", content: "Loading dependencies..."});
+api.log({type: "success", content: "Dependencies loaded"});
+
+// Report errors
+api.log({type: "error", content: "Failed to connect to database"});
+```
+
+```python
+# In your app code (Python example)
+await api.log("Starting up...")
+await api.log({"type": "progress", "content": "Configuring services..."})
+await api.log({"type": "success", "content": "Services configured"})
+
+# Report errors
+await api.log({"type": "error", "content": "Configuration error: missing API key"})
+```
+
+**Early Failure Detection:**
+Apps can disconnect early to signal failure:
+
+```javascript
+// JavaScript app example
+api.export({
+    async setup() {
+        try {
+            // Initialization code
+            await api.log("Connecting to database...");
+            await connectDatabase();
+        } catch (error) {
+            await api.log({type: "error", content: `Initialization failed: ${error.message}`});
+            await api.disconnect(); // Signal failure by disconnecting
+            return;
+        }
+        await api.log({type: "success", content: "Application ready"});
+    }
+});
+```
+
+```python
+# Python app example
+from hypha_rpc import api
+
+async def setup():
+    try:
+        # Initialization code
+        await api.log("Loading configuration...")
+        config = load_config()
+    except Exception as e:
+        await api.log({"type": "error", "content": f"Failed to load config: {str(e)}"})
+        await api.disconnect()  # Signal failure by disconnecting
+        return
+    
+    await api.log({"type": "success", "content": "Setup complete"})
+
+api.export({"setup": setup})
+```
+
+**Monitoring Installation Progress:**
+When installing or starting apps, you can provide a progress callback to receive real-time updates:
+
+```python
+def progress_handler(message):
+    print(f"[{message['type']}] {message['message']}")
+
+# Install with progress monitoring
+app_info = await controller.install(
+    source=app_source,
+    manifest={"name": "My App", "type": "web-worker", "version": "1.0.0"},
+    progress_callback=progress_handler
+)
+
+# Start with progress monitoring
+started_app = await controller.start(
+    app_info.id,
+    wait_for_service="default",
+    progress_callback=progress_handler
+)
+```
+
+The controller will automatically:
+- Listen for app disconnection events to detect early failures
+- Subscribe to the app's log channel to receive progress messages
+- Fail fast if the app disconnects with error logs
+- Provide detailed progress updates throughout the installation/startup process
+
 **Execute Method Features:**
 - **Session Persistence**: Variables and state persist between executions in the same session
 - **Jupyter-Compatible Output**: Returns structured output including stdout, stderr, and display data
@@ -828,6 +923,150 @@ app_info = await controller.install(
 
 ---
 
+## Singleton Mode and Multiple Instances
+
+By default, Hypha apps run in **singleton mode**, meaning only one instance of an app can be running at a time within a workspace. This is controlled by the `singleton` option in the application manifest, which defaults to `true`.
+
+### Understanding Singleton Behavior
+
+When `singleton: true` (default):
+- Starting an app multiple times returns the same running instance
+- The existing session is reused instead of creating a new one
+- Useful for shared services or stateful applications
+- Prevents resource duplication for single-instance apps
+
+```python
+# First start creates a new instance
+session1 = await controller.start("my-app")
+print(session1.id)  # e.g., "workspace/client-123"
+
+# Second start returns the same instance
+session2 = await controller.start("my-app")
+print(session2.id)  # Same as session1.id: "workspace/client-123"
+```
+
+### Running Multiple Instances
+
+To run multiple instances of the same app, you have several options:
+
+**Option 1: Disable Singleton Mode**
+
+Set `singleton: false` in the application manifest to allow multiple instances:
+
+```python
+app_info = await controller.install(
+    source=app_source,
+    manifest={
+        "name": "Multi-Instance App",
+        "type": "web-worker",
+        "version": "1.0.0",
+        "singleton": false  # Allow multiple instances
+    }
+)
+
+# Each start creates a new instance
+session1 = await controller.start(app_info.id)
+session2 = await controller.start(app_info.id)
+session3 = await controller.start(app_info.id)
+
+# All sessions have different IDs
+print(session1.id)  # e.g., "workspace/client-123"
+print(session2.id)  # e.g., "workspace/client-456"
+print(session3.id)  # e.g., "workspace/client-789"
+```
+
+**Option 2: Use Autoscaling**
+
+Configure autoscaling to automatically manage multiple instances based on load:
+
+```python
+app_info = await controller.install(
+    source=app_source,
+    manifest={
+        "name": "Autoscaling App",
+        "type": "web-worker",
+        "version": "1.0.0",
+        "singleton": false,  # Required for autoscaling
+        "autoscaling": {
+            "enabled": true,
+            "min_instances": 2,  # Always keep at least 2 instances
+            "max_instances": 10, # Scale up to 10 instances
+            "target_requests_per_instance": 100
+        }
+    }
+)
+
+# The controller automatically manages instances based on load
+# Requests are distributed across available instances
+```
+
+**Option 3: Programmatic Instance Management**
+
+For advanced use cases, you can manually manage instances with custom client IDs:
+
+```python
+# Install app with singleton disabled
+app_info = await controller.install(
+    source=app_source,
+    manifest={
+        "name": "Managed Instances",
+        "type": "web-worker",
+        "version": "1.0.0",
+        "singleton": false
+    }
+)
+
+# Start instances with specific client IDs
+instances = []
+for i in range(3):
+    session = await controller.start(
+        app_info.id,
+        client_id=f"instance-{i}",  # Custom client ID
+        wait_for_service="default"
+    )
+    instances.append(session)
+
+# Access specific instances
+for instance in instances:
+    service = await api.get_service(f"default@{instance.id}")
+    result = await service.process_data(data)
+```
+
+### Load Balancing with Multiple Instances
+
+When multiple instances are running, Hypha automatically provides load balancing through the `__rlb` (round-robin load balancer) suffix:
+
+```python
+# Without load balancing - accesses specific instance
+service = await api.get_service("my-app:my-service")
+
+# With load balancing - distributes across all instances
+balanced_service = await api.get_service("my-app__rlb:my-service")
+
+# Requests are automatically distributed
+for i in range(10):
+    result = await balanced_service.process(data)  # Each call may go to different instance
+```
+
+### When to Use Multiple Instances
+
+Consider using multiple instances for:
+- **High-throughput processing**: Distribute load across instances
+- **Parallel computation**: Process multiple requests simultaneously
+- **Fault tolerance**: Continue service if one instance fails
+- **Development/testing**: Test different versions side-by-side
+- **Resource isolation**: Separate instances for different tenants
+
+### Singleton Mode Best Practices
+
+Keep singleton mode enabled (`singleton: true`) for:
+- **Stateful services**: Database connections, caches, session managers
+- **Resource managers**: File system access, hardware interfaces
+- **Coordination services**: Message brokers, task schedulers
+- **Single-user apps**: Personal dashboards, development tools
+
+---
+
 ## Application Types and Alternatives
 
 Depending on your use case, you might want to consider different approaches:
@@ -839,7 +1078,7 @@ Depending on your use case, you might want to consider different approaches:
 
 ### For Scalable Applications
 - **[Autoscaling](autoscaling.md)**: Configure automatic scaling based on load for any application type, with detailed examples and best practices
-- **Load Balancing**: Distribute requests across multiple instances
+- **Load Balancing**: Distribute requests across multiple instances using `__rlb` suffix
 - **Service Selection**: Control how requests are routed to instances
 
 ### For Different Programming Languages

@@ -52,58 +52,54 @@ async def test_apps_and_lazy_worker_discovery(
 
     browser_app_id = browser_worker_app["id"]
 
-    try:
-        # Test 1: List workers - basic functionality
-        workers = await controller.list_workers()
-        assert isinstance(workers, list), "Should return workers list"
-        
-        # Test 2: Verify include_app_services functionality works
-        services_without_apps = await api.list_services(
-            query={"workspace": api.config.workspace},
-            include_app_services=False
-        )
-        
-        services_with_apps = await api.list_services(
-            query={"workspace": api.config.workspace},
-            include_app_services=True
-        )
-        
-        # The key test is that include_app_services works without errors
-        assert isinstance(services_without_apps, list), "Should return services list"
-        assert isinstance(services_with_apps, list), "Should return services list with apps"
-        assert len(services_with_apps) >= len(services_without_apps), "App services should not reduce count"
-        
-        print(f"Services without apps: {len(services_without_apps)}")
-        print(f"Services with apps: {len(services_with_apps)}")
-        
-        # Test 3: Test different query combinations
-        all_services = await api.list_services(include_app_services=True)
-        workspace_services = await api.list_services(
-            query={"workspace": api.config.workspace},
-            include_app_services=True
-        )
-        
-        assert isinstance(all_services, list), "Should return all services list"
-        assert isinstance(workspace_services, list), "Should return workspace services list"
-        
-        # Test 4: Start the app and verify basic functionality
-        session = await controller.start(browser_app_id, wait_for_service=False, timeout=15)
-        session_id = session["id"]
-        
-        try:
-            # Wait for app to start
-            await asyncio.sleep(1)
-            
-            # Verify the app started correctly
-            print(f"App session started: {session_id}")
-            
-        finally:
-            # Stop the app
-            await controller.stop(session_id, raise_exception=False)
-            
-    finally:
-        # Cleanup
-        await controller.uninstall(browser_app_id)
+    # Test 1: List workers - basic functionality
+    workers = await controller.list_workers()
+    assert isinstance(workers, list), "Should return workers list"
+    
+    # Test 2: Verify include_app_services functionality works
+    services_without_apps = await api.list_services(
+        query={"workspace": api.config.workspace},
+        include_app_services=False
+    )
+    
+    services_with_apps = await api.list_services(
+        query={"workspace": api.config.workspace},
+        include_app_services=True
+    )
+    
+    # The key test is that include_app_services works without errors
+    assert isinstance(services_without_apps, list), "Should return services list"
+    assert isinstance(services_with_apps, list), "Should return services list with apps"
+    assert len(services_with_apps) >= len(services_without_apps), "App services should not reduce count"
+    
+    print(f"Services without apps: {len(services_without_apps)}")
+    print(f"Services with apps: {len(services_with_apps)}")
+    
+    # Test 3: Test different query combinations
+    all_services = await api.list_services(include_app_services=True)
+    workspace_services = await api.list_services(
+        query={"workspace": api.config.workspace},
+        include_app_services=True
+    )
+    
+    assert isinstance(all_services, list), "Should return all services list"
+    assert isinstance(workspace_services, list), "Should return workspace services list"
+    
+    # Test 4: Start the app and verify basic functionality
+    session = await controller.start(browser_app_id, wait_for_service=False, timeout=15)
+    session_id = session["id"]
+    
+    # Wait for app to start
+    await asyncio.sleep(1)
+    
+    # Verify the app started correctly
+    print(f"App session started: {session_id}")
+    
+    # Stop the app
+    await controller.stop(session_id, raise_exception=False)
+    
+    # Cleanup
+    await controller.uninstall(browser_app_id)
 
     await api.disconnect()
 
@@ -111,13 +107,78 @@ async def test_apps_and_lazy_worker_discovery(
 async def test_lazy_loading_with_get_service(
     minio_server, fastapi_server, test_user_token
 ):
-    """Test include_app_services functionality and basic app lifecycle."""
+    """Test include_app_services functionality - discovers services from app manifests."""
     api = await connect_to_server(
         {"name": "test lazy loading", "server_url": SERVER_URL, "token": test_user_token}
     )
     controller = await api.get_service("public/server-apps")
     
-    # Create a simple window app for testing
+    # Create a web-python app that registers services when it starts
+    # These services will be collected and stored in the manifest
+    service_app = await controller.install(
+        source="""
+<config lang="json">
+{
+    "name": "Service Provider App",
+    "type": "web-python",
+    "version": "1.0.0",
+    "description": "App that provides multiple services for testing"
+}
+</config>
+
+<script lang="python">
+from hypha_rpc import api
+
+# Data processor service functions
+def process(data):
+    return {"processed": True, "data": data, "timestamp": "2024-01-01"}
+
+def validate(data):
+    return {"valid": True, "data": data}
+
+def test():
+    return "Service provider app ready"
+
+# Export the default service with functions
+# This will be collected and stored in the manifest
+api.export({
+    "process": process,
+    "validate": validate,
+    "test": test
+})
+
+print("Services exported successfully")
+</script>
+        """,
+        wait_for_service=True,  # Wait for the default service to be registered
+        timeout=30,
+        overwrite=True,
+    )
+    
+    service_app_id = service_app["id"]
+    print(f"Installed app: {service_app_id}")
+    
+    # The app was already started during installation (wait_for_service=True)
+    # The services should have been collected and stored in the manifest
+    # Installation returns a session when wait_for_service=True
+    
+    # First verify the services are in the manifest
+    app_info = await controller.get_app_info(service_app_id)
+    assert "manifest" in app_info, "App should have a manifest"
+    assert "services" in app_info["manifest"], "Services should be collected in manifest"
+    assert len(app_info["manifest"]["services"]) >= 1, "Should have at least 1 service"
+    print(f"Services in manifest: {[s['id'] for s in app_info['manifest']['services']]}")
+    
+    # The app is running from installation - need to stop it for our test
+    # When wait_for_service=True, install returns the started session info
+    if "session_id" in service_app:
+        await controller.stop(service_app["session_id"], raise_exception=False)
+        print(f"Stopped session from installation: {service_app['session_id']}")
+    
+    # Wait for services to be unregistered
+    await asyncio.sleep(1)
+    
+    # Now install another app that won't be started (for lazy loading test)
     lazy_app = await controller.install(
         source="""
 <config lang="json">
@@ -125,70 +186,133 @@ async def test_lazy_loading_with_get_service(
     "name": "Lazy Loading Test App",
     "type": "window",
     "version": "1.0.0",
-    "description": "App for testing lazy loading and service discovery"
+    "description": "App for testing lazy loading functionality"
 }
 </config>
 
 <div>
     <h1>Lazy Loading Test App</h1>
-    <p>This app tests lazy loading and service discovery functionality.</p>
-    <p>Focus: include_app_services parameter in list_services method.</p>
+    <p>This app tests lazy loading functionality.</p>
 </div>
         """,
-        wait_for_service=False,  # Don't wait for service during install
+        wait_for_service=False,
         timeout=15,
         overwrite=True,
     )
     
-    app_id = lazy_app["id"]
+    lazy_app_id = lazy_app["id"]
     
-    try:
-        # Test 1: Verify include_app_services functionality works
-        services_without_apps = await api.list_services(
-            query={"workspace": api.config.workspace},
-            include_app_services=False
-        )
+    # Test 1: After stopping the app, services should NOT be in regular list
+    services_without_apps = await api.list_services(
+        query={"workspace": api.config.workspace},
+        include_app_services=False
+    )
+    
+    # Test 2: With include_app_services=True, services from manifest should be included
+    services_with_apps = await api.list_services(
+        query={"workspace": api.config.workspace},
+        include_app_services=True
+    )
+    
+    assert isinstance(services_without_apps, list), "Should return services list"
+    assert isinstance(services_with_apps, list), "Should return services list with apps"
+    
+    print(f"\nServices without include_app_services: {len(services_without_apps)}")
+    print(f"Services with include_app_services: {len(services_with_apps)}")
+    
+    # The key test: should have more services when including app services
+    assert len(services_with_apps) > len(services_without_apps), \
+        "Should have more services when including app services from manifests"
+    
+    # Find services from the app manifest (marked with _source: app_manifest)
+    app_manifest_services = [s for s in services_with_apps if s.get("_source") == "app_manifest"]
+    print(f"\nFound {len(app_manifest_services)} services from app manifests")
+    
+    # Should find the services we registered
+    assert len(app_manifest_services) >= 1, "Should find at least 1 service from app manifest"
+    
+    # Verify the app manifest services have complete ServiceInfo structure
+    # Find services specifically from our app
+    our_app_services = [s for s in app_manifest_services 
+                        if s.get("app_id") == service_app_id or 
+                        s.get("app_id") == service_app_id.split('/')[-1]]
+    
+    # If no exact match, just verify we have manifest services with proper structure
+    services_to_check = our_app_services if our_app_services else app_manifest_services[:1]
+    
+    for service in services_to_check:
+        assert service.get("id"), "Service should have an ID"
+        assert service.get("name"), "Service should have a name"
+        assert service.get("type"), "Service should have a type"
+        assert "description" in service, "Service should have description field (can be None)"
+        assert "config" in service, "Service should have config"
+        assert "service_schema" in service, "Service should have service_schema"
+        assert service.get("app_id"), "Service should have an app_id"
+        print(f"Validated manifest service: {service['id']} - {service['name']} (app_id: {service.get('app_id')})")
+    
+    # Verify we have at least one default service from any app
+    default_services = [s for s in app_manifest_services if "default" in s.get("id", "")]
+    assert len(default_services) >= 1, "Should find at least one default service from manifests"
+    
+    # Check the first default service has proper structure
+    if default_services:
+        default_service = default_services[0]
+        assert default_service.get("id"), "Default service should have an ID"
+        assert default_service.get("app_id"), "Default service should have an app_id"
+        print(f"Found default service: {default_service['id']} from app {default_service.get('app_id')}")
+    
+    print("\n✅ include_app_services functionality verified successfully!")
+    
+    # Test 3: Start the app again to verify services are registered again
+    print("\nStarting app again to verify services work...")
+    session = await controller.start(service_app_id, wait_for_service=True, timeout=20)
+    session_id = session["id"]
+    
+    # Wait a moment for services to register
+    await asyncio.sleep(1)
+    
+    # Services should now be available as running services
+    running_services = await api.list_services(
+        query={"workspace": api.config.workspace},
+        include_app_services=False
+    )
+    
+    # Look for services with the session ID in them (not the app ID)
+    active_services = [s for s in running_services if session_id.split('/')[-1] in s.get("id", "")]
+    assert len(active_services) >= 1, f"Should have active services after starting app, found: {[s.get('id') for s in running_services]}"
+    print(f"Active services after restart: {len(active_services)}")
+    
+    # Stop the app again
+    await controller.stop(session_id, raise_exception=False)
+    
+    # Test 4: Test edge cases and different parameters
+    type_filtered_services = await api.list_services(
+        query={"type": "built-in"},
+        include_app_services=True
+    )
+    
+    assert isinstance(type_filtered_services, list), "Should handle type filtering"
+    
+    # Test 4: Start the lazy app and verify basic functionality
+    lazy_session = await controller.start(lazy_app_id, wait_for_service=False, timeout=15)
+    
+    # After lazy app starts, test listing
+    await asyncio.sleep(1)  # Give time for app startup
+    
+    # Test that services listing still works
+    final_services = await api.list_services(
+        query={"workspace": api.config.workspace},
+        include_app_services=True
+    )
+    
+    assert isinstance(final_services, list), "Should work after lazy app start"
+    print(f"Final services count: {len(final_services)}")
+    
+    await controller.stop(lazy_session["id"], raise_exception=False)
         
-        services_with_apps = await api.list_services(
-            query={"workspace": api.config.workspace},
-            include_app_services=True
-        )
-        
-        # The key test is that include_app_services works
-        assert isinstance(services_without_apps, list), "Should return services list"
-        assert isinstance(services_with_apps, list), "Should return services list with apps"
-        print(f"Services without apps: {len(services_without_apps)}")
-        print(f"Services with apps: {len(services_with_apps)}")
-        
-        # Test 2: Test edge cases and different parameters
-        type_filtered_services = await api.list_services(
-            query={"type": "built-in"},
-            include_app_services=True
-        )
-        
-        assert isinstance(type_filtered_services, list), "Should handle type filtering"
-        
-        # Test 3: Start the app and verify basic functionality
-        session = await controller.start(app_id, wait_for_service=False, timeout=15)
-        
-        try:
-            # After app starts, basic functionality should work
-            await asyncio.sleep(1)  # Give time for app startup
-            
-            # Test that services listing still works after app start
-            services_after_start = await api.list_services(
-                query={"workspace": api.config.workspace},
-                include_app_services=True
-            )
-            
-            assert isinstance(services_after_start, list), "Should work after app start"
-            print(f"Services after app start: {len(services_after_start)}")
-            
-        finally:
-            await controller.stop(session["id"], raise_exception=False)
-            
-    finally:
-        await controller.uninstall(app_id)
+    # Clean up both apps
+    await controller.uninstall(service_app_id)
+    await controller.uninstall(lazy_app_id)
     
     await api.disconnect()
 

@@ -28,6 +28,7 @@ from hypha_rpc.utils import ObjectProxy
 from hypha_rpc import connect_to_server
 
 async def export_service(plugin_api, config, hypha_rpc):
+    wm = None
     try:
         wm = await connect_to_server(config)
         hypha_rpc.api.update(wm) # make the api available to the plugin
@@ -40,8 +41,16 @@ async def export_service(plugin_api, config, hypha_rpc):
         await wm.register_service(plugin_api, {"overwrite": True})
         console.log("Application initialized successfully.")
     except Exception as exp:
-        console.error("Failed to export service: ", traceback.format_exc())
+        error_msg = f"Failed to export service: {traceback.format_exc()}"
+        console.error(error_msg)
         print(traceback.format_exc())
+        # Log error and disconnect to signal failure
+        if wm:
+            try:
+                await wm.log({"type": "error", "content": error_msg})
+                await wm.disconnect()
+            except:
+                pass
 
 
 async def patch_hypha_rpc(default_config):
@@ -131,8 +140,11 @@ async def run():
         hypha_rpc = await patch_hypha_rpc(config)
         exec(script_src, globals())
     except Exception as exp:
-        console.error("Failed to run script: ", traceback.format_exc())
+        error_msg = f"Failed to run script: {traceback.format_exc()}"
+        console.error(error_msg)
         print(traceback.format_exc())
+        # Note: We can't use api.log here since hypha_rpc might not be connected
+        # The error will be shown in console instead
 
 asyncio.ensure_future(run())
 `

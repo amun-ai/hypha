@@ -16,7 +16,7 @@ from functools import partial
 
 from hypha import hypha_rpc_version
 from jinja2 import Environment, PackageLoader, select_autoescape
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 from hypha.core import (
     UserInfo,
     UserPermission,
@@ -1454,10 +1454,22 @@ class ServerAppController:
             app_files.extend(files)
 
 
-        if "services" in artifact_manifest or "service_ids" in artifact_manifest:
-            raise ValueError(
-                "Services and service_ids fields are not allowed in the app manifest."
-            )
+        # Validation: ensure services and service_ids are not provided by the user during installation
+        # This check only applies to user-provided manifests, not system-updated ones
+        # Note: The system will populate these fields after the app runs and registers services
+        if source is not None:  # Only validate when installing from source (user-provided)
+            if "services" in artifact_manifest or "service_ids" in artifact_manifest:
+                raise ValueError(
+                    "Services and service_ids fields are not allowed in user-provided app manifests. "
+                    "Services should be registered dynamically by the app code when it runs."
+                )
+            
+            # Also check the original manifest if it was parsed from config
+            if manifest and ("services" in manifest or "service_ids" in manifest):
+                raise ValueError(
+                    "Services and service_ids fields are not allowed in user-provided app manifests. "
+                    "Services should be registered dynamically by the app code when it runs."
+                )
 
         # Always try to get a worker for compilation - this ensures all browser apps are handled consistently
         app_type = artifact_manifest.get("type", "hypha")
@@ -1589,11 +1601,17 @@ class ServerAppController:
 
         ApplicationManifest.model_validate(artifact_manifest)
         
-        # Extract service IDs for searchability - store full service IDs
+        # Services should not be in the manifest at this point - they're registered dynamically
+        # Double-check to ensure no services leaked through
         if "services" in artifact_manifest:
-            artifact_manifest["service_ids"] = [svc.get("id") for svc in artifact_manifest["services"] if svc.get("id")]
-        else:
-            artifact_manifest["service_ids"] = []
+            logger.warning("Removing unexpected 'services' field from artifact manifest")
+            del artifact_manifest["services"]
+        if "service_ids" in artifact_manifest:
+            logger.warning("Removing unexpected 'service_ids' field from artifact manifest")
+            del artifact_manifest["service_ids"]
+        
+        # Initialize empty service_ids list - will be populated when services are registered
+        artifact_manifest["service_ids"] = []
         try:
             artifact = await self.artifact_manager.read("applications", context=context)
             collection_id = artifact["id"]
@@ -2175,6 +2193,12 @@ class ServerAppController:
         # The caller (start method) will store it in Redis after adding services
         return session_data
 
+    async def _check_for_early_failure(self, event_future, disconnected_early, error_msg):
+        """Check if app has failed early and set exception if needed."""
+        await asyncio.sleep(0.5)  # Brief delay to see if app disconnects
+        if disconnected_early and not event_future.done():
+            event_future.set_exception(Exception(f"App failed with error: {error_msg}"))
+    
     def _extract_core_error(self, error, logs=None):
         """Extract the core error message from worker logs or exception."""
         # First try to get meaningful error from worker logs
@@ -2204,6 +2228,249 @@ class ServerAppController:
                 error_str = f"{error.__class__.__name__}: {error_str}"
         
         return error_str or "Unknown error occurred"
+
+    async def _setup_app_event_listeners(
+        self,
+        client_id: str,
+        full_client_id: str,
+        workspace: str,
+        wait_for_service: Union[str, bool],
+        progress_callback: Callable
+    ) -> dict:
+        """
+        Set up event listeners for app startup monitoring.
+        
+        This method sets up all the event-based monitoring for app startup,
+        including service registration, client connections, disconnections, and log messages.
+        It should be called BEFORE starting the app to avoid race conditions.
+        
+        Args:
+            client_id: The client ID without workspace prefix
+            full_client_id: The full client ID including workspace prefix
+            workspace: The workspace name
+            wait_for_service: Service name to wait for (or False for no wait)
+            progress_callback: Callback for progress updates
+            
+        Returns:
+            dict: Contains 'future' (event future), 'cleanup' (cleanup functions),
+                  'services' (list for collecting services), and 'config' (dict for config)
+        """
+        # Collections to track startup progress
+        collected_services: List[ServiceInfo] = []
+        _collected_config = {}  # To collect config from default service
+        collected_logs = []  # To collect log messages from the app
+        disconnected_early = False  # Track if app disconnected before completion
+        
+        # Create a future that will be set when the target event occurs
+        event_future = asyncio.Future()
+        cleanup_handlers = []
+
+        def service_added(info: dict):
+            logger.info(f"Service added: {info['id']}")
+            if info["id"].startswith(full_client_id + ":"):
+                sinfo = ServiceInfo.model_validate(info)
+                collected_services.append(sinfo)
+                # Report service registration progress
+                service_name = info["id"].split(":")[-1]
+                progress_callback(
+                    {
+                        "type": "success",
+                        "message": f"Service '{service_name}' registered successfully",
+                    }
+                )
+
+            if info["id"] == full_client_id + ":default":
+                for key in ["config", "name", "description"]:
+                    if info.get(key):
+                        _collected_config[key] = info[key]
+                progress_callback(
+                    {"type": "success", "message": "Default service configured"}
+                )
+
+            # Check if this is the target service we're waiting for
+            if (
+                wait_for_service
+                and isinstance(wait_for_service, str)
+                and info["id"] == full_client_id + ":" + wait_for_service
+            ):
+                if not event_future.done():
+                    progress_callback(
+                        {
+                            "type": "success",
+                            "message": f"Target service '{wait_for_service}' found",
+                        }
+                    )
+                    event_future.set_result(info)
+                    logger.info(f"Target service found: {info['id']}")
+
+        def client_connected(info: dict):
+            logger.info(f"Client connected: {info}")
+            progress_callback(
+                {"type": "success", "message": "Client connection established"}
+            )
+            # Check if this is the target client we're waiting for
+            if not wait_for_service and info["id"] == full_client_id:
+                if not event_future.done():
+                    progress_callback(
+                        {"type": "success", "message": "Application ready"}
+                    )
+                    event_future.set_result(info)
+                    logger.info(f"Target client connected: {info['id']}")
+
+        def client_disconnected(info: dict):
+            """Handle client disconnection for early failure detection."""
+            nonlocal disconnected_early
+            logger.info(f"Client disconnected during startup: {info}")
+            # Extract data from the message structure when coming through workspace interface
+            if "data" in info:
+                info = info["data"]
+            # Compare just the client_id part (without workspace prefix)
+            event_client_id = info.get("id", "")
+            logger.debug(f"Comparing client IDs - event: '{event_client_id}', expected: '{client_id}' or '{full_client_id}'")
+            if event_client_id == client_id or event_client_id == full_client_id:
+                disconnected_early = True
+                # Check if there were error logs before disconnection
+                error_logs = [log for log in collected_logs if log.get("type") == "error"]
+                if error_logs:
+                    error_msg = "; ".join([log.get("content", "Unknown error") for log in error_logs])
+                    progress_callback(
+                        {"type": "error", "message": f"App failed: {error_msg}"}
+                    )
+                    if not event_future.done():
+                        event_future.set_exception(Exception(f"App disconnected with errors: {error_msg}"))
+                else:
+                    progress_callback(
+                        {"type": "error", "message": "App disconnected unexpectedly"}
+                    )
+                    if not event_future.done():
+                        event_future.set_exception(Exception("App disconnected during startup"))
+
+        def on_log_message(message):
+            """Collect log messages from the app via log><client-id> channel."""
+            # Extract data from the message structure when coming through workspace interface
+            if isinstance(message, dict) and "data" in message:
+                message = message["data"]
+            
+            collected_logs.append(message)
+            # Handle both dict and string messages
+            if isinstance(message, dict):
+                log_type = message.get("type", "info")
+                log_content = message.get("content", str(message))
+            else:
+                # Plain string message
+                log_type = "info"
+                log_content = str(message)
+            
+            progress_callback(
+                {"type": log_type, "message": f"[App] {log_content}"}
+            )
+            
+            # If it's an error and we're still waiting, consider failing fast
+            if log_type == "error" and not event_future.done() and wait_for_service:
+                # Give the app a moment to potentially disconnect on its own
+                asyncio.create_task(self._check_for_early_failure(event_future, disconnected_early, log_content))
+
+        # Set up all event listeners
+        ws_interface = None
+        ws_interface_manager = None
+        log_channel = f"log>{client_id}"
+        
+        # Set up event callbacks BEFORE starting the app to avoid timing issues
+        # Use on_local for service events since they happen locally
+        self.event_bus.on_local("service_added", service_added)
+        if not wait_for_service:
+            self.event_bus.on_local("client_connected", client_connected)
+        
+        # For client disconnection, we need to subscribe through the workspace interface
+        # to receive events from remote workers
+        ws_interface_manager = self.store.get_workspace_interface(
+            self.store.get_root_user(), 
+            workspace,
+            client_id=f"apps-controller-{random_id(readable=False)}",
+            timeout=30,
+            silent=True
+        )
+        ws_interface = await ws_interface_manager.__aenter__()
+        
+        # Subscribe to client_disconnected events through the workspace interface
+        logger.debug(f"Subscribing to client_disconnected events for {full_client_id}")
+        await ws_interface.subscribe("client_disconnected")
+        ws_interface.on("client_disconnected", client_disconnected)
+        logger.debug(f"Subscribed to client_disconnected events successfully")
+        
+        # Subscribe to log channel for progress messages through workspace interface
+        # Log messages are broadcast through Redis, so we need to subscribe through workspace interface
+        logger.debug(f"Subscribing to log channel: {log_channel}")
+        await ws_interface.subscribe(log_channel)
+        ws_interface.on(log_channel, on_log_message)
+        logger.debug(f"Subscribed to log channel successfully")
+        
+        # Create cleanup functions
+        async def cleanup():
+            self.event_bus.off_local("service_added", service_added)
+            if not wait_for_service:
+                self.event_bus.off_local("client_connected", client_connected)
+            
+            # Clean up workspace interface
+            if ws_interface:
+                ws_interface.off("client_disconnected", client_disconnected)
+                ws_interface.off(log_channel, on_log_message)
+                if ws_interface_manager:
+                    await ws_interface_manager.__aexit__(None, None, None)
+        
+        cleanup_handlers.append(cleanup)
+        
+        return {
+            "future": event_future,
+            "cleanup": cleanup_handlers,
+            "services": collected_services,
+            "config": _collected_config
+        }
+    
+    async def _wait_for_app_event(
+        self,
+        event_future: asyncio.Future,
+        timeout: float,
+        wait_for_service: Union[str, bool],
+        progress_callback: Callable,
+        full_client_id: str
+    ):
+        """
+        Wait for the app startup event.
+        
+        Args:
+            event_future: The future to wait for
+            timeout: Maximum time to wait
+            wait_for_service: Service name we're waiting for
+            progress_callback: Callback for progress updates
+            full_client_id: Full client ID for logging
+        """
+        # Progress update before waiting
+        if wait_for_service:
+            progress_callback(
+                {
+                    "type": "info",
+                    "message": f"Waiting for service '{wait_for_service}'...",
+                }
+            )
+        else:
+            progress_callback(
+                {"type": "info", "message": "Waiting for client connection..."}
+            )
+
+        # Wait for the target event with timeout
+        logger.info(
+            f"Waiting for event after starting app: {full_client_id}, timeout: {timeout}, wait_for_service: {wait_for_service}"
+        )
+        await asyncio.wait_for(event_future, timeout=timeout)
+        logger.info(
+            f"Successfully received event for starting app: {full_client_id}"
+        )
+        await asyncio.sleep(0.1)  # Brief delay to allow service registration
+
+        progress_callback(
+            {"type": "info", "message": "Finalizing application startup..."}
+        )
 
     @schema_method
     async def start(
@@ -2358,77 +2625,11 @@ class ServerAppController:
             raise ValueError("Application type should not be application or None")
 
         full_client_id = workspace + "/" + client_id
-
-        # collecting services registered during the startup of the script
-        collected_services: List[ServiceInfo] = []
-        _collected_config = {}  # To collect config from default service
-        # Only set up event waiting if not in detached mode
-        event_future = None
-        if not detached:
-            # Create a future that will be set when the target event occurs
-            event_future = asyncio.Future()
-
-            def service_added(info: dict):
-                logger.info(f"Service added: {info['id']}")
-                if info["id"].startswith(full_client_id + ":"):
-                    sinfo = ServiceInfo.model_validate(info)
-                    collected_services.append(sinfo)
-                    # Report service registration progress
-                    service_name = info["id"].split(":")[-1]
-                    _progress_callback(
-                        {
-                            "type": "success",
-                            "message": f"Service '{service_name}' registered successfully",
-                        }
-                    )
-
-                if info["id"] == full_client_id + ":default":
-                    for key in ["config", "name", "description"]:
-                        if info.get(key):
-                            _collected_config[key] = info[key]
-                    _progress_callback(
-                        {"type": "success", "message": "Default service configured"}
-                    )
-
-                # Check if this is the target service we're waiting for
-                if (
-                    wait_for_service
-                    and isinstance(wait_for_service, str)
-                    and info["id"] == full_client_id + ":" + wait_for_service
-                ):
-                    if not event_future.done():
-                        _progress_callback(
-                            {
-                                "type": "success",
-                                "message": f"Target service '{wait_for_service}' found",
-                            }
-                        )
-                        event_future.set_result(info)
-                        logger.info(f"Target service found: {info['id']}")
-
-            def client_connected(info: dict):
-                logger.info(f"Client connected: {info}")
-                _progress_callback(
-                    {"type": "success", "message": "Client connection established"}
-                )
-                # Check if this is the target client we're waiting for
-                if not wait_for_service and info["id"] == full_client_id:
-                    if not event_future.done():
-                        _progress_callback(
-                            {"type": "success", "message": "Application ready"}
-                        )
-                        event_future.set_result(info)
-                        logger.info(f"Target client connected: {info['id']}")
-
-            # Set up event callbacks BEFORE starting the app to avoid timing issues
-            self.event_bus.on_local("service_added", service_added)
-            if not wait_for_service:
-                self.event_bus.on_local("client_connected", client_connected)
-
+        
+        # Initialize session_data to None to ensure it's always defined for exception handling
+        session_data = None
+        
         try:
-            # Initialize session_data to None to ensure it's always defined for exception handling
-            session_data = None
-            
             # Get worker if worker_id is specified, otherwise use selection mode
             selected_worker = None
             if worker_id:
@@ -2451,6 +2652,26 @@ class ServerAppController:
                 )
                 if not selected_worker:
                     raise Exception(f"No server app worker found for app type: {app_type}")
+            
+            # Set up event listeners BEFORE starting the app to avoid race conditions
+            collected_services = []
+            _collected_config = {}
+            event_future = None
+            cleanup_handlers = []
+            
+            if not detached:
+                # Setup event listeners before starting the app
+                event_setup = await self._setup_app_event_listeners(
+                    client_id=client_id,
+                    full_client_id=full_client_id,
+                    workspace=workspace,
+                    wait_for_service=wait_for_service,
+                    progress_callback=_progress_callback
+                )
+                event_future = event_setup["future"]
+                cleanup_handlers = event_setup["cleanup"]
+                collected_services = event_setup["services"]
+                _collected_config = event_setup["config"]
             
             # Start the app using the new start_by_type function
             server_url = self.local_base_url or f"http://127.0.0.1:{self.port}"
@@ -2478,19 +2699,21 @@ class ServerAppController:
             # This ensures the session is tracked even if something goes wrong later
             await self._store_session_in_redis(full_client_id, session_data)
 
-            # Progress update after worker starts but before waiting for services
-            if not detached:
-                if wait_for_service:
-                    _progress_callback(
-                        {
-                            "type": "info",
-                            "message": f"Waiting for service '{wait_for_service}'...",
-                        }
+            # Wait for app startup events (unless in detached mode)
+            if not detached and event_future:
+                try:
+                    # Wait for the startup event
+                    await self._wait_for_app_event(
+                        event_future=event_future,
+                        timeout=timeout,
+                        wait_for_service=wait_for_service,
+                        progress_callback=_progress_callback,
+                        full_client_id=full_client_id
                     )
-                else:
-                    _progress_callback(
-                        {"type": "info", "message": "Waiting for client connection..."}
-                    )
+                finally:
+                    # Clean up event handlers
+                    for cleanup_func in cleanup_handlers:
+                        await cleanup_func()
             else:
                 _progress_callback(
                     {
@@ -2498,6 +2721,9 @@ class ServerAppController:
                         "message": "Application started in detached mode",
                     }
                 )
+                # In detached mode, give a brief moment for services to be registered
+                # but don't wait for them
+                logger.info(f"Started app in detached mode: {full_client_id}")
 
             # Set up activity tracker after starting the app
             tracker = self.store.get_activity_tracker()
@@ -2523,26 +2749,6 @@ class ServerAppController:
                     on_inactive=_stop_after_inactive,
                     entity_type="client",
                 )
-
-            # Only wait for events if not in detached mode
-            if not detached and event_future is not None:
-                # Now wait for the event that we set up before starting the app
-                logger.info(
-                    f"Waiting for event after starting app: {full_client_id}, timeout: {timeout}, wait_for_service: {wait_for_service}"
-                )
-                await asyncio.wait_for(event_future, timeout=timeout)
-                logger.info(
-                    f"Successfully received event for starting app: {full_client_id}"
-                )
-                await asyncio.sleep(0.1)  # Brief delay to allow service registration
-
-                _progress_callback(
-                    {"type": "info", "message": "Finalizing application startup..."}
-                )
-            elif detached:
-                # In detached mode, give a brief moment for services to be registered
-                # but don't wait for them
-                logger.info(f"Started app in detached mode: {full_client_id}")
 
             # save the services
             # service_count = len(collected_services)
@@ -2614,12 +2820,6 @@ class ServerAppController:
             raise Exception(
                 f"Failed to start app '{app_id}', error: {error_msg}, logs:\n{logs}"
             ) from None
-        finally:
-            # Clean up event listeners
-            if not detached:
-                self.event_bus.off_local("service_added", service_added)
-                if not wait_for_service:
-                    self.event_bus.off_local("client_connected", client_connected)
 
         # Merge session_data with collected services and config
         # session_data already exists from start_by_type, now we add the collected info
