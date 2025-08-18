@@ -1783,18 +1783,16 @@ async def test_mcp_nested_services(fastapi_server, test_user_token):
         """Convert text to lowercase."""
         return text.lower()
     
-    # Register a service that will be converted to MCP with nested structure
-    # When this service is exposed via MCP, the nested functions should be flattened
-    # The recursive flattening happens in _setup_auto_wrapped_handlers for inline config services
+    # Service with nested structure - should NOT use type="mcp" 
+    # because it doesn't follow valid MCP structure
     nested_service_info = await api.register_service(
         {
-            "id": "nested-mcp-service",
-            "name": "Nested MCP Service",
-            "description": "Test service with nested callable functions for MCP",
-            "type": "mcp",  # This will trigger MCP conversion with flattening
+            "id": "nested-service",
+            "name": "Nested Service",
+            "description": "Test service with nested callable functions",
+            # NO type="mcp" - let it be auto-wrapped
             "config": {"visibility": "public"},
-            # For inline config, we put nested structure directly in service dict
-            # The tools will be collected recursively from nested structures
+            # Nested structure with functions
             "math": {
                 "basic": {
                     "add": add,
@@ -1874,4 +1872,271 @@ async def test_mcp_nested_services(fastapi_server, test_user_token):
     
     # Clean up
     await api.unregister_service(nested_service_info["id"])
+    await api.disconnect()
+
+
+async def test_mcp_invalid_type_validation(fastapi_server, test_user_token):
+    """Test that services with type='mcp' but invalid structure throw an error."""
+    from mcp.client.streamable_http import streamablehttp_client
+    from mcp.client.session import ClientSession
+    
+    # Connect to the Hypha server
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+    
+    workspace = api.config.workspace
+    
+    # Create schema functions for testing
+    @schema_function
+    def test_func(x: int) -> int:
+        """A test function."""
+        return x * 2
+    
+    # Try to register a service with type="mcp" but invalid structure
+    # This should be rejected when accessed via MCP endpoint
+    invalid_service_info = await api.register_service(
+        {
+            "id": "invalid-mcp-service",
+            "name": "Invalid MCP Service",
+            "description": "Service incorrectly using type='mcp'",
+            "type": "mcp",  # WRONG: This service doesn't follow MCP structure
+            "config": {"visibility": "public"},
+            # This is neither native MCP nor inline config structure
+            "nested": {
+                "functions": {
+                    "test": test_func
+                }
+            }
+        }
+    )
+    
+    # The service should be registered (registration doesn't validate MCP structure)
+    assert "invalid-mcp-service" in invalid_service_info["id"]
+    
+    # Now try to access it via MCP endpoint - this should fail
+    mcp_endpoint_url = f"{SERVER_URL}/{workspace}/mcp/{invalid_service_info['id'].split('/')[-1]}/mcp"
+    
+    try:
+        async with streamablehttp_client(mcp_endpoint_url) as (
+            read_stream,
+            write_stream,
+            get_session_id,
+        ):
+            async with ClientSession(read_stream, write_stream) as session:
+                # This should fail during initialization or when listing tools
+                await session.initialize()
+                # If we get here, the validation didn't work
+                assert False, "Expected ValueError for invalid MCP structure with type='mcp'"
+    except Exception as e:
+        # We expect an error here - could be wrapped in ExceptionGroup
+        # The validation worked if we got a 500 error (server rejected the invalid structure)
+        error_repr = repr(e)
+        error_str = str(e)
+        # Check for HTTP 500 error in the exception representation
+        validation_worked = ("500" in error_repr or "500" in error_str or 
+                           "does not follow valid MCP structure" in error_repr or
+                           "does not follow valid MCP structure" in error_str)
+        assert validation_worked, f"Expected validation error but got: {error_repr}"
+        print(f"✓ Correctly rejected invalid type='mcp' service with error")
+    
+    # Clean up
+    await api.unregister_service(invalid_service_info["id"])
+    
+    # Now test that the same service works WITHOUT type="mcp"
+    valid_service_info = await api.register_service(
+        {
+            "id": "valid-auto-wrap-service",
+            "name": "Valid Auto-wrap Service",
+            "description": "Service without type='mcp' gets auto-wrapped",
+            # NO type="mcp" - let it be auto-wrapped
+            "config": {"visibility": "public"},
+            # Same structure as before
+            "nested": {
+                "functions": {
+                    "test": test_func
+                }
+            }
+        }
+    )
+    
+    # This should work when accessed via MCP
+    mcp_endpoint_url = f"{SERVER_URL}/{workspace}/mcp/{valid_service_info['id'].split('/')[-1]}/mcp"
+    
+    async with streamablehttp_client(mcp_endpoint_url) as (
+        read_stream,
+        write_stream,
+        get_session_id,
+    ):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            
+            # List tools - should work
+            tools_result = await session.list_tools()
+            assert tools_result is not None
+            assert hasattr(tools_result, "tools")
+            
+            # Should have the nested function
+            tool_names = {tool.name for tool in tools_result.tools}
+            assert "nested_functions_test" in tool_names
+            
+            # Test calling the function
+            result = await session.call_tool(
+                name="nested_functions_test",
+                arguments={"x": 5}
+            )
+            assert result is not None
+            assert "10" in str(result.content[0].text)
+    
+    print("✓ Service without type='mcp' correctly auto-wrapped and accessible via MCP")
+    
+    # Clean up
+    await api.unregister_service(valid_service_info["id"])
+    await api.disconnect()
+
+
+async def test_mcp_arbitrary_service_conversion(fastapi_server, test_user_token):
+    """Test that ANY service (without explicit type=mcp) can be accessed via MCP endpoints."""
+    from mcp.client.streamable_http import streamablehttp_client
+    from mcp.client.session import ClientSession
+    
+    # Connect to the Hypha server
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+    
+    workspace = api.config.workspace
+    
+    # Create schema functions for testing
+    @schema_function
+    def calculate(operation: str, x: float, y: float) -> float:
+        """Perform a calculation."""
+        if operation == "add":
+            return x + y
+        elif operation == "subtract":
+            return x - y
+        elif operation == "multiply":
+            return x * y
+        elif operation == "divide":
+            return x / y if y != 0 else float('inf')
+        else:
+            raise ValueError(f"Unknown operation: {operation}")
+    
+    @schema_function
+    def process_text(text: str, mode: str = "upper") -> str:
+        """Process text in different modes."""
+        if mode == "upper":
+            return text.upper()
+        elif mode == "lower":
+            return text.lower()
+        elif mode == "title":
+            return text.title()
+        else:
+            return text
+    
+    @schema_function
+    def get_info(name: str) -> Dict[str, Any]:
+        """Get information about something."""
+        return {
+            "name": name,
+            "timestamp": "2024-01-01T00:00:00Z",
+            "status": "active",
+            "data": {"key": "value"}
+        }
+    
+    # Register a regular service WITHOUT type="mcp"
+    # This should still be accessible via MCP endpoints
+    service_info = await api.register_service(
+        {
+            "id": "regular-service",
+            "name": "Regular Service",
+            "description": "A regular service without explicit MCP type",
+            # NOTE: No "type": "mcp" here!
+            "config": {"visibility": "public"},
+            # Nested structure with functions
+            "operations": {
+                "math": calculate,
+                "text": {
+                    "process": process_text,
+                    "utils": {
+                        "get_info": get_info
+                    }
+                }
+            }
+        }
+    )
+    
+    # The service should be registered successfully
+    assert "regular-service" in service_info["id"]
+    
+    # Now try to access it via MCP endpoint - this should work!
+    mcp_endpoint_url = f"{SERVER_URL}/{workspace}/mcp/{service_info['id'].split('/')[-1]}/mcp"
+    
+    async with streamablehttp_client(mcp_endpoint_url) as (
+        read_stream,
+        write_stream,
+        get_session_id,
+    ):
+        async with ClientSession(read_stream, write_stream) as session:
+            # Initialize the session
+            await session.initialize()
+            
+            # List available tools - should include flattened nested functions
+            tools_result = await session.list_tools()
+            assert tools_result is not None
+            assert hasattr(tools_result, "tools")
+            
+            # Check that nested functions are properly flattened
+            tool_names = {tool.name for tool in tools_result.tools}
+            
+            # Verify expected flattened tool names
+            expected_tools = {
+                "operations_math",  # calculate function
+                "operations_text_process",  # process_text function
+                "operations_text_utils_get_info",  # get_info function
+            }
+            
+            for expected_tool in expected_tools:
+                assert expected_tool in tool_names, f"Missing tool: {expected_tool}. Available tools: {tool_names}"
+            
+            # Test calling the math function
+            result = await session.call_tool(
+                name="operations_math",
+                arguments={"operation": "multiply", "x": 7, "y": 6}
+            )
+            assert result is not None
+            assert "42" in str(result.content[0].text)
+            
+            # Test calling the text processing function
+            result = await session.call_tool(
+                name="operations_text_process",
+                arguments={"text": "hello world", "mode": "title"}
+            )
+            assert result is not None
+            assert "Hello World" in str(result.content[0].text)
+            
+            # Test calling the nested get_info function
+            result = await session.call_tool(
+                name="operations_text_utils_get_info",
+                arguments={"name": "test"}
+            )
+            assert result is not None
+            result_text = str(result.content[0].text)
+            assert "test" in result_text
+            assert "active" in result_text
+    
+    print("✓ Arbitrary service without type='mcp' successfully accessed via MCP endpoint")
+    
+    # Clean up
+    await api.unregister_service(service_info["id"])
     await api.disconnect()

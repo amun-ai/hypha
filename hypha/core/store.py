@@ -171,7 +171,7 @@ class RedisStore:
         # Create a fixed HTTP anonymous user. Grant read on public; set current to public
         # so we can use it to create a workspace interface safely.
         self._http_anonymous_user = UserInfo(
-            id="http-anonymous",
+            id="anonymouz-http",
             is_anonymous=True,
             email=None,
             parent=None,
@@ -777,7 +777,7 @@ class RedisStore:
         else:
             # Use a fixed anonymous user
             self._http_anonymous_user = UserInfo(
-                id="http-anonymous",
+                id="anonymouz-http",  # Use anonymouz- prefix for consistency
                 is_anonymous=True,
                 email=None,
                 parent=None,
@@ -1091,21 +1091,31 @@ class RedisStore:
                 self._store = store
                 self._interface = None
                 self._interface_cm = None
+                self._default_workspace = None  # Cache the workspace to use
 
             def __call__(self, user_info=None, workspace=None):
                 """Support both wm() and wm(context) syntax for context manager."""
+                # If workspace is explicitly provided, remember it for future direct calls
+                if workspace is not None:
+                    self._default_workspace = workspace
+                
+                # Use the cached workspace or default to root user's workspace
+                effective_workspace = workspace or self._default_workspace or "public"
+
                 return WorkspaceManagerContextManager(
                     self._store,
                     user_info or self._store._root_user.model_dump(),
-                    workspace or "public",
+                    effective_workspace,
                 )
 
             async def _ensure_interface(self):
                 """Ensure we have an active interface, creating one if needed."""
                 if self._interface is None:
+                    # Use the cached workspace or default to root user's workspace
+                    workspace = self._default_workspace or "public"
                     self._interface_cm = self._store.get_workspace_interface(
                         self._store._root_user,
-                        "public",
+                        workspace,
                         client_id=None,
                         silent=True,
                     )
