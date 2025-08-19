@@ -821,3 +821,49 @@ def custom_auth_server_fixture():
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+
+@pytest_asyncio.fixture(name="local_auth_server")
+def local_auth_server_fixture():
+    """Start a server with local authentication for testing."""
+    # Use a different port for the local auth server
+    LOCAL_AUTH_PORT = 39000
+    
+    with subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "hypha.server",
+            f"--port={LOCAL_AUTH_PORT}",
+            "--enable-local-auth",
+            "--enable-s3",
+            "--reset-redis",
+            "--start-minio-server",
+            "--minio-root-user=minioadmin",
+            "--minio-root-password=minioadmin",
+        ],
+        env=test_env,
+    ) as proc:
+        timeout = 30
+        while timeout > 0:
+            try:
+                response = requests.get(f"http://127.0.0.1:{LOCAL_AUTH_PORT}/health/readiness")
+                if response.ok:
+                    break
+            except RequestException:
+                pass
+            timeout -= 0.1
+            time.sleep(0.1)
+        if timeout <= 0:
+            raise TimeoutError("Local auth server did not start in time")
+        
+        response = requests.get(f"http://127.0.0.1:{LOCAL_AUTH_PORT}/health/liveness")
+        assert response.ok
+        
+        yield f"http://127.0.0.1:{LOCAL_AUTH_PORT}"
+        
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()

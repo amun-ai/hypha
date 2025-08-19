@@ -81,6 +81,16 @@ class ActivityTracker:
         }
         return reg_id
 
+    def is_registered(self, entity_id: str, entity_type: Optional[str] = "default") -> bool:
+        """Check if an entity is registered.
+        
+        :param entity_id: The entity's ID
+        :param entity_type: Type of entity being tracked
+        :return: True if the entity has any registrations
+        """
+        full_id = f"{entity_type}:{entity_id}"
+        return full_id in self._registrations
+    
     def unregister(
         self, entity_id: str, reg_id: str, entity_type: Optional[str] = "default"
     ):
@@ -119,7 +129,8 @@ class ActivityTracker:
                             f"Error calling on_inactive during removal for {full_id}: {e}"
                         )
             del self._registrations[full_id]
-        await self._notify_entity_removed(entity_id, entity_type)
+            # Only notify if the entity was actually registered
+            await self._notify_entity_removed(entity_id, entity_type)
 
     async def reset_timer(self, entity_id: str, entity_type: Optional[str] = "default"):
         """Reset the activity timer for all registrations of an entity."""

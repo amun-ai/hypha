@@ -136,6 +136,7 @@ class WebsocketServer:
                 )
             except RuntimeError as exp:
                 # this happens when the websocket is closed
+                logger.error(f"RuntimeError in establish_websocket_communication: {str(exp)}")
                 reason = f"WebSocket runtime error: {str(exp)}"
                 await self.handle_disconnection(
                     websocket,
@@ -290,7 +291,7 @@ class WebsocketServer:
         event_bus = self.store.get_event_bus()
         assert (
             user_info.scope.current_workspace == workspace
-        ), f"Workspace mismatch: {workspace} != {user_info.current_workspace}"
+        ), f"Workspace mismatch: {workspace} != {user_info.scope.current_workspace}"
         
         # Determine if client has read-only permissions
         user_permission = user_info.get_permission(workspace)

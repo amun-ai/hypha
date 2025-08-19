@@ -256,6 +256,13 @@ def create_application(args):
         if terminal_startup_function not in args.startup_functions:
             args.startup_functions.append(terminal_startup_function)
             logger.info("Automatically added Terminal worker to startup functions")
+    
+    # Automatically add Local Auth startup function if Local Auth is enabled
+    if args.enable_local_auth:
+        local_auth_startup_function = "hypha.local_auth:hypha_startup"
+        if local_auth_startup_function not in args.startup_functions:
+            args.startup_functions.append(local_auth_startup_function)
+            logger.info("Automatically added Local Authentication provider to startup functions")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -608,6 +615,11 @@ def get_argparser(add_help=True):
         "--enable-terminal-worker",
         action="store_true",
         help="enable Terminal worker support for executing commands",
+    )
+    parser.add_argument(
+        "--enable-local-auth",
+        action="store_true",
+        help="enable local authentication provider with user management",
     )
     parser.add_argument(
         "--interactive",

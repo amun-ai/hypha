@@ -787,9 +787,10 @@ class RedisRPCConnection:
             await self._handle_disconnected(reason)
 
         if RedisRPCConnection._tracker:
-            await RedisRPCConnection._tracker.remove_entity(
-                self._workspace + "/" + self._client_id, "client"
-            )
+            # Only remove from tracker if it was registered
+            entity_id = self._workspace + "/" + self._client_id
+            if RedisRPCConnection._tracker.is_registered(entity_id, "client"):
+                await RedisRPCConnection._tracker.remove_entity(entity_id, "client")
 
         # Clean up metrics for load balancing enabled clients only
         if self._is_load_balancing_enabled():
