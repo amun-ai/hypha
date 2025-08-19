@@ -43,6 +43,7 @@ from . import (
 
 JWT_SECRET = str(uuid.uuid4())
 os.environ["JWT_SECRET"] = JWT_SECRET
+os.environ["HYPHA_JWT_SECRET"] = JWT_SECRET  # Also set HYPHA_JWT_SECRET to ensure consistency
 os.environ["ACTIVITY_CHECK_INTERVAL"] = "0.3"
 test_env = os.environ.copy()
 
@@ -776,3 +777,45 @@ def conda_integration_server_fixture():
             return {"id": service_config.get("id", "test-service")}
 
     yield MockIntegrationServer()
+
+
+@pytest_asyncio.fixture(name="custom_auth_server")
+def custom_auth_server_fixture():
+    """Start a server with custom authentication for testing."""
+    # Use a different port for the custom auth server
+    CUSTOM_AUTH_PORT = 38999
+    
+    with subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "hypha.server",
+            f"--port={CUSTOM_AUTH_PORT}",
+            "--startup-functions",
+            "./tests/custom_auth_startup_test.py:hypha_startup",
+        ],
+        env=test_env,
+    ) as proc:
+        timeout = 20
+        while timeout > 0:
+            try:
+                response = requests.get(f"http://127.0.0.1:{CUSTOM_AUTH_PORT}/health/readiness")
+                if response.ok:
+                    break
+            except RequestException:
+                pass
+            timeout -= 0.1
+            time.sleep(0.1)
+        if timeout <= 0:
+            raise TimeoutError("Custom auth server did not start in time")
+        
+        response = requests.get(f"http://127.0.0.1:{CUSTOM_AUTH_PORT}/health/liveness")
+        assert response.ok
+        
+        yield f"http://127.0.0.1:{CUSTOM_AUTH_PORT}"
+        
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()

@@ -228,7 +228,8 @@ def _parse_token(authorization: str, expected_workspace: str = None):
             scope_info = parse_scope(scope_str)
             
             # Check if current workspace matches expected
-            if scope_info.current_workspace != expected_workspace:
+            # Only validate if the token has a current_workspace set
+            if scope_info.current_workspace and scope_info.current_workspace != expected_workspace:
                 raise HTTPException(
                     status_code=403, 
                     detail=f"Token is not authorized for workspace '{expected_workspace}'"
@@ -251,11 +252,22 @@ async def set_parse_token_function(auth_function: Callable):
     _current_auth_function = auth_function
     logger.info("Custom parse_token function has been set")
 
-async def parse_auth_token(token: str):
-    """Get the auth provider."""
+async def parse_auth_token(token: str, expected_workspace: str = None):
+    """Parse auth token with optional workspace validation.
+    
+    Args:
+        token: The authorization token string
+        expected_workspace: If provided, will validate that the token's current_workspace matches
+                          this value (only applies to default parser)
+    
+    Returns:
+        UserInfo object if token is valid and workspace matches (if specified)
+    """
     if _current_auth_function is None:
-        auth_function = _parse_token
+        auth_function = lambda t: _parse_token(t, expected_workspace)
     else:
+        # Custom auth functions may not support workspace validation
+        # They should implement their own logic if needed
         auth_function = _current_auth_function
     user_info = auth_function(token)
     if inspect.isawaitable(user_info):

@@ -41,7 +41,7 @@ from hypha.core import (
     VisibilityEnum,
 )
 from hypha.vectors import VectorSearchEngine
-from hypha.core.auth import generate_auth_token, create_scope, _parse_token
+from hypha.core.auth import generate_auth_token, create_scope, parse_auth_token
 from hypha.utils import EventBus, random_id
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
@@ -1000,7 +1000,7 @@ class WorkspaceManager:
         """Parse a token."""
         assert context is not None
         self.validate_context(context, UserPermission.read)
-        user_info = await _parse_token(token, context["ws"])
+        user_info = await parse_auth_token(token, context["ws"])
         return user_info.model_dump(mode="json")
 
     @schema_method
