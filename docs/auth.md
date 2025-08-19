@@ -105,15 +105,44 @@ Test the login at: `https://my-org.com/public/apps/hypha-login/`
 
 ## Custom Authentication Providers
 
-Hypha supports custom authentication through startup functions, allowing you to replace the default JWT authentication with your own implementation.
+Hypha supports custom authentication through startup functions, allowing you to replace or extend the default JWT authentication with your own implementation.
 
 ### Overview
 
-Custom authentication providers can implement three components:
+Custom authentication in Hypha is configured through the unified `register_auth_service` function, which allows you to customize:
 
-1. **Token Generation** (`set_generate_token_function`): Create custom tokens
-2. **Token Validation** (`set_parse_token_function`): Validate and parse tokens
-3. **Login Service** (`set_login_service`): Optional ASGI service for login UI
+1. **Token Parsing**: Custom token validation and user extraction
+2. **Token Generation**: Custom token creation logic
+3. **Login Service**: Custom login UI and authentication flow
+
+The `register_auth_service` function provides a simplified interface that handles all authentication aspects in one place.
+
+### register_auth_service Function
+
+```python
+await server.register_auth_service(
+    parse_token=None,           # Custom token parsing function
+    generate_token=None,        # Custom token generation function  
+    login_service=None,         # Complete login service dict (advanced)
+    index_handler=None,         # Custom login page handler
+    start_handler=None,         # Custom login start handler
+    check_handler=None,         # Custom login check handler
+    report_handler=None,        # Custom login report handler
+    **extra_handlers            # Additional service methods
+)
+```
+
+**Parameters:**
+- **parse_token**: Function to parse and validate tokens, returning `UserInfo`
+- **generate_token**: Function to generate tokens from `UserInfo` and expiration
+- **login_service**: Complete service dictionary (overrides individual handlers)
+- **index_handler**: Serves the login page (`async def index(event)`)
+- **start_handler**: Starts login session (`async def start(workspace=None, expires_in=None)`)
+- **check_handler**: Checks login status (`async def check(key, timeout=180, profile=False)`)
+- **report_handler**: Reports login completion (`async def report(key, token, **kwargs)`)
+- **extra_handlers**: Additional methods to add to the login service
+
+The login service is automatically registered with ID `"hypha-login"` to replace the default.
 
 ### Basic Custom Authentication
 
@@ -152,8 +181,11 @@ async def custom_parse_token(token: str) -> UserInfo:
 
 async def hypha_startup(server):
     """Register custom authentication on startup."""
-    await server["set_generate_token_function"](custom_generate_token)
-    await server["set_parse_token_function"](custom_parse_token)
+    # Use the unified register_auth_service function
+    await server.register_auth_service(
+        parse_token=custom_parse_token,
+        generate_token=custom_generate_token
+    )
     print("Custom authentication configured")
 ```
 
@@ -164,13 +196,66 @@ python -m hypha.server --host=0.0.0.0 --port=9527 \
     --startup-functions=custom_auth.py:hypha_startup
 ```
 
+### Custom Login Service
+
+You can customize the login interface and flow by providing custom handlers:
+
+```python
+# custom_login.py
+import asyncio
+import shortuuid
+
+# Store login sessions
+LOGIN_SESSIONS = {}
+
+async def custom_login_page(event):
+    """Serve custom login page."""
+    return {
+        "status": 200,
+        "headers": {"Content-Type": "text/html"},
+        "body": "<html><body><h1>Custom Login</h1>...</body></html>"
+    }
+
+async def start_login(workspace=None, expires_in=None):
+    """Start a login session."""
+    key = shortuuid.uuid()
+    LOGIN_SESSIONS[key] = {"status": "pending", "workspace": workspace}
+    return {
+        "login_url": f"/public/apps/hypha-login/?key={key}",
+        "key": key,
+    }
+
+async def check_login(key, timeout=180, profile=False):
+    """Check login status."""
+    # Wait for login completion
+    for _ in range(timeout):
+        if key in LOGIN_SESSIONS and LOGIN_SESSIONS[key]["status"] == "complete":
+            return LOGIN_SESSIONS[key]["token"]
+        await asyncio.sleep(1)
+    raise TimeoutError("Login timeout")
+
+async def report_login(key, token, **kwargs):
+    """Report login completion."""
+    if key in LOGIN_SESSIONS:
+        LOGIN_SESSIONS[key]["status"] = "complete"
+        LOGIN_SESSIONS[key]["token"] = token
+
+async def hypha_startup(server):
+    """Register custom login service."""
+    await server.register_auth_service(
+        index_handler=custom_login_page,
+        start_handler=start_login,
+        check_handler=check_login,
+        report_handler=report_login,
+    )
+```
+
 ### API Key Authentication
 
 Implement API key authentication for programmatic access:
 
 ```python
 # api_key_auth.py
-import hashlib
 from hypha.core import UserInfo, UserPermission
 from hypha.core.auth import create_scope
 
@@ -183,10 +268,6 @@ API_KEYS = {
         "workspace": "api-workspace"
     }
 }
-
-def hash_api_key(key: str) -> str:
-    """Hash API key for secure comparison."""
-    return hashlib.sha256(key.encode()).hexdigest()
 
 async def parse_api_key_token(token: str) -> UserInfo:
     """Parse API key format tokens."""
@@ -211,8 +292,10 @@ async def parse_api_key_token(token: str) -> UserInfo:
 
 async def hypha_startup(server):
     """Configure API key authentication."""
-    await server["set_parse_token_function"](parse_api_key_token)
-    # Keep default token generation for regular users
+    await server.register_auth_service(
+        parse_token=parse_api_key_token
+        # Keep default token generation and login service
+    )
 ```
 
 ### SAML Authentication
@@ -335,7 +418,10 @@ async def create_saml_login_service(server, saml_auth):
 async def hypha_startup(server):
     """Configure SAML authentication."""
     saml_auth = SAMLAuth("https://idp.example.com/metadata")
-    await server["set_parse_token_function"](saml_auth.parse_token)
+    await server.register_auth_service(
+        parse_token=saml_auth.parse_token
+    )
+    # Optionally register SAML endpoints as additional services
     await create_saml_login_service(server, saml_auth)
     print("SAML authentication configured")
 ```
@@ -424,7 +510,9 @@ async def hypha_startup(server):
         token_url="https://provider.com/token",
         userinfo_url="https://provider.com/userinfo"
     )
-    await server["set_parse_token_function"](oauth_auth.parse_token)
+    await server.register_auth_service(
+        parse_token=oauth_auth.parse_token
+    )
     print("OAuth2 authentication configured")
 ```
 
@@ -471,7 +559,9 @@ async def hypha_startup(server):
     # Register custom provider
     multi_auth.register_provider("custom_", parse_custom_token)
     
-    await server["set_parse_token_function"](multi_auth.parse_token)
+    await server.register_auth_service(
+        parse_token=multi_auth.parse_token
+    )
     print("Multi-provider authentication configured")
 ```
 

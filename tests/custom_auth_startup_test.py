@@ -67,9 +67,11 @@ async def custom_parse_token(token: str) -> UserInfo:
 
 async def hypha_startup(server):
     """Startup function to register custom authentication."""
-    # Register our custom authentication functions
-    await server["set_parse_token_function"](custom_parse_token)
-    await server["set_generate_token_function"](custom_generate_token)
+    # Use the new simplified register_auth_service function
+    await server.register_auth_service(
+        parse_token=custom_parse_token,
+        generate_token=custom_generate_token
+    )
     
     # Register a test service to verify the custom auth is working
     await server.register_service(
