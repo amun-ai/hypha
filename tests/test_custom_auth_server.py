@@ -138,5 +138,63 @@ async def test_custom_auth_with_workspace_operations(custom_auth_server):
         assert result == 42
 
 
+@pytest.mark.asyncio
+async def test_custom_auth_with_server_apps(custom_auth_server):
+    """Test that server apps functionality works with custom authentication."""
+    server_url = custom_auth_server.replace("http://", "ws://") + "/ws"
+    
+    # Connect with anonymous user
+    async with connect_to_server(
+        {
+            "client_id": "test-apps-client",
+            "server_url": server_url,
+        }
+    ) as api:
+        # Generate a custom token
+        workspace = api.config.workspace
+        custom_token = await api.generate_token(
+            config={
+                "workspace": workspace,
+                "expires_in": 3600
+            }
+        )
+        
+        # Verify custom token format
+        assert custom_token.startswith("CUSTOM:"), f"Should be custom token: {custom_token[:30]}"
+    
+    # Connect with custom token
+    async with connect_to_server(
+        {
+            "client_id": "test-apps-auth-client",
+            "server_url": server_url,
+            "token": custom_token,
+        }
+    ) as api_auth:
+        # Should still be able to list services with auth
+        services_with_auth = await api_auth.list_services("public")
+        assert len(services_with_auth) > 0
+        
+        # Register a test service
+        await api_auth.register_service(
+            {
+                "id": "test-app-service",
+                "name": "Test App Service",
+                "type": "functions",
+                "config": {
+                    "visibility": "public",
+                },
+                "test_method": lambda: "Test app service works!",
+            }
+        )
+        
+        # List services in the user's workspace to verify service was registered
+        user_workspace = api_auth.config.workspace
+        updated_services = await api_auth.list_services(user_workspace)
+        
+        # Check that our test service is in the list
+        service_ids = [s["id"] for s in updated_services]
+        assert any("test-app-service" in sid for sid in service_ids), f"Test service should be registered in {user_workspace}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

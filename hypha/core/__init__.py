@@ -636,13 +636,27 @@ class RedisRPCConnection:
 
         source_id = f"{self._workspace}/{self._client_id}"
 
+        # Determine the workspace for the context
+        # If the user has a current_workspace set, use that (preserves caller's workspace)
+        # Otherwise fall back to the connection's workspace
+        if self._workspace == "*":
+            # For system connections, check if user has a current_workspace
+            user_current_ws = self._user_info.get("current_workspace") or (
+                self._user_info.get("scope", {}).get("current_workspace") if isinstance(self._user_info.get("scope"), dict) else None
+            )
+            if user_current_ws and user_current_ws != "*":
+                # Use the user's current workspace (preserves caller's context)
+                context_workspace = user_current_ws
+            else:
+                # Fall back to target's workspace for system connections without specific workspace
+                context_workspace = target_id.split("/")[0]
+        else:
+            # Normal client connections use their own workspace
+            context_workspace = self._workspace
+        
         message.update(
             {
-                "ws": (
-                    target_id.split("/")[0]
-                    if self._workspace == "*"
-                    else self._workspace
-                ),
+                "ws": context_workspace,
                 "to": target_id,
                 "from": source_id,
                 "user": self._user_info,

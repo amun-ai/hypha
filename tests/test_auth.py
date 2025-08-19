@@ -29,7 +29,6 @@ from hypha.core.auth import (
     get_rsa_key,
     _parse_token,
     create_login_service,
-    JWT_SECRET,
     AUTH0_AUDIENCE,
     AUTH0_ISSUER,
     AUTH0_NAMESPACE,
@@ -37,6 +36,7 @@ from hypha.core.auth import (
     MAXIMUM_LOGIN_TIME,
     LOGIN_KEY_PREFIX,
 )
+from hypha.core import auth
 from hypha.core.workspace import WorkspaceInfo
 
 
@@ -61,7 +61,7 @@ class TestBasicAuth:
         # Verify token can be decoded
         payload = jose_jwt.decode(
             token,
-            JWT_SECRET,
+            auth.JWT_SECRET,
             algorithms=["HS256"],
             audience=AUTH0_AUDIENCE,
             issuer=AUTH0_ISSUER,
@@ -314,7 +314,7 @@ class TestTokenValidation:
             AUTH0_NAMESPACE + "email": "test@example.com",
         }
         
-        token = jose_jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+        token = jose_jwt.encode(payload, auth.JWT_SECRET, algorithm="HS256")
         
         # Validate token
         decoded_payload = valid_token(token)
@@ -338,7 +338,7 @@ class TestTokenValidation:
             AUTH0_NAMESPACE + "email": "test@example.com",
         }
         
-        token = jose_jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+        token = jose_jwt.encode(payload, auth.JWT_SECRET, algorithm="HS256")
         
         # Should raise HTTPException for expired token
         from fastapi import HTTPException
@@ -542,7 +542,7 @@ class TestTokenHelperFunctions:
             AUTH0_NAMESPACE + "email": "test@example.com",
         }
         
-        token = jose_jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+        token = jose_jwt.encode(payload, auth.JWT_SECRET, algorithm="HS256")
         
         # Test with Bearer prefix
         parsed_user_info = _parse_token(f"Bearer {token}")
@@ -1043,8 +1043,8 @@ class TestEnvironmentAndConfiguration:
     def test_jwt_secret_generation(self):
         """Test JWT secret generation when not provided."""
         # This is tested by checking that JWT_SECRET exists and has reasonable length
-        assert JWT_SECRET is not None
-        assert len(JWT_SECRET) > 10  # Should be reasonably long
+        assert auth.JWT_SECRET is not None
+        assert len(auth.JWT_SECRET) > 10  # Should be reasonably long
 
     def test_auth_constants(self):
         """Test that auth constants are properly set."""

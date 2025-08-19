@@ -302,7 +302,7 @@ class RedisStore:
             email=None,
             parent=None,
             roles=["admin"],
-            scope=create_scope("*#a"),
+            scope=create_scope("*#a", current_workspace="*"),
             expires_at=None,
         )
         return self._root_user

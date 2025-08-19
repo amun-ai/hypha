@@ -10,6 +10,12 @@ import time
 import uuid
 from threading import Thread
 
+# Set JWT_SECRET environment variables BEFORE importing any hypha modules
+# This ensures all modules use the same JWT_SECRET
+JWT_SECRET = str(uuid.uuid4())
+os.environ["JWT_SECRET"] = JWT_SECRET
+os.environ["HYPHA_JWT_SECRET"] = JWT_SECRET  # Also set HYPHA_JWT_SECRET to ensure consistency
+
 import requests
 from requests import RequestException
 import pytest
@@ -40,10 +46,6 @@ from . import (
     POSTGRES_DB,
     POSTGRES_URI,
 )
-
-JWT_SECRET = str(uuid.uuid4())
-os.environ["JWT_SECRET"] = JWT_SECRET
-os.environ["HYPHA_JWT_SECRET"] = JWT_SECRET  # Also set HYPHA_JWT_SECRET to ensure consistency
 os.environ["ACTIVITY_CHECK_INTERVAL"] = "0.3"
 test_env = os.environ.copy()
 
