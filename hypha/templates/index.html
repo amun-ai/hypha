@@ -12,7 +12,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/marked@2.1.3/lib/marked.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
-    <script src="https://cdn.auth0.com/js/auth0-spa-js/2.0/auth0-spa-js.production.js"></script>
+    <script src="./assets/hypha-rpc-websocket.js"></script>
     <!-- Favicon and Icons -->
     <link rel="apple-touch-icon" sizes="180x180" href="./static/img/apple-touch-icon.png">
     <link rel="icon" type="image/png" sizes="32x32" href="./static/img/favicon-32x32.png">
@@ -86,10 +86,16 @@
                         {isLoggedIn ? (
                             <div className="dropdown">
                                 <button className="hover:text-gray-400 transition duration-300">
-                                    <img src={user.picture} alt={user.name} className="inline-block h-10 w-10 rounded-full" />
+                                    {user.picture ? (
+                                        <img src={user.picture} alt={user.name} className="inline-block h-10 w-10 rounded-full" />
+                                    ) : (
+                                        <div className="inline-flex items-center justify-center h-10 w-10 rounded-full bg-blue-600 text-white font-bold">
+                                            {(user.name || user.email || 'U')[0].toUpperCase()}
+                                        </div>
+                                    )}
                                 </button>
                                 <div className="dropdown-content">
-                                    <a href="./public/apps/hypha-login">My Profile</a>
+                                    <a href="./public/apps/hypha-login/profile">My Profile</a>
                                     <a href={"./ws-user-" + user.sub}>My Workspace</a>
                                     <a href="#" onClick={onLogout}>Logout</a>
                                 </div>
@@ -157,108 +163,116 @@
         };
 
         const App = () => {
-            const [config, setConfig] = React.useState(null);
+            const [hyphaVersion, setHyphaVersion] = React.useState('');
             const [isModalOpen, setIsModalOpen] = React.useState(false);
             const [isLoggedIn, setIsLoggedIn] = React.useState(false);
             const [user, setUser] = React.useState(null);
             const [loginError, setLoginError] = React.useState(null);
+            const [hyphaServer, setHyphaServer] = React.useState(null);
 
             React.useEffect(() => {
-                const fetchConfig = async () => {
+                const initialize = async () => {
+                    // Fetch config just for version info
                     try {
                         const response = await fetch('./assets/config.json');
                         const configData = await response.json();
-                        setConfig(configData);
-                        const auth0 = new window.auth0.Auth0Client({
-                            domain: configData.auth0_domain,
-                            clientId: configData.auth0_client_id,
-                            authorizationParams: {
-                                audience: configData.auth0_audience,
-                            },
-                            cacheLocation: 'localstorage',
-                            useRefreshTokens: true,
-                            useRefreshTokensFallback: true,
-                        });
-
-                        const checkAuth = async () => {
-                            try {
-                                const isAuthenticated = await auth0.isAuthenticated();
-                                if (isAuthenticated) {
-                                    const userProfile = await auth0.getUser();
-                                    setUser(userProfile);
-                                    setIsLoggedIn(true);
-                                }
-                            } catch (e) {
-                                console.error(e);
-                            }
-                        };
-
-                        window.auth0Client = auth0; // Store the Auth0 client in the global window object
-                        checkAuth();
+                        setHyphaVersion(configData.hypha_version || '');
                     } catch (error) {
                         console.error('Error fetching config:', error);
                     }
+                    
+                    // Check if we have a stored token
+                    const storedToken = localStorage.getItem('hypha_token');
+                    if (storedToken) {
+                        try {
+                            // Parse the token to get user info
+                            const decodedToken = parseJwt(storedToken);
+                            if (decodedToken.exp * 1000 > Date.now()) {
+                                // Token is still valid
+                                setUser({
+                                    sub: decodedToken.id || decodedToken.sub,
+                                    email: decodedToken.email,
+                                    name: decodedToken.name || decodedToken.email?.split('@')[0],
+                                    picture: decodedToken.picture || null
+                                });
+                                setIsLoggedIn(true);
+                                // Set cookie for server authentication
+                                const maxAge = decodedToken.exp - Math.floor(Date.now() / 1000);
+                                document.cookie = `access_token=${storedToken}; path=/; max-age=${maxAge}; samesite=lax`;
+                            } else {
+                                // Token expired, clear it
+                                localStorage.removeItem('hypha_token');
+                            }
+                        } catch (e) {
+                            console.error('Error parsing stored token:', e);
+                            localStorage.removeItem('hypha_token');
+                        }
+                    }
                 };
 
-                fetchConfig();
+                initialize();
             }, []);
 
-            React.useEffect(() => {
-                if(isLoggedIn){
-                    window.auth0Client.getTokenSilently({ audience: config.auth0_audience }).then(accessToken => {
-                        const decodedToken = parseJwt(accessToken);
-                        const exp = decodedToken.exp;
-                        const maxAge = exp - Math.floor(Date.now() / 1000);
-                        document.cookie = `access_token=${accessToken}; path=/; max-age=${maxAge}; samesite=lax`;
-                        document.cookie = `hypha_version=${config.hypha_version}; path=/; max-age=${maxAge}; samesite=lax`;
-                    });
-                }
-            }, [isLoggedIn, user]);
+            // Remove Auth0 specific code - cookies are already set when login succeeds
 
             const onLogin = async () => {
                 // Clear any previous errors
                 setLoginError(null);
                 
                 try {
-                    // Manually open the popup window
-                    const popupWindow = window.open('', '_blank', 'width=500,height=600');
-                    if (popupWindow) {
-                        try {
-                            // Pass the opened popup window to the Auth0 loginWithPopup method
-                            await window.auth0Client.loginWithPopup({ audience: config.auth0_audience }, { popup: popupWindow });
-                            popupWindow.close(); // Close the popup window after login
-                            const userProfile = await window.auth0Client.getUser();
-                            setUser(userProfile);
-                            setIsLoggedIn(true);
-                        } catch (e) {
-                            console.error('Login with popup failed', e);
-                            // Convert error to string and show in UI
-                            let errorMessage = String(e);
-                            if (e.message) {
-                                errorMessage = e.message;
-                            } else if (e.error_description) {
-                                errorMessage = e.error_description;
-                            }
-                            
-                            // Enhance email verification error message
-                            if (errorMessage.toLowerCase().includes('verify your email') || 
-                                errorMessage.toLowerCase().includes('email verification') ||
-                                errorMessage.toLowerCase().includes('email not verified')) {
-                                errorMessage = "Please check your email and follow the instructions to verify your email address before proceeding with the login. If you don't see the verification email, check your spam folder or try signing up again.";
-                            }
-                            
-                            setLoginError(errorMessage);
-                            if (!popupWindow.closed) {
-                                popupWindow.close(); // Ensure the popup window is closed in case of failure
-                            }
+                    // Use hypha-rpc login function which will use the configured authentication service
+                    const loginCallback = async (context) => {
+                        // Open login URL in a popup window
+                        const loginUrl = context.login_url;
+                        const popupWindow = window.open(loginUrl, '_blank', 'width=600,height=700');
+                        
+                        if (!popupWindow) {
+                            throw new Error('Unable to open login window. Please allow popups for this site.');
                         }
-                    } else {
-                        console.error('Unable to open popup window for login');
-                        setLoginError('Unable to open popup window for login. Please allow popups for this site.');
+                        
+                        // The login service will handle the authentication flow
+                        // and the popup will close itself when done
+                    };
+                    
+                    // Connect to server first if not connected
+                    if (!hyphaServer) {
+                        const server = await hyphaWebsocketClient.connectToServer({
+                            server_url: window.location.origin
+                        });
+                        setHyphaServer(server);
+                    }
+                    
+                    // Use the login function from hypha-rpc
+                    const token = await hyphaWebsocketClient.login({
+                        server_url: window.location.origin,
+                        login_callback: loginCallback,
+                        login_timeout: 180,  // 3 minutes timeout
+                        expires_in: 3600 * 24  // 24 hours
+                    });
+                    
+                    if (token) {
+                        // Store token
+                        localStorage.setItem('hypha_token', token);
+                        
+                        // Parse token to get user info
+                        const decodedToken = parseJwt(token);
+                        setUser({
+                            sub: decodedToken.id || decodedToken.sub,
+                            email: decodedToken.email,
+                            name: decodedToken.name || decodedToken.email?.split('@')[0],
+                            picture: decodedToken.picture || null
+                        });
+                        setIsLoggedIn(true);
+                        
+                        // Set cookie for server authentication
+                        const exp = decodedToken.exp;
+                        const maxAge = exp - Math.floor(Date.now() / 1000);
+                        document.cookie = `access_token=${token}; path=/; max-age=${maxAge}; samesite=lax`;
+                        document.cookie = `hypha_version=${hyphaVersion}; path=/; max-age=${maxAge}; samesite=lax`;
                     }
                 } catch (e) {
-                    console.error(e);
-                    setLoginError("Failed to open login window. Please allow pop-ups for this site.");
+                    console.error('Login failed:', e);
+                    setLoginError(e.message || 'Login failed. Please try again.');
                 }
             };
 
@@ -267,12 +281,8 @@
                 document.cookie = 'access_token=; path=/; max-age=0; samesite=lax';
                 document.cookie = 'hypha_version=; path=/; max-age=0; samesite=lax';
                 
-                // Clear Auth0 local storage cache
-                try {
-                    await window.auth0Client.logout({ logoutParams: { returnTo: window.location.href }, localOnly: true });
-                } catch (e) {
-                    console.log("Error clearing Auth0 local storage:", e);
-                }
+                // Clear localStorage token
+                localStorage.removeItem('hypha_token');
                 
                 // Clear React state
                 setIsLoggedIn(false);
@@ -280,22 +290,29 @@
             };
 
             const onLogout = async () => {
+                // Clear cookies and localStorage
                 document.cookie = 'access_token=; path=/; max-age=0; samesite=lax';
                 document.cookie = 'hypha_version=; path=/; max-age=0; samesite=lax';
-                await window.auth0Client.logout({
-                    logoutParams: { returnTo: window.location.origin }
-                });
+                localStorage.removeItem('hypha_token');
+                
+                // Clear React state
                 setIsLoggedIn(false);
                 setUser(null);
+                
+                // Optionally disconnect from server
+                if (hyphaServer) {
+                    try {
+                        await hyphaServer.disconnect();
+                    } catch (e) {
+                        console.log("Error disconnecting from server:", e);
+                    }
+                    setHyphaServer(null);
+                }
             };
 
             const onAboutClick = () => {
                 setIsModalOpen(true);
             };
-
-            if (!config) {
-                return <div>Loading...</div>; // Show a loading state while fetching config
-            }
 
             return (
                 <div>
@@ -349,7 +366,7 @@
                             </button>
                         </a>
                     </div>
-                    <AboutModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} version={config.hypha_version} />
+                    <AboutModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} version={hyphaVersion} />
                     <Footer />
                 </div>
             );

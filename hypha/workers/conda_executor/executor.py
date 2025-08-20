@@ -398,9 +398,8 @@ class CondaEnvExecutor:
             tuple: (command_string, executable_path_or_none)
         """
         # Basic command that works on all platforms
-        # Add --override-channels to avoid accessing default channels when not needed
         base_cmd = (
-            f"{self.package_manager} env create -p {self.env_path} -f {env_file} -y --override-channels"
+            f"{self.package_manager} env create -p {self.env_path} -f {env_file} -y"
         )
 
         if os.name == "nt":  # Windows
