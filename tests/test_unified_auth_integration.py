@@ -230,7 +230,9 @@ async def test_login_function_compatibility():
             "token": token
         }) as api:
             # Should be able to connect with the token
-            user_info = await api.get_user_info()
+            # Get user info from the server
+            server = await api.get_service("server")
+            user_info = await server.get_user_info()
             assert user_info["email"] == "apitest@example.com"
             assert user_info["is_anonymous"] is False
             

@@ -13,7 +13,7 @@ import json
 import zipfile
 
 from . import SERVER_URL, SERVER_URL_SQLITE, find_item
-from hypha.core.auth import valid_token
+from hypha_rpc.rpc import RemoteException
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
@@ -8309,7 +8309,7 @@ async def test_cross_workspace_draft_creation(
             file_path="data.csv"
         )
         assert False, "Should have raised error when using just alias"
-    except KeyError as e:
+    except RemoteException as e:
         # Should get our helpful error message
         assert "Note: When working with artifacts from other workspaces" in str(e)
     
