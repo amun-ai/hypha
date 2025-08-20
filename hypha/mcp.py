@@ -9,14 +9,12 @@ import inspect
 import json
 import logging
 import asyncio
-from typing import Any, Dict, Optional, List, Callable, Union
-from collections import deque
+from typing import Any, Dict, List, Callable
 from dataclasses import dataclass
 from uuid import uuid4
 import time
 
-from starlette.applications import Starlette
-from starlette.routing import Route, Mount
+from starlette.routing import Route
 from starlette.types import ASGIApp, Scope, Receive, Send
 from pydantic import AnyUrl
 
@@ -108,8 +106,6 @@ class RedisEventStore(EventStore):
         # Convert JSONRPCMessage to dict if needed
         if hasattr(message, 'model_dump'):
             message_data = message.model_dump()
-        elif hasattr(message, 'dict'):
-            message_data = message.dict()
         else:
             message_data = dict(message)
         
@@ -1067,41 +1063,204 @@ class MCPRoutingMiddleware:
                     f"MCP Middleware: Info route match - workspace='{workspace}', service_id='{service_id}'"
                 )
                 
-                # Return helpful 404 message
-                await self._send_helpful_404(send, workspace, service_id)
+                # Return service info
+                await self._send_service_info(scope, receive, send, workspace, service_id)
                 return
         
         # Continue to next middleware if not an MCP route
         await self.app(scope, receive, send)
     
-    async def _send_helpful_404(self, send, workspace, service_id):
-        """Send a helpful message with endpoint information."""
-        message = {
-            "service": service_id,
-            "message": f"MCP service '{service_id}' is available. Please use one of the endpoints below.",
-            "available_endpoints": {
-                "streamable_http": f"/{workspace}/mcp/{service_id}/mcp",
-                "sse": f"/{workspace}/mcp/{service_id}/sse",
-            },
-            "help": "Use the streamable HTTP endpoint for MCP communication.",
-        }
-        response_body = json.dumps(message, indent=2).encode()
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 200,
-                "headers": [
-                    [b"content-type", b"application/json"],
-                    [b"content-length", str(len(response_body)).encode()],
-                ],
+    async def _send_service_info(self, scope, receive, send, workspace, service_id):
+        """Send comprehensive service information including available tools, resources, and prompts."""
+        try:
+            # Get authentication info
+            access_token = self._get_access_token_from_cookies(scope)
+            authorization = self._get_authorization_header(scope)
+            
+            # Login and get user info
+            user_info = await self.store.login_optional(
+                authorization=authorization, access_token=access_token
+            )
+            
+            # Get _mode from query string
+            query = scope.get("query_string", b"").decode("utf-8")
+            _mode = None
+            if query:
+                params = [q.split("=") for q in query.split("&") if "=" in q]
+                _mode = dict(params).get("_mode")
+            
+            # Check if we have a cached MCP app for this service
+            cache_key = f"{workspace}/{service_id}"
+            
+            service_info = None
+            mcp_app = None
+            
+            if cache_key in self._mcp_cache:
+                # Use cached MCP app
+                mcp_app, api_context, api_task = self._mcp_cache[cache_key]
+                # We need to get service_info from the adapter
+                if hasattr(mcp_app, 'adapter'):
+                    adapter = mcp_app.adapter
+                    service_info = adapter.service_info
+                    mcp_app = adapter
+            else:
+                # Create API connection to get service info
+                api_context_manager = self.store.get_workspace_interface(user_info, workspace)
+                api_context = api_context_manager.__aenter__()
+                api = await api_context
+                
+                try:
+                    service_info = await api.get_service_info(
+                        service_id, {"mode": _mode}
+                    )
+                    
+                    # Get the service to create MCP app
+                    service = await api.get_service(service_info.id)
+                    
+                    # Check if it's MCP compatible
+                    if is_mcp_compatible_service(service):
+                        # Create MCP app with the service
+                        mcp_wrapper = await create_mcp_app_from_service(
+                            service, service_info, self.store.get_redis()
+                        )
+                        mcp_app = mcp_wrapper.adapter if hasattr(mcp_wrapper, 'adapter') else mcp_wrapper
+                        
+                        # Cache the MCP app and API connection
+                        self._mcp_cache[cache_key] = (mcp_wrapper, api_context_manager, api)
+                    else:
+                        # Clean up if not MCP compatible
+                        await api_context_manager.__aexit__(None, None, None)
+                
+                except Exception as e:
+                    # Clean up on error
+                    await api_context_manager.__aexit__(None, None, None)
+                    
+                    if "Service not found" in str(e) or "not found" in str(e).lower():
+                        await self._send_error_response(
+                            send, 404, f"Service {service_id} not found"
+                        )
+                    else:
+                        logger.error(f"Error getting service info: {e}")
+                        await self._send_error_response(
+                            send, 500, f"Error getting service info: {e}"
+                        )
+                    return
+            
+            # Build the response message
+            public_base_url = self.store.public_base_url.rstrip('/')
+            message = {
+                "service": {
+                    "id": service_id,
+                    "name": getattr(service_info, 'name', service_id) if service_info else service_id,
+                    "type": getattr(service_info, 'type', 'unknown') if service_info else 'unknown',
+                    "description": getattr(service_info, 'description', '') if service_info else '',
+                },
+                "endpoints": {
+                    "streamable_http": f"{public_base_url}/{workspace}/mcp/{service_id}/mcp",
+                    "sse": f"{public_base_url}/{workspace}/mcp/{service_id}/sse",
+                },
+                "documentation": {
+                    "mcp_protocol": "https://modelcontextprotocol.io/",
+                    "hypha_mcp": "https://ha.amun.ai/#/mcp",
+                },
             }
-        )
-        await send(
-            {
-                "type": "http.response.body",
-                "body": response_body,
+            
+            # Extract capabilities from the MCP app
+            capabilities = {
+                "tools": [],
+                "resources": [],
+                "prompts": [],
             }
-        )
+            
+            if mcp_app:
+                # Get tools
+                tool_handlers = getattr(mcp_app, 'tool_handlers', {})
+                for name, func in tool_handlers.items():
+                    tool_info = {"name": name}
+                    
+                    # Extract schema information if available
+                    if hasattr(func, "__schema__"):
+                        schema = func.__schema__
+                        tool_info["description"] = schema.get("description", "")
+                        tool_info["parameters"] = schema.get("parameters", {})
+                    elif hasattr(func, "__doc__") and func.__doc__:
+                        tool_info["description"] = func.__doc__
+                    else:
+                        tool_info["description"] = f"Tool: {name}"
+                    
+                    capabilities["tools"].append(tool_info)
+                
+                # Get resources
+                resource_handlers = getattr(mcp_app, 'resource_handlers', {})
+                for name, config in resource_handlers.items():
+                    resource_info = {
+                        "name": config.get("name", name),
+                        "uri": config.get("uri", name),
+                        "description": config.get("description", ""),
+                        "mime_type": config.get("mime_type", "text/plain"),
+                    }
+                    capabilities["resources"].append(resource_info)
+                
+                # Get prompts
+                prompt_handlers = getattr(mcp_app, 'prompt_handlers', {})
+                for name, config in prompt_handlers.items():
+                    prompt_info = {
+                        "name": config.get("name", name),
+                        "description": config.get("description", ""),
+                    }
+                    
+                    # Extract arguments from read function if available
+                    read_func = config.get("read")
+                    if read_func and hasattr(read_func, "__schema__"):
+                        schema = read_func.__schema__
+                        parameters = schema.get("parameters", {})
+                        properties = parameters.get("properties", {})
+                        required = parameters.get("required", [])
+                        
+                        arguments = []
+                        for prop_name, prop_info in properties.items():
+                            arguments.append({
+                                "name": prop_name,
+                                "description": prop_info.get("description", ""),
+                                "required": prop_name in required,
+                                "type": prop_info.get("type", "string"),
+                            })
+                        
+                        if arguments:
+                            prompt_info["arguments"] = arguments
+                    
+                    capabilities["prompts"].append(prompt_info)
+            
+            # Add summary
+            capabilities["summary"] = {
+                "tools_count": len(capabilities["tools"]),
+                "resources_count": len(capabilities["resources"]),
+                "prompts_count": len(capabilities["prompts"]),
+            }
+            
+            message["capabilities"] = capabilities
+            
+            response_body = json.dumps(message, indent=2).encode()
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [
+                        [b"content-type", b"application/json"],
+                        [b"content-length", str(len(response_body)).encode()],
+                    ],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": response_body,
+                }
+            )
+        
+        except Exception as e:
+            logger.exception(f"Error in _send_service_info: {e}")
+            await self._send_error_response(send, 500, f"Internal Server Error: {e}")
     
     async def _handle_mcp_request(self, scope, receive, send, workspace, service_id):
         """Handle MCP streamable HTTP requests."""
