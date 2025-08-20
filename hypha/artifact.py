@@ -1538,6 +1538,13 @@ class ArtifactController:
                         raise KeyError(
                             f"Artifact exists but failed to retrieve with ID '{artifact_id}', this may be a race condition."
                         )
+                # Provide helpful error message for common mistake
+                if "/" not in artifact_id:
+                    raise KeyError(
+                        f"Artifact with ID '{artifact_id}' does not exist. "
+                        f"Note: When working with artifacts from other workspaces, "
+                        f"use the full ID (workspace/alias) returned by create(), not just the alias."
+                    )
                 raise KeyError(f"Artifact with ID '{artifact_id}' does not exist.")
 
             parent_artifact = None
@@ -2294,6 +2301,7 @@ class ArtifactController:
     async def create(
         self,
         alias: str = None,
+        artifact_id: str = None,  # Alternative to workspace + alias
         workspace: str = None,
         parent_id: str = None,
         manifest: dict = None,
@@ -2306,7 +2314,19 @@ class ArtifactController:
         stage: bool = False,  # Add stage parameter
         context: dict = None,
     ):
-        """Create a new artifact and store its manifest in the database."""
+        """Create a new artifact and store its manifest in the database.
+        
+        Important: When creating a child artifact in a parent collection, the artifact 
+        will be created in the parent's workspace, not the user's current workspace.
+        The returned artifact ID will be in the format 'parent_workspace/alias'.
+        You must use this full ID for subsequent operations like put_file(), not just the alias.
+        
+        Args:
+            alias: The artifact alias (without workspace prefix)
+            artifact_id: Full artifact ID (workspace/alias). Alternative to using alias + workspace.
+            workspace: The workspace to create the artifact in (ignored if parent_id is provided)
+            parent_id: The parent collection ID (if provided, artifact inherits parent's workspace)
+        """
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
 
@@ -2329,7 +2349,20 @@ class ArtifactController:
             stage = True
             version = None
 
-        if alias:
+        # Handle artifact_id parameter (full ID)
+        if artifact_id:
+            if alias or workspace:
+                raise ValueError(
+                    "Cannot specify both artifact_id and alias/workspace. "
+                    "Use either artifact_id='workspace/alias' or alias='alias' + workspace='workspace'."
+                )
+            if "/" not in artifact_id:
+                raise ValueError(
+                    "artifact_id must be in format 'workspace/alias'. "
+                    f"Got '{artifact_id}'"
+                )
+            workspace, alias = artifact_id.split("/", 1)
+        elif alias:
             alias = alias.strip()
             if "/" in alias:
                 ws, alias = alias.split("/")
@@ -2343,24 +2376,44 @@ class ArtifactController:
         try:
             async with session.begin():
                 parent_artifact = None
+                parent_workspace = None
+                
+                # Resolve parent workspace if parent_id is provided
                 if parent_id:
+                    # Validate parent_id and extract its workspace if it has one
+                    if "/" in parent_id:
+                        parent_workspace, _ = parent_id.split("/", 1)
                     parent_id = self._validate_artifact_id(parent_id, context)
+                    
                     # Get parent artifact with list permission (minimum needed)
                     parent_artifact, _ = await self._get_artifact_with_permission(
                         user_info, parent_id, "list", session
                     )
                     parent_id = parent_artifact.id
-                    if workspace:
-                        assert (
-                            workspace == parent_artifact.workspace
-                        ), "Workspace must match parent artifact's workspace."
-                    workspace = parent_artifact.workspace
+                    parent_workspace = parent_artifact.workspace
+                    
                     if not parent_artifact.manifest:
                         raise ValueError(
                             f"Parent artifact with ID '{parent_id}' must be committed before creating a child artifact."
                         )
+                
+                # Workspace resolution logic:
+                # 1. If workspace is explicitly provided, validate it matches parent's workspace (if parent exists)
+                # 2. If no workspace provided but parent exists, use parent's workspace
+                # 3. If no workspace and no parent, use current user's workspace
+                if workspace:
+                    # Workspace explicitly provided
+                    if parent_workspace and workspace != parent_workspace:
+                        raise ValueError(
+                            f"Specified workspace '{workspace}' does not match parent's workspace '{parent_workspace}'. "
+                            f"Child artifacts must be created in the same workspace as their parent."
+                        )
+                elif parent_workspace:
+                    # No workspace specified, but parent exists - use parent's workspace
+                    workspace = parent_workspace
                 else:
-                    workspace = workspace or context["ws"]
+                    # No workspace specified and no parent - use current workspace
+                    workspace = context["ws"]
                     if not user_info.check_permission(
                         workspace, UserPermission.read_write
                     ):
