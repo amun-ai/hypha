@@ -1538,6 +1538,13 @@ class ArtifactController:
                         raise KeyError(
                             f"Artifact exists but failed to retrieve with ID '{artifact_id}', this may be a race condition."
                         )
+                    # Provide helpful error message for cross-workspace access
+                    # Don't leak information about artifacts in other workspaces
+                    raise KeyError(
+                        f"Artifact with ID '{artifact_id}' does not exist. "
+                        f"Note: When working with artifacts from other workspaces, "
+                        f"use the full ID (workspace/alias) returned by create(), not just the alias."
+                    )
                 # Provide helpful error message for common mistake
                 if "/" not in artifact_id:
                     raise KeyError(
