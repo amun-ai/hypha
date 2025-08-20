@@ -1154,14 +1154,11 @@ class MCPRoutingMiddleware:
                     "name": getattr(service_info, 'name', service_id) if service_info else service_id,
                     "type": getattr(service_info, 'type', 'unknown') if service_info else 'unknown',
                     "description": getattr(service_info, 'description', '') if service_info else '',
+                    "docs": getattr(service_info, 'docs', '') if service_info else '',
                 },
                 "endpoints": {
                     "streamable_http": f"{public_base_url}/{workspace}/mcp/{service_id}/mcp",
                     "sse": f"{public_base_url}/{workspace}/mcp/{service_id}/sse",
-                },
-                "documentation": {
-                    "mcp_protocol": "https://modelcontextprotocol.io/",
-                    "hypha_mcp": "https://ha.amun.ai/#/mcp",
                 },
             }
             
