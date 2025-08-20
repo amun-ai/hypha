@@ -24,9 +24,10 @@ async def test_unified_auth_with_templates(tmp_path):
          f"--port={port}", 
          "--enable-local-auth",
          "--enable-s3",
-         "--s3-access-key-id=minioadmin",
-         "--s3-secret-access-key=minioadmin",
-         "--reset-redis"],
+         "--reset-redis",
+         "--start-minio-server",
+         "--minio-root-user=minioadmin",
+         "--minio-root-password=minioadmin"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env={**os.environ, "HYPHA_LOGLEVEL": "INFO"}
@@ -130,9 +131,10 @@ async def test_login_function_compatibility():
          f"--port={port}",
          "--enable-local-auth", 
          "--enable-s3",
-         "--s3-access-key-id=minioadmin",
-         "--s3-secret-access-key=minioadmin",
-         "--reset-redis"],
+         "--reset-redis",
+         "--start-minio-server",
+         "--minio-root-user=minioadmin",
+         "--minio-root-password=minioadmin"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env={**os.environ, "HYPHA_LOGLEVEL": "INFO"}
@@ -207,7 +209,9 @@ async def test_login_function_compatibility():
                     if result["success"]:
                         received_token = result["token"]
                         login_completed = True
-        
+                    else:
+                        print("Failed to login:", result.get("error"))
+
         # Test the unified login function
         token = await login({
             "server_url": ws_url,
