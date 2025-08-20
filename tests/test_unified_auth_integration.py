@@ -23,6 +23,9 @@ async def test_unified_auth_with_templates(tmp_path):
         [sys.executable, "-m", "hypha.server", 
          f"--port={port}", 
          "--enable-local-auth",
+         "--enable-s3",
+         "--s3-access-key-id=minioadmin",
+         "--s3-secret-access-key=minioadmin",
          "--reset-redis"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -83,7 +86,7 @@ async def test_unified_auth_with_templates(tmp_path):
                 email="test@example.com",
                 password="testpass123"
             )
-            assert result["success"] is True
+            assert result["success"] is True, f"Signup failed: {result.get('error')}"
             
             # Test the unified login API
             # This simulates what the template JavaScript does
@@ -126,6 +129,9 @@ async def test_login_function_compatibility():
         [sys.executable, "-m", "hypha.server",
          f"--port={port}",
          "--enable-local-auth", 
+         "--enable-s3",
+         "--s3-access-key-id=minioadmin",
+         "--s3-secret-access-key=minioadmin",
          "--reset-redis"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
