@@ -2692,28 +2692,67 @@ class ServerAppController:
             context = {"user": self.store.get_root_user().model_dump(), "ws": "public"}
         session_data = await self._get_session_from_redis(session_id)
         if session_data:
+            session_stopped = False
             try:
-                # Get worker from cache and stop session
+                # Get worker from cache first
                 worker = self._get_worker_from_cache(session_data["worker_id"])
+                
+                # If worker not in cache, try to get it from worker manager
+                if not worker:
+                    logger.warning(f"Worker {session_data['worker_id']} not in cache, attempting to fetch from worker manager")
+                    try:
+                        # Try to get worker using worker manager
+                        worker = await self.get_worker_by_id(session_data["worker_id"], context)
+                        if worker:
+                            # Cache it for future use
+                            self._worker_cache[session_data["worker_id"]] = worker
+                            logger.info(f"Successfully fetched worker {session_data['worker_id']} from worker manager")
+                    except Exception as e:
+                        logger.error(f"Failed to fetch worker {session_data['worker_id']} from worker manager: {e}")
+                
                 if worker:
                     await worker.stop(session_id, context=context)
+                    session_stopped = True
+                    logger.info(f"Successfully stopped session {session_id}")
+                else:
+                    # Worker not available
+                    error_msg = f"Worker {session_data['worker_id']} not available for session {session_id}"
+                    logger.error(error_msg)
+                    if raise_exception:
+                        # Always raise if raise_exception is True
+                        raise Exception(error_msg)
+                    else:
+                        # Only log warning and clean up orphaned session if raise_exception is False
+                        logger.warning(f"{error_msg}, removing orphaned session")
+                        session_stopped = True  # Mark as stopped since worker is gone
+                        
             except Exception as exp:
+                # Log the error
+                logger.error(f"Failed to stop session {session_id}: {exp}")
                 if raise_exception:
+                    # Re-raise the exception if raise_exception is True
                     raise
                 else:
+                    # Only log warning if raise_exception is False
                     logger.warning(f"Failed to stop browser tab: {exp}")
-            finally:
-                # Remove session from Redis
+            
+            # Only remove session from Redis if it was successfully stopped
+            # or if we're not raising exceptions and worker is gone
+            if session_stopped:
                 await self._remove_session_from_redis(session_id)
-
-            # Check if this was the last instance of an app and stop autoscaling
-            app_id = session_data.get("app_id")
-            if app_id:
-                remaining_instances = await self.autoscaling_manager._get_app_instances(
-                    app_id
-                )
-                if not remaining_instances:
-                    await self.autoscaling_manager.stop_autoscaling(app_id)
+                logger.info(f"Removed session {session_id} from Redis")
+                
+                # Check if this was the last instance of an app and stop autoscaling
+                app_id = session_data.get("app_id")
+                if app_id:
+                    remaining_instances = await self.autoscaling_manager._get_app_instances(
+                        app_id
+                    )
+                    if not remaining_instances:
+                        await self.autoscaling_manager.stop_autoscaling(app_id)
+            else:
+                # Session wasn't stopped successfully - keep it in Redis
+                logger.warning(f"Session {session_id} was not stopped successfully, keeping in Redis for manual cleanup")
 
         elif raise_exception:
             raise Exception(f"Server app instance not found: {session_id}")
