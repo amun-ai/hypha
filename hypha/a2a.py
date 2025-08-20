@@ -13,6 +13,7 @@ import asyncio
 from typing import Any, Dict, Optional, Union, Callable, AsyncGenerator
 from starlette.routing import Route
 from starlette.types import ASGIApp, Scope, Receive, Send
+from starlette.requests import Request
 import json
 
 logger = logging.getLogger(__name__)
@@ -416,10 +417,10 @@ class A2ARoutingMiddleware:
                     access_token = self._get_access_token_from_cookies(scope)
                     authorization = self._get_authorization_header(scope)
 
+                    # Create a Request object with the scope
+                    request = Request(scope, receive=receive)
                     # Login and get user info
-                    user_info = await self.store.login_optional(
-                        authorization=authorization, access_token=access_token
-                    )
+                    user_info = await self.store.login_optional(request)
 
                     # Get the A2A service
                     async with self.store.get_workspace_interface(

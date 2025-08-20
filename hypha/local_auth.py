@@ -4,10 +4,8 @@ import hashlib
 import secrets
 import time
 import asyncio
-import json
-from typing import Optional, Dict, Any
 from hypha.core import UserInfo, UserPermission
-from hypha.core.auth import generate_auth_token, _parse_token, create_scope
+from hypha.core.auth import _parse_token, create_scope
 from hypha.utils import random_id
 import shortuuid
 import logging
@@ -1053,6 +1051,51 @@ async def update_profile_handler(server, context=None, name: str = None, current
         return {"success": False, "error": "Failed to update profile"}
 
 
+def local_get_token(scope):
+    """Extract token from custom locations for local authentication.
+    
+    This function allows tokens to be extracted from various sources:
+    - X-Local-Auth header
+    - hypha_local_token cookie
+    - Standard Authorization header (fallback)
+    - access_token cookie (fallback)
+    
+    Args:
+        scope: The ASGI scope object containing request information
+        
+    Returns:
+        The extracted token string or None to fall back to default extraction
+    """
+    headers = scope.get("headers", [])
+    
+    for key, value in headers:
+        # Decode bytes if necessary
+        if isinstance(key, bytes):
+            key = key.decode("utf-8")
+        if isinstance(value, bytes):
+            value = value.decode("utf-8")
+        
+        # Check for custom local auth header
+        if key.lower() == "x-local-auth":
+            return value
+        
+        # Check for cookies
+        if key.lower() == "cookie":
+            # Parse cookies
+            cookie_dict = {}
+            for cookie in value.split(";"):
+                if "=" in cookie:
+                    k, v = cookie.split("=", 1)
+                    cookie_dict[k.strip()] = v.strip()
+            
+            # Check for local auth specific cookie
+            if "hypha_local_token" in cookie_dict:
+                return cookie_dict["hypha_local_token"]
+    
+    # Return None to fall back to default extraction (Authorization header, access_token cookie)
+    return None
+
+
 async def hypha_startup(server):
     """Startup function for local authentication."""
     logger.info("Initializing local authentication provider")
@@ -1061,6 +1104,7 @@ async def hypha_startup(server):
     await server.register_auth_service(
         parse_token=local_parse_token,
         generate_token=local_generate_token,
+        get_token=local_get_token,  # Add custom token extraction
         index_handler=index_handler,
         start_handler=start_login_handler,
         check_handler=check_login_handler,

@@ -13,7 +13,7 @@ import json
 import zipfile
 
 from . import SERVER_URL, SERVER_URL_SQLITE, find_item
-from hypha.core.auth import valid_token
+from hypha_rpc.rpc import RemoteException
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
@@ -8182,6 +8182,147 @@ async def test_draft_attach_detach_permissions(
     await api2.disconnect()
     
     print("✅ Draft, attach, and detach permissions working correctly")
+
+
+async def test_cross_workspace_draft_creation(
+    minio_server, fastapi_server, test_user_token, test_user_token_2
+):
+    """Test creating drafts in collections owned by different workspaces with r+ permission.
+    
+    This test verifies the fix for the issue where users from different workspaces
+    need to use the full artifact ID (workspace/alias) when working with drafts
+    created in another workspace's collection.
+    """
+    
+    # User 1 connects and creates a collection
+    api1 = await connect_to_server({
+        "name": "collection-owner",
+        "server_url": SERVER_URL,
+        "token": test_user_token
+    })
+    artifact_manager1 = await api1.get_service("public/artifact-manager")
+    owner_workspace = api1.config["workspace"]
+    
+    # Create collection with r+ permission for authenticated users
+    collection = await artifact_manager1.create(
+        type="collection",
+        alias="ai-model-hub",
+        manifest={
+            "name": "AI Model Hub",
+            "description": "A collection for AI models"
+        },
+        config={
+            "permissions": {
+                "*": "r",   # Read for everyone
+                "@": "r+"   # Authenticated users can create drafts
+            }
+        }
+    )
+    
+    assert collection["workspace"] == owner_workspace
+    collection_id = collection["id"]  # This is owner_workspace/ai-model-hub
+    
+    # User 2 connects from their workspace
+    api2 = await connect_to_server({
+        "name": "contributor",
+        "server_url": SERVER_URL,
+        "token": test_user_token_2
+    })
+    artifact_manager2 = await api2.get_service("public/artifact-manager")
+    user2_workspace = api2.config["workspace"]
+    
+    assert user2_workspace != owner_workspace, "Users should be in different workspaces"
+    
+    # Test 1: User 2 creates a draft using just alias (workspace inherited from parent)
+    draft = await artifact_manager2.create(
+        parent_id=collection_id,
+        alias="model-example1",
+        type="dataset",
+        manifest={
+            "name": "Model Example 1",
+            "description": "A test model created by user 2",
+            "id": "model-example1"
+        },
+        stage=True  # Create as draft
+    )
+    
+    # Test 2: User 2 can also use artifact_id parameter with full ID
+    draft_with_id = await artifact_manager2.create(
+        parent_id=collection_id,
+        artifact_id=f"{owner_workspace}/model-with-full-id",
+        type="dataset",
+        manifest={"name": "Model with Full ID"},
+        stage=True
+    )
+    assert draft_with_id["id"] == f"{owner_workspace}/model-with-full-id"
+    
+    # The draft should be created in the collection's workspace
+    assert draft["workspace"] == owner_workspace, f"Draft should be in {owner_workspace}, not {draft['workspace']}"
+    assert draft["id"] == f"{owner_workspace}/model-example1", f"Draft ID should be {owner_workspace}/model-example1"
+    
+    # User 2 uploads a file using the full draft ID returned by create()
+    put_url = await artifact_manager2.put_file(
+        artifact_id=draft["id"],  # Use full ID: owner_workspace/model-example1
+        file_path="data.csv"
+    )
+    
+    # Upload test content
+    async with httpx.AsyncClient() as client:
+        response = await client.put(put_url, data=b"test,data\n1,2\n3,4")
+        assert response.status_code == 200
+    
+    # User 2 can also edit the draft using the full ID
+    await artifact_manager2.edit(
+        artifact_id=draft["id"],  # Use full ID
+        manifest={
+            "name": "Model Example 1 - Updated",
+            "description": "Updated by user 2"
+        }
+    )
+    
+    # User 2 commits the draft
+    committed = await artifact_manager2.commit(artifact_id=draft["id"])
+    assert committed["id"] == draft["id"]
+    assert committed["workspace"] == owner_workspace
+    
+    # Verify the artifact appears in the collection
+    artifacts = await artifact_manager1.list(parent_id=collection_id)
+    assert len(artifacts) == 1
+    assert artifacts[0]["id"] == draft["id"]
+    assert artifacts[0]["manifest"]["name"] == "Model Example 1 - Updated"
+    
+    # Test error case: Using just the alias instead of full ID should fail
+    # Create another draft
+    draft2 = await artifact_manager2.create(
+        parent_id=collection_id,
+        alias="model-example2",
+        type="dataset",
+        manifest={"name": "Model Example 2"},
+        stage=True
+    )
+    
+    # Try to use just the alias (this will fail with helpful error)
+    try:
+        # This will fail because "model-example2" gets prefixed with user2's workspace
+        await artifact_manager2.put_file(
+            artifact_id="model-example2",  # Wrong - using just alias
+            file_path="data.csv"
+        )
+        assert False, "Should have raised error when using just alias"
+    except RemoteException as e:
+        # Should get our helpful error message
+        assert "Note: When working with artifacts from other workspaces" in str(e)
+    
+    # Clean up
+    await artifact_manager1.delete(draft["id"])
+    await artifact_manager1.delete(draft_with_id["id"])
+    await artifact_manager1.delete(draft2["id"])
+    await artifact_manager1.delete(collection["id"])
+    
+    await api1.disconnect()
+    await api2.disconnect()
+    
+    print("✅ Cross-workspace draft creation test passed!")
 
 
 async def test_permission_isolation_between_artifacts(

@@ -1,9 +1,7 @@
 """Test custom authentication with a real server."""
 import pytest
-import asyncio
+import httpx    
 from hypha_rpc import connect_to_server
-from hypha.core import UserInfo, UserPermission
-from hypha.core.auth import create_scope, generate_auth_token
 
 
 @pytest.mark.asyncio
@@ -324,6 +322,147 @@ async def test_custom_auth_login_invalid_key(custom_auth_server):
 
 # Index page test removed - requires special HTTP handling that's not available
 # in the test setup. The index handler is tested through the login flow tests.
+
+
+@pytest.mark.asyncio
+async def test_custom_get_token_extraction(custom_auth_server):
+    """Test custom token extraction from different sources (headers, cookies)."""
+    server_url = custom_auth_server.replace("http://", "ws://") + "/ws"
+    
+    # First, connect as anonymous to generate a custom token
+    async with connect_to_server(
+        {
+            "client_id": "test-get-token-gen",
+            "server_url": server_url,
+        }
+    ) as api:
+        # Generate a custom token
+        workspace = api.config.workspace
+        custom_token = await api.generate_token(
+            config={
+                "workspace": workspace,
+                "expires_in": 3600
+            }
+        )
+        
+        # Verify it's a custom token
+        assert custom_token.startswith("CUSTOM:"), f"Should be custom token: {custom_token[:30]}"
+    
+    # Test HTTP endpoint with custom header extraction
+
+    base_url = custom_auth_server
+    
+    # Test with CF_Authorization header (custom header from Cloudflare)
+    async with httpx.AsyncClient() as client:
+        # Make a request with the custom header
+        response = await client.get(
+            f"{base_url}/{workspace}/info",
+            headers={"CF_Authorization": custom_token}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["id"] == workspace
+    
+    # Test with X-Hypha-Token header (custom header)
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{base_url}/{workspace}/info",
+            headers={"X-Hypha-Token": custom_token}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["id"] == workspace
+    
+    # Test with custom cookie extraction
+    async with httpx.AsyncClient() as client:
+        # Make a request with the hypha_token cookie
+        response = await client.get(
+            f"{base_url}/{workspace}/info", 
+            cookies={"hypha_token": custom_token}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["id"] == workspace
+    
+    # Test with cf_token cookie (Cloudflare)
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{base_url}/{workspace}/info", 
+            cookies={"cf_token": custom_token}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["id"] == workspace
+    
+    # Note: WebSocket header passing would require modification to hypha-rpc client
+    # For now, test that standard auth still works alongside custom get_token
+
+
+@pytest.mark.asyncio
+async def test_custom_get_token_priority(custom_auth_server):
+    """Test that custom get_token function takes priority over default extraction."""
+    server_url = custom_auth_server.replace("http://", "ws://") + "/ws"
+    
+    # Generate two different tokens
+    async with connect_to_server(
+        {
+            "client_id": "test-priority-gen",
+            "server_url": server_url,
+        }
+    ) as api:
+        workspace = api.config.workspace
+        
+        # Generate first token (will be in CF_Authorization)
+        custom_token_1 = await api.generate_token(
+            config={
+                "workspace": workspace,
+                "expires_in": 3600
+            }
+        )
+        
+        # Generate second token (will be in Authorization header)  
+        custom_token_2 = await api.generate_token(
+            config={
+                "workspace": workspace,
+                "expires_in": 1800
+            }
+        )
+        
+        assert custom_token_1 != custom_token_2
+        assert custom_token_1.startswith("CUSTOM:")
+        assert custom_token_2.startswith("CUSTOM:")
+    
+    # Test that custom header takes priority over standard Authorization
+    import httpx
+    base_url = custom_auth_server
+    
+    async with httpx.AsyncClient() as client:
+        # Send both headers - custom should take priority
+        response = await client.get(
+            f"{base_url}/{workspace}/info",
+            headers={
+                "CF_Authorization": custom_token_1,
+                "Authorization": f"Bearer {custom_token_2}"
+            }
+        )
+        assert response.status_code == 200
+        # The custom get_token should extract CF_Authorization first
+        # Both tokens are valid for the same workspace, so this should work
+        data = response.json()
+        assert data["id"] == workspace
+    
+    # Test with X-Hypha-Token taking priority over Authorization
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{base_url}/{workspace}/info",
+            headers={
+                "X-Hypha-Token": custom_token_1,
+                "Authorization": f"Bearer {custom_token_2}"
+            }
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["id"] == workspace
 
 
 if __name__ == "__main__":

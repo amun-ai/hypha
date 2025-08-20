@@ -8,7 +8,7 @@ import sys
 import datetime
 from typing import List, Union
 from pydantic import BaseModel
-from fastapi import Header, Cookie
+from fastapi import Header, Cookie, Request
 
 from hypha_rpc import RPC
 from hypha_rpc.utils.schema import schema_method
@@ -27,6 +27,7 @@ from hypha.core import (
     UserInfo,
     WorkspaceInfo,
 )
+from hypha.core.auth import extract_token_from_scope
 from hypha.core.activity import ActivityTracker
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
@@ -781,15 +782,15 @@ class RedisStore:
 
     async def login_optional(
         self,
-        authorization: str = Header(None),
-        access_token: str = Cookie(None),
+        request: Request = None,
     ):
         """Return user info or create an anonymous user.
 
         If authorization code is valid the user info is returned,
         If the code is invalid an anonymous user is created.
         """
-        token = authorization or access_token
+        # Try to extract token using custom function if request is provided
+        token = await extract_token_from_scope(request.scope)
         if token:
             user_info = await self.parse_user_token(token)
             if user_info.scope.current_workspace is None:

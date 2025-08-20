@@ -12,13 +12,14 @@ logger.setLevel(LOGLEVEL)
 
 import importlib.util
 from importlib import import_module
-from hypha.core.auth import set_parse_token_function, set_generate_token_function
+from hypha.core.auth import set_parse_token_function, set_generate_token_function, set_get_token_function
 
 
 async def register_auth_service(
     server,
     parse_token: Optional[Callable] = None,
     generate_token: Optional[Callable] = None,
+    get_token: Optional[Callable] = None,
     login_service: Optional[Dict[str, Any]] = None,
     index_handler: Optional[Callable] = None,
     start_handler: Optional[Callable] = None,
@@ -29,12 +30,14 @@ async def register_auth_service(
     """Register a custom authentication service with Hypha.
     
     This function provides a unified interface for customizing authentication in Hypha.
-    You can customize token parsing, token generation, and the login service.
+    You can customize token parsing, token generation, token extraction, and the login service.
     
     Args:
         server: The Hypha server instance
         parse_token: Optional custom token parsing function (async or sync)
         generate_token: Optional custom token generation function (async or sync)
+        get_token: Optional custom token extraction function (async or sync) that receives
+                   a scope object and returns the token string
         login_service: Optional complete login service dictionary
         index_handler: Optional handler for serving login page (overrides login_service)
         start_handler: Optional handler for starting login session (overrides login_service)
@@ -61,6 +64,10 @@ async def register_auth_service(
     if generate_token:
         await set_generate_token_function(generate_token)
         logger.info("Custom generate_token function registered via register_auth_service")
+    
+    if get_token:
+        await set_get_token_function(get_token)
+        logger.info("Custom get_token function registered via register_auth_service")
     
     # Handle login service registration
     if login_service or any([index_handler, start_handler, check_handler, report_handler]):
@@ -183,6 +190,7 @@ async def run_startup_function(store: any, startup_function_uri: str):
     # Keep legacy functions for backward compatibility
     server["set_parse_token_function"] = set_parse_token_function
     server["set_generate_token_function"] = set_generate_token_function
+    server["set_get_token_function"] = set_get_token_function
     
     # Also provide access to the store for more advanced use cases
     server["store"] = store
