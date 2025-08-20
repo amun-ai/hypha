@@ -199,21 +199,38 @@ class S3Controller:
         # self.local_log_dir = Path(local_log_dir)
         self.workspace_etc_dir = workspace_etc_dir.rstrip("/")
         s3client = self.create_client_sync()
-        try:
-            s3client.create_bucket(Bucket=self.workspace_bucket)
-            logger.info("Bucket created: %s", self.workspace_bucket)
+        
+        # Try to create bucket with retries for MinIO startup
+        max_retries = 10
+        retry_delay = 1
+        for attempt in range(max_retries):
             try:
-                if self.s3_admin_type != "minio":
-                    s3client.put_bucket_cors(
-                        Bucket=self.workspace_bucket,
-                        CORSConfiguration=DEFAULT_CORS_POLICY,
-                    )
-            except Exception as ex:
-                logger.error("Failed to apply CORS policy: %s", ex)
-        except s3client.exceptions.BucketAlreadyExists:
-            pass
-        except s3client.exceptions.BucketAlreadyOwnedByYou:
-            pass
+                s3client.create_bucket(Bucket=self.workspace_bucket)
+                logger.info("Bucket created: %s", self.workspace_bucket)
+                break
+            except botocore.exceptions.ClientError as e:
+                error_code = e.response['Error']['Code']
+                if error_code in ['BucketAlreadyExists', 'BucketAlreadyOwnedByYou']:
+                    # Bucket already exists, that's fine
+                    break
+                elif error_code == 'SlowDownWrite' and attempt < max_retries - 1:
+                    # MinIO is still initializing, wait and retry
+                    logger.debug(f"MinIO still initializing, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 1.5, 5)  # Exponential backoff up to 5 seconds
+                else:
+                    # Other error or max retries reached
+                    raise
+        
+        # Apply CORS policy if not using MinIO
+        try:
+            if self.s3_admin_type != "minio":
+                s3client.put_bucket_cors(
+                    Bucket=self.workspace_bucket,
+                    CORSConfiguration=DEFAULT_CORS_POLICY,
+                )
+        except Exception as ex:
+            logger.error("Failed to apply CORS policy: %s", ex)
 
         if self.minio_client:
             self.minio_client.admin_user_add_sync("root", generate_password())
