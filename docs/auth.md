@@ -105,44 +105,524 @@ Test the login at: `https://my-org.com/public/apps/hypha-login/`
 
 ## Custom Authentication Providers
 
-Hypha supports custom authentication through startup functions, allowing you to replace or extend the default JWT authentication with your own implementation.
+Hypha supports custom authentication through startup functions, allowing you to replace or extend the default JWT authentication with your own implementation. This section will guide you through creating a complete custom authentication service.
 
 ### Overview
 
-Custom authentication in Hypha is configured through the unified `register_auth_service` function, which allows you to customize:
+Custom authentication in Hypha is implemented using a startup function that registers your authentication handlers when the server starts. The startup function uses the `register_auth_service` API to customize:
 
 1. **Token Parsing**: Custom token validation and user extraction
 2. **Token Generation**: Custom token creation logic
-3. **Login Service**: Custom login UI and authentication flow
+3. **Login Service**: Custom login UI and authentication flow with multiple handlers
 
-The `register_auth_service` function provides a simplified interface that handles all authentication aspects in one place.
+### Creating a Custom Authentication Service
 
-### register_auth_service Function
+#### Step 1: Create Your Authentication Module
+
+Create a Python file (e.g., `my_auth.py`) with a `hypha_startup` function:
 
 ```python
-await server.register_auth_service(
-    parse_token=None,           # Custom token parsing function
-    generate_token=None,        # Custom token generation function  
-    login_service=None,         # Complete login service dict (advanced)
-    index_handler=None,         # Custom login page handler
-    start_handler=None,         # Custom login start handler
-    check_handler=None,         # Custom login check handler
-    report_handler=None,        # Custom login report handler
-    **extra_handlers            # Additional service methods
-)
+# my_auth.py
+import logging
+
+logger = logging.getLogger(__name__)
+
+async def hypha_startup(server):
+    """Startup function called when Hypha server starts."""
+    logger.info("Initializing custom authentication")
+    
+    # Register your authentication service
+    await server.register_auth_service(
+        # Your authentication handlers go here
+    )
+    
+    logger.info("Custom authentication initialized")
 ```
 
-**Parameters:**
-- **parse_token**: Function to parse and validate tokens, returning `UserInfo`
-- **generate_token**: Function to generate tokens from `UserInfo` and expiration
-- **login_service**: Complete service dictionary (overrides individual handlers)
-- **index_handler**: Serves the login page (`async def index(event)`)
-- **start_handler**: Starts login session (`async def start(workspace=None, expires_in=None)`)
-- **check_handler**: Checks login status (`async def check(key, timeout=180, profile=False)`)
-- **report_handler**: Reports login completion (`async def report(key, token, **kwargs)`)
-- **extra_handlers**: Additional methods to add to the login service
+#### Step 2: Start Hypha with Your Module
 
-The login service is automatically registered with ID `"hypha-login"` to replace the default.
+```bash
+python -m hypha.server --host=0.0.0.0 --port=9527 \
+    --startup-functions=my_auth.py:hypha_startup
+```
+
+### Complete Example: Local Authentication Implementation
+
+Here's a complete example based on Hypha's built-in local authentication provider that demonstrates all the components needed for a full authentication system:
+
+```python
+# local_auth_example.py
+import hashlib
+import secrets
+import time
+import asyncio
+from typing import Optional
+from hypha.core import UserInfo, UserPermission
+from hypha.core.auth import _parse_token, create_scope, _generate_presigned_token
+from hypha.utils import random_id
+import logging
+
+logger = logging.getLogger(__name__)
+
+# In-memory storage for demo (use database in production)
+USER_DATABASE = {}
+LOGIN_SESSIONS = {}
+
+def hash_password(password: str, salt: str) -> str:
+    """Hash a password with salt."""
+    return hashlib.sha256((password + salt).encode()).hexdigest()
+
+def verify_password(password: str, salt: str, hashed: str) -> bool:
+    """Verify a password against its hash."""
+    return hash_password(password, salt) == hashed
+
+# 1. Token Parsing Function
+async def custom_parse_token(token: str) -> UserInfo:
+    """Parse and validate tokens."""
+    if not token:
+        from hypha.core.auth import generate_anonymous_user
+        return generate_anonymous_user()
+    
+    # For this example, we use standard JWT tokens
+    # You could implement your own token format here
+    return _parse_token(token)
+
+# 2. Token Generation Function  
+async def custom_generate_token(user_info: UserInfo, expires_in: int) -> str:
+    """Generate a token for a user."""
+    # Use Hypha's built-in JWT generation
+    # You could implement your own token generation here
+    token = _generate_presigned_token(user_info, expires_in)
+    logger.debug(f"Generated token for user: {user_info.id}")
+    return token
+
+# 3. Login Page Handler
+async def login_page_handler(event):
+    """Serve the login/signup page."""
+    html_content = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Custom Authentication</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center">
+    <div class="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
+        <h1 class="text-2xl font-bold text-center mb-6">Custom Login</h1>
+        
+        <!-- Login Form -->
+        <div class="space-y-4">
+            <input type="email" id="email" placeholder="Email" 
+                class="w-full px-3 py-2 border rounded-md">
+            <input type="password" id="password" placeholder="Password" 
+                class="w-full px-3 py-2 border rounded-md">
+            <button onclick="login()" 
+                class="w-full bg-blue-600 text-white py-2 rounded-md">
+                Login
+            </button>
+        </div>
+        
+        <div id="message" class="mt-4 text-center"></div>
+    </div>
+    
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const loginKey = urlParams.get('key');
+        
+        async function login() {
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            
+            const response = await fetch('/public/services/hypha-login/login', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({email, password, key: loginKey})
+            });
+            
+            const result = await response.json();
+            if (result.success) {
+                if (loginKey) {
+                    // Report success and close popup
+                    await fetch('/public/services/hypha-login/report', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            key: loginKey,
+                            token: result.token,
+                            email: result.email
+                        })
+                    });
+                    window.close();
+                }
+                document.getElementById('message').textContent = 'Login successful!';
+            } else {
+                document.getElementById('message').textContent = result.error;
+            }
+        }
+    </script>
+</body>
+</html>
+    '''
+    return {
+        "status": 200,
+        "headers": {"Content-Type": "text/html"},
+        "body": html_content
+    }
+
+# 4. Login Flow Handlers
+async def start_login_handler(workspace: str = None, expires_in: int = None):
+    """Start a login session (called by hypha-rpc login)."""
+    import shortuuid
+    key = shortuuid.uuid()
+    LOGIN_SESSIONS[key] = {
+        "status": "pending",
+        "workspace": workspace,
+        "expires_in": expires_in or 3600
+    }
+    return {
+        "login_url": f"/public/apps/hypha-login/?key={key}",
+        "key": key,
+        "report_url": "/public/services/hypha-login/report",
+        "check_url": "/public/services/hypha-login/check"
+    }
+
+async def check_login_handler(key, timeout=180, profile=False):
+    """Check if login is complete (polled by hypha-rpc)."""
+    if key not in LOGIN_SESSIONS:
+        raise ValueError("Invalid login key")
+    
+    session = LOGIN_SESSIONS[key]
+    start_time = time.time()
+    
+    while time.time() - start_time < timeout:
+        if session["status"] == "completed":
+            token = session.get("token")
+            if profile:
+                return {
+                    "token": token,
+                    "email": session.get("email"),
+                    "workspace": session.get("workspace")
+                }
+            return token
+        await asyncio.sleep(1)
+    
+    raise TimeoutError(f"Login timeout after {timeout} seconds")
+
+async def report_login_handler(key, token=None, email=None, **kwargs):
+    """Report login completion (called by login page)."""
+    if key not in LOGIN_SESSIONS:
+        raise ValueError("Invalid login key")
+    
+    LOGIN_SESSIONS[key]["status"] = "completed"
+    LOGIN_SESSIONS[key]["token"] = token
+    LOGIN_SESSIONS[key]["email"] = email
+    return {"success": True}
+
+# 5. User Management Functions
+async def signup_handler(server, context=None, name=None, email=None, password=None):
+    """Handle user registration."""
+    if not all([name, email, password]):
+        return {"success": False, "error": "Missing required fields"}
+    
+    if email in USER_DATABASE:
+        return {"success": False, "error": "Email already registered"}
+    
+    # Generate user ID and hash password
+    user_id = random_id(readable=True)
+    salt = secrets.token_hex(32)
+    password_hash = hash_password(password, salt)
+    
+    # Store user
+    USER_DATABASE[email] = {
+        "id": user_id,
+        "name": name,
+        "email": email,
+        "password_hash": password_hash,
+        "salt": salt,
+        "roles": ["user"]
+    }
+    
+    return {"success": True, "user_id": user_id}
+
+async def login_handler(server, context=None, email=None, password=None, key=None, **kwargs):
+    """Handle user login."""
+    if not email or not password:
+        return {"success": False, "error": "Email and password required"}
+    
+    user = USER_DATABASE.get(email)
+    if not user:
+        return {"success": False, "error": "Invalid credentials"}
+    
+    if not verify_password(password, user["salt"], user["password_hash"]):
+        return {"success": False, "error": "Invalid credentials"}
+    
+    # Create UserInfo and generate token
+    user_info = UserInfo(
+        id=user["id"],
+        email=user["email"],
+        roles=user["roles"],
+        is_anonymous=False,
+        scope=create_scope(
+            workspaces={f"ws-user-{user['id']}": UserPermission.admin},
+            current_workspace=f"ws-user-{user['id']}"
+        )
+    )
+    
+    token = await custom_generate_token(user_info, 3600 * 24)
+    
+    # Update login session if key provided
+    if key and key in LOGIN_SESSIONS:
+        LOGIN_SESSIONS[key]["status"] = "completed"
+        LOGIN_SESSIONS[key]["token"] = token
+        LOGIN_SESSIONS[key]["email"] = user["email"]
+    
+    return {
+        "success": True,
+        "token": token,
+        "email": user["email"],
+        "user_id": user["id"]
+    }
+
+# 6. Main Startup Function
+async def hypha_startup(server):
+    """Register the complete authentication service."""
+    logger.info("Initializing custom authentication")
+    
+    await server.register_auth_service(
+        # Core authentication functions
+        parse_token=custom_parse_token,
+        generate_token=custom_generate_token,
+        
+        # Login service handlers
+        index_handler=login_page_handler,
+        start_handler=start_login_handler,
+        check_handler=check_login_handler,
+        report_handler=report_login_handler,
+        
+        # Additional service methods
+        signup=lambda context=None, **kwargs: signup_handler(server, context, **kwargs),
+        login=lambda context=None, **kwargs: login_handler(server, context, **kwargs)
+    )
+    
+    logger.info("Custom authentication service registered")
+```
+
+### Key Components Explained
+
+#### 1. The Startup Function
+The `hypha_startup` function is called when Hypha starts. It receives the server object which provides access to the `register_auth_service` function.
+
+#### 2. Token Management
+- **parse_token**: Validates tokens and returns a `UserInfo` object
+- **generate_token**: Creates tokens from `UserInfo` and expiration time
+
+#### 3. Login Service Handlers
+The login service implements the OAuth-like flow used by hypha-rpc's `login()` function:
+- **index_handler**: Serves the login page HTML
+- **start_handler**: Initiates a login session, returns a key and URLs
+- **check_handler**: Polls for login completion (used by hypha-rpc)
+- **report_handler**: Reports successful login (called by login page)
+
+#### 4. Additional Methods
+Any extra keyword arguments to `register_auth_service` are added as methods to the login service. These can be called via `/public/services/hypha-login/<method_name>`.
+
+### Using Your Custom Authentication
+
+Once implemented, clients can use your authentication seamlessly:
+
+```python
+from hypha_rpc import login, connect_to_server
+
+# The login() function will use your custom authentication
+token = await login({"server_url": "http://localhost:9527"})
+
+# Connect with the token
+async with connect_to_server({
+    "server_url": "http://localhost:9527",
+    "token": token
+}) as server:
+    # Use authenticated services
+    pass
+```
+
+### Production Considerations
+
+When implementing custom authentication for production use:
+
+#### 1. Persistent Storage
+Replace in-memory storage with a database:
+
+```python
+# Use Redis for session storage
+import redis.asyncio as redis
+
+class AuthStorage:
+    def __init__(self):
+        self.redis = redis.Redis(host='localhost', port=6379, decode_responses=True)
+    
+    async def store_session(self, key: str, data: dict, ttl: int = 3600):
+        await self.redis.setex(f"session:{key}", ttl, json.dumps(data))
+    
+    async def get_session(self, key: str):
+        data = await self.redis.get(f"session:{key}")
+        return json.loads(data) if data else None
+
+# Use PostgreSQL or MongoDB for user data
+from sqlalchemy import create_engine, Column, String
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+
+Base = declarative_base()
+
+class User(Base):
+    __tablename__ = 'users'
+    id = Column(String, primary_key=True)
+    email = Column(String, unique=True, nullable=False)
+    name = Column(String)
+    password_hash = Column(String)
+    salt = Column(String)
+    roles = Column(String)  # JSON string
+
+# Initialize database
+engine = create_engine('postgresql://user:password@localhost/hypha_auth')
+SessionLocal = sessionmaker(bind=engine)
+```
+
+#### 2. Security Best Practices
+
+- **Password Requirements**: Enforce strong password policies
+- **Rate Limiting**: Prevent brute force attacks
+- **Token Rotation**: Implement refresh tokens
+- **Secure Communication**: Always use HTTPS in production
+- **Input Validation**: Sanitize all user inputs
+- **Audit Logging**: Log authentication events
+
+```python
+import time
+from functools import lru_cache
+
+# Rate limiting example
+LOGIN_ATTEMPTS = {}
+
+def check_rate_limit(email: str, max_attempts: int = 5, window: int = 300):
+    """Check if user has exceeded login attempts."""
+    now = time.time()
+    if email not in LOGIN_ATTEMPTS:
+        LOGIN_ATTEMPTS[email] = []
+    
+    # Remove old attempts outside the window
+    LOGIN_ATTEMPTS[email] = [t for t in LOGIN_ATTEMPTS[email] if now - t < window]
+    
+    if len(LOGIN_ATTEMPTS[email]) >= max_attempts:
+        raise Exception(f"Too many login attempts. Try again in {window} seconds.")
+    
+    LOGIN_ATTEMPTS[email].append(now)
+```
+
+#### 3. Using Hypha's Artifact Manager for Storage
+
+For better integration with Hypha, you can use the Artifact Manager to store user data:
+
+```python
+async def store_user_with_artifacts(server, user_data):
+    """Store user data using Hypha's Artifact Manager."""
+    artifact_manager = await server.get_service("public/artifact-manager")
+    
+    # Create or get users collection
+    try:
+        collection = await artifact_manager.read("ws-user-root/auth-users")
+    except:
+        collection = await artifact_manager.create(
+            workspace="ws-user-root",
+            alias="auth-users",
+            type="collection",
+            manifest={"name": "Authentication Users"}
+        )
+    
+    # Store user as artifact
+    await artifact_manager.create(
+        parent_id=collection["id"],
+        alias=user_data["id"],
+        type="user",
+        manifest=user_data
+    )
+```
+
+### Advanced Authentication Patterns
+
+#### Multi-Factor Authentication (MFA)
+
+Add an additional verification step:
+
+```python
+import pyotp
+
+async def setup_mfa(user_id: str) -> str:
+    """Generate MFA secret for user."""
+    secret = pyotp.random_base32()
+    # Store secret with user data
+    return pyotp.totp.TOTP(secret).provisioning_uri(
+        name=user_id,
+        issuer_name="Hypha"
+    )
+
+async def verify_mfa(user_id: str, code: str) -> bool:
+    """Verify MFA code."""
+    secret = await get_user_mfa_secret(user_id)
+    totp = pyotp.TOTP(secret)
+    return totp.verify(code, valid_window=1)
+```
+
+#### Session Management
+
+Implement proper session handling:
+
+```python
+async def create_session(user_info: UserInfo, device_info: dict = None):
+    """Create a user session with device tracking."""
+    session_id = secrets.token_urlsafe(32)
+    session_data = {
+        "user_id": user_info.id,
+        "created_at": time.time(),
+        "last_activity": time.time(),
+        "device_info": device_info,
+        "ip_address": request.client.host
+    }
+    await store_session(session_id, session_data)
+    return session_id
+
+async def invalidate_all_sessions(user_id: str):
+    """Logout user from all devices."""
+    # Implementation depends on your storage backend
+    pass
+```
+
+### Integration with External Providers
+
+You can integrate multiple authentication providers in your custom auth:
+
+```python
+async def hybrid_auth_startup(server):
+    """Support multiple authentication methods."""
+    
+    async def hybrid_parse_token(token: str) -> UserInfo:
+        """Parse tokens from multiple sources."""
+        # Check token type
+        if token.startswith("local_"):
+            return await parse_local_token(token)
+        elif token.startswith("oauth_"):
+            return await parse_oauth_token(token)
+        elif token.startswith("ldap_"):
+            return await parse_ldap_token(token)
+        else:
+            # Fall back to JWT
+            return _parse_token(token)
+    
+    await server.register_auth_service(
+        parse_token=hybrid_parse_token,
+        # ... other handlers
+    )
+```
 
 ### Basic Custom Authentication
 

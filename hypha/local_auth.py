@@ -1046,7 +1046,7 @@ async def hypha_startup(server):
     logger.info("Initializing local authentication provider")
     
     # Register the authentication handlers with additional methods
-    await server["register_auth_service"](
+    await server.register_auth_service(
         parse_token=local_parse_token,
         generate_token=local_generate_token,
         index_handler=index_handler,
