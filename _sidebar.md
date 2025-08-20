@@ -1,5 +1,6 @@
  * [Getting Started](/getting-started)
  * [Configuration Guide](/configurations)
+ * [Authentication](/auth)
  * [Artifact Manager](/artifact-manager)
  * [Service Type Annotation](/service-type-annotation)
  * [Service Load Balancing](/service-load-balancing)
