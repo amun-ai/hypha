@@ -751,6 +751,10 @@ async def check_login_handler(key, timeout=180, profile=False):
                     "token": token,
                     "user_id": session.get("user_id"),
                     "email": session.get("email"),
+                    "email_verified": session.get("email_verified", True),
+                    "name": session.get("name"),
+                    "nickname": session.get("nickname"),
+                    "picture": session.get("picture"),
                     "workspace": session.get("workspace")
                 }
             else:
@@ -768,6 +772,10 @@ async def check_login_handler(key, timeout=180, profile=False):
                     "token": token,
                     "user_id": session.get("user_id"),
                     "email": session.get("email"),
+                    "email_verified": session.get("email_verified", True),
+                    "name": session.get("name"),
+                    "nickname": session.get("nickname"),
+                    "picture": session.get("picture"),
                     "workspace": session.get("workspace")
                 }
             else:
@@ -946,6 +954,10 @@ async def login_handler(server, context=None, email: str = None, password: str =
             LOGIN_SESSIONS[key]["token"] = token
             LOGIN_SESSIONS[key]["user_id"] = user_data["id"]
             LOGIN_SESSIONS[key]["email"] = user_data["email"]
+            LOGIN_SESSIONS[key]["email_verified"] = True  # Local auth emails are always verified
+            LOGIN_SESSIONS[key]["name"] = user_data.get("name", user_data["email"].split("@")[0])
+            LOGIN_SESSIONS[key]["nickname"] = user_data.get("nickname", user_data.get("name", user_data["email"].split("@")[0]))
+            LOGIN_SESSIONS[key]["picture"] = user_data.get("picture")  # May be None
             LOGIN_SESSIONS[key]["workspace"] = user_workspace
         
         return {

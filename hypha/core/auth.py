@@ -550,11 +550,21 @@ def create_login_service(store):
             token = await generate_auth_token(user_info, int(expires_in or 3600))
             # replace the token
             user_token_info.token = token
+        
         await redis.setex(
             LOGIN_KEY_PREFIX + key,
             MAXIMUM_LOGIN_TIME,
             user_token_info.model_dump_json(),
         )
+
+    async def profile(event):
+        """Redirect to the Auth0 login page for profile management."""
+        # For Auth0, we redirect to the login template which handles profile display
+        return {
+            "status": 302,
+            "headers": {"Location": f"{login_service_url.replace('/services/', '/apps/')}"},
+            "body": "Redirecting to profile page..."
+        }
 
     logger.info(
         f"To preview the login page, visit: {login_service_url.replace('/services/', '/apps/')}"
@@ -569,5 +579,6 @@ def create_login_service(store):
         "start": start_login,
         "check": check_login,
         "report": report_login,
+        "profile": profile,
     }
 

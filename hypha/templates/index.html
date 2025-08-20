@@ -73,6 +73,23 @@
     <!-- Render the App component -->
     <script type="text/babel" data-presets="env,react" data-env-targets="defaults, safari >= 12">
         const Navbar = ({ isLoggedIn, user, onLogin, onLogout, onAboutClick }) => {
+            // Generate initials from name or email
+            const getInitials = (name, email) => {
+                const displayName = name || email?.split('@')[0] || 'User';
+                return displayName.split(' ').map(word => word[0]).join('').substring(0, 2).toUpperCase();
+            };
+
+            // Generate background color based on email or name
+            const getAvatarColor = (email, name) => {
+                let hash = 0;
+                const str = email || name || '';
+                for (let i = 0; i < str.length; i++) {
+                    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+                }
+                const hue = Math.abs(hash) % 360;
+                return `hsl(${hue}, 70%, 50%)`;
+            };
+
             return (
                 <nav className="navbar flex justify-between items-center p-4 bg-gray-900 shadow-lg">
                     <div className="flex items-center space-x-4">
@@ -89,8 +106,11 @@
                                     {user.picture ? (
                                         <img src={user.picture} alt={user.name} className="inline-block h-10 w-10 rounded-full" />
                                     ) : (
-                                        <div className="inline-flex items-center justify-center h-10 w-10 rounded-full bg-blue-600 text-white font-bold">
-                                            {(user.name || user.email || 'U')[0].toUpperCase()}
+                                        <div 
+                                            className="inline-flex items-center justify-center h-10 w-10 rounded-full text-white font-bold"
+                                            style={ {backgroundColor: getAvatarColor(user.email, user.name)} }
+                                        >
+                                            {getInitials(user.name, user.email)}
                                         </div>
                                     )}
                                 </button>
@@ -169,14 +189,19 @@
             const [user, setUser] = React.useState(null);
             const [loginError, setLoginError] = React.useState(null);
             const [hyphaServer, setHyphaServer] = React.useState(null);
+            const [authNamespace, setAuthNamespace] = React.useState('https://amun.ai/'); // Default namespace
 
             React.useEffect(() => {
                 const initialize = async () => {
-                    // Fetch config just for version info
+                    // Fetch config including auth namespace
                     try {
                         const response = await fetch('./assets/config.json');
                         const configData = await response.json();
                         setHyphaVersion(configData.hypha_version || '');
+                        // Get auth namespace from config if available
+                        if (configData.auth_namespace) {
+                            setAuthNamespace(configData.auth_namespace);
+                        }
                     } catch (error) {
                         console.error('Error fetching config:', error);
                     }
@@ -189,11 +214,13 @@
                             const decodedToken = parseJwt(storedToken);
                             if (decodedToken.exp * 1000 > Date.now()) {
                                 // Token is still valid
+                                const userId = decodedToken.id || decodedToken.sub;
+                                const userEmail = decodedToken.email || decodedToken[`${window.HYPHA_AUTH_NAMESPACE}email`];
+                                
                                 setUser({
-                                    sub: decodedToken.id || decodedToken.sub,
-                                    email: decodedToken.email,
-                                    name: decodedToken.name || decodedToken.email?.split('@')[0],
-                                    picture: decodedToken.picture || null
+                                    sub: userId,
+                                    email: userEmail,
+                                    name: userId,
                                 });
                                 setIsLoggedIn(true);
                                 // Set cookie for server authentication
@@ -243,31 +270,34 @@
                     }
                     
                     // Use the login function from hypha-rpc
-                    const token = await hyphaWebsocketClient.login({
+                    const userProfile = await hyphaWebsocketClient.login({
                         server_url: window.location.origin,
                         login_callback: loginCallback,
                         login_timeout: 180,  // 3 minutes timeout
-                        expires_in: 3600 * 24  // 24 hours
+                        expires_in: 3600 * 24,  // 24 hours
+                        profile: true  // Get full profile information
                     });
                     
-                    if (token) {
+                    if (userProfile && userProfile.token) {
                         // Store token
-                        localStorage.setItem('hypha_token', token);
+                        localStorage.setItem('hypha_token', userProfile.token);
                         
-                        // Parse token to get user info
-                        const decodedToken = parseJwt(token);
+                        // Use profile information directly - no need to parse JWT
                         setUser({
-                            sub: decodedToken.id || decodedToken.sub,
-                            email: decodedToken.email,
-                            name: decodedToken.name || decodedToken.email?.split('@')[0],
-                            picture: decodedToken.picture || null
+                            sub: userProfile.user_id,
+                            email: userProfile.email,
+                            name: userProfile.name,
+                            nickname: userProfile.nickname,
+                            picture: userProfile.picture,
+                            email_verified: userProfile.email_verified
                         });
                         setIsLoggedIn(true);
                         
                         // Set cookie for server authentication
+                        const decodedToken = parseJwt(userProfile.token);
                         const exp = decodedToken.exp;
                         const maxAge = exp - Math.floor(Date.now() / 1000);
-                        document.cookie = `access_token=${token}; path=/; max-age=${maxAge}; samesite=lax`;
+                        document.cookie = `access_token=${userProfile.token}; path=/; max-age=${maxAge}; samesite=lax`;
                         document.cookie = `hypha_version=${hyphaVersion}; path=/; max-age=${maxAge}; samesite=lax`;
                     }
                 } catch (e) {
