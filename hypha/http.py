@@ -30,9 +30,9 @@ from starlette.datastructures import Headers, MutableHeaders
 from hypha_rpc import RPC
 from hypha import hypha_rpc_version
 from hypha.core import UserPermission
-from hypha.core.auth import AUTH0_DOMAIN
+from hypha.core.auth import AUTH0_DOMAIN, extract_token_from_scope
 from hypha.core.store import RedisStore
-from hypha.utils import GzipRoute, safe_join, is_safe_path
+from hypha.utils import safe_join, is_safe_path
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
@@ -194,31 +194,9 @@ class ASGIRoutingMiddleware:
         self.route = Route(route, endpoint=None)
         self.store = store
 
-    def _get_authorization_header(self, scope):
-        """Extract the Authorization header from the scope."""
-        for key, value in scope.get("headers", []):
-            if key.decode("utf-8").lower() == "authorization":
-                return value.decode("utf-8")
-        return None
-
-    def _get_access_token_from_cookies(self, scope):
-        """Extract the access_token cookie from the scope."""
-        try:
-            cookies = None
-            for key, value in scope.get("headers", []):
-                if key.decode("utf-8").lower() == "cookie":
-                    cookies = value.decode("utf-8")
-                    break
-            if not cookies:
-                return None
-            # Split cookies and find the access_token
-            cookie_dict = {
-                k.strip(): v.strip()
-                for k, v in (cookie.split("=") for cookie in cookies.split(";"))
-            }
-            return cookie_dict.get("access_token")
-        except Exception as exp:
-            return None
+    async def _get_token_from_scope(self, scope):
+        """Extract token from scope using custom or default logic."""
+        return await extract_token_from_scope(scope)
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
@@ -255,11 +233,10 @@ class ASGIRoutingMiddleware:
                     else:
                         _mode = None
 
-                    access_token = self._get_access_token_from_cookies(scope)
-                    # get authorization from headers
-                    authorization = self._get_authorization_header(scope)
+                    # Use the custom token extraction
+                    token = await self._get_token_from_scope(scope)
                     user_info = await self.store.login_optional(
-                        authorization=authorization, access_token=access_token
+                        authorization=token, access_token=None
                     )
 
                     # Here we must always use the user's current workspace for the interface

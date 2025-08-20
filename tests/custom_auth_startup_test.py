@@ -235,12 +235,53 @@ async def custom_report_login(
     
     return {"success": True}
 
+def custom_get_token(scope):
+    """Extract token from custom headers or cookies."""
+    headers = scope.get("headers", [])
+    
+    for key, value in headers:
+        if isinstance(key, bytes):
+            key = key.decode("utf-8")
+        if isinstance(value, bytes):
+            value = value.decode("utf-8")
+        
+        # Check for custom CF_Authorization header (e.g., from Cloudflare)
+        if key.lower() == "cf_authorization":
+            return value
+        
+        # Check for X-Hypha-Token header
+        if key.lower() == "x-hypha-token":
+            return value
+        
+        # Check for custom cookie
+        if key.lower() == "cookie":
+            cookies = value
+            # Parse cookies
+            cookie_dict = {}
+            for cookie in cookies.split(";"):
+                if "=" in cookie:
+                    k, v = cookie.split("=", 1)
+                    cookie_dict[k.strip()] = v.strip()
+            
+            # Check for hypha_token cookie
+            if "hypha_token" in cookie_dict:
+                return cookie_dict["hypha_token"]
+            
+            # Check for cf_token cookie (Cloudflare)
+            if "cf_token" in cookie_dict:
+                return cookie_dict["cf_token"]
+    
+    # Fall back to default extraction (Authorization header or access_token cookie)
+    return None
+
+
 async def hypha_startup(server):
     """Startup function with complete custom authentication and login service."""
     # Register complete custom authentication with login service
     await server.register_auth_service(
         parse_token=custom_parse_token,
         generate_token=custom_generate_token,
+        get_token=custom_get_token,  # Add custom token extraction
         index_handler=custom_index,
         start_handler=custom_start_login,
         check_handler=custom_check_login,
