@@ -955,8 +955,10 @@ Examples:
                 else:
                     print(f"   ⚠️  Worker NOT found in service list!")
                     print(f"   Available workers: {[s.get('id') for s in services]}")
+                    raise WorkerNotAvailableError("Kubernetes worker not found in service list")
             except Exception as e:
                 print(f"   ⚠️  Failed to verify registration: {e}")
+                raise e
 
             print(f"✅ Kubernetes Worker registered successfully!")
             print(f"   Service ID: {service_config['id']}")

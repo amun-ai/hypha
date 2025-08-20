@@ -15,9 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from hypha import __version__
-from hypha.core.auth import create_login_service
 from hypha.core.store import RedisStore
-from hypha.queue import create_queue_service
 from hypha.http import HTTPProxy
 from hypha.triton import TritonProxy
 from hypha.utils import GZipMiddleware, GzipRoute, PatchedCORSMiddleware
@@ -88,8 +86,9 @@ def start_builtin_services(
             allow_origins=args.allow_origins,
         )
 
-    store.register_public_service(create_queue_service(store))
-    store.register_public_service(create_login_service(store))
+    # Initialize variables to None first
+    s3_controller = None
+    artifact_manager = None
 
     if args.enable_s3:
         # pylint: disable=import-outside-toplevel
@@ -257,6 +256,13 @@ def create_application(args):
         if terminal_startup_function not in args.startup_functions:
             args.startup_functions.append(terminal_startup_function)
             logger.info("Automatically added Terminal worker to startup functions")
+    
+    # Automatically add Local Auth startup function if Local Auth is enabled
+    if args.enable_local_auth:
+        local_auth_startup_function = "hypha.local_auth:hypha_startup"
+        if local_auth_startup_function not in args.startup_functions:
+            args.startup_functions.append(local_auth_startup_function)
+            logger.info("Automatically added Local Authentication provider to startup functions")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -609,6 +615,11 @@ def get_argparser(add_help=True):
         "--enable-terminal-worker",
         action="store_true",
         help="enable Terminal worker support for executing commands",
+    )
+    parser.add_argument(
+        "--enable-local-auth",
+        action="store_true",
+        help="enable local authentication provider with user management",
     )
     parser.add_argument(
         "--interactive",

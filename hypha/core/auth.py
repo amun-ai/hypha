@@ -4,12 +4,13 @@ import asyncio
 import json
 import logging
 import ssl
+import inspect
 import os
 import sys
 from calendar import timegm
 import datetime
 from os import environ as env
-from typing import List, Union, Dict
+from typing import List, Union, Dict, Callable
 from urllib.request import urlopen
 
 import shortuuid
@@ -37,15 +38,30 @@ AUTH0_DOMAIN = env.get("AUTH0_DOMAIN", "amun-ai.eu.auth0.com")
 AUTH0_AUDIENCE = env.get("AUTH0_AUDIENCE", "https://amun-ai.eu.auth0.com/api/v2/")
 AUTH0_ISSUER = env.get("AUTH0_ISSUER", "https://amun.ai/")
 AUTH0_NAMESPACE = env.get("AUTH0_NAMESPACE", "https://amun.ai/")
-JWT_SECRET = env.get("HYPHA_JWT_SECRET") or env.get("JWT_SECRET")
+def _get_jwt_secret():
+    """Get JWT secret, ensuring consistency during testing and runtime."""
+    # Always check environment variables first (important for testing)
+    secret = env.get("HYPHA_JWT_SECRET") or env.get("JWT_SECRET")
+    if not secret:
+        logger.info(
+            "Neither HYPHA_JWT_SECRET nor JWT_SECRET is defined, using a random JWT_SECRET"
+        )
+        secret = shortuuid.ShortUUID().random(length=22)
+        # Set the environment variable to ensure consistency across module reloads
+        env["JWT_SECRET"] = secret
+        env["HYPHA_JWT_SECRET"] = secret
+    return secret
+
+JWT_SECRET = _get_jwt_secret()
+
+def set_jwt_secret(secret: str):
+    """Set JWT secret explicitly (mainly for testing)."""
+    global JWT_SECRET
+    env["JWT_SECRET"] = secret
+    env["HYPHA_JWT_SECRET"] = secret
+    JWT_SECRET = secret
 LOGIN_SERVICE_URL = "/public/services/hypha-login"
 LOGIN_KEY_PREFIX = "login_key:"
-
-if not JWT_SECRET:
-    logger.info(
-        "Neither HYPHA_JWT_SECRET nor JWT_SECRET is defined, using a random JWT_SECRET"
-    )
-    JWT_SECRET = shortuuid.ShortUUID().random(length=22)
 
 
 def get_user_email(token):
@@ -168,7 +184,7 @@ def generate_anonymous_user(scope=None) -> UserInfo:
     )
 
 
-def parse_token(authorization: str, expected_workspace: str = None):
+def _parse_token(authorization: str, expected_workspace: str = None):
     """Parse the token with optional workspace validation.
     
     Args:
@@ -212,7 +228,8 @@ def parse_token(authorization: str, expected_workspace: str = None):
             scope_info = parse_scope(scope_str)
             
             # Check if current workspace matches expected
-            if scope_info.current_workspace != expected_workspace:
+            # Only validate if the token has a current_workspace set
+            if scope_info.current_workspace and scope_info.current_workspace != expected_workspace:
                 raise HTTPException(
                     status_code=403, 
                     detail=f"Token is not authorized for workspace '{expected_workspace}'"
@@ -226,7 +243,38 @@ def parse_token(authorization: str, expected_workspace: str = None):
     return get_user_info(payload)
 
 
-def generate_presigned_token(
+_current_auth_function = None
+
+
+async def set_parse_token_function(auth_function: Callable):
+    """Set the auth provider."""
+    global _current_auth_function
+    _current_auth_function = auth_function
+    logger.info("Custom parse_token function has been set")
+
+async def parse_auth_token(token: str, expected_workspace: str = None):
+    """Parse auth token with optional workspace validation.
+    
+    Args:
+        token: The authorization token string
+        expected_workspace: If provided, will validate that the token's current_workspace matches
+                          this value (only applies to default parser)
+    
+    Returns:
+        UserInfo object if token is valid and workspace matches (if specified)
+    """
+    if _current_auth_function is None:
+        auth_function = lambda t: _parse_token(t, expected_workspace)
+    else:
+        # Custom auth functions may not support workspace validation
+        # They should implement their own logic if needed
+        auth_function = _current_auth_function
+    user_info = auth_function(token)
+    if inspect.isawaitable(user_info):
+        user_info = await user_info
+    return user_info
+
+def _generate_presigned_token(
     user_info: UserInfo,
     expires_in: int,
 ):
@@ -260,29 +308,26 @@ def generate_presigned_token(
     )
     return token
 
+_generate_token_function = _generate_presigned_token
 
-def generate_reconnection_token(user_info: UserInfo, expires_in: int = 60):
-    """Generate a token for reconnection."""
-    current_time = datetime.datetime.now(datetime.timezone.utc)
-    expires_at = current_time + datetime.timedelta(seconds=expires_in)
+async def set_generate_token_function(generate_token_function: Callable):
+    """Set the generate token function."""
+    global _generate_token_function
+    _generate_token_function = generate_token_function
+    logger.info("Custom generate_token function has been set")
 
-    ret = jwt.encode(
-        {
-            "iss": AUTH0_ISSUER,
-            "sub": user_info.id,
-            "aud": AUTH0_AUDIENCE,
-            "iat": current_time,
-            "exp": expires_at,
-            "gty": "client-credentials",
-            AUTH0_NAMESPACE + "email": user_info.email,
-            AUTH0_NAMESPACE + "roles": user_info.roles,
-            "scope": generate_jwt_scope(user_info.scope),
-        },
-        JWT_SECRET,
-        algorithm="HS256",
-    )
-    return ret
-
+async def generate_auth_token(user_info: UserInfo, expires_in: int):
+    """Generate a presigned token."""
+    if _generate_token_function is None:
+        generate = _generate_presigned_token
+    else:
+        generate = _generate_token_function
+    
+    result = generate(user_info, expires_in)
+    if inspect.isawaitable(result):
+        return await result
+    else:
+        return result
 
 def parse_scope(scope: str) -> ScopeInfo:
     """Parse the scope."""
@@ -493,7 +538,7 @@ def create_login_service(store):
 
         user_token_info = UserTokenInfo.model_validate(kwargs)
         if workspace:
-            user_info = parse_token(token)
+            user_info = await parse_auth_token(token)
             # based on the user token, create a scoped token
             workspace = workspace or user_info.get_workspace()
             # generate scoped token
@@ -502,14 +547,24 @@ def create_login_service(store):
             if not user_info.check_permission(workspace, UserPermission.read):
                 raise Exception(f"Invalid permission for the workspace {workspace}")
 
-            token = generate_presigned_token(user_info, int(expires_in or 3600))
+            token = await generate_auth_token(user_info, int(expires_in or 3600))
             # replace the token
             user_token_info.token = token
+        
         await redis.setex(
             LOGIN_KEY_PREFIX + key,
             MAXIMUM_LOGIN_TIME,
             user_token_info.model_dump_json(),
         )
+
+    async def profile(event):
+        """Redirect to the Auth0 login page for profile management."""
+        # For Auth0, we redirect to the login template which handles profile display
+        return {
+            "status": 302,
+            "headers": {"Location": f"{login_service_url.replace('/services/', '/apps/')}"},
+            "body": "Redirecting to profile page..."
+        }
 
     logger.info(
         f"To preview the login page, visit: {login_service_url.replace('/services/', '/apps/')}"
@@ -524,4 +579,6 @@ def create_login_service(store):
         "start": start_login,
         "check": check_login,
         "report": report_login,
+        "profile": profile,
     }
+

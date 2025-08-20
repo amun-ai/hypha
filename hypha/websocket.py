@@ -13,7 +13,7 @@ from hypha import __version__
 from hypha.core import UserInfo, UserPermission
 from hypha.core.store import RedisRPCConnection, RedisStore
 from hypha.core.auth import (
-    generate_reconnection_token,
+    generate_auth_token,
     generate_anonymous_user,
     create_scope,
     update_user_scope,
@@ -136,6 +136,7 @@ class WebsocketServer:
                 )
             except RuntimeError as exp:
                 # this happens when the websocket is closed
+                logger.error(f"RuntimeError in establish_websocket_communication: {str(exp)}")
                 reason = f"WebSocket runtime error: {str(exp)}"
                 await self.handle_disconnection(
                     websocket,
@@ -290,7 +291,7 @@ class WebsocketServer:
         event_bus = self.store.get_event_bus()
         assert (
             user_info.scope.current_workspace == workspace
-        ), f"Workspace mismatch: {workspace} != {user_info.current_workspace}"
+        ), f"Workspace mismatch: {workspace} != {user_info.scope.current_workspace}"
         
         # Determine if client has read-only permissions
         user_permission = user_info.get_permission(workspace)
@@ -314,7 +315,7 @@ class WebsocketServer:
                     logger.error("Failed to send message via websocket: %s", str(e))
 
             conn.on_message(send_bytes)
-            reconnection_token = generate_reconnection_token(
+            reconnection_token = await generate_auth_token(
                 user_info, expires_in=self.store.reconnection_token_life_time
             )
             conn_info = {
@@ -347,7 +348,7 @@ class WebsocketServer:
                         if data.get("type") == "ping":
                             await websocket.send_text(json.dumps({"type": "pong"}))
                         elif data.get("type") == "refresh_token":
-                            reconnection_token = generate_reconnection_token(
+                            reconnection_token = await generate_auth_token(
                                 user_info,
                                 expires_in=self.store.reconnection_token_life_time,
                             )

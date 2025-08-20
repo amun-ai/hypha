@@ -16,12 +16,6 @@ import zipfile
 import requests
 import shutil
 from hypha_rpc import connect_to_server
-from hypha.core.auth import (
-    generate_presigned_token,
-    create_scope,
-    UserInfo,
-    UserPermission,
-)
 
 from . import WS_SERVER_URL, SERVER_URL, SIO_PORT_SQLITE, find_item
 

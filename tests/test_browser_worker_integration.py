@@ -25,76 +25,113 @@ async def browser_worker():
 async def test_localstorage_and_sessionstorage_configuration(browser_worker):
     """Test that localStorage and sessionStorage are properly preloaded."""
     
-    # Use a public test URL that allows storage
-    # Note: localStorage/sessionStorage won't work with data: or about: URLs due to browser security
-    config = WorkerConfig(
-        id="test-storage-session",
-        app_id="test-app",
-        workspace="test-workspace",
-        client_id="test-client",
-        server_url="http://localhost:8000",
-        token="test-token",
-        artifact_id="test-workspace/test-app",
-        manifest={
-            "type": "web-app",
-            "entry_point": "https://example.com",  # Use a real HTTP URL that allows storage
-            "local_storage": {
-                "api_key": "test-api-key-123",
-                "user_preferences": '{"theme": "dark", "language": "en"}',
-                "auth_token": "bearer-token-xyz"
+    # Start a simple HTTP server to serve our test page
+    import asyncio
+    from aiohttp import web
+    
+    # Create a simple HTML page
+    test_html = """
+    <!DOCTYPE html>
+    <html>
+    <head><title>Storage Test</title></head>
+    <body>
+        <h1>Storage Test Page</h1>
+        <div id="status">Page loaded</div>
+    </body>
+    </html>
+    """
+    
+    # Create a simple HTTP server
+    app = web.Application()
+    async def handle_test_page(request):
+        return web.Response(text=test_html, content_type='text/html')
+    
+    app.router.add_get('/test-storage.html', handle_test_page)
+    app.router.add_get('/', handle_test_page)  # Also handle root
+    
+    # Start the server on a free port
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '127.0.0.1', 0)  # Port 0 = auto-select free port
+    await site.start()
+    
+    # Get the actual port
+    port = site._server.sockets[0].getsockname()[1]
+    
+    try:
+        config = WorkerConfig(
+            id="test-storage-session",
+            app_id="test-app",
+            workspace="test-workspace",
+            client_id="test-client",
+            server_url="http://localhost:8000",
+            token="test-token",
+            artifact_id="test-workspace/test-app",
+            manifest={
+                "type": "web-app",
+                "entry_point": f"http://127.0.0.1:{port}/test-storage.html",
+                "local_storage": {
+                    "api_key": "test-api-key-123",
+                    "user_preferences": '{"theme": "dark", "language": "en"}',
+                    "auth_token": "bearer-token-xyz"
+                },
+                "session_storage": {
+                    "temp_session": "session-789",
+                    "csrf_token": "csrf-abc-123"
+                }
             },
-            "session_storage": {
-                "temp_session": "session-789",
-                "csrf_token": "csrf-abc-123"
-            }
-        },
-        entry_point="index.html"
-    )
+            entry_point="index.html"
+        )
     
-    # Start the session
-    session_id = await browser_worker.start(config)
-    assert session_id == "test-storage-session"
-    
-    # Wait a moment for page to fully load
-    await asyncio.sleep(0.5)
-    
-    # Use execute to validate both storage types
-    result = await browser_worker.execute(session_id, """
-        (() => {
-            // Get all localStorage items
-            const localData = {};
-            for (let i = 0; i < localStorage.length; i++) {
-                const key = localStorage.key(i);
-                localData[key] = localStorage.getItem(key);
-            }
-            
-            // Get all sessionStorage items
-            const sessionData = {};
-            for (let i = 0; i < sessionStorage.length; i++) {
-                const key = sessionStorage.key(i);
-                sessionData[key] = sessionStorage.getItem(key);
-            }
-            
-            return {
-                localStorage: localData,
-                sessionStorage: sessionData
-            };
-        })()
-    """)
-    
-    # Validate localStorage
-    assert result["localStorage"]["api_key"] == "test-api-key-123"
-    assert result["localStorage"]["user_preferences"] == '{"theme": "dark", "language": "en"}'
-    assert result["localStorage"]["auth_token"] == "bearer-token-xyz"
-    
-    # Validate sessionStorage
-    assert result["sessionStorage"]["temp_session"] == "session-789"
-    assert result["sessionStorage"]["csrf_token"] == "csrf-abc-123"
-    
-    print("✓ localStorage and sessionStorage correctly configured")
-    
-    # Stop the session
-    await browser_worker.stop(session_id)
+        # Start the session
+        session_id = await browser_worker.start(config)
+        assert session_id == "test-storage-session"
+        
+        # Wait a moment for page to fully load
+        await asyncio.sleep(0.5)
+        
+        # Use execute to validate both storage types
+        # With localhost URL, storage should be available and pre-populated
+        result = await browser_worker.execute(session_id, """
+            (() => {
+                // Get all localStorage items
+                const localData = {};
+                for (let i = 0; i < localStorage.length; i++) {
+                    const key = localStorage.key(i);
+                    localData[key] = localStorage.getItem(key);
+                }
+                
+                // Get all sessionStorage items
+                const sessionData = {};
+                for (let i = 0; i < sessionStorage.length; i++) {
+                    const key = sessionStorage.key(i);
+                    sessionData[key] = sessionStorage.getItem(key);
+                }
+                
+                return {
+                    localStorage: localData,
+                    sessionStorage: sessionData
+                };
+            })()
+        """)
+        
+        # Validate localStorage
+        assert result["localStorage"]["api_key"] == "test-api-key-123"
+        assert result["localStorage"]["user_preferences"] == '{"theme": "dark", "language": "en"}'
+        assert result["localStorage"]["auth_token"] == "bearer-token-xyz"
+        
+        # Validate sessionStorage
+        assert result["sessionStorage"]["temp_session"] == "session-789"
+        assert result["sessionStorage"]["csrf_token"] == "csrf-abc-123"
+        
+        print("✓ localStorage and sessionStorage correctly configured")
+        
+        # Stop the session
+        await browser_worker.stop(session_id)
+        
+    finally:
+        # Clean up the HTTP server
+        await runner.cleanup()
 
 
 async def test_execute_script_functionality(browser_worker):

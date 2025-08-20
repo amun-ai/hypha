@@ -10,6 +10,12 @@ import time
 import uuid
 from threading import Thread
 
+# Set JWT_SECRET environment variables BEFORE importing any hypha modules
+# This ensures all modules use the same JWT_SECRET
+JWT_SECRET = str(uuid.uuid4())
+os.environ["JWT_SECRET"] = JWT_SECRET
+os.environ["HYPHA_JWT_SECRET"] = JWT_SECRET  # Also set HYPHA_JWT_SECRET to ensure consistency
+
 import requests
 from requests import RequestException
 import pytest
@@ -17,7 +23,7 @@ import pytest_asyncio
 from sqlalchemy import create_engine
 
 from hypha.core import UserInfo, auth, UserPermission
-from hypha.core.auth import generate_presigned_token, create_scope
+from hypha.core.auth import generate_auth_token, create_scope
 from hypha.minio import setup_minio_executables, start_minio_server
 from redis import Redis
 
@@ -40,9 +46,6 @@ from . import (
     POSTGRES_DB,
     POSTGRES_URI,
 )
-
-JWT_SECRET = str(uuid.uuid4())
-os.environ["JWT_SECRET"] = JWT_SECRET
 os.environ["ACTIVITY_CHECK_INTERVAL"] = "0.3"
 test_env = os.environ.copy()
 
@@ -103,12 +106,40 @@ def _cleanup_server_process(proc, server_name):
 @pytest_asyncio.fixture
 def event_loop():
     """Create an event loop for each test."""
-    yield asyncio.get_event_loop()
+    try:
+        # Try to get existing event loop
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("Event loop is closed")
+    except RuntimeError:
+        # Create a new event loop if none exists or is closed
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    yield loop
+    
+    # Clean up the loop after the test
+    try:
+        if not loop.is_closed():
+            # Cancel all pending tasks
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+    except Exception:
+        pass
 
 
 def pytest_sessionfinish(session, exitstatus):
     """Clean up after the tests."""
-    asyncio.get_event_loop().close()
+    try:
+        loop = asyncio.get_event_loop()
+        if not loop.is_closed():
+            loop.close()
+    except RuntimeError:
+        # No event loop in the current thread, which is fine
+        pass
 
 
 def _generate_token(id, roles):
@@ -124,8 +155,14 @@ def _generate_token(id, roles):
         scope=create_scope(workspaces={f"ws-user-{id}": UserPermission.admin}),
         expires_at=None,
     )
-    token = generate_presigned_token(root_user_info, 18000)
-    yield token
+    # Since generate_auth_token is now async, we need to run it in an event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        token = loop.run_until_complete(generate_auth_token(root_user_info, 18000))
+        yield token
+    finally:
+        loop.close()
 
 
 @pytest_asyncio.fixture(name="root_user_token", scope="session")
@@ -141,8 +178,14 @@ def generate_root_user_token():
         scope=create_scope(workspaces={"*": UserPermission.admin}),
         expires_at=None,
     )
-    token = generate_presigned_token(root_user_info, 1800)
-    yield token
+    # Since generate_auth_token is now async, we need to run it in an event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        token = loop.run_until_complete(generate_auth_token(root_user_info, 1800))
+        yield token
+    finally:
+        loop.close()
 
 
 @pytest_asyncio.fixture(name="test_user_token", scope="session")
@@ -736,3 +779,91 @@ def conda_integration_server_fixture():
             return {"id": service_config.get("id", "test-service")}
 
     yield MockIntegrationServer()
+
+
+@pytest_asyncio.fixture(name="custom_auth_server")
+def custom_auth_server_fixture():
+    """Start a server with custom authentication for testing."""
+    # Use a different port for the custom auth server
+    CUSTOM_AUTH_PORT = 38999
+    
+    with subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "hypha.server",
+            f"--port={CUSTOM_AUTH_PORT}",
+            "--startup-functions",
+            "./tests/custom_auth_startup_test.py:hypha_startup",
+        ],
+        env=test_env,
+    ) as proc:
+        timeout = 20
+        while timeout > 0:
+            try:
+                response = requests.get(f"http://127.0.0.1:{CUSTOM_AUTH_PORT}/health/readiness")
+                if response.ok:
+                    break
+            except RequestException:
+                pass
+            timeout -= 0.1
+            time.sleep(0.1)
+        if timeout <= 0:
+            raise TimeoutError("Custom auth server did not start in time")
+        
+        response = requests.get(f"http://127.0.0.1:{CUSTOM_AUTH_PORT}/health/liveness")
+        assert response.ok
+        
+        yield f"http://127.0.0.1:{CUSTOM_AUTH_PORT}"
+        
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+@pytest_asyncio.fixture(name="local_auth_server")
+def local_auth_server_fixture():
+    """Start a server with local authentication for testing."""
+    # Use a different port for the local auth server
+    LOCAL_AUTH_PORT = 39000
+    
+    with subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "hypha.server",
+            f"--port={LOCAL_AUTH_PORT}",
+            "--enable-local-auth",
+            "--enable-s3",
+            "--reset-redis",
+            "--start-minio-server",
+            "--minio-root-user=minioadmin",
+            "--minio-root-password=minioadmin",
+        ],
+        env=test_env,
+    ) as proc:
+        timeout = 30
+        while timeout > 0:
+            try:
+                response = requests.get(f"http://127.0.0.1:{LOCAL_AUTH_PORT}/health/readiness")
+                if response.ok:
+                    break
+            except RequestException:
+                pass
+            timeout -= 0.1
+            time.sleep(0.1)
+        if timeout <= 0:
+            raise TimeoutError("Local auth server did not start in time")
+        
+        response = requests.get(f"http://127.0.0.1:{LOCAL_AUTH_PORT}/health/liveness")
+        assert response.ok
+        
+        yield f"http://127.0.0.1:{LOCAL_AUTH_PORT}"
+        
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()

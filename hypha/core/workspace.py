@@ -41,7 +41,7 @@ from hypha.core import (
     VisibilityEnum,
 )
 from hypha.vectors import VectorSearchEngine
-from hypha.core.auth import generate_presigned_token, create_scope, parse_token
+from hypha.core.auth import generate_auth_token, create_scope, parse_auth_token
 from hypha.utils import EventBus, random_id
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
@@ -1000,10 +1000,7 @@ class WorkspaceManager:
         """Parse a token."""
         assert context is not None
         self.validate_context(context, UserPermission.read)
-        # We need to extract unverified information about the user's current workspace before parse it
-        # unverified_header = jwt.get_unverified_header(authorization)
-        # alg = unverified_header.get("alg")
-        user_info = await parse_token(token)
+        user_info = await parse_auth_token(token, context["ws"])
         return user_info.model_dump(mode="json")
 
     @schema_method
@@ -1015,7 +1012,7 @@ class WorkspaceManager:
         """Revoke a token by storing it in Redis with a prefix and expiration time."""
         self.validate_context(context, UserPermission.admin)
         try:
-            user_info = parse_token(token)
+            user_info = await parse_auth_token(token)
         except Exception as e:
             raise ValueError(f"Invalid token: {e}")
         expiration = int(user_info.expires_at - time.time())
@@ -1121,7 +1118,7 @@ class WorkspaceManager:
             extra_scopes=extra_scopes,
         )
         config.expires_in = config.expires_in or 3600
-        token = generate_presigned_token(user_info, config.expires_in)
+        token = await generate_auth_token(user_info, config.expires_in)
         return token
 
     @schema_method

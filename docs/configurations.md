@@ -234,7 +234,7 @@ async def callback(context):
     print(f"Go to login url: {context['login_url']}")
 ```
 
-By default, hypha server uses a user authentication system based on [Auth0](https://auth0.com) controlled by us. You can also setup your own auth0 account to use it with your own hypha server. See [Setup Authentication](./setup-authentication) for more details.
+By default, Hypha server uses a user authentication system based on [Auth0](https://auth0.com). You can configure your own Auth0 account or implement custom authentication providers. See [Authentication](./auth) for complete details on authentication options.
 
 ## HTTP Proxy and API Access
 
@@ -740,7 +740,7 @@ This feature is particularly useful for:
 
 Hypha's flexibility allows services to be registered from scripts running on the same host as the server or on a different one. To further accommodate complex applications, Hypha supports the initiation of "built-in" services in conjunction with server startup. This can be achieved using the `--startup-functions` option.
 
-The `--startup-functions` option allows you to provide a URI pointing to a Python function intended for custom server initialization tasks. The specified function can perform various tasks, such as registering services, configuring the server, or launching additional processes. The URI should follow the format `<python module or script file>:<entrypoint function name>`, providing a straightforward way to customize your server's startup behavior.
+The `--startup-functions` option allows you to provide a URI pointing to a Python function intended for custom server initialization tasks. The specified function can perform various tasks, such as registering services, configuring the server, implementing custom authentication, or launching additional processes. The URI should follow the format `<python module or script file>:<entrypoint function name>`, providing a straightforward way to customize your server's startup behavior.
 
 For example, to start the server with a custom startup function, use the following command:
 
@@ -771,6 +771,10 @@ async def hypha_startup(server):
         }
     )
 
+    # You can also configure custom authentication here
+    # await server["set_parse_token_function"](custom_parse_token)
+    # await server["set_generate_token_function"](custom_generate_token)
+
     # Note: In startup functions, the server connection is managed by Hypha,
     # so you don't need to use async with or call disconnect()
 ```
@@ -782,6 +786,8 @@ Multiple startup functions can be specified by providing additional `--startup-f
 ```bash
 python -m hypha.server --host=0.0.0.0 --port=9527 --startup-functions=./example-startup-function.py:hypha_startup ./example-startup-function2.py:hypha_startup
 ```
+
+For implementing custom authentication providers via startup functions, see the [Authentication](./auth#custom-authentication-providers) documentation.
 
 ## Custom Workers
 

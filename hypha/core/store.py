@@ -17,6 +17,7 @@ from aiocache.backends.redis import RedisCache
 from aiocache.serializers import PickleSerializer
 
 
+from hypha_rpc.rpc import RemoteException
 from hypha import __version__
 from hypha.core import (
     RedisEventBus,
@@ -33,7 +34,8 @@ from sqlalchemy.ext.asyncio import (
 
 from hypha.core.auth import (
     create_scope,
-    parse_token,
+    parse_auth_token,
+    create_login_service,
     UserPermission,
     AUTH0_CLIENT_ID,
     AUTH0_DOMAIN,
@@ -300,7 +302,7 @@ class RedisStore:
             email=None,
             parent=None,
             roles=["admin"],
-            scope=create_scope("*#a"),
+            scope=create_scope("*#a", current_workspace="*"),
             expires_at=None,
         )
         return self._root_user
@@ -621,6 +623,25 @@ class RedisStore:
 
         if startup_functions:
             await self._run_startup_functions(startup_functions)
+        
+        # check if the login service is registered after startup functions
+        # this allows startup functions to register custom login services
+        try:
+            await api.get_service_info("public/hypha-login")
+            logger.info("Login service already registered (likely from startup function)")
+        except RemoteException:
+            logger.info("No custom login service found, registering default login service")
+            await api.register_service(create_login_service(self))
+        
+        # check if the queue service is registered
+        try:
+            await api.get_service_info("public/queue")
+        except RemoteException:
+            logger.warning("Queue service is not registered, registering it now")
+            # Import dynamically to avoid circular import
+            from hypha.queue import create_queue_service
+            await api.register_service(create_queue_service(self))
+        
         self._ready = True
         await self.get_event_bus().emit_local("startup")
         servers = await self.list_servers()
@@ -750,7 +771,7 @@ class RedisStore:
 
     async def parse_user_token(self, token):
         """Parse a client token."""
-        user_info = parse_token(token)
+        user_info = await parse_auth_token(token)
         key = "revoked_token:" + token
         if await self._redis.exists(key):
             raise Exception("Token has been revoked")
