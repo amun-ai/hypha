@@ -4,10 +4,8 @@ import hashlib
 import secrets
 import time
 import asyncio
-import json
-from typing import Optional, Dict, Any
 from hypha.core import UserInfo, UserPermission
-from hypha.core.auth import generate_auth_token, _parse_token, create_scope
+from hypha.core.auth import _parse_token, create_scope
 from hypha.utils import random_id
 import shortuuid
 import logging
