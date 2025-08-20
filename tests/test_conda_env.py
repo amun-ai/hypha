@@ -1244,7 +1244,7 @@ print('hello from init')
 
                 async def mock_extract_env(progress_callback=None):
                     if progress_callback:
-                        progress_callback({"type": "info", "message": "env step"})
+                        await progress_callback({"type": "info", "message": "env step"})
                     return 0.1
 
                 mock_executor._extract_env = mock_extract_env

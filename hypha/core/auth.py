@@ -244,6 +244,7 @@ def _parse_token(authorization: str, expected_workspace: str = None):
 
 
 _current_auth_function = None
+_current_get_token_function = None
 
 
 async def set_parse_token_function(auth_function: Callable):
@@ -251,6 +252,54 @@ async def set_parse_token_function(auth_function: Callable):
     global _current_auth_function
     _current_auth_function = auth_function
     logger.info("Custom parse_token function has been set")
+
+async def set_get_token_function(get_token_function: Callable):
+    """Set the custom token extraction function.
+    
+    The function should accept a scope object (from websocket.scope or request.scope)
+    and return the token string to be used for authentication.
+    """
+    global _current_get_token_function
+    _current_get_token_function = get_token_function
+    logger.info("Custom get_token function has been set")
+
+async def extract_token_from_scope(scope: dict) -> str:
+    """Extract token from a scope object using custom or default logic.
+    
+    Args:
+        scope: The scope object from websocket or request
+        
+    Returns:
+        The extracted token string or None if no token found
+    """
+    if _current_get_token_function:
+        token = _current_get_token_function(scope)
+        if inspect.isawaitable(token):
+            token = await token
+        return token
+    
+    # Default extraction logic - look in headers for Authorization
+    headers = scope.get("headers", [])
+    for key, value in headers:
+        if isinstance(key, bytes):
+            key = key.decode("utf-8")
+        if isinstance(value, bytes):
+            value = value.decode("utf-8")
+        if key.lower() == "authorization":
+            return value
+        # Also check for access_token cookie
+        if key.lower() == "cookie":
+            cookies = value
+            # Parse cookies
+            cookie_dict = {}
+            for cookie in cookies.split(";"):
+                if "=" in cookie:
+                    k, v = cookie.split("=", 1)
+                    cookie_dict[k.strip()] = v.strip()
+            if "access_token" in cookie_dict:
+                return cookie_dict["access_token"]
+    
+    return None
 
 async def parse_auth_token(token: str, expected_workspace: str = None):
     """Parse auth token with optional workspace validation.

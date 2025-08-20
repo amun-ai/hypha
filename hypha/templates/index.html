@@ -240,8 +240,6 @@
                 initialize();
             }, []);
 
-            // Remove Auth0 specific code - cookies are already set when login succeeds
-
             const onLogin = async () => {
                 // Clear any previous errors
                 setLoginError(null);

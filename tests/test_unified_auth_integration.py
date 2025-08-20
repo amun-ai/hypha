@@ -23,7 +23,11 @@ async def test_unified_auth_with_templates(tmp_path):
         [sys.executable, "-m", "hypha.server", 
          f"--port={port}", 
          "--enable-local-auth",
-         "--reset-redis"],
+         "--enable-s3",
+         "--reset-redis",
+         "--start-minio-server",
+         "--minio-root-user=minioadmin",
+         "--minio-root-password=minioadmin"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env={**os.environ, "HYPHA_LOGLEVEL": "INFO"}
@@ -32,21 +36,55 @@ async def test_unified_auth_with_templates(tmp_path):
     server_url = f"http://127.0.0.1:{port}"
     ws_url = f"ws://127.0.0.1:{port}/ws"
     
-    # Wait for server to start
-    max_retries = 30
+    # Wait for server to start with longer timeout for MinIO initialization
+    max_retries = 60  # Increased timeout for MinIO
+    server_ready = False
+    last_error = None
+    config = None
+    
     for i in range(max_retries):
         try:
-            response = requests.get(f"{server_url}/assets/config.json", timeout=1)
+            # First check if the server process is still running
+            if server_proc.poll() is not None:
+                # Server process has exited, capture output for debugging
+                stdout, stderr = server_proc.communicate(timeout=1)
+                error_msg = f"Server process exited with code {server_proc.returncode}"
+                if stderr:
+                    error_msg += f"\nStderr: {stderr.decode('utf-8', errors='ignore')[-1000:]}"
+                raise RuntimeError(error_msg)
+            
+            # Try to access the config endpoint
+            response = requests.get(f"{server_url}/assets/config.json", timeout=2)
             if response.status_code == 200:
                 config = response.json()
-                break
-        except:
-            pass
+                # Also verify that the health endpoint is ready
+                health_response = requests.get(f"{server_url}/health/readiness", timeout=2)
+                if health_response.status_code == 200:
+                    server_ready = True
+                    break
+        except requests.RequestException as e:
+            last_error = str(e)
+        except Exception as e:
+            last_error = str(e)
+            if "Server process exited" in str(e):
+                raise  # Re-raise if server crashed
+        
         time.sleep(1)
-    else:
-        server_proc.terminate()
-        server_proc.wait()
-        raise TimeoutError("Server failed to start")
+    
+    if not server_ready:
+        # Try to get more diagnostic info before failing
+        try:
+            server_proc.terminate()
+            stdout, stderr = server_proc.communicate(timeout=5)
+            error_details = f"Server failed to start after {max_retries} seconds."
+            if last_error:
+                error_details += f"\nLast error: {last_error}"
+            if stderr:
+                error_details += f"\nServer stderr (last 500 chars): {stderr.decode('utf-8', errors='ignore')[-500:]}"
+            raise TimeoutError(error_details)
+        except subprocess.TimeoutExpired:
+            server_proc.kill()
+            raise TimeoutError(f"Server failed to start and didn't terminate gracefully. Last error: {last_error}")
     
     try:
         # Test that config contains login_service_url (for unified auth)
@@ -83,7 +121,7 @@ async def test_unified_auth_with_templates(tmp_path):
                 email="test@example.com",
                 password="testpass123"
             )
-            assert result["success"] is True
+            assert result["success"] is True, f"Signup failed: {result.get('error')}"
             
             # Test the unified login API
             # This simulates what the template JavaScript does
@@ -126,7 +164,11 @@ async def test_login_function_compatibility():
         [sys.executable, "-m", "hypha.server",
          f"--port={port}",
          "--enable-local-auth", 
-         "--reset-redis"],
+         "--enable-s3",
+         "--reset-redis",
+         "--start-minio-server",
+         "--minio-root-user=minioadmin",
+         "--minio-root-password=minioadmin"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env={**os.environ, "HYPHA_LOGLEVEL": "INFO"}
@@ -135,20 +177,53 @@ async def test_login_function_compatibility():
     server_url = f"http://127.0.0.1:{port}"
     ws_url = f"ws://127.0.0.1:{port}/ws"
     
-    # Wait for server to start
-    max_retries = 30
+    # Wait for server to start with longer timeout for MinIO initialization
+    max_retries = 60  # Increased from 30 to 60 seconds
+    server_ready = False
+    last_error = None
+    
     for i in range(max_retries):
         try:
-            response = requests.get(f"{server_url}/assets/config.json", timeout=1)
+            # First check if the server process is still running
+            if server_proc.poll() is not None:
+                # Server process has exited, capture output for debugging
+                stdout, stderr = server_proc.communicate(timeout=1)
+                error_msg = f"Server process exited with code {server_proc.returncode}"
+                if stderr:
+                    error_msg += f"\nStderr: {stderr.decode('utf-8', errors='ignore')[-1000:]}"  # Last 1000 chars
+                raise RuntimeError(error_msg)
+            
+            # Try to access the config endpoint
+            response = requests.get(f"{server_url}/assets/config.json", timeout=2)
             if response.status_code == 200:
-                break
-        except:
-            pass
+                # Also verify that the health endpoint is ready
+                health_response = requests.get(f"{server_url}/health/readiness", timeout=2)
+                if health_response.status_code == 200:
+                    server_ready = True
+                    break
+        except requests.RequestException as e:
+            last_error = str(e)
+        except Exception as e:
+            last_error = str(e)
+            if "Server process exited" in str(e):
+                raise  # Re-raise if server crashed
+        
         time.sleep(1)
-    else:
-        server_proc.terminate()
-        server_proc.wait()
-        raise TimeoutError("Server failed to start")
+    
+    if not server_ready:
+        # Try to get more diagnostic info before failing
+        try:
+            server_proc.terminate()
+            stdout, stderr = server_proc.communicate(timeout=5)
+            error_details = f"Server failed to start after {max_retries} seconds."
+            if last_error:
+                error_details += f"\nLast error: {last_error}"
+            if stderr:
+                error_details += f"\nServer stderr (last 500 chars): {stderr.decode('utf-8', errors='ignore')[-500:]}"
+            raise TimeoutError(error_details)
+        except subprocess.TimeoutExpired:
+            server_proc.kill()
+            raise TimeoutError(f"Server failed to start and didn't terminate gracefully. Last error: {last_error}")
     
     try:
         # First create a user
@@ -201,7 +276,9 @@ async def test_login_function_compatibility():
                     if result["success"]:
                         received_token = result["token"]
                         login_completed = True
-        
+                    else:
+                        print("Failed to login:", result.get("error"))
+
         # Test the unified login function
         token = await login({
             "server_url": ws_url,
@@ -220,9 +297,14 @@ async def test_login_function_compatibility():
             "token": token
         }) as api:
             # Should be able to connect with the token
-            user_info = await api.get_user_info()
+            # Parse the token to verify user info
+            user_info = await api.parse_token(token)
             assert user_info["email"] == "apitest@example.com"
             assert user_info["is_anonymous"] is False
+            
+            # Also verify we can list services
+            services = await api.list_services("public")
+            assert len(services) > 0, "Should be able to list services with token"
             
     finally:
         server_proc.terminate()

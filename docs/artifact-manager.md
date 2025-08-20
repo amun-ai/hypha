@@ -392,13 +392,13 @@ print("Valid dataset committed.")
 
 ## API References
 
-### `create(parent_id: str, alias: str, type: str, manifest: dict, permissions: dict=None, config: dict=None, version: str = None, stage: bool = False, comment: str = None, overwrite: bool = False) -> None`
+### `create(parent_id: str, alias: str, artifact_id: str, workspace: str, type: str, manifest: dict, permissions: dict=None, config: dict=None, version: str = None, stage: bool = False, comment: str = None, overwrite: bool = False) -> None`
 
 Creates a new artifact or collection with the specified manifest. The artifact is staged until committed. For collections, the `collection` field should be an empty list.
 
 **Parameters:**
 
-- `alias`: A human readable name for indexing the artifact, it can be a text with lower case letters and numbers. You can set it to absolute alias in the format of `"workspace_id/alias"` or just `"alias"`. In the alias itself, `/` is not allowed, you should use `:` instead in the alias. If the alias already exists in the workspace, it will raise an error and you need to either delete the existing artifact or use a different alias.
+- `alias`: A human readable name for indexing the artifact. It should contain only lowercase letters, numbers, and hyphens (no slashes allowed in the alias itself). Examples: `"my-dataset"`, `"model-v2"`.
   To generate an auto-id, you can use patterns like `"{uuid}"` or `"{timestamp}"`. The following patterns are supported:
   - `{uuid}`: Generates a random UUID.
   - `{timestamp}`: Generates a timestamp in milliseconds.
@@ -406,8 +406,22 @@ Creates a new artifact or collection with the specified manifest. The artifact i
   - `{zenodo_id}`: If `publish_to` is set to `zenodo` or `sandbox_zenodo`, it will use the Zenodo deposit ID (which changes when a new version is created).
   - `{zenodo_conceptrecid}`: If `publish_to` is set to `zenodo` or `sandbox_zenodo`, it will use the Zenodo concept id (which does not change when a new version is created).
   - **Id Parts**: You can also use id parts stored in the parent collection's config['id_parts'] to generate an id. For example, if the parent collection has `{"animals": ["dog", "cat", ...], "colors": ["red", "blue", ...]}`, you can use `"{colors}-{animals}"` to generate an id like `red-dog`.
-- `workspace`: Optional. The workspace id where the artifact will be created. If not set, it will be created in the default workspace. If specified, it should match the workspace in the alias and also the parent_id.
+
+- `artifact_id`: Optional. The full artifact ID in the format `"workspace/alias"`. This is an alternative to providing `alias` and `workspace` separately. When specified:
+  - Cannot be used together with `alias` or `workspace` parameters
+  - Must contain exactly one slash separating workspace and alias
+  - The workspace portion must match the parent's workspace if a parent is specified
+  - Example: `artifact_id="ri-scale/model-example1"`
+
+- `workspace`: Optional. The workspace where the artifact will be created. 
+  **Workspace Resolution Rules:**
+  1. If `artifact_id` is provided, the workspace is extracted from it and this parameter is ignored
+  2. If a `parent_id` is provided, the artifact inherits the parent's workspace (this parameter is ignored)
+  3. If no parent and no `artifact_id`, uses this parameter or defaults to the current user's workspace
+  4. When specified, it must match the parent's workspace if a parent exists
+
 - `parent_id`: The id of the parent collection where the artifact will be created. If the artifact is a top-level collection, leave this field empty or set to None.
+  **Important:** When a parent is specified, the child artifact is ALWAYS created in the parent's workspace, regardless of the user's current workspace.
 - `type`: The type of the artifact. Supported values are `collection`, `vector-collection`, `generic` and any other custom type. By default, it's set to `generic` which contains fields tailored for displaying the artifact as cards on a webpage.
 - `manifest`: The manifest of the new artifact. Ensure the manifest follows the required schema if applicable (e.g., for collections).
 - `config`: Optional. A dictionary containing additional configuration options for the artifact (shared for both staged and committed). For collections, the config can contain the following special fields:
@@ -441,8 +455,30 @@ Creates a new artifact or collection with the specified manifest. The artifact i
 **Example:**
 
 ```python
-# Assuming we have already created a dataset-gallery collection, we can add a new dataset to it
-await artifact_manager.create(artifact_id="dataset-gallery", alias="example-dataset", manifest=dataset_manifest, stage=True)
+# Method 1: Use the returned artifact ID (recommended for dynamic IDs)
+draft = await artifact_manager.create(
+    parent_id="dataset-gallery", 
+    alias="example-dataset", 
+    manifest=dataset_manifest, 
+    stage=True
+)
+# Use the returned ID for subsequent operations
+put_url = await artifact_manager.put_file(artifact_id=draft['id'], file_path="data.csv")
+
+# Method 2: Specify the full artifact_id upfront (cleaner for known IDs)
+await artifact_manager.create(
+    parent_id="ri-scale/dataset-gallery",
+    artifact_id="ri-scale/example-dataset",  # Full ID specified
+    manifest=dataset_manifest,
+    stage=True
+)
+# Use the same full ID for subsequent operations
+put_url = await artifact_manager.put_file(artifact_id="ri-scale/example-dataset", file_path="data.csv")
+
+# IMPORTANT: When creating a child artifact in a parent collection:
+# - The artifact is created in the PARENT's workspace, not your current workspace
+# - Always use the full ID (workspace/alias) for subsequent operations
+# - Never use just the alias if the parent is in a different workspace
 ```
 
 ## Permissions and Access Control
@@ -981,6 +1017,16 @@ put_url = await artifact_manager.put_file(artifact_id="example-dataset", file_pa
 
 # If "example-dataset" is an alias of the artifact under another workspace
 put_url = await artifact_manager.put_file(artifact_id="other_workspace/example-dataset", file_path="data.csv")
+
+# IMPORTANT: When working with drafts created in another workspace's collection:
+# Always use the full ID returned by create(), not just the alias
+draft = await artifact_manager.create(
+    parent_id="other_workspace/collection",  # Parent in different workspace
+    alias="my-draft",
+    stage=True
+)
+# Use the full ID from draft['id'], which will be "other_workspace/my-draft"
+put_url = await artifact_manager.put_file(artifact_id=draft['id'], file_path="data.csv")
 
 # Upload with proxy bypassed (useful for direct S3 access)
 put_url = await artifact_manager.put_file(artifact_id="example-dataset", file_path="data.csv", use_proxy=False)

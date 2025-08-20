@@ -113,7 +113,8 @@ Custom authentication in Hypha is implemented using a startup function that regi
 
 1. **Token Parsing**: Custom token validation and user extraction
 2. **Token Generation**: Custom token creation logic
-3. **Login Service**: Custom login UI and authentication flow with multiple handlers
+3. **Token Extraction**: Custom token extraction from requests (headers, cookies, etc.)
+4. **Login Service**: Custom login UI and authentication flow with multiple handlers
 
 ### Creating a Custom Authentication Service
 
@@ -146,9 +147,167 @@ python -m hypha.server --host=0.0.0.0 --port=9527 \
     --startup-functions=my_auth.py:hypha_startup
 ```
 
+### Custom Token Extraction (get_token)
+
+By default, Hypha looks for tokens in the `Authorization` header or `access_token` cookie. You can customize this behavior by providing a `get_token` function that extracts tokens from custom locations in the request:
+
+```python
+# custom_token_extraction.py
+
+def custom_get_token(scope):
+    """Extract token from custom headers or cookies.
+    
+    Args:
+        scope: The ASGI scope object containing request information
+        
+    Returns:
+        The extracted token string or None if no token found
+    """
+    headers = scope.get("headers", [])
+    
+    for key, value in headers:
+        # Decode bytes if necessary
+        if isinstance(key, bytes):
+            key = key.decode("utf-8")
+        if isinstance(value, bytes):
+            value = value.decode("utf-8")
+        
+        # Check for Cloudflare Access token
+        if key.lower() == "cf-authorization":
+            return value
+        
+        # Check for custom X-API-Key header
+        if key.lower() == "x-api-key":
+            return value
+        
+        # Check for custom cookies
+        if key.lower() == "cookie":
+            # Parse cookies
+            cookie_dict = {}
+            for cookie in value.split(";"):
+                if "=" in cookie:
+                    k, v = cookie.split("=", 1)
+                    cookie_dict[k.strip()] = v.strip()
+            
+            # Check for custom token cookie
+            if "app_token" in cookie_dict:
+                return cookie_dict["app_token"]
+            
+            # Check for Cloudflare token cookie
+            if "CF_Authorization" in cookie_dict:
+                return cookie_dict["CF_Authorization"]
+    
+    # Return None to fall back to default extraction
+    return None
+
+async def hypha_startup(server):
+    """Register custom token extraction."""
+    await server.register_auth_service(
+        get_token=custom_get_token,
+        # Optional: also customize parsing if needed
+        parse_token=custom_parse_token,
+    )
+```
+
+#### Common Use Cases for Custom Token Extraction
+
+1. **Cloudflare Access Integration**:
+```python
+def cloudflare_get_token(scope):
+    """Extract Cloudflare Access JWT token."""
+    headers = scope.get("headers", [])
+    for key, value in headers:
+        if isinstance(key, bytes):
+            key = key.decode("utf-8")
+        if isinstance(value, bytes):
+            value = value.decode("utf-8")
+        
+        # Cloudflare Access uses CF-Authorization header
+        if key.lower() == "cf-authorization":
+            return value
+        
+        # Also check cookie
+        if key.lower() == "cookie" and "CF_Authorization" in value:
+            for cookie in value.split(";"):
+                if cookie.strip().startswith("CF_Authorization="):
+                    return cookie.split("=", 1)[1].strip()
+    return None
+```
+
+2. **API Key in Custom Header**:
+```python
+def api_key_get_token(scope):
+    """Extract API key from custom header."""
+    headers = scope.get("headers", [])
+    for key, value in headers:
+        if isinstance(key, bytes):
+            key = key.decode("utf-8")
+        if isinstance(value, bytes):
+            value = value.decode("utf-8")
+        
+        # Check multiple possible API key headers
+        if key.lower() in ["x-api-key", "api-key", "x-auth-token"]:
+            return value
+    return None
+```
+
+3. **Session-based Authentication**:
+```python
+def session_get_token(scope):
+    """Extract session ID from cookie."""
+    headers = scope.get("headers", [])
+    for key, value in headers:
+        if isinstance(key, bytes):
+            key = key.decode("utf-8")
+        if isinstance(value, bytes):
+            value = value.decode("utf-8")
+        
+        if key.lower() == "cookie":
+            # Parse cookies
+            for cookie in value.split(";"):
+                if "=" in cookie:
+                    k, v = cookie.split("=", 1)
+                    if k.strip() == "session_id":
+                        # Return session ID prefixed to identify it
+                        return f"session:{v.strip()}"
+    return None
+```
+
+4. **Query Parameter Token (for WebSocket connections)**:
+```python
+def query_param_get_token(scope):
+    """Extract token from query parameters (useful for WebSocket)."""
+    # First try headers
+    headers = scope.get("headers", [])
+    for key, value in headers:
+        if isinstance(key, bytes):
+            key = key.decode("utf-8")
+        if isinstance(value, bytes):
+            value = value.decode("utf-8")
+        if key.lower() == "authorization":
+            return value
+    
+    # Then check query string for WebSocket connections
+    query_string = scope.get("query_string", b"")
+    if query_string:
+        params = {}
+        for param in query_string.decode("utf-8").split("&"):
+            if "=" in param:
+                k, v = param.split("=", 1)
+                params[k] = v
+        
+        # Check for token in query params
+        if "token" in params:
+            return params["token"]
+        if "access_token" in params:
+            return params["access_token"]
+    
+    return None
+```
+
 ### Complete Example: Local Authentication Implementation
 
-Here's a complete example based on Hypha's built-in local authentication provider that demonstrates all the components needed for a full authentication system:
+Here's a complete example based on Hypha's built-in local authentication provider that demonstrates all the components needed for a full authentication system, including custom token extraction:
 
 ```python
 # local_auth_example.py
@@ -383,7 +542,33 @@ async def login_handler(server, context=None, email=None, password=None, key=Non
         "user_id": user["id"]
     }
 
-# 6. Main Startup Function
+# 6. Custom Token Extraction (optional)
+def custom_get_token(scope):
+    """Extract token from custom locations."""
+    headers = scope.get("headers", [])
+    
+    for key, value in headers:
+        if isinstance(key, bytes):
+            key = key.decode("utf-8")
+        if isinstance(value, bytes):
+            value = value.decode("utf-8")
+        
+        # Check for custom header
+        if key.lower() == "x-custom-token":
+            return value
+        
+        # Check for custom cookie
+        if key.lower() == "cookie":
+            for cookie in value.split(";"):
+                if "=" in cookie:
+                    k, v = cookie.split("=", 1)
+                    if k.strip() == "auth_token":
+                        return v.strip()
+    
+    # Fall back to default extraction
+    return None
+
+# 7. Main Startup Function
 async def hypha_startup(server):
     """Register the complete authentication service."""
     logger.info("Initializing custom authentication")
@@ -392,6 +577,7 @@ async def hypha_startup(server):
         # Core authentication functions
         parse_token=custom_parse_token,
         generate_token=custom_generate_token,
+        get_token=custom_get_token,  # Optional custom extraction
         
         # Login service handlers
         index_handler=login_page_handler,
@@ -415,6 +601,7 @@ The `hypha_startup` function is called when Hypha starts. It receives the server
 #### 2. Token Management
 - **parse_token**: Validates tokens and returns a `UserInfo` object
 - **generate_token**: Creates tokens from `UserInfo` and expiration time
+- **get_token** (optional): Extracts tokens from custom locations in the request scope
 
 #### 3. Login Service Handlers
 The login service implements the OAuth-like flow used by hypha-rpc's `login()` function:
@@ -595,6 +782,84 @@ async def invalidate_all_sessions(user_id: str):
     """Logout user from all devices."""
     # Implementation depends on your storage backend
     pass
+```
+
+### Combining Custom Token Extraction with Authentication Providers
+
+You can combine custom token extraction with various authentication methods to support multiple token sources:
+
+```python
+# multi_source_auth.py
+
+def flexible_get_token(scope):
+    """Extract tokens from multiple possible sources."""
+    headers = scope.get("headers", [])
+    
+    # Priority order for token extraction
+    for key, value in headers:
+        if isinstance(key, bytes):
+            key = key.decode("utf-8")
+        if isinstance(value, bytes):
+            value = value.decode("utf-8")
+        
+        # 1. Check Cloudflare Access header (highest priority)
+        if key.lower() == "cf-authorization":
+            return value
+        
+        # 2. Check API key headers
+        if key.lower() in ["x-api-key", "api-key"]:
+            return f"api:{value}"  # Prefix to identify API keys
+        
+        # 3. Check Authorization header
+        if key.lower() == "authorization":
+            return value
+        
+        # 4. Check cookies as fallback
+        if key.lower() == "cookie":
+            cookies = {}
+            for cookie in value.split(";"):
+                if "=" in cookie:
+                    k, v = cookie.split("=", 1)
+                    cookies[k.strip()] = v.strip()
+            
+            # Check various cookie names
+            for cookie_name in ["CF_Authorization", "auth_token", "session_id", "access_token"]:
+                if cookie_name in cookies:
+                    if cookie_name == "session_id":
+                        return f"session:{cookies[cookie_name]}"
+                    return cookies[cookie_name]
+    
+    return None
+
+async def flexible_parse_token(token: str) -> UserInfo:
+    """Parse tokens from different sources."""
+    if not token:
+        from hypha.core.auth import generate_anonymous_user
+        return generate_anonymous_user()
+    
+    # Handle API keys
+    if token.startswith("api:"):
+        api_key = token[4:]
+        # Validate API key and return user info
+        return validate_api_key(api_key)
+    
+    # Handle session tokens
+    if token.startswith("session:"):
+        session_id = token[8:]
+        # Validate session and return user info
+        return validate_session(session_id)
+    
+    # Handle JWT tokens (default)
+    from hypha.core.auth import _parse_token
+    return _parse_token(token)
+
+async def hypha_startup(server):
+    """Register flexible authentication."""
+    await server.register_auth_service(
+        get_token=flexible_get_token,
+        parse_token=flexible_parse_token,
+        # ... other handlers
+    )
 ```
 
 ### Integration with External Providers
@@ -1086,9 +1351,9 @@ async def start_service(server):
 
 ## HTTP API Authentication
 
-For non-WebSocket clients, authenticate via HTTP headers:
+For non-WebSocket clients, authenticate via HTTP headers. With custom `get_token` functions, you can support various authentication methods:
 
-### Using Tokens
+### Using Standard Authorization Header
 
 ```bash
 # Get token via login service
@@ -1102,13 +1367,35 @@ curl -X POST "https://ai.imjoy.io/public/services/my-service/method" \
   -d '{"param": "value"}'
 ```
 
-### Using API Keys
+### Using Custom Headers (with get_token)
 
 ```bash
-# Use API key directly
+# Use custom X-API-Key header
 curl -X POST "https://ai.imjoy.io/public/services/my-service/method" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk_live_your_api_key" \
+  -H "X-API-Key: your_api_key" \
+  -d '{"param": "value"}'
+
+# Use Cloudflare Access token
+curl -X POST "https://ai.imjoy.io/public/services/my-service/method" \
+  -H "Content-Type: application/json" \
+  -H "CF-Authorization: YOUR_CF_TOKEN" \
+  -d '{"param": "value"}'
+```
+
+### Using Cookies (with get_token)
+
+```bash
+# Use cookie authentication
+curl -X POST "https://ai.imjoy.io/public/services/my-service/method" \
+  -H "Content-Type: application/json" \
+  -b "auth_token=YOUR_TOKEN" \
+  -d '{"param": "value"}'
+
+# Use Cloudflare Access cookie
+curl -X POST "https://ai.imjoy.io/public/services/my-service/method" \
+  -H "Content-Type: application/json" \
+  -b "CF_Authorization=YOUR_CF_TOKEN" \
   -d '{"param": "value"}'
 ```
 
