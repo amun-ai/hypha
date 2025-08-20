@@ -1748,8 +1748,8 @@ async def register_web_interface(server, worker_service_id, server_url, workspac
         
         # Register the ASGI service
         web_service = await server.register_service({
-            "id": "terminal-web",
-            "name": "Terminal Web Interface",
+            "id": "hypha-terminal",
+            "name": "Hypha Terminal Web Interface",
             "type": "asgi",
             "serve": serve_asgi,
             "config": {"visibility": "public", "require_context": True}
@@ -1776,9 +1776,6 @@ async def hypha_startup(server):
         worker = TerminalWorker(server_url=server.config.local_base_url, use_local_url=True, working_dir=working_dir)
         service = worker.get_worker_service()
         
-        # Store worker instance for web interface
-        server._terminal_worker = worker
-        
         # Log what we're registering
         logger.info(f"Registering terminal worker with supported_types: {service.get('supported_types')}")
         
@@ -1794,10 +1791,7 @@ async def hypha_startup(server):
         # Register using the standard register_service method
         result = await server.register_service(service)
         logger.info(f"Terminal worker initialized and registered with id: {result.id}, visibility: {service['config']['visibility']}, supported_types: {service.get('supported_types')}")
-        
-        # Store the worker service ID for the web interface
-        server._terminal_worker_id = result.id
-        
+
         # Register web interface if enabled (default: true for built-in workers)
         enable_web = os.environ.get("TERMINAL_ENABLE_WEB", "true").lower() == "true"
         if enable_web:
