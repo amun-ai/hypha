@@ -18,6 +18,7 @@ import time
 from starlette.applications import Starlette
 from starlette.routing import Route, Mount
 from starlette.types import ASGIApp, Scope, Receive, Send
+from starlette.requests import Request
 from pydantic import AnyUrl
 
 logger = logging.getLogger(__name__)
@@ -1127,13 +1128,11 @@ class MCPRoutingMiddleware:
                 _mode = None
             
             # Get authentication info
-            access_token = self._get_access_token_from_cookies(scope)
-            authorization = self._get_authorization_header(scope)
+            # Create a mock Request object with the scope
+            request = Request(scope, receive=receive, send=send)
             
             # Login and get user info
-            user_info = await self.store.login_optional(
-                authorization=authorization, access_token=access_token
-            )
+            user_info = await self.store.login_optional(request)
             
             # Check if we have a cached MCP app for this service
             cache_key = f"{workspace}/{service_id}"
@@ -1251,13 +1250,11 @@ class MCPRoutingMiddleware:
             scope["root_path"] = f"/{workspace}/mcp/{service_id}/sse"
             
             # Get authentication info
-            access_token = self._get_access_token_from_cookies(scope)
-            authorization = self._get_authorization_header(scope)
+            # Create a mock Request object with the scope
+            request = Request(scope, receive=receive, send=send)
             
             # Login and get user info
-            user_info = await self.store.login_optional(
-                authorization=authorization, access_token=access_token
-            )
+            user_info = await self.store.login_optional(request)
             
             # Check if we have a cached MCP app for this service
             cache_key = f"{workspace}/{service_id}"
@@ -1341,13 +1338,11 @@ class MCPRoutingMiddleware:
         """Handle MCP SSE message POST requests."""
         try:
             # Get authentication info
-            access_token = self._get_access_token_from_cookies(scope)
-            authorization = self._get_authorization_header(scope)
+            # Create a mock Request object with the scope
+            request = Request(scope, receive=receive, send=send)
             
             # Login and get user info
-            user_info = await self.store.login_optional(
-                authorization=authorization, access_token=access_token
-            )
+            user_info = await self.store.login_optional(request)
             
             # Check if we have a cached MCP app for this service
             cache_key = f"{workspace}/{service_id}"

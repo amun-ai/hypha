@@ -233,11 +233,9 @@ class ASGIRoutingMiddleware:
                     else:
                         _mode = None
 
-                    # Use the custom token extraction
-                    token = await self._get_token_from_scope(scope)
-                    user_info = await self.store.login_optional(
-                        authorization=token, access_token=None
-                    )
+                    # Create a Request object with the scope
+                    request = Request(scope, receive=receive)
+                    user_info = await self.store.login_optional(request)
 
                     # Here we must always use the user's current workspace for the interface
                     # This is a security measure to prevent unauthorized access to private workspaces
