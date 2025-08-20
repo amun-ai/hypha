@@ -5,6 +5,8 @@ metadata:
   name: {{ include "hypha-server.fullname" . }}-data-pvc
   labels:
     {{- include "hypha-server.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/resource-policy": keep
 spec:
   accessModes:
     {{- toYaml .Values.persistence.accessModes | nindent 4 }}

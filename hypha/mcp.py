@@ -1075,10 +1075,10 @@ class MCPRoutingMiddleware:
         await self.app(scope, receive, send)
     
     async def _send_helpful_404(self, send, workspace, service_id):
-        """Send a helpful 404 message with endpoint information."""
+        """Send a helpful message with endpoint information."""
         message = {
-            "error": "MCP endpoint not found",
-            "message": f"The MCP service '{service_id}' endpoint was not found at this path.",
+            "service": service_id,
+            "message": f"MCP service '{service_id}' is available. Please use one of the endpoints below.",
             "available_endpoints": {
                 "streamable_http": f"/{workspace}/mcp/{service_id}/mcp",
                 "sse": f"/{workspace}/mcp/{service_id}/sse",
@@ -1089,7 +1089,7 @@ class MCPRoutingMiddleware:
         await send(
             {
                 "type": "http.response.start",
-                "status": 404,
+                "status": 200,
                 "headers": [
                     [b"content-type", b"application/json"],
                     [b"content-length", str(len(response_body)).encode()],

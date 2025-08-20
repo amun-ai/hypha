@@ -233,6 +233,12 @@ class RedisStore:
             health_check_interval = int(
                 os.environ.get("HYPHA_REDIS_HEALTH_CHECK_INTERVAL", "30")
             )
+            socket_connect_timeout = int(
+                os.environ.get("HYPHA_REDIS_SOCKET_CONNECT_TIMEOUT", "10")
+            )
+            socket_timeout = int(
+                os.environ.get("HYPHA_REDIS_SOCKET_TIMEOUT", "30")
+            )
 
             self._redis = aioredis.from_url(
                 redis_uri,
@@ -242,8 +248,8 @@ class RedisStore:
                 health_check_interval=health_check_interval,
                 socket_keepalive=True,
                 socket_keepalive_options={},
-                socket_connect_timeout=5,
-                socket_timeout=5,
+                socket_connect_timeout=socket_connect_timeout,
+                socket_timeout=socket_timeout,
                 client_name=f"hypha-server:{self._server_id}:cmd",
             )
 
