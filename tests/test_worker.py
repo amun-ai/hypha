@@ -1041,30 +1041,29 @@ async def test_worker_concurrent_sessions(fastapi_server, test_user_token):
 
     sessions = []
 
-    try:
-        # Start multiple sessions concurrently
-        for i in range(3):
-            config = await controller.install(
-                source=test_app_code,
-                manifest={"type": "window", "name": f"Concurrent Test App {i}"},
-                wait_for_service="default",
-                timeout=10,  # Reduced from 30
-                overwrite=True,
-            )
-            config = await controller.start(config.id)
-            sessions.append(config)
+    # Start multiple sessions concurrently
+    for i in range(3):
+        config = await controller.install(
+            source=test_app_code,
+            manifest={"type": "window", "name": f"Concurrent Test App {i}"},
+            wait_for_service="default",
+            timeout=10,  # Reduced from 30
+            overwrite=True,
+        )
+        config = await controller.start(config.id)
+        sessions.append(config)
 
-        # Verify all sessions are running
-        assert len(sessions) == 3
+    # Verify all sessions are running
+    assert len(sessions) == 3
 
-        # Test that each session is independent
-        for i, session in enumerate(sessions):
-            app = await api.get_app(session.id)
-            app_id = await app.get_id()
-            assert app_id is not None
-            print(f"✓ Session {i} is running independently with ID: {app_id}")
+    # Test that each session is independent
+    for i, session in enumerate(sessions):
+        app = await api.get_app(session.id)
+        app_id = await app.get_id()
+        assert app_id is not None
+        print(f"✓ Session {i} is running independently with ID: {app_id}")
 
-        print("✓ Concurrent sessions test passed")
+    print("✓ Concurrent sessions test passed")
 
     # Clean up all sessions
     for session in sessions:

@@ -71,83 +71,81 @@ async def test_discover_services_from_installed_apps(
     
     # Service IDs in list_services will have @app-id appended
 
-    try:
-        # Wait a moment for the app to be fully registered
-        await asyncio.sleep(2)
-        
-        # Test 1: List services WITHOUT include_app_services
-        # This should find only actively running services
-        print("\n=== Test 1: List services (active services only) ===")
-        services_without_apps = await api.list_services(
-            query={"workspace": workspace},
-            include_app_services=False
-        )
-        
-        print(f"Found {len(services_without_apps)} active services")
-        
-        # Debug: Print all active services found
-        print("Active services found:")
-        for svc in services_without_apps:
-            print(f"  - {svc.get('id')} (type: {svc.get('type')})")
-        
-        # Should find at least the built-in service
-        assert len(services_without_apps) >= 1, f"Should find at least 1 service (built-in)"
-        print("✓ Active services found as expected")
-        
-        # Test 2: Test include_app_services functionality
-        print("\n=== Test 2: Test include_app_services functionality ===")
-        
-        # Compare services with and without include_app_services
-        services_baseline = await api.list_services(
-            query={"workspace": workspace},
-            include_app_services=False
-        )
-        
-        services_with_app_discovery = await api.list_services(
-            query={"workspace": workspace},
-            include_app_services=True
-        )
-        
-        print(f"Services with include_app_services=False: {len(services_baseline)}")
-        print(f"Services with include_app_services=True: {len(services_with_app_discovery)}")
-        
-        # The key test: include_app_services should work without errors
-        assert len(services_with_app_discovery) >= len(services_baseline), "include_app_services=True should return at least as many services"
-        print("✓ include_app_services functionality works correctly")
-        
-        # Test 3: Verify the implementation handles edge cases
-        print("\n=== Test 3: Test edge cases ===")
-        
-        # Test with different query parameters
-        all_services = await api.list_services(include_app_services=True)
-        workspace_services = await api.list_services(
-            query={"workspace": workspace}, 
-            include_app_services=True
-        )
-        
-        print(f"All services (include_app_services=True): {len(all_services)}")
-        print(f"Workspace services (include_app_services=True): {len(workspace_services)}")
-        
-        # Both should work without errors
-        assert isinstance(all_services, list), "all_services should be a list"
-        assert isinstance(workspace_services, list), "workspace_services should be a list"
-        print("✓ Edge cases handled correctly")
-        
-        # Test 4: Verify the core functionality
-        print("\n=== Test 4: Verify core functionality ===")
-        
-        # The key test is that include_app_services=True works and can discover from manifests
-        # Debug: Print a few services to see the structure
-        print("Sample services with include_app_services=True:")
-        for i, svc in enumerate(services_with_app_discovery[:3]):
-            print(f"  {i+1}. {svc.get('id')} (source: {svc.get('_source', 'active')}, type: {svc.get('type')})")
-        
-        # Success criteria: the function completes without errors and returns services
-        assert len(services_with_app_discovery) > 0, "Should find at least some services"
-        print("✅ Service discovery functionality is working correctly!")
-        
-        print("\n✅ Service discovery tests completed successfully!")
-        
+    # Wait a moment for the app to be fully registered
+    await asyncio.sleep(2)
+    
+    # Test 1: List services WITHOUT include_app_services
+    # This should find only actively running services
+    print("\n=== Test 1: List services (active services only) ===")
+    services_without_apps = await api.list_services(
+        query={"workspace": workspace},
+        include_app_services=False
+    )
+    
+    print(f"Found {len(services_without_apps)} active services")
+    
+    # Debug: Print all active services found
+    print("Active services found:")
+    for svc in services_without_apps:
+        print(f"  - {svc.get('id')} (type: {svc.get('type')})")
+    
+    # Should find at least the built-in service
+    assert len(services_without_apps) >= 1, f"Should find at least 1 service (built-in)"
+    print("✓ Active services found as expected")
+    
+    # Test 2: Test include_app_services functionality
+    print("\n=== Test 2: Test include_app_services functionality ===")
+    
+    # Compare services with and without include_app_services
+    services_baseline = await api.list_services(
+        query={"workspace": workspace},
+        include_app_services=False
+    )
+    
+    services_with_app_discovery = await api.list_services(
+        query={"workspace": workspace},
+        include_app_services=True
+    )
+    
+    print(f"Services with include_app_services=False: {len(services_baseline)}")
+    print(f"Services with include_app_services=True: {len(services_with_app_discovery)}")
+    
+    # The key test: include_app_services should work without errors
+    assert len(services_with_app_discovery) >= len(services_baseline), "include_app_services=True should return at least as many services"
+    print("✓ include_app_services functionality works correctly")
+    
+    # Test 3: Verify the implementation handles edge cases
+    print("\n=== Test 3: Test edge cases ===")
+    
+    # Test with different query parameters
+    all_services = await api.list_services(include_app_services=True)
+    workspace_services = await api.list_services(
+        query={"workspace": workspace}, 
+        include_app_services=True
+    )
+    
+    print(f"All services (include_app_services=True): {len(all_services)}")
+    print(f"Workspace services (include_app_services=True): {len(workspace_services)}")
+    
+    # Both should work without errors
+    assert isinstance(all_services, list), "all_services should be a list"
+    assert isinstance(workspace_services, list), "workspace_services should be a list"
+    print("✓ Edge cases handled correctly")
+    
+    # Test 4: Verify the core functionality
+    print("\n=== Test 4: Verify core functionality ===")
+    
+    # The key test is that include_app_services=True works and can discover from manifests
+    # Debug: Print a few services to see the structure
+    print("Sample services with include_app_services=True:")
+    for i, svc in enumerate(services_with_app_discovery[:3]):
+        print(f"  {i+1}. {svc.get('id')} (source: {svc.get('_source', 'active')}, type: {svc.get('type')})")
+    
+    # Success criteria: the function completes without errors and returns services
+    assert len(services_with_app_discovery) > 0, "Should find at least some services"
+    print("✅ Service discovery functionality is working correctly!")
+    
+    print("\n✅ Service discovery tests completed successfully!")
     
     # Clean up - uninstall the app
     print(f"\nCleaning up - uninstalling app {app_id}")
