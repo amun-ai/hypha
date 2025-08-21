@@ -2195,11 +2195,12 @@ async def test_mcp_service_with_docs_field(fastapi_server, test_user_token):
             # Find the docs resource
             docs_resource = None
             for resource in resources_result.resources:
-                if resource.uri == "resource://docs":
+                # Convert AnyUrl to string for comparison
+                if str(resource.uri) == "resource://docs":
                     docs_resource = resource
                     break
             
-            assert docs_resource is not None, f"Docs resource not found. Available resources: {[r.uri for r in resources_result.resources]}"
+            assert docs_resource is not None, f"Docs resource not found. Available resources: {[str(r.uri) for r in resources_result.resources]}"
             assert "Documentation" in docs_resource.name
             assert docs_resource.mimeType == "text/plain"
             
@@ -2292,9 +2293,11 @@ async def test_mcp_service_with_nested_string_resources(fastapi_server, test_use
             }
             
             # Build a map of actual resources
+            # Convert AnyUrl objects to strings for comparison
             actual_resources = {}
             for resource in resources_result.resources:
-                actual_resources[resource.uri] = resource
+                uri_str = str(resource.uri)  # Convert AnyUrl to string
+                actual_resources[uri_str] = resource
             
             # Verify all expected resources are present
             for uri, expected_content in expected_resources.items():
