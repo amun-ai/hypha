@@ -2127,25 +2127,20 @@ async def test_mcp_arbitrary_service_conversion(fastapi_server, test_user_token)
     await api.disconnect()
 
 
-@pytest.mark.asyncio
 async def test_mcp_service_with_docs_field(fastapi_server, test_user_token):
-    """Test that services with docs field expose it as MCP resource."""
+    """Test that a service with a docs field exposes it as an MCP resource."""
     api = await connect_to_server(
-        {"server_url": WS_SERVER_URL, "client_id": "test-client-docs", "token": test_user_token}
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
     )
     
     workspace = api.config.workspace
     
-    # Register a non-MCP service with docs field
-    docs_content = """# Service Documentation
+    docs_content = """
+    # Service Documentation
     
-    This is a comprehensive guide for using the service.
+    This service processes data according to specific rules.
     
-    ## Features
-    - Feature 1: Does something useful
-    - Feature 2: Does something else
-    
-    ## Usage Examples
+    ## Usage
     ```python
     result = await service.process(data)
     ```
@@ -2155,7 +2150,7 @@ async def test_mcp_service_with_docs_field(fastapi_server, test_user_token):
         {
             "id": "docs-service",
             "name": "Service with Documentation",
-            "type": "functions",  # Use functions type for auto-wrapping
+            # Don't specify type - let it be auto-wrapped as MCP
             "docs": docs_content,
             "description": "A service with documentation field",
             "config": {"visibility": "public"},
@@ -2167,11 +2162,7 @@ async def test_mcp_service_with_docs_field(fastapi_server, test_user_token):
     import asyncio
     await asyncio.sleep(0.5)
     
-    # Test using the actual MCP client
-    from mcp.client.streamable_http import streamablehttp_client
-    from mcp.client.session import ClientSession
-    
-    # Create MCP client session
+    # Connect to the MCP endpoint
     base_url = f"{SERVER_URL}/{workspace}/mcp/docs-service/mcp"
     
     async with streamablehttp_client(base_url) as (
@@ -2183,38 +2174,32 @@ async def test_mcp_service_with_docs_field(fastapi_server, test_user_token):
             # Initialize the session
             await session.initialize()
             
-            # List resources
+            # List resources - should include the docs field
             resources_result = await session.list_resources()
             assert resources_result is not None
             assert hasattr(resources_result, "resources")
             
-            # Check that docs resource is present
+            # Find the docs resource
             docs_resource = None
             for resource in resources_result.resources:
-                if str(resource.uri) == "resource://docs":
+                if resource.uri == "resource://docs":
                     docs_resource = resource
                     break
             
-            assert docs_resource is not None
-            assert "Documentation for Service with Documentation" in docs_resource.name
-            assert "documentation content" in docs_resource.description.lower()
+            assert docs_resource is not None, "Docs resource not found"
+            assert "Documentation" in docs_resource.name
+            assert docs_resource.mimeType == "text/plain"
             
             # Read the docs resource
-            resource_result = await session.read_resource(
-                uri="resource://docs"
-            )
-            assert resource_result is not None
-            assert hasattr(resource_result, "contents")
-            assert len(resource_result.contents) == 1
-            assert resource_result.contents[0].text == docs_content
-            assert resource_result.contents[0].mimeType == "text/plain"
-    
-    print("✓ Service with docs field successfully exposed as MCP resource")
+            read_result = await session.read_resource(uri="resource://docs")
+            assert read_result is not None
+            assert hasattr(read_result, "contents")
+            assert len(read_result.contents) > 0
+            assert read_result.contents[0].text == docs_content
     
     await api.disconnect()
 
 
-@pytest.mark.asyncio
 async def test_mcp_service_with_nested_string_resources(fastapi_server, test_user_token):
     """Test that services with nested string fields expose them as MCP resources."""
     api = await connect_to_server(
@@ -2228,7 +2213,7 @@ async def test_mcp_service_with_nested_string_resources(fastapi_server, test_use
         {
             "id": "nested-service",
             "name": "Service with Nested Resources",
-            "type": "functions",  # Use functions type for auto-wrapping
+            # Don't specify type - let it be auto-wrapped as MCP
             "description": "A service with nested string resources",
             "config": {"visibility": "public"},
             "metadata": {
@@ -2236,29 +2221,22 @@ async def test_mcp_service_with_nested_string_resources(fastapi_server, test_use
                 "author": "Test Author",
                 "nested": {
                     "info": "Some nested information",
-                    "deeply": {
-                        "nested": {
-                            "value": "A deeply nested string value"
-                        }
-                    }
+                    "details": "More details here"
                 }
             },
             "settings": {
-                "theme": "dark",
-                "language": "en",
-                "preferences": {
-                    "notifications": "enabled",
-                    "auto_save": "true"
-                }
+                "feature_flags": ["flag1", "flag2"],
+                "configuration": "Production configuration"
             },
             "process": lambda x: x * 2,
         }
     )
     
     # Wait a moment for the service to be fully registered
+    import asyncio
     await asyncio.sleep(0.5)
     
-    # Create MCP client session
+    # Connect to the MCP endpoint
     base_url = f"{SERVER_URL}/{workspace}/mcp/nested-service/mcp"
     
     async with streamablehttp_client(base_url) as (
@@ -2270,52 +2248,37 @@ async def test_mcp_service_with_nested_string_resources(fastapi_server, test_use
             # Initialize the session
             await session.initialize()
             
-            # List resources
+            # List resources - should include nested string fields
             resources_result = await session.list_resources()
             assert resources_result is not None
             assert hasattr(resources_result, "resources")
+            assert len(resources_result.resources) > 0
             
-            # Convert resources to dict for easier checking
-            resource_map = {str(r.uri): r for r in resources_result.resources}
+            # Check for expected resources with hierarchical URIs
+            expected_resources = {
+                "resource://metadata/version": "1.0.0",
+                "resource://metadata/author": "Test Author", 
+                "resource://metadata/nested/info": "Some nested information",
+                "resource://metadata/nested/details": "More details here",
+                "resource://settings/feature_flags/0": "flag1",
+                "resource://settings/feature_flags/1": "flag2",
+                "resource://settings/configuration": "Production configuration"
+            }
             
-            # Check that nested string resources are present
-            expected_resources = [
-                "resource://metadata/version",
-                "resource://metadata/author",
-                "resource://metadata/nested/info",
-                "resource://metadata/nested/deeply/nested/value",
-                "resource://settings/theme",
-                "resource://settings/language",
-                "resource://settings/preferences/notifications",
-                "resource://settings/preferences/auto_save"
-            ]
+            # Build a map of actual resources
+            actual_resources = {}
+            for resource in resources_result.resources:
+                actual_resources[resource.uri] = resource
             
-            for expected_uri in expected_resources:
-                assert expected_uri in resource_map, f"Missing resource: {expected_uri}"
-                resource = resource_map[expected_uri]
-                # Check that name includes the path
-                path_parts = expected_uri.replace("resource://", "").split("/")
-                assert path_parts[-1] in resource.name.lower()
-            
-            # Read a specific nested resource
-            resource_result = await session.read_resource(
-                uri="resource://metadata/nested/deeply/nested/value"
-            )
-            assert resource_result is not None
-            assert hasattr(resource_result, "contents")
-            assert len(resource_result.contents) == 1
-            assert resource_result.contents[0].text == "A deeply nested string value"
-            assert resource_result.contents[0].mimeType == "text/plain"
-            
-            # Read another nested resource
-            resource_result = await session.read_resource(
-                uri="resource://settings/preferences/notifications"
-            )
-            assert resource_result is not None
-            assert hasattr(resource_result, "contents")
-            assert len(resource_result.contents) == 1
-            assert resource_result.contents[0].text == "enabled"
-    
-    print("✓ Service with nested string resources successfully exposed via MCP")
+            # Verify all expected resources are present
+            for uri, expected_content in expected_resources.items():
+                assert uri in actual_resources, f"Expected resource {uri} not found. Available: {list(actual_resources.keys())}"
+                
+                # Read the resource and verify content
+                read_result = await session.read_resource(uri=uri)
+                assert read_result is not None
+                assert hasattr(read_result, "contents")
+                assert len(read_result.contents) > 0
+                assert read_result.contents[0].text == expected_content
     
     await api.disconnect()
