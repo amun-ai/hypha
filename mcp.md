@@ -258,6 +258,88 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+### Automatic Service Wrapping for MCP
+
+Any Hypha service can be automatically exposed as an MCP endpoint, even if it wasn't originally designed for MCP. When MCP is enabled, Hypha intelligently wraps services to expose their functions as tools and their string fields as resources.
+
+#### Automatic Resource Exposure
+
+Hypha automatically scans service objects and exposes string fields as MCP resources with hierarchical URIs:
+
+```python
+from hypha_rpc import connect_to_server
+from hypha_rpc.utils.schema import schema_function
+
+async def main():
+    api = await connect_to_server({
+        "server_url": "ws://localhost:9527",
+        "workspace": "my-workspace"
+    })
+
+    @schema_function
+    def process(data: str) -> str:
+        """Process data."""
+        return f"Processed: {data}"
+
+    # Register a regular service (no type="mcp" needed)
+    service = await api.register_service({
+        "id": "my-service",
+        "name": "My Service",
+        "description": "A service with documentation and metadata",
+        "config": {"visibility": "public"},
+        # Special 'docs' field is exposed as resource://docs
+        "docs": """
+        # Service Documentation
+        
+        This service provides data processing capabilities.
+        
+        ## Usage
+        Call the process function with your data.
+        """,
+        # Nested structures are recursively scanned
+        "metadata": {
+            "version": "1.0.0",
+            "author": "John Doe",
+            "license": "MIT",
+            "nested": {
+                "info": "Nested information",
+                "details": "More nested details"
+            }
+        },
+        # Lists are indexed in the resource URI
+        "settings": {
+            "features": ["feature1", "feature2"],
+            "config": "Production configuration"
+        },
+        # Functions are exposed as tools
+        "process": process
+    })
+
+    print(f"Service registered: {service['id']}")
+    # This service is now accessible via MCP at:
+    # http://localhost:9527/my-workspace/mcp/my-service/mcp
+    
+    # Resources automatically exposed:
+    # - resource://docs (the documentation)
+    # - resource://metadata/version
+    # - resource://metadata/author
+    # - resource://metadata/license
+    # - resource://metadata/nested/info
+    # - resource://metadata/nested/details
+    # - resource://settings/features/0
+    # - resource://settings/features/1
+    # - resource://settings/config
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
+```
+
+When accessed via MCP, the service automatically provides:
+- **Tools**: All callable functions in the service
+- **Resources**: All string fields with hierarchical URIs reflecting the object structure
+- **Documentation**: The `docs` field is specially handled as `resource://docs`
+
 ### MCP HTTP Endpoints
 
 When MCP is enabled (starting Hypha server with `--enable-mcp`), Hypha exposes MCP endpoints at:
