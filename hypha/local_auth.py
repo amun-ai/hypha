@@ -838,7 +838,8 @@ async def signup_handler(server, context=None, name: str = None, email: str = No
                     "name": "Local Authentication Users",
                     "description": "User accounts for local authentication",
                 },
-                config={"permissions": {"*": "", "@": "rw+"}}  # Only authenticated users can access
+                # here we can add {"admin-user-id": "*"} for enable user managment
+                config={"permissions": {}}
             )
             collection_id = collection.id if hasattr(collection, 'id') else collection["id"]
         
