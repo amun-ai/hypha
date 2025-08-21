@@ -3720,7 +3720,7 @@ async def test_get_zip_file_content_very_large(
     # This simulates the OME-Zarr file structure mentioned in the issue
     zip_buffer = BytesIO()
     with ZipFile(
-        zip_buffer, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1
+        zip_buffer, "w", compression=zipfile.ZIP_STORED
     ) as zip_file:
         # Create a zarr-like structure with many chunk files
         # Create .zattrs file (metadata)
@@ -3740,6 +3740,7 @@ async def test_get_zip_file_content_very_large(
         
         # Create many chunk files (4000+ files to simulate real OME-Zarr)
         # Each chunk represents a piece of the array data
+        # Use uncompressed storage to ensure we hit the 200MB size requirement
         chunk_data = b"x" * (50 * 1024)  # 50KB per chunk
         
         # Create chunks in a hierarchical structure

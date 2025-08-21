@@ -235,7 +235,7 @@ async def get_zip_file_content(
     bucket: str,
     key: str,
     path: str = "",
-    zip_tail: Optional[bytes] = None,
+    zip_tail: Optional[Union[bytes, Tuple[bytes, int]]] = None,
     cache_instance=None,
 ) -> Response:
     """
@@ -246,7 +246,7 @@ async def get_zip_file_content(
         bucket: S3 bucket name
         key: S3 object key for the ZIP file
         path: Path within the ZIP file to retrieve
-        zip_tail: Optional pre-fetched ZIP tail data
+        zip_tail: Optional pre-fetched ZIP tail data (can be bytes or tuple of (bytes, offset))
         cache_instance: Optional Redis cache instance
 
     Returns:
@@ -292,6 +292,15 @@ async def get_zip_file_content(
                         "detail": f"Failed to fetch ZIP file structure: {str(e)}",
                     },
                 )
+        else:
+            # Handle both tuple and bytes formats
+            if isinstance(zip_tail, tuple):
+                # If it's already a tuple, unpack it
+                zip_tail, tail_start_offset = zip_tail
+            else:
+                # If zip_tail was provided as bytes, assume it's the full file
+                # (this is for backward compatibility with existing callers)
+                tail_start_offset = 0
 
         # Open the in-memory ZIP tail and parse it
         try:

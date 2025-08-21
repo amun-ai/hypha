@@ -735,16 +735,14 @@ class ArtifactController:
                             )
                             await self._cache.set(cache_key, zip_tail_data, ttl=60)
 
-                        # Unpack the tuple
-                        zip_tail, tail_start_offset = zip_tail_data
-                            
                         # Process zip file using the utility function
+                        # Pass the full tuple to get_zip_file_content
                         return await zip_utils.get_zip_file_content(
                             s3_client,
                             self.workspace_bucket,
                             s3_key,
                             path=path,
-                            zip_tail=zip_tail,
+                            zip_tail=zip_tail_data,  # Pass the tuple directly
                             cache_instance=self._cache,
                         )
 
