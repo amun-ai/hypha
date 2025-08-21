@@ -2028,8 +2028,14 @@ class WorkspaceManager:
         # Handle special "~" shortcut for workspace manager
         if service_id == "~":
             # The workspace manager is in the "*" workspace with service_id "default"
-            # Use a wildcard pattern to find any manager service
-            service_id = f"*/*:default"
+            # Find the manager service dynamically
+            services = await self.list_services("*", {"visibility": "public"}, context=context)
+            for service in services:
+                if service.get("id", "").endswith(":default") and service.get("id", "").startswith("*/"):
+                    service_id = service["id"]
+                    break
+            else:
+                raise ValueError("Workspace manager service not found")
         
         assert service_id.count("/") <= 1, "Service id must contain at most one '/'"
         assert service_id.count(":") <= 1, "Service id must contain at most one ':'"
@@ -2589,9 +2595,15 @@ class WorkspaceManager:
         # Handle special "~" shortcut for workspace manager
         if service_id == "~":
             # The workspace manager is in the "*" workspace with service_id "default"
-            # Use a wildcard pattern to find any manager service
-            service_id = f"*/*:default"
-        
+            # Find the manager service dynamically
+            services = await self.list_services("*", {"visibility": "public"}, context=context)
+            for service in services:
+                if service.get("id", "").endswith(":default") and service.get("id", "").startswith("*/"):
+                    service_id = service["id"]
+                    break
+            else:
+                raise ValueError("Workspace manager service not found")
+
         # no need to validate the context
         # self.validate_context(context, permission=UserPermission.read)
         try:

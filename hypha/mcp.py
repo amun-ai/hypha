@@ -908,6 +908,17 @@ class HyphaMCPAdapter:
                 # Try to convert to dict if it looks like a serialized object
                 if len(result) > 0 and isinstance(result[0], dict) and "contents" in result[0]:
                     result = result[0]
+                elif len(result) > 0 and isinstance(result[0], str):
+                    # It's a tuple of strings, treat as text content
+                    result = {
+                        "contents": [
+                            {
+                                "uri": str(uri),
+                                "mimeType": "text/plain",
+                                "text": str(result[0]) if len(result) == 1 else str(result)
+                            }
+                        ]
+                    }
                 else:
                     # Assume it's just a content list
                     result = {"contents": result}
