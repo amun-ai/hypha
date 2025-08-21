@@ -2014,7 +2014,7 @@ class WorkspaceManager:
         self,
         service_id: str = Field(
             ...,
-            description="Service id, it can be the service id or the full service id with workspace: `workspace/client_id:service_id`",
+            description="Service id, it can be the service id or the full service id with workspace: `workspace/client_id:service_id`. Special value '~' expands to the workspace manager service.",
         ),
         config: Optional[dict] = Field(
             None,
@@ -2041,6 +2041,14 @@ class WorkspaceManager:
             "/" in service_id and ":" in service_id
         ), f"Invalid service id: {service_id}, it must contain '/' and ':'"
         workspace = service_id.split("/")[0]
+                
+        sid = service_id.split(":")[-1]
+        # Handle special "~" shortcut for workspace manager
+        if sid == "~":
+            assert workspace == context["ws"], f"Workspace must match context workspace for '~' service, got {workspace} instead of {context['ws']}"
+            service_id = f"{workspace}/{self._client_id}:default"
+            app_id = "*"
+
         assert (
             workspace != "*"
         ), "You must specify a workspace for the service query, otherwise please call list_services to find the service."
@@ -2559,7 +2567,7 @@ class WorkspaceManager:
         self,
         service_id: str = Field(
             ...,
-            description="Service ID. This should be a service id in the format: 'workspace/service_id', 'workspace/client_id:service_id' or 'workspace/client_id:service_id@app_id'",
+            description="Service ID. This should be a service id in the format: 'workspace/service_id', 'workspace/client_id:service_id' or 'workspace/client_id:service_id@app_id'. Special value '~' expands to the workspace manager service.",
         ),
         config: Optional[GetServiceConfig] = Field(
             None, description="Get service config"

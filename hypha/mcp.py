@@ -670,9 +670,6 @@ class HyphaMCPAdapter:
             string_resources['docs'] = docs
         
         if string_resources:
-            # Import the helper type used by MCP SDK
-            from mcp.server.lowlevel.helper_types import ReadResourceContents
-            
             # Store the string resources for later access
             self.string_resources = string_resources
             
@@ -682,18 +679,18 @@ class HyphaMCPAdapter:
                 resources = []
                 
                 for resource_key, resource_value in self.string_resources.items():
-                    # Format the URI properly
-                    uri = resource_key.replace('_', '/')
+                    # Format the URI with resource:// prefix
+                    uri = f"resource://{resource_key}"
                     
                     # Generate descriptive name based on the key
                     if resource_key == 'docs':
                         name = f"Documentation for {service_name}"
-                        description = f"Service documentation for '{self.service_info.id}' - {service_name}"
+                        description = f"Service documentation content for '{service_name}'"
                     else:
                         # Create human-readable name from the key path
                         key_parts = resource_key.split('/')
                         name = ' '.join(part.replace('_', ' ').title() for part in key_parts)
-                        description = f"String resource at path '{resource_key}' in service '{self.service_info.id}'"
+                        description = f"String resource at path '{resource_key}' in service '{service_name}'"
                     
                     resources.append(types.Resource(
                         uri=uri,
@@ -705,25 +702,37 @@ class HyphaMCPAdapter:
                 return resources
             
             @self.server.read_resource()
-            async def read_resource(uri: AnyUrl) -> List[ReadResourceContents]:
+            async def read_resource(uri: AnyUrl) -> types.ReadResourceResult:
                 uri_str = str(uri)
                 
-                # Try direct match first
-                if uri_str in self.string_resources:
-                    content = unwrap_object_proxy(self.string_resources[uri_str])
-                    return [ReadResourceContents(
-                        content=str(content),
-                        mime_type="text/plain"
-                    )]
+                # Remove resource:// prefix if present
+                if uri_str.startswith("resource://"):
+                    resource_key = uri_str[len("resource://"):]
+                else:
+                    resource_key = uri_str
                 
-                # Try with underscores replaced (for compatibility)
-                uri_with_underscores = uri_str.replace('/', '_')
-                if uri_with_underscores in self.string_resources:
-                    content = unwrap_object_proxy(self.string_resources[uri_with_underscores])
-                    return [ReadResourceContents(
-                        content=str(content),
-                        mime_type="text/plain"
-                    )]
+                # Try direct match first
+                if resource_key in self.string_resources:
+                    content = unwrap_object_proxy(self.string_resources[resource_key])
+                    return types.ReadResourceResult(
+                        contents=[types.TextResourceContents(
+                            uri=uri_str,
+                            mimeType="text/plain",
+                            text=str(content)
+                        )]
+                    )
+                
+                # Try with slashes replaced by underscores (for compatibility)
+                resource_key_with_underscores = resource_key.replace('/', '_')
+                if resource_key_with_underscores in self.string_resources:
+                    content = unwrap_object_proxy(self.string_resources[resource_key_with_underscores])
+                    return types.ReadResourceResult(
+                        contents=[types.TextResourceContents(
+                            uri=uri_str,
+                            mimeType="text/plain",
+                            text=str(content)
+                        )]
+                    )
                 
                 raise ValueError(f"Resource '{uri_str}' not found")
     
