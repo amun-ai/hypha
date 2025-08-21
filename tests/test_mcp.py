@@ -2155,7 +2155,7 @@ async def test_mcp_service_with_docs_field(fastapi_server, test_user_token):
         {
             "id": "docs-service",
             "name": "Service with Documentation",
-            "type": "generic",
+            # Don't specify type - let it be auto-wrapped
             "docs": docs_content,
             "description": "A service with documentation field",
             "config": {"visibility": "public"},
@@ -2163,7 +2163,10 @@ async def test_mcp_service_with_docs_field(fastapi_server, test_user_token):
         }
     )
     
-
+    # Test using the actual MCP client
+    from mcp.client.streamable_http import streamablehttp_client
+    from mcp.client.session import ClientSession
+    
     # Create MCP client session
     base_url = f"{SERVER_URL}/{workspace}/mcp/docs-service/mcp"
     
