@@ -569,32 +569,63 @@ async def stream_file_chunks_from_zip(
 
     # Calculate data offset: header offset + size of the local file header + filename length + extra field length
     try:
-        with zipfile.ZipFile(BytesIO(zip_tail)) as zf:
-            # Get header data to calculate size
-            file_header = zf._RealGetContents()[zip_info.filename]
-            local_header_size = 30  # Fixed size of the local file header
-            filename_length = len(zip_info.filename)
-            extra_field_length = len(zip_info.extra)
-
+        # Read the local file header from S3 to get the exact extra field length
+        # The local header format is:
+        # 4 bytes: signature (0x04034b50)
+        # 2 bytes: version needed
+        # 2 bytes: general purpose bit flag
+        # 2 bytes: compression method
+        # 2 bytes: last mod file time
+        # 2 bytes: last mod file date
+        # 4 bytes: crc-32
+        # 4 bytes: compressed size
+        # 4 bytes: uncompressed size
+        # 2 bytes: filename length
+        # 2 bytes: extra field length
+        # Total: 30 bytes
+        
+        local_header_size = 30
+        
+        # Fetch the local file header to get the actual filename and extra field lengths
+        range_header = f"bytes={file_header_offset}-{file_header_offset + local_header_size - 1}"
+        response = await s3_client.get_object(Bucket=bucket, Key=key, Range=range_header)
+        local_header = await response["Body"].read()
+        
+        # Parse the local header to get the actual lengths
+        if len(local_header) >= 30:
+            # Unpack the filename length and extra field length from the local header
+            # These are at bytes 26-27 and 28-29 respectively
+            filename_len_local = struct.unpack('<H', local_header[26:28])[0]
+            extra_field_len_local = struct.unpack('<H', local_header[28:30])[0]
+            
             # Calculate the offset where the actual file data begins
             data_offset = (
                 file_header_offset
                 + local_header_size
-                + filename_length
-                + extra_field_length
+                + filename_len_local
+                + extra_field_len_local
+            )
+        else:
+            # Fallback: use the lengths from the central directory
+            logger.warning(f"Could not read full local header, using central directory values")
+            data_offset = (
+                file_header_offset
+                + local_header_size
+                + len(zip_info.filename)
+                + len(zip_info.extra)
             )
 
-            compression_method = zip_info.compress_type
-            compressed_size = zip_info.compress_size
-            uncompressed_size = zip_info.file_size
+        compression_method = zip_info.compress_type
+        compressed_size = zip_info.compress_size
+        uncompressed_size = zip_info.file_size
 
-            logger.debug(
-                f"Streaming file {zip_info.filename}, "
-                f"compression: {compression_method}, "
-                f"compressed size: {compressed_size}, "
-                f"uncompressed size: {uncompressed_size}, "
-                f"data offset: {data_offset}"
-            )
+        logger.debug(
+            f"Streaming file {zip_info.filename}, "
+            f"compression: {compression_method}, "
+            f"compressed size: {compressed_size}, "
+            f"uncompressed size: {uncompressed_size}, "
+            f"data offset: {data_offset}"
+        )
     except Exception as e:
         logger.error(f"Error calculating data offset: {str(e)}")
         # Fall back to simple approach only if zip_tail contains the full ZIP file
