@@ -2224,7 +2224,7 @@ async def test_mcp_service_with_nested_string_resources(fastapi_server, test_use
         {
             "id": "nested-service",
             "name": "Service with Nested Resources",
-            "type": "generic",
+            # Don't specify type - let it be auto-wrapped
             "description": "A service with nested string resources",
             "config": {"visibility": "public"},
             "metadata": {
