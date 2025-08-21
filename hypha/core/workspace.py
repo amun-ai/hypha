@@ -818,11 +818,48 @@ class WorkspaceManager:
     @schema_method
     async def create_workspace(
         self,
-        config: Union[dict, WorkspaceInfo],
-        overwrite=False,
+        config: Union[dict, WorkspaceInfo] = Field(
+            ...,
+            description="Workspace configuration dictionary or WorkspaceInfo object. Must include 'id' field. Optional fields: 'name', 'description', 'persistent', 'owners', 'config'."
+        ),
+        overwrite: bool = Field(
+            False,
+            description="If True, overwrites an existing workspace with the same ID. If False, raises an error if workspace already exists."
+        ),
         context: Optional[dict] = None,
     ):
-        """Create a new workspace."""
+        """Create a new workspace for organizing services and data.
+        
+        Workspaces provide isolated environments for services, applications, and data. 
+        They support multi-tenancy, access control, and resource management. Persistent 
+        workspaces have dedicated storage and can store artifacts, while non-persistent 
+        workspaces are temporary and cleaned up when inactive.
+        
+        Returns:
+            Dict[str, Any]: The created workspace information including:
+                - id: Workspace identifier
+                - name: Workspace display name
+                - description: Workspace description
+                - persistent: Whether workspace has persistent storage
+                - owners: List of user IDs who own the workspace
+                - status: Current workspace status
+                
+        Examples:
+            >>> # Create a basic workspace
+            >>> workspace = await workspace_manager.create_workspace(
+            ...     config={"id": "research-lab", "name": "Research Lab"}
+            ... )
+            >>> 
+            >>> # Create a persistent workspace with description
+            >>> workspace = await workspace_manager.create_workspace(
+            ...     config={
+            ...         "id": "ml-project",
+            ...         "name": "ML Project",
+            ...         "description": "Machine learning experiments",
+            ...         "persistent": True
+            ...     }
+            ... )
+        """
         assert context is not None
         if isinstance(config, WorkspaceInfo):
             config = config.model_dump()
@@ -1077,11 +1114,37 @@ class WorkspaceManager:
     async def generate_token(
         self,
         config: Optional[TokenConfig] = Field(
-            None, description="config for token generation"
+            None,
+            description="Configuration for token generation. Includes workspace, permission level, expiration time, client ID, and extra scopes. If not provided, uses defaults."
         ),
         context: Optional[dict] = None,
     ):
-        """Generate a token for a specified workspace."""
+        """Generate an authentication token for workspace access.
+        
+        Creates a JWT token with specified permissions and scopes for accessing 
+        workspace resources. Only workspace administrators can generate tokens. 
+        The token can be used for programmatic access to the workspace via API 
+        clients or for delegating access to other users/services.
+        
+        Returns:
+            str: JWT authentication token that can be used in API requests.
+            
+        Examples:
+            >>> # Generate a read-only token for current workspace
+            >>> token = await workspace_manager.generate_token(
+            ...     config={"permission": "read", "expires_in": 3600}
+            ... )
+            >>> 
+            >>> # Generate admin token for specific workspace
+            >>> token = await workspace_manager.generate_token(
+            ...     config={
+            ...         "workspace": "research-lab",
+            ...         "permission": "admin",
+            ...         "expires_in": 86400,
+            ...         "client_id": "data-processor"
+            ...     }
+            ... )
+        """
         assert context is not None, "Context cannot be None"
         ws = context["ws"]
         user_info = UserInfo.from_context(context)
