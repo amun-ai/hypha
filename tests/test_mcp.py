@@ -2146,6 +2146,12 @@ async def test_mcp_service_with_docs_field(fastapi_server, test_user_token):
     ```
     """
     
+    # Use a schema_function to ensure proper function wrapping
+    @schema_function
+    def process(x: int) -> int:
+        """Process a value."""
+        return x * 2
+    
     service_info = await api.register_service(
         {
             "id": "docs-service",
@@ -2154,16 +2160,17 @@ async def test_mcp_service_with_docs_field(fastapi_server, test_user_token):
             "docs": docs_content,
             "description": "A service with documentation field",
             "config": {"visibility": "public"},
-            "process": lambda x: x * 2,
+            "process": process,  # Use the schema_function
         }
     )
     
     # Wait a moment for the service to be fully registered
     import asyncio
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(1.0)  # Increase wait time
     
     # Connect to the MCP endpoint
-    base_url = f"{SERVER_URL}/{workspace}/mcp/docs-service/mcp"
+    service_id = service_info['id'].split('/')[-1]  # Get just the service ID part
+    base_url = f"{SERVER_URL}/{workspace}/mcp/{service_id}/mcp"
     
     async with streamablehttp_client(base_url) as (
         read_stream,
@@ -2173,6 +2180,12 @@ async def test_mcp_service_with_docs_field(fastapi_server, test_user_token):
         async with ClientSession(read_stream, write_stream) as session:
             # Initialize the session
             await session.initialize()
+            
+            # First verify the service has tools (the process function)
+            tools_result = await session.list_tools()
+            assert tools_result is not None
+            assert hasattr(tools_result, "tools")
+            assert len(tools_result.tools) > 0, "Service should have at least one tool"
             
             # List resources - should include the docs field
             resources_result = await session.list_resources()
@@ -2186,7 +2199,7 @@ async def test_mcp_service_with_docs_field(fastapi_server, test_user_token):
                     docs_resource = resource
                     break
             
-            assert docs_resource is not None, "Docs resource not found"
+            assert docs_resource is not None, f"Docs resource not found. Available resources: {[r.uri for r in resources_result.resources]}"
             assert "Documentation" in docs_resource.name
             assert docs_resource.mimeType == "text/plain"
             
@@ -2208,6 +2221,12 @@ async def test_mcp_service_with_nested_string_resources(fastapi_server, test_use
     
     workspace = api.config.workspace
     
+    # Use a schema_function to ensure proper function wrapping
+    @schema_function
+    def process(x: int) -> int:
+        """Process a value."""
+        return x * 2
+    
     # Register a non-MCP service with nested string fields
     service_info = await api.register_service(
         {
@@ -2228,16 +2247,17 @@ async def test_mcp_service_with_nested_string_resources(fastapi_server, test_use
                 "feature_flags": ["flag1", "flag2"],
                 "configuration": "Production configuration"
             },
-            "process": lambda x: x * 2,
+            "process": process,  # Use the schema_function
         }
     )
     
     # Wait a moment for the service to be fully registered
     import asyncio
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(1.0)  # Increase wait time
     
     # Connect to the MCP endpoint
-    base_url = f"{SERVER_URL}/{workspace}/mcp/nested-service/mcp"
+    service_id = service_info['id'].split('/')[-1]  # Get just the service ID part
+    base_url = f"{SERVER_URL}/{workspace}/mcp/{service_id}/mcp"
     
     async with streamablehttp_client(base_url) as (
         read_stream,
@@ -2248,11 +2268,17 @@ async def test_mcp_service_with_nested_string_resources(fastapi_server, test_use
             # Initialize the session
             await session.initialize()
             
+            # First verify the service has tools (the process function)
+            tools_result = await session.list_tools()
+            assert tools_result is not None
+            assert hasattr(tools_result, "tools")
+            assert len(tools_result.tools) > 0, "Service should have at least one tool"
+            
             # List resources - should include nested string fields
             resources_result = await session.list_resources()
             assert resources_result is not None
             assert hasattr(resources_result, "resources")
-            assert len(resources_result.resources) > 0
+            assert len(resources_result.resources) > 0, f"No resources found! Service should have string resources"
             
             # Check for expected resources with hierarchical URIs
             expected_resources = {
