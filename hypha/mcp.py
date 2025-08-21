@@ -26,6 +26,7 @@ logger.setLevel(logging.DEBUG)
 
 import mcp.types as types
 from mcp.server.lowlevel import Server
+from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.sse import SseServerTransport
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.streamable_http import (
@@ -702,7 +703,7 @@ class HyphaMCPAdapter:
                 return resources
             
             @self.server.read_resource()
-            async def read_resource(uri: AnyUrl) -> types.ReadResourceResult:
+            async def read_resource(uri: AnyUrl) -> List[ReadResourceContents]:
                 uri_str = str(uri)
                 
                 # Remove resource:// prefix if present
@@ -714,25 +715,21 @@ class HyphaMCPAdapter:
                 # Try direct match first
                 if resource_key in self.string_resources:
                     content = unwrap_object_proxy(self.string_resources[resource_key])
-                    return types.ReadResourceResult(
-                        contents=[types.TextResourceContents(
-                            uri=uri_str,
-                            mimeType="text/plain",
-                            text=str(content)
-                        )]
-                    )
+                    # Return a list of ReadResourceContents with proper fields
+                    return [ReadResourceContents(
+                        content=str(content),
+                        mime_type="text/plain"
+                    )]
                 
                 # Try with slashes replaced by underscores (for compatibility)
                 resource_key_with_underscores = resource_key.replace('/', '_')
                 if resource_key_with_underscores in self.string_resources:
                     content = unwrap_object_proxy(self.string_resources[resource_key_with_underscores])
-                    return types.ReadResourceResult(
-                        contents=[types.TextResourceContents(
-                            uri=uri_str,
-                            mimeType="text/plain",
-                            text=str(content)
-                        )]
-                    )
+                    # Return a list of ReadResourceContents with proper fields
+                    return [ReadResourceContents(
+                        content=str(content),
+                        mime_type="text/plain"
+                    )]
                 
                 raise ValueError(f"Resource '{uri_str}' not found")
     
