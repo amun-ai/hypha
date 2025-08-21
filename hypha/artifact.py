@@ -728,13 +728,16 @@ class ArtifactController:
 
                         # Fetch the ZIP's central directory from cache or download if not cached
                         cache_key = f"zip_tail:{self.workspace_bucket}:{s3_key}:{content_length}"
-                        zip_tail = await self._cache.get(cache_key)
-                        if zip_tail is None:
-                            zip_tail = await zip_utils.fetch_zip_tail(
+                        zip_tail_data = await self._cache.get(cache_key)
+                        if zip_tail_data is None:
+                            zip_tail_data = await zip_utils.fetch_zip_tail(
                                 s3_client, self.workspace_bucket, s3_key, content_length
                             )
-                            await self._cache.set(cache_key, zip_tail, ttl=60)
+                            await self._cache.set(cache_key, zip_tail_data, ttl=60)
 
+                        # Unpack the tuple
+                        zip_tail, tail_start_offset = zip_tail_data
+                            
                         # Process zip file using the utility function
                         return await zip_utils.get_zip_file_content(
                             s3_client,
