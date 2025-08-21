@@ -2155,7 +2155,7 @@ async def test_mcp_service_with_docs_field(fastapi_server, test_user_token):
         {
             "id": "docs-service",
             "name": "Service with Documentation",
-            # Don't specify type - let it be auto-wrapped
+            "type": "functions",  # Use functions type for auto-wrapping
             "docs": docs_content,
             "description": "A service with documentation field",
             "config": {"visibility": "public"},
@@ -2228,7 +2228,7 @@ async def test_mcp_service_with_nested_string_resources(fastapi_server, test_use
         {
             "id": "nested-service",
             "name": "Service with Nested Resources",
-            # Don't specify type - let it be auto-wrapped
+            "type": "functions",  # Use functions type for auto-wrapping
             "description": "A service with nested string resources",
             "config": {"visibility": "public"},
             "metadata": {
