@@ -557,7 +557,7 @@ class HyphaMCPAdapter:
                     )
     
     def _setup_auto_wrapped_handlers(self):
-        """Auto-wrap all service functions as MCP tools."""
+        """Auto-wrap all service functions as MCP tools and string fields as resources."""
         
         def collect_tools(obj, prefix=""):
             """Recursively collect callable functions from nested structures."""
@@ -593,35 +593,139 @@ class HyphaMCPAdapter:
                     
             return collected
         
+        def collect_string_resources(obj, prefix="", skip_keys=None):
+            """Recursively collect string fields as resources from nested structures."""
+            if skip_keys is None:
+                skip_keys = {'docs', 'id', 'name', 'description', 'type', 'config'}  # Skip metadata fields
+            
+            collected = {}
+            
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    # Skip private keys, metadata, and callables
+                    if key.startswith("_") or key in skip_keys or callable(value):
+                        continue
+                    
+                    # Build the resource path
+                    new_key = f"{prefix}/{key}" if prefix else key
+                    
+                    if isinstance(value, str):
+                        # Direct string value - add as resource
+                        collected[new_key] = value
+                    elif isinstance(value, (dict, list)):
+                        # Nested structure - recurse
+                        nested = collect_string_resources(value, new_key, skip_keys)
+                        collected.update(nested)
+                    # Skip other types (numbers, booleans, etc.)
+                    
+            elif isinstance(obj, list):
+                # For lists, use index as part of the path
+                for i, item in enumerate(obj):
+                    new_key = f"{prefix}/{i}" if prefix else str(i)
+                    
+                    if isinstance(item, str):
+                        collected[new_key] = item
+                    elif isinstance(item, (dict, list)):
+                        # Nested structure - recurse
+                        nested = collect_string_resources(item, new_key, skip_keys)
+                        collected.update(nested)
+                    # Skip other types
+                    
+            return collected
+        
         # Collect all callable functions from the service (including nested)
         tools = collect_tools(self.service)
         
-        if not tools:
-            return
-        
-        self.tool_handlers = tools
-        
-        @self.server.list_tools()
-        async def list_tools() -> List[types.Tool]:
-            tool_list = []
-            for key, func in self.tool_handlers.items():
-                tool_def = self._extract_tool_from_function(key, func)
-                tool_list.append(types.Tool(**tool_def))
-            return tool_list
-        
-        @self.server.call_tool()
-        async def call_tool(name: str, arguments: dict) -> List[types.ContentBlock]:
-            if name not in self.tool_handlers:
-                raise ValueError(f"Tool '{name}' not found")
+        if tools:
+            self.tool_handlers = tools
             
-            func = self.tool_handlers[name]
-            result = await self._call_function(func, arguments)
+            @self.server.list_tools()
+            async def list_tools() -> List[types.Tool]:
+                tool_list = []
+                for key, func in self.tool_handlers.items():
+                    tool_def = self._extract_tool_from_function(key, func)
+                    tool_list.append(types.Tool(**tool_def))
+                return tool_list
             
-            # Convert result to content blocks
-            if isinstance(result, list):
-                return self._ensure_content_blocks(result)
-            else:
-                return [types.TextContent(type="text", text=str(result))]
+            @self.server.call_tool()
+            async def call_tool(name: str, arguments: dict) -> List[types.ContentBlock]:
+                if name not in self.tool_handlers:
+                    raise ValueError(f"Tool '{name}' not found")
+                
+                func = self.tool_handlers[name]
+                result = await self._call_function(func, arguments)
+                
+                # Convert result to content blocks
+                if isinstance(result, list):
+                    return self._ensure_content_blocks(result)
+                else:
+                    return [types.TextContent(type="text", text=str(result))]
+        
+        # Collect string resources (including docs and other string fields)
+        string_resources = collect_string_resources(self.service)
+        
+        # Special handling for docs field - always include if present
+        docs = self.service.get("docs") if isinstance(self.service, dict) else getattr(self.service, "docs", None)
+        if docs and isinstance(docs, str):
+            string_resources['docs'] = docs
+        
+        if string_resources:
+            # Import the helper type used by MCP SDK
+            from mcp.server.lowlevel.helper_types import ReadResourceContents
+            
+            # Store the string resources for later access
+            self.string_resources = string_resources
+            
+            @self.server.list_resources()
+            async def list_resources() -> List[types.Resource]:
+                service_name = getattr(self.service_info, 'name', self.service_info.id)
+                resources = []
+                
+                for resource_key, resource_value in self.string_resources.items():
+                    # Format the URI properly
+                    uri = resource_key.replace('_', '/')
+                    
+                    # Generate descriptive name based on the key
+                    if resource_key == 'docs':
+                        name = f"Documentation for {service_name}"
+                        description = f"Service documentation for '{self.service_info.id}' - {service_name}"
+                    else:
+                        # Create human-readable name from the key path
+                        key_parts = resource_key.split('/')
+                        name = ' '.join(part.replace('_', ' ').title() for part in key_parts)
+                        description = f"String resource at path '{resource_key}' in service '{self.service_info.id}'"
+                    
+                    resources.append(types.Resource(
+                        uri=uri,
+                        name=name,
+                        description=description,
+                        mimeType="text/plain"
+                    ))
+                
+                return resources
+            
+            @self.server.read_resource()
+            async def read_resource(uri: AnyUrl) -> List[ReadResourceContents]:
+                uri_str = str(uri)
+                
+                # Try direct match first
+                if uri_str in self.string_resources:
+                    content = unwrap_object_proxy(self.string_resources[uri_str])
+                    return [ReadResourceContents(
+                        content=str(content),
+                        mime_type="text/plain"
+                    )]
+                
+                # Try with underscores replaced (for compatibility)
+                uri_with_underscores = uri_str.replace('/', '_')
+                if uri_with_underscores in self.string_resources:
+                    content = unwrap_object_proxy(self.string_resources[uri_with_underscores])
+                    return [ReadResourceContents(
+                        content=str(content),
+                        mime_type="text/plain"
+                    )]
+                
+                raise ValueError(f"Resource '{uri_str}' not found")
     
     def _extract_tool_from_function(self, name: str, func: Callable) -> Dict[str, Any]:
         """Extract MCP tool definition from a function."""
