@@ -2163,6 +2163,10 @@ async def test_mcp_service_with_docs_field(fastapi_server, test_user_token):
         }
     )
     
+    # Wait a moment for the service to be fully registered
+    import asyncio
+    await asyncio.sleep(0.5)
+    
     # Test using the actual MCP client
     from mcp.client.streamable_http import streamablehttp_client
     from mcp.client.session import ClientSession
@@ -2251,6 +2255,8 @@ async def test_mcp_service_with_nested_string_resources(fastapi_server, test_use
         }
     )
     
+    # Wait a moment for the service to be fully registered
+    await asyncio.sleep(0.5)
     
     # Create MCP client session
     base_url = f"{SERVER_URL}/{workspace}/mcp/nested-service/mcp"
