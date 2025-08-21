@@ -2024,6 +2024,12 @@ class WorkspaceManager:
     ):
         """Get the service info."""
         assert isinstance(service_id, str), "Service ID must be a string."
+        
+        # Handle special "~" shortcut for workspace manager
+        if service_id == "~":
+            # The workspace manager is in the "*" workspace with service_id "default"
+            service_id = f"*/{self._client_id}:default"
+        
         assert service_id.count("/") <= 1, "Service id must contain at most one '/'"
         assert service_id.count(":") <= 1, "Service id must contain at most one ':'"
         assert service_id.count("@") <= 1, "Service id must contain at most one '@'"
@@ -2041,17 +2047,17 @@ class WorkspaceManager:
             "/" in service_id and ":" in service_id
         ), f"Invalid service id: {service_id}, it must contain '/' and ':'"
         workspace = service_id.split("/")[0]
-                
-        sid = service_id.split(":")[-1]
-        # Handle special "~" shortcut for workspace manager
-        if sid == "~":
-            assert workspace == context["ws"], f"Workspace must match context workspace for '~' service, got {workspace} instead of {context['ws']}"
-            service_id = f"{workspace}/{self._client_id}:default"
-            app_id = "*"
-
-        assert (
-            workspace != "*"
-        ), "You must specify a workspace for the service query, otherwise please call list_services to find the service."
+        
+        # Allow "*" workspace for the workspace manager (when it matches the pattern)
+        is_workspace_manager = (
+            workspace == "*" and 
+            f"/{self._client_id}:default" in service_id
+        )
+        if not is_workspace_manager:
+            assert (
+                workspace != "*"
+            ), "You must specify a workspace for the service query, otherwise please call list_services to find the service."
+        
         logger.info("Getting service: %s", service_id)
         config = config or {}
         mode = config.get("mode")
@@ -2578,6 +2584,12 @@ class WorkspaceManager:
         assert (
             service_id != "*"
         ), "Invalid service id: {service_id}, it cannot be a wildcard."
+        
+        # Handle special "~" shortcut for workspace manager
+        if service_id == "~":
+            # The workspace manager is in the "*" workspace with service_id "default"
+            service_id = f"*/{self._client_id}:default"
+        
         # no need to validate the context
         # self.validate_context(context, permission=UserPermission.read)
         try:
