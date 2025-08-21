@@ -2127,6 +2127,7 @@ async def test_mcp_arbitrary_service_conversion(fastapi_server, test_user_token)
     await api.disconnect()
 
 
+@pytest.mark.asyncio
 async def test_mcp_service_with_docs_field(fastapi_server, test_user_token):
     """Test that a service with a docs field exposes it as an MCP resource."""
     api = await connect_to_server(
@@ -2214,6 +2215,7 @@ async def test_mcp_service_with_docs_field(fastapi_server, test_user_token):
     await api.disconnect()
 
 
+@pytest.mark.asyncio
 async def test_mcp_service_with_nested_string_resources(fastapi_server, test_user_token):
     """Test that services with nested string fields expose them as MCP resources."""
     api = await connect_to_server(
