@@ -127,30 +127,32 @@ async def fetch_zip_tail(
     found = False
     zip_tail = b""
     current_offset = content_length
-    tail_start_offset = content_length - tail_length
+    tail_start_offset = max(content_length - tail_length, 0)  # Initialize properly
 
     # Adaptive approach: start small and increase until we find the central directory
     while tail_length <= MAX_TAIL:
-        tail_start_offset = max(content_length - tail_length, 0)
+        new_tail_start = max(content_length - tail_length, 0)
         # Only fetch the new part if we've already read a smaller tail
-        if zip_tail and tail_start_offset < current_offset:
+        if zip_tail and new_tail_start < current_offset:
             # Fetch only the missing part
-            range_header = f"bytes={tail_start_offset}-{current_offset - 1}"
+            range_header = f"bytes={new_tail_start}-{current_offset - 1}"
             logger.debug(f"Fetching additional ZIP tail: {range_header}")
             response = await s3_client.get_object(
                 Bucket=bucket, Key=key, Range=range_header
             )
             new_part = await response["Body"].read()
             zip_tail = new_part + zip_tail
-            current_offset = tail_start_offset
+            current_offset = new_tail_start
+            tail_start_offset = new_tail_start  # Update tail_start_offset
         else:
-            range_header = f"bytes={tail_start_offset}-{content_length - 1}"
+            range_header = f"bytes={new_tail_start}-{content_length - 1}"
             logger.debug(f"Fetching ZIP tail: {range_header}")
             response = await s3_client.get_object(
                 Bucket=bucket, Key=key, Range=range_header
             )
             zip_tail = await response["Body"].read()
-            current_offset = tail_start_offset
+            current_offset = new_tail_start
+            tail_start_offset = new_tail_start  # Update tail_start_offset
 
         # First check for regular ZIP EOCD signature
         eocd_offset = zip_tail.rfind(EOCD_SIGNATURE)

@@ -2028,7 +2028,8 @@ class WorkspaceManager:
         # Handle special "~" shortcut for workspace manager
         if service_id == "~":
             # The workspace manager is in the "*" workspace with service_id "default"
-            service_id = f"*/{self._client_id}:default"
+            # Use a wildcard pattern to find any manager service
+            service_id = f"*/*:default"
         
         assert service_id.count("/") <= 1, "Service id must contain at most one '/'"
         assert service_id.count(":") <= 1, "Service id must contain at most one ':'"
@@ -2588,7 +2589,8 @@ class WorkspaceManager:
         # Handle special "~" shortcut for workspace manager
         if service_id == "~":
             # The workspace manager is in the "*" workspace with service_id "default"
-            service_id = f"*/{self._client_id}:default"
+            # Use a wildcard pattern to find any manager service
+            service_id = f"*/*:default"
         
         # no need to validate the context
         # self.validate_context(context, permission=UserPermission.read)
