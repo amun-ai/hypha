@@ -314,6 +314,7 @@ class WorkspaceManager:
         self._store = store
         self._initialized = False
         self._rpc = None
+        self._service_info = None  # Will be set during setup
         self._root_user = root_user
         self._event_bus = event_bus
         self._server_info = server_info
@@ -364,10 +365,12 @@ class WorkspaceManager:
         rpc = self._create_rpc(self._client_id)
         self._rpc = rpc
         management_service = self.create_service(service_id, service_name)
-        await rpc.register_service(
+        # Store the service info when registering
+        _service_info = await rpc.register_service(
             management_service,
             {"notify": False},
         )
+        self._service_info = ServiceInfo.model_validate(_service_info)
         if self._sql_engine:
             async with self._sql_engine.begin() as conn:
                 await conn.run_sync(EventLog.metadata.create_all)
@@ -2023,20 +2026,7 @@ class WorkspaceManager:
         context: Optional[dict] = None,
     ):
         """Get the service info."""
-        assert isinstance(service_id, str), "Service ID must be a string."
-        
-        # Handle special "~" shortcut for workspace manager
-        if service_id == "~":
-            # The workspace manager is in the "*" workspace with service_id "default"
-            # Find the manager service dynamically
-            services = await self.list_services("*", {"visibility": "public"}, context=context)
-            for service in services:
-                if service.get("id", "").endswith(":default") and service.get("id", "").startswith("*/"):
-                    service_id = service["id"]
-                    break
-            else:
-                raise ValueError("Workspace manager service not found")
-        
+        assert isinstance(service_id, str), "Service ID must be a string."     
         assert service_id.count("/") <= 1, "Service id must contain at most one '/'"
         assert service_id.count(":") <= 1, "Service id must contain at most one ':'"
         assert service_id.count("@") <= 1, "Service id must contain at most one '@'"
@@ -2054,16 +2044,20 @@ class WorkspaceManager:
             "/" in service_id and ":" in service_id
         ), f"Invalid service id: {service_id}, it must contain '/' and ':'"
         workspace = service_id.split("/")[0]
-        
-        # Allow "*" workspace for the workspace manager (when it matches the pattern)
-        is_workspace_manager = (
-            workspace == "*" and 
-            f"/{self._client_id}:default" in service_id
-        )
-        if not is_workspace_manager:
-            assert (
-                workspace != "*"
-            ), "You must specify a workspace for the service query, otherwise please call list_services to find the service."
+        assert (
+            workspace != "*"
+        ), "You must specify a workspace for the service query, otherwise please call list_services to find the service."
+                
+        # Handle special "~" shortcut for workspace manager
+        sid = service_id.split(":")[-1]
+        # Check if service_id is "~" or ends with "/~" (for HTTP endpoint calls)
+        if sid == "~" and workspace == context["ws"]:
+            # Return the stored service info from registration
+            if not self._service_info:
+                raise RuntimeError("Workspace manager service info not available")
+            
+            # Return the service info directly - no expansion needed
+            return self._service_info
         
         logger.info("Getting service: %s", service_id)
         config = config or {}
@@ -2591,18 +2585,6 @@ class WorkspaceManager:
         assert (
             service_id != "*"
         ), "Invalid service id: {service_id}, it cannot be a wildcard."
-        
-        # Handle special "~" shortcut for workspace manager
-        if service_id == "~":
-            # The workspace manager is in the "*" workspace with service_id "default"
-            # Find the manager service dynamically
-            services = await self.list_services("*", {"visibility": "public"}, context=context)
-            for service in services:
-                if service.get("id", "").endswith(":default") and service.get("id", "").startswith("*/"):
-                    service_id = service["id"]
-                    break
-            else:
-                raise ValueError("Workspace manager service not found")
 
         # no need to validate the context
         # self.validate_context(context, permission=UserPermission.read)
@@ -2612,6 +2594,17 @@ class WorkspaceManager:
             svc_info = await self.get_service_info(
                 service_id, {"mode": config.mode}, context=context
             )
+            # Handle special "~" shortcut for workspace manager
+            # Check if service_id is "~" or ends with "/~" (for HTTP endpoint calls)
+            if svc_info == self._service_info:
+                # Return the workspace manager service directly as a local service
+                if not self._rpc:
+                    raise RuntimeError("Workspace manager RPC not initialized")
+                
+                # Get the workspace manager service from our own RPC as a LOCAL service
+                # Since we ARE the workspace manager, we return ourselves
+                # Pass the context to get_local_service (it's synchronous, not async)
+                return self._rpc.get_local_service("default", context=context)
             service_api = await self._rpc.get_remote_service(
                 svc_info.id,
                 {"timeout": config.timeout, "case_conversion": config.case_conversion},
