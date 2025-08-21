@@ -90,71 +90,66 @@ api.registerService({{
     
     app_id = app_info["id"] if isinstance(app_info, dict) else app_info.id
     
-    try:
-        # Start the app to register services at runtime
-        # Services are exported by running code, not declared in manifests
-        print("Starting app to register services...")
-        session = await apps.start(app_id, wait_for_service=False, timeout=20)
-        session_id = session["id"]
-        
-        # Give the app time to export its services
-        await asyncio.sleep(2)
-        
-        # Test 1: List services (should find the running app services)
-        services = await api.list_services(
-            query={"workspace": api.config.workspace}
-        )
-        
-        # Debug: Print all services found
-        print(f"Found {len(services)} services")
-        for svc in services:
-            print(f"  - Service: {svc.get('id')}")
-        
-        # Should find the exported services
-        test_svc_1 = find_item(
-            services, 
-            lambda s: ":test-service-1" in s.get("id", "")
-        )
-        assert test_svc_1 is not None, f"Should find test-service-1. Found services: {[s.get('id') for s in services]}"
-        assert test_svc_1.get("name") == "Test Service 1"
-        
-        # Should find the second service
-        test_svc_2 = find_item(
-            services,
-            lambda s: ":test-service-2" in s.get("id", "")
-        )
-        assert test_svc_2 is not None, "Should find test-service-2"
-        assert test_svc_2.get("name") == "Test Service 2"
-        
-        # Test 2: Query with type filter
-        computation_services = await api.list_services(
-            query={"workspace": api.config.workspace, "type": "computation"}
-        )
-        
-        # Should find test-service-1 which has type "computation"
-        test_svc_1_filtered = find_item(
-            computation_services,
-            lambda s: ":test-service-1" in s.get("id", "")
-        )
-        assert test_svc_1_filtered is not None, "Should find test-service-1 with type filter"
-        
-        # Should not find test-service-2 which has type "data-processing"
-        test_svc_2_filtered = find_item(
-            computation_services,
-            lambda s: ":test-service-2" in s.get("id", "")
-        )
-        assert test_svc_2_filtered is None, "Should not find test-service-2 with computation type filter"
-        
-        # Stop the app session
-        await apps.stop(session_id)
-        
-        print("✅ All tests passed successfully!")
-        
-    finally:
-        # Clean up - uninstall the app
-        try:
-            await apps.uninstall(app_id)
-        except:
-            pass  # Ignore cleanup errors
+    # Start the app to register services at runtime
+    # Services are exported by running code, not declared in manifests
+    print("Starting app to register services...")
+    session = await apps.start(app_id, wait_for_service=False, timeout=20)
+    session_id = session["id"]
+    
+    # Give the app time to export its services
+    await asyncio.sleep(2)
+    
+    # Test 1: List services (should find the running app services)
+    services = await api.list_services(
+        query={"workspace": api.config.workspace}
+    )
+    
+    # Debug: Print all services found
+    print(f"Found {len(services)} services")
+    for svc in services:
+        print(f"  - Service: {svc.get('id')}")
+    
+    # Should find the exported services
+    test_svc_1 = find_item(
+        services, 
+        lambda s: ":test-service-1" in s.get("id", "")
+    )
+    assert test_svc_1 is not None, f"Should find test-service-1. Found services: {[s.get('id') for s in services]}"
+    assert test_svc_1.get("name") == "Test Service 1"
+    
+    # Should find the second service
+    test_svc_2 = find_item(
+        services,
+        lambda s: ":test-service-2" in s.get("id", "")
+    )
+    assert test_svc_2 is not None, "Should find test-service-2"
+    assert test_svc_2.get("name") == "Test Service 2"
+    
+    # Test 2: Query with type filter
+    computation_services = await api.list_services(
+        query={"workspace": api.config.workspace, "type": "computation"}
+    )
+    
+    # Should find test-service-1 which has type "computation"
+    test_svc_1_filtered = find_item(
+        computation_services,
+        lambda s: ":test-service-1" in s.get("id", "")
+    )
+    assert test_svc_1_filtered is not None, "Should find test-service-1 with type filter"
+    
+    # Should not find test-service-2 which has type "data-processing"
+    test_svc_2_filtered = find_item(
+        computation_services,
+        lambda s: ":test-service-2" in s.get("id", "")
+    )
+    assert test_svc_2_filtered is None, "Should not find test-service-2 with computation type filter"
+    
+    # Stop the app session
+    await apps.stop(session_id)
+    
+    # Clean up - uninstall the app
+    await apps.uninstall(app_id)
+    
+    print("✅ All tests passed successfully!")
     
     await api.disconnect()

@@ -1066,13 +1066,9 @@ async def test_worker_concurrent_sessions(fastapi_server, test_user_token):
 
         print("✓ Concurrent sessions test passed")
 
-    finally:
-        # Clean up all sessions
-        for session in sessions:
-            try:
-                await controller.stop(session.id)
-            except Exception as e:
-                print(f"Error stopping session {session.id}: {e}")
+    # Clean up all sessions
+    for session in sessions:
+        await controller.stop(session.id)
 
     await api.disconnect()
 

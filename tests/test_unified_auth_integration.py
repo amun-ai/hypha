@@ -150,9 +150,9 @@ async def test_unified_auth_with_templates(tmp_path):
         # Check that workspace template has localStorage fallback for tokens
         assert "localStorage.getItem('hypha_token')" in ws_html, "Should have localStorage fallback"
         
-    finally:
-        server_proc.terminate()
-        server_proc.wait()
+    
+    server_proc.terminate()
+    server_proc.wait()
 
 
 @pytest.mark.asyncio
@@ -306,9 +306,9 @@ async def test_login_function_compatibility():
             services = await api.list_services("public")
             assert len(services) > 0, "Should be able to list services with token"
             
-    finally:
-        server_proc.terminate()
-        server_proc.wait()
+    
+    server_proc.terminate()
+    server_proc.wait()
 
 
 if __name__ == "__main__":

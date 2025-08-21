@@ -97,13 +97,12 @@ async def test_apps_and_lazy_worker_discovery(
             # Verify the app started correctly
             print(f"App session started: {session_id}")
             
-        finally:
-            # Stop the app
-            await controller.stop(session_id, raise_exception=False)
-            
-    finally:
-        # Cleanup
-        await controller.uninstall(browser_app_id)
+        
+        # Stop the app
+        await controller.stop(session_id, raise_exception=False)
+        
+    # Cleanup
+    await controller.uninstall(browser_app_id)
 
     await api.disconnect()
 
@@ -184,11 +183,10 @@ async def test_lazy_loading_with_get_service(
             assert isinstance(services_after_start, list), "Should work after app start"
             print(f"Services after app start: {len(services_after_start)}")
             
-        finally:
-            await controller.stop(session["id"], raise_exception=False)
-            
-    finally:
-        await controller.uninstall(app_id)
+        
+        await controller.stop(session["id"], raise_exception=False)
+        
+    await controller.uninstall(app_id)
     
     await api.disconnect()
 

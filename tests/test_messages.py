@@ -486,24 +486,22 @@ async def test_worker_manager_system_events(fastapi_server):
     # Test that workspace listeners can be set up without errors
     worker_manager = WorkerManager(MockStore())
     
-    try:
-        # This should work now with the subscribe calls
-        await worker_manager._ensure_workspace_monitoring(
-            api.config["workspace"], 
-            {"user": UserInfo.model_validate(api.config["user"]).model_dump()}
-        )
-        
-        # Give a moment for setup
-        await asyncio.sleep(0.1)
-        
-        # If we get here without exceptions, the subscribe calls worked
-        assert api.config["workspace"] in worker_manager._monitored_workspaces
-        assert worker_manager._monitored_workspaces[api.config["workspace"]] is True
-        
-        print("✅ WorkerManager successfully set up workspace monitoring with system events")
-        
-    finally:
-        await worker_manager.shutdown()
+    # This should work now with the subscribe calls
+    await worker_manager._ensure_workspace_monitoring(
+        api.config["workspace"], 
+        {"user": UserInfo.model_validate(api.config["user"]).model_dump()}
+    )
+    
+    # Give a moment for setup
+    await asyncio.sleep(0.1)
+    
+    # If we get here without exceptions, the subscribe calls worked
+    assert api.config["workspace"] in worker_manager._monitored_workspaces
+    assert worker_manager._monitored_workspaces[api.config["workspace"]] is True
+    
+    print("✅ WorkerManager successfully set up workspace monitoring with system events")
+    
+    await worker_manager.shutdown()
     
     await api.disconnect()
 

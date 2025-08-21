@@ -148,14 +148,11 @@ async def test_discover_services_from_installed_apps(
         
         print("\n✅ Service discovery tests completed successfully!")
         
-    finally:
-        # Clean up - uninstall the app
-        print(f"\nCleaning up - uninstalling app {app_id}")
-        try:
-            await apps.uninstall(app_id)
-            print("App uninstalled successfully")
-        except Exception as e:
-            print(f"Warning: Failed to uninstall app: {e}")
+    
+    # Clean up - uninstall the app
+    print(f"\nCleaning up - uninstalling app {app_id}")
+    await apps.uninstall(app_id)
+    print("App uninstalled successfully")
     
     await api.disconnect()
 
@@ -172,10 +169,7 @@ if __name__ == "__main__":
         server = fastapi_server_fixture(minio, postgres)
         token = test_user_token_fixture()
         
-        try:
-            await test_discover_services_from_installed_apps(minio, server, token)
-        finally:
-            # Clean up would happen here
-            pass
+        await test_discover_services_from_installed_apps(minio, server, token)
+        # Clean up would happen here
     
     asyncio.run(main())

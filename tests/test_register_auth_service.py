@@ -131,40 +131,38 @@ async def hypha_startup(server):
             stdout, stderr = server_process.communicate()
             raise Exception(f"Server startup timed out. Output: {stdout.decode()}")
     
-    try:
-        server_url = f"ws://127.0.0.1:{port}/ws"
-        
-        # Test custom login service
-        async with connect_to_server(
-            {
-                "client_id": "test-custom-login",
-                "server_url": server_url,
-            }
-        ) as api:
-            # Get the custom login service
-            login_service = await api.get_service("public/hypha-login")
-            
-            # Test custom start handler
-            result = await login_service.start()
-            assert result["key"] == "test-key-login"
-            assert result["login_url"] == "/custom/login"
-            
-            # Test custom check handler
-            token = await login_service.check(key="test-key-login", timeout=1)
-            assert token == "CUSTOM_LOGIN:test-user:workspace"
-            
-            # Test custom report handler
-            report_result = await login_service.report(
-                key="test-key-login",
-                token="some-token"
-            )
-            assert report_result["success"] is True
-            assert report_result["message"] == "Login reported"
+    server_url = f"ws://127.0.0.1:{port}/ws"
     
-    finally:
-        server_process.terminate()
-        server_process.wait()
-        os.unlink(test_module_path)
+    # Test custom login service
+    async with connect_to_server(
+        {
+            "client_id": "test-custom-login",
+            "server_url": server_url,
+        }
+    ) as api:
+        # Get the custom login service
+        login_service = await api.get_service("public/hypha-login")
+        
+        # Test custom start handler
+        result = await login_service.start()
+        assert result["key"] == "test-key-login"
+        assert result["login_url"] == "/custom/login"
+        
+        # Test custom check handler
+        token = await login_service.check(key="test-key-login", timeout=1)
+        assert token == "CUSTOM_LOGIN:test-user:workspace"
+        
+        # Test custom report handler
+        report_result = await login_service.report(
+            key="test-key-login",
+            token="some-token"
+        )
+        assert report_result["success"] is True
+        assert report_result["message"] == "Login reported"
+    
+    server_process.terminate()
+    server_process.wait()
+    os.unlink(test_module_path)
 
 
 @pytest.mark.asyncio
@@ -273,54 +271,52 @@ async def hypha_startup(server):
             stdout, stderr = server_process.communicate()
             raise Exception(f"Server startup timed out. Output: {stdout.decode()}")
     
-    try:
-        server_url = f"ws://127.0.0.1:{port}/ws"
-        
-        # Test that custom token functions work
-        async with connect_to_server(
-            {
-                "client_id": "test-partial-auth",
-                "server_url": server_url,
-            }
-        ) as api:
-            # Generate a token using custom generate function
-            workspace = api.config.workspace
-            token = await api.generate_token(
-                config={
-                    "workspace": workspace,
-                    "expires_in": 3600
-                }
-            )
-            
-            # Should be our custom partial token format
-            assert token.startswith("PARTIAL:"), f"Expected PARTIAL: token, got: {token}"
-            
-            # Should contain the user ID and expires_in
-            parts = token.split(":")
-            assert len(parts) == 3
-            assert parts[2] == "3600"  # expires_in value
-        
-        # Test that we can connect with the custom token
-        async with connect_to_server(
-            {
-                "client_id": "test-partial-token",
-                "server_url": server_url,
-                "token": token,  # Use the custom token
-            }
-        ) as api_with_token:
-            # Should be able to list services with custom token
-            services = await api_with_token.list_services("public")
-            assert len(services) > 0
-            
-            # The hypha-login service should NOT be registered since we only provided token functions
-            service_ids = [s["id"] for s in services]
-            login_services = [sid for sid in service_ids if "hypha-login" in sid]
-            # The default login service might exist, but not our custom one
+    server_url = f"ws://127.0.0.1:{port}/ws"
     
-    finally:
-        server_process.terminate()
-        server_process.wait()
-        os.unlink(test_module_path)
+    # Test that custom token functions work
+    async with connect_to_server(
+        {
+            "client_id": "test-partial-auth",
+            "server_url": server_url,
+        }
+    ) as api:
+        # Generate a token using custom generate function
+        workspace = api.config.workspace
+        token = await api.generate_token(
+            config={
+                "workspace": workspace,
+                "expires_in": 3600
+            }
+        )
+        
+        # Should be our custom partial token format
+        assert token.startswith("PARTIAL:"), f"Expected PARTIAL: token, got: {token}"
+        
+        # Should contain the user ID and expires_in
+        parts = token.split(":")
+        assert len(parts) == 3
+        assert parts[2] == "3600"  # expires_in value
+    
+    # Test that we can connect with the custom token
+    async with connect_to_server(
+        {
+            "client_id": "test-partial-token",
+            "server_url": server_url,
+            "token": token,  # Use the custom token
+        }
+    ) as api_with_token:
+        # Should be able to list services with custom token
+        services = await api_with_token.list_services("public")
+        assert len(services) > 0
+        
+        # The hypha-login service should NOT be registered since we only provided token functions
+        service_ids = [s["id"] for s in services]
+        login_services = [sid for sid in service_ids if "hypha-login" in sid]
+        # The default login service might exist, but not our custom one
+    
+    server_process.terminate()
+    server_process.wait()
+    os.unlink(test_module_path)
 
 
 @pytest.mark.asyncio 
@@ -416,38 +412,36 @@ async def hypha_startup(server):
         stdout, stderr = server_process.communicate(timeout=5)
         raise Exception(f"Server failed to start after {max_retries} seconds. Output: {stdout}")
     
-    try:
-        # Test custom login service
-        async with connect_to_server(
-            {
-                "client_id": "test-custom-override",
-                "server_url": server_url,
-            }
-        ) as api:
-            # Get the custom login service
-            login_service = await api.get_service("public/hypha-login")
-            
-            # Test custom start handler
-            result = await login_service.start()
-            assert result["custom"] is True
-            assert result["key"] == "test-key-override"
-            
-            # Test custom check handler
-            token = await login_service.check(key="test-key-override", timeout=1)
-            assert token == "custom-token-override-123"
-            
-            # Test custom report handler
-            report_result = await login_service.report(
-                key="test-key-override",
-                token="some-token"
-            )
-            assert report_result["reported"] is True
-            assert report_result["custom_handler"] is True
+    # Test custom login service
+    async with connect_to_server(
+        {
+            "client_id": "test-custom-override",
+            "server_url": server_url,
+        }
+    ) as api:
+        # Get the custom login service
+        login_service = await api.get_service("public/hypha-login")
+        
+        # Test custom start handler
+        result = await login_service.start()
+        assert result["custom"] is True
+        assert result["key"] == "test-key-override"
+        
+        # Test custom check handler
+        token = await login_service.check(key="test-key-override", timeout=1)
+        assert token == "custom-token-override-123"
+        
+        # Test custom report handler
+        report_result = await login_service.report(
+            key="test-key-override",
+            token="some-token"
+        )
+        assert report_result["reported"] is True
+        assert report_result["custom_handler"] is True
     
-    finally:
-        server_process.terminate()
-        server_process.wait()
-        os.unlink(test_module_path)
+    server_process.terminate()
+    server_process.wait()
+    os.unlink(test_module_path)
 
 
 if __name__ == "__main__":

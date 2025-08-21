@@ -368,27 +368,17 @@ async def test_cross_workspace_list_public_service(
         }
     )
 
-    try:
-        # List services in user 1's workspace
-        services = await api_user2.list_services({"workspace": cws_user1})
-        names = [s["name"] for s in services]
-        assert any(n == f"Public X {suffix}" for n in names)
-        assert all(n != f"Protected X {suffix}" for n in names)
-    except Exception as e:
-        print(f"Error listing services: {e}")
-        raise e
-    finally:
-        # Cleanup
-        try:
-            await api_user1.unregister_service(svc_public["id"])  # type: ignore[index]
-        except Exception:
-            pass
-        try:
-            await api_user1.unregister_service(svc_protected["id"])  # type: ignore[index]
-        except Exception:
-            pass
-        await api_user2.disconnect()
-        await api_user1.disconnect()
+    # List services in user 1's workspace
+    services = await api_user2.list_services({"workspace": cws_user1})
+    names = [s["name"] for s in services]
+    assert any(n == f"Public X {suffix}" for n in names)
+    assert all(n != f"Protected X {suffix}" for n in names)
+    
+    # Cleanup
+    await api_user1.unregister_service(svc_public["id"])  # type: ignore[index]
+    await api_user1.unregister_service(svc_protected["id"])  # type: ignore[index]
+    await api_user2.disconnect()
+    await api_user1.disconnect()
 
 async def test_service_selection_mode(fastapi_server, test_user_token):
     """Test that service_selection_mode from application manifest is used."""
