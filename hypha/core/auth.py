@@ -216,6 +216,9 @@ def _parse_token(authorization: str, expected_workspace: str = None):
         token = parts[1]
     else:
         token = authorization
+    
+    if not token:
+        raise ValueError("Token is empty")
 
     # If expected_workspace is provided, extract and verify workspace before full validation
     if expected_workspace:

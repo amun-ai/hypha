@@ -368,27 +368,17 @@ async def test_cross_workspace_list_public_service(
         }
     )
 
-    try:
-        # List services in user 1's workspace
-        services = await api_user2.list_services({"workspace": cws_user1})
-        names = [s["name"] for s in services]
-        assert any(n == f"Public X {suffix}" for n in names)
-        assert all(n != f"Protected X {suffix}" for n in names)
-    except Exception as e:
-        print(f"Error listing services: {e}")
-        raise e
-    finally:
-        # Cleanup
-        try:
-            await api_user1.unregister_service(svc_public["id"])  # type: ignore[index]
-        except Exception:
-            pass
-        try:
-            await api_user1.unregister_service(svc_protected["id"])  # type: ignore[index]
-        except Exception:
-            pass
-        await api_user2.disconnect()
-        await api_user1.disconnect()
+    # List services in user 1's workspace
+    services = await api_user2.list_services({"workspace": cws_user1})
+    names = [s["name"] for s in services]
+    assert any(n == f"Public X {suffix}" for n in names)
+    assert all(n != f"Protected X {suffix}" for n in names)
+    
+    # Cleanup
+    await api_user1.unregister_service(svc_public["id"])  # type: ignore[index]
+    await api_user1.unregister_service(svc_protected["id"])  # type: ignore[index]
+    await api_user2.disconnect()
+    await api_user1.disconnect()
 
 async def test_service_selection_mode(fastapi_server, test_user_token):
     """Test that service_selection_mode from application manifest is used."""
@@ -1448,3 +1438,135 @@ async def test_parse_token_workspace_validation(fastapi_server, test_user_token)
     await api.disconnect()
     
     print("✅ parse_token workspace validation tests passed successfully")
+
+
+async def test_workspace_manager_tilde_shortcut(fastapi_server, test_user_token):
+    """Test the '~' shortcut for workspace manager service."""
+    import httpx
+    
+    # Connect to the server
+    api = await connect_to_server(
+        {
+            "client_id": "test-tilde-shortcut",
+            "name": "Test Tilde Shortcut",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 20,
+            "token": test_user_token,
+        }
+    )
+    
+    # Test 1: Get workspace manager service using "~" shortcut via get_service
+    print("Test 1: Getting workspace manager using '~' shortcut via get_service...")
+    try:
+        ws_manager = await api.get_service("~")
+        assert ws_manager is not None
+        # The workspace manager should have certain methods
+        assert hasattr(ws_manager, "list_services")
+        assert hasattr(ws_manager, "create_workspace")
+        assert hasattr(ws_manager, "generate_token")
+        print("✅ Successfully got workspace manager using '~' shortcut via get_service")
+    except Exception as e:
+        print(f"Failed to get workspace manager using '~': {e}")
+        raise
+    
+    # Test 2: Get workspace manager service info using "~" shortcut via get_service_info
+    print("Test 2: Getting workspace manager info using '~' shortcut via get_service_info...")
+    try:
+        ws_manager_info = await api.get_service_info("~")
+        assert ws_manager_info is not None
+        assert ws_manager_info.id is not None
+        # The workspace manager is registered in the "*" workspace
+        # Should be in the format "*/manager-{server_id}:default"
+        assert "/" in ws_manager_info.id
+        assert ":default" in ws_manager_info.id
+        assert ws_manager_info.id.startswith("*/")
+        print(f"✅ Successfully got workspace manager info: {ws_manager_info.id}")
+    except Exception as e:
+        print(f"Failed to get workspace manager info using '~': {e}")
+        raise
+    
+    # Test 3: Test that workspace manager methods work through the "~" shortcut
+    print("Test 3: Testing workspace manager methods through '~' shortcut...")
+    try:
+        ws_manager = await api.get_service("~")
+        # Try listing workspaces
+        workspaces = await ws_manager.list_workspaces()
+        assert isinstance(workspaces, list)
+        print(f"✅ Listed {len(workspaces)} workspaces through '~' shortcut")
+    except Exception as e:
+        print(f"Failed to use workspace manager methods: {e}")
+        raise
+    
+    # Test 4: Test HTTP endpoint with "~" shortcut for service info
+    print("Test 4: Testing HTTP endpoint with '~' shortcut for service info...")
+    try:
+        # Get the current workspace
+        workspace = api.config.workspace
+        # Build the HTTP URL
+        base_url = api.config.public_base_url.rstrip("/")
+        url = f"{base_url}/{workspace}/services/~"
+        
+        # Make HTTP request with the token
+        headers = {"Authorization": f"Bearer {test_user_token}"}
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
+            assert response.status_code == 200
+            service_info = response.json()
+            assert service_info is not None
+            # Should contain service information
+            assert "id" in service_info
+            assert "/" in service_info["id"]
+            assert ":default" in service_info["id"]
+            # The workspace manager is in the "*" workspace
+            assert service_info["id"].startswith("*/")
+            print(f"✅ HTTP endpoint returned workspace manager info: {service_info['id']}")
+    except Exception as e:
+        print(f"Failed to access HTTP endpoint with '~': {e}")
+        raise
+    
+    # Test 5: Test HTTP endpoint with "~" shortcut for method calls
+    print("Test 5: Testing HTTP endpoint with '~' shortcut for method calls...")
+    try:
+        # Get the current workspace
+        workspace = api.config.workspace
+        # Build the HTTP URL for a method call
+        base_url = api.config.public_base_url.rstrip("/")
+        url = f"{base_url}/{workspace}/services/~/list_workspaces"
+        
+        # Make HTTP request with the token
+        headers = {
+            "Authorization": f"Bearer {test_user_token}",
+            "Content-Type": "application/json"
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json={})
+            assert response.status_code == 200
+            workspaces = response.json()
+            assert isinstance(workspaces, list)
+            print(f"✅ HTTP endpoint successfully called workspace manager method, got {len(workspaces)} workspaces")
+    except Exception as e:
+        print(f"Failed to call HTTP method with '~': {e}")
+        raise
+    
+    # Test 6: Verify that "~" consistently resolves to the same service
+    print("Test 6: Verifying '~' consistency...")
+    try:
+        # Get service info multiple times
+        info1 = await api.get_service_info("~")
+        info2 = await api.get_service_info("~")
+        assert info1.id == info2.id
+        print(f"✅ '~' consistently resolves to: {info1.id}")
+        
+        # Get service multiple times
+        svc1 = await api.get_service("~")
+        svc2 = await api.get_service("~")
+        # Should get the same service
+        assert svc1.id == svc2.id
+        print("✅ '~' consistently returns the same service instance")
+    except Exception as e:
+        print(f"Failed consistency check: {e}")
+        raise
+    
+    await api.disconnect()
+    
+    print("✅ All workspace manager '~' shortcut tests passed successfully")

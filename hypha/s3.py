@@ -40,6 +40,9 @@ from hypha.utils import (
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
+from hypha_rpc.utils.schema import schema_method
+from pydantic import Field as PydanticField
+from typing import Optional, List
 logger = logging.getLogger("s3")
 logger.setLevel(LOGLEVEL)
 
@@ -788,8 +791,51 @@ class S3Controller:
                 and response["ResponseMetadata"]["HTTPStatusCode"] == 200
             ), f"Failed to save workspace ({workspace.id}) manifest: {response}"
 
-    async def generate_credential(self, context: dict = None):
-        """Generate credential."""
+    @schema_method
+    async def generate_credential(
+        self,
+        context: dict = None
+    ) -> Dict[str, str]:
+        """
+        Generate S3 credentials for direct MinIO access.
+        
+        This method creates temporary S3 credentials that allow direct access to MinIO
+        storage using standard S3 clients. Only available when using MinIO backend.
+        The generated credentials are scoped to the user's workspace.
+        
+        Returns:
+            Dictionary with S3 connection details:
+            - endpoint_url: The S3 endpoint URL
+            - access_key_id: Generated access key for authentication
+            - secret_access_key: Generated secret key for authentication
+            - region_name: S3 region name
+            - bucket: The workspace bucket name
+            - prefix: Workspace-specific path prefix
+            
+        Examples:
+            # Generate credentials for S3 client access
+            creds = await generate_credential()
+            
+            # Use with boto3
+            import boto3
+            s3 = boto3.client('s3',
+                endpoint_url=creds['endpoint_url'],
+                aws_access_key_id=creds['access_key_id'],
+                aws_secret_access_key=creds['secret_access_key'],
+                region_name=creds['region_name']
+            )
+            
+        Raises:
+            AssertionError: If MinIO client is not available
+            Exception: If workspace is read-only
+            PermissionError: If user lacks write permission
+            
+        Limitations:
+            - Only available with MinIO backend (not generic S3)
+            - Requires read_write permission on the workspace
+            - Credentials are temporary and may expire
+            - Access is limited to the user's workspace prefix
+        """
         assert self.minio_client, "Minio client is not available"
         workspace = context["ws"]
         ws = await self.store.get_workspace_info(workspace, load=True)
@@ -815,13 +861,48 @@ class S3Controller:
             "prefix": workspace + "/",  # important to have the trailing slash
         }
 
+    @schema_method
     async def list_files(
         self,
-        path: str = "",
-        max_length: int = 1000,
+        path: str = PydanticField(
+            "",
+            description="Path to the directory to list files from. Use empty string for workspace root, or provide relative path like 'data/images'. Admin users can use absolute paths starting with '/'."
+        ),
+        max_length: int = PydanticField(
+            1000,
+            description="Maximum number of files to return in the listing. Default is 1000.",
+            ge=1,
+            le=10000
+        ),
         context: dict = None,
     ) -> Dict[str, Any]:
-        """List files in the folder."""
+        """
+        List files and directories in an S3 storage path.
+        
+        This service lists the contents of a directory in the S3-compatible storage system.
+        It returns file metadata including names, sizes, and modification times.
+        
+        Returns:
+            Dictionary containing:
+            - items: List of file/directory objects with metadata
+            - truncated: Boolean indicating if results were truncated
+            - continuation_token: Token for pagination (if truncated)
+        
+        Examples:
+            # List files in workspace root
+            files = await list_files("")
+            
+            # List files in a subdirectory
+            files = await list_files("datasets/images")
+            
+            # List with pagination
+            files = await list_files("large-folder", max_length=100)
+        
+        Limitations:
+            - Maximum 10000 files per request
+            - Requires read permission on the workspace
+            - Admin permission required for absolute paths (starting with '/')
+        """
         workspace = context["ws"]
         user_info = UserInfo.from_context(context)
         if path.startswith("/"):
@@ -884,8 +965,34 @@ class S3Controller:
             )  # FIXME: If we raise the error why do we need to log it first?
             raise
 
-    async def delete_directory(self, path: str, context: dict = None):
-        """Delete directory."""
+    @schema_method
+    async def delete_directory(
+        self,
+        path: str = PydanticField(
+            ...,
+            description="Path to the directory to delete. Must end with '/' to indicate a directory. Example: 'data/old-files/'. Admin users can use absolute paths starting with '/'."
+        ),
+        context: dict = None
+    ) -> Dict[str, Any]:
+        """
+        Delete a directory and all its contents from S3 storage (DEPRECATED - use remove_file instead).
+        
+        This method recursively deletes a directory and all files/subdirectories within it.
+        Use with caution as this operation cannot be undone.
+        
+        Note: This method is deprecated. Please use remove_file() which handles both files and directories.
+        
+        Returns:
+            Dictionary with deletion results including number of objects deleted
+        
+        Raises:
+            AssertionError: If path doesn't end with '/' or permission denied
+            
+        Limitations:
+            - Requires read_write permission on the workspace
+            - Admin permission required for absolute paths
+            - Directory must end with '/'
+        """
         # make sure the path is a directory
         assert path.endswith("/"), "Path should end with a slash for directory"
         workspace = context["ws"]
@@ -905,8 +1012,34 @@ class S3Controller:
             full_path += "/"
         return await self._delete_full_path(full_path)
 
-    async def delete_file(self, path: str, context: dict = None):
-        """Delete file."""
+    @schema_method
+    async def delete_file(
+        self,
+        path: str = PydanticField(
+            ...,
+            description="Path to the file to delete. Must NOT end with '/'. Example: 'data/document.pdf'. Admin users can use absolute paths starting with '/'."
+        ),
+        context: dict = None
+    ) -> Dict[str, Any]:
+        """
+        Delete a single file from S3 storage (DEPRECATED - use remove_file instead).
+        
+        This method deletes a specific file from the storage system.
+        Use with caution as this operation cannot be undone.
+        
+        Note: This method is deprecated. Please use remove_file() which handles both files and directories.
+        
+        Returns:
+            Dictionary with deletion confirmation
+            
+        Raises:
+            AssertionError: If path ends with '/' or permission denied
+            
+        Limitations:
+            - Requires read_write permission on the workspace
+            - Admin permission required for absolute paths
+            - Path must NOT end with '/'
+        """
         assert not path.endswith("/"), "Path should not end with a slash for file"
         workspace = context["ws"]
         user_info = UserInfo.from_context(context)
@@ -923,16 +1056,62 @@ class S3Controller:
             full_path = safe_join(workspace, path)
         return await self._delete_full_path(full_path)
 
+    @schema_method
     async def put_file(
         self,
-        file_path: str,
-        use_proxy: bool = None,
-        use_local_url: bool = False,
-        expires_in: float = 3600,
-        ttl: int = None,
+        file_path: str = PydanticField(
+            ...,
+            description="Path where the file will be stored. Example: 'uploads/document.pdf' or 'data/images/photo.jpg'. Do not include workspace prefix."
+        ),
+        use_proxy: bool = PydanticField(
+            None,
+            description="Whether to use proxy for the upload. If None, uses default configuration."
+        ),
+        use_local_url: bool = PydanticField(
+            False,
+            description="Whether to use local URL instead of public URL. Set to True for internal services."
+        ),
+        expires_in: float = PydanticField(
+            3600,
+            description="Time in seconds until the upload URL expires. Default is 1 hour (3600 seconds).",
+            gt=0,
+            le=604800
+        ),
+        ttl: Optional[int] = PydanticField(
+            None,
+            description="Time-to-live in seconds. File will be automatically deleted after this period. Set to None for permanent storage.",
+            gt=0
+        ),
         context: dict = None,
     ) -> str:
-        """Generate a presigned URL for uploading a file to S3."""
+        """
+        Generate a presigned URL for uploading a file to S3 storage.
+        
+        This method creates a temporary signed URL that allows direct file upload to S3
+        without needing permanent credentials. The URL can be used with HTTP PUT request.
+        
+        Returns:
+            Presigned URL string for uploading the file
+            
+        Examples:
+            # Get URL for uploading a document
+            upload_url = await put_file("documents/report.pdf")
+            
+            # Upload with automatic deletion after 1 day
+            upload_url = await put_file("temp/data.csv", ttl=86400)
+            
+            # Get URL valid for 30 minutes
+            upload_url = await put_file("uploads/image.jpg", expires_in=1800)
+        
+        Raises:
+            ValueError: If workspace not found
+            PermissionError: If workspace is read-only or user lacks write permission
+            
+        Limitations:
+            - Maximum URL expiration time is 7 days (604800 seconds)
+            - Requires read_write permission on the workspace
+            - Workspace must not be read-only
+        """
         workspace = context["ws"]
         user_info = UserInfo.from_context(context)
 
@@ -955,15 +1134,57 @@ class S3Controller:
             context=context,
         )
 
+    @schema_method
     async def get_file(
         self,
-        file_path: str,
-        use_proxy: bool = None,
-        use_local_url: bool = False,
-        expires_in: float = 3600,
+        file_path: str = PydanticField(
+            ...,
+            description="Path to the file to download. Example: 'documents/report.pdf' or 'data/images/photo.jpg'. Do not include workspace prefix."
+        ),
+        use_proxy: bool = PydanticField(
+            None,
+            description="Whether to use proxy for the download. If None, uses default configuration."
+        ),
+        use_local_url: bool = PydanticField(
+            False,
+            description="Whether to use local URL instead of public URL. Set to True for internal services."
+        ),
+        expires_in: float = PydanticField(
+            3600,
+            description="Time in seconds until the download URL expires. Default is 1 hour (3600 seconds).",
+            gt=0,
+            le=604800
+        ),
         context: dict = None,
     ) -> str:
-        """Generate a presigned URL for downloading a file from S3."""
+        """
+        Generate a presigned URL for downloading a file from S3 storage.
+        
+        This method creates a temporary signed URL that allows direct file download from S3
+        without needing permanent credentials. The URL can be used with HTTP GET request.
+        
+        Returns:
+            Presigned URL string for downloading the file
+            
+        Examples:
+            # Get URL for downloading a document
+            download_url = await get_file("documents/report.pdf")
+            
+            # Get URL valid for 30 minutes
+            download_url = await get_file("data/results.csv", expires_in=1800)
+            
+            # Get local URL for internal service
+            download_url = await get_file("models/weights.bin", use_local_url=True)
+        
+        Raises:
+            ValueError: If workspace not found
+            PermissionError: If user lacks read permission
+            
+        Limitations:
+            - Maximum URL expiration time is 7 days (604800 seconds)
+            - Requires read permission on the workspace
+            - File must exist in the specified path
+        """
         workspace = context["ws"]
         user_info = UserInfo.from_context(context)
 
@@ -980,15 +1201,64 @@ class S3Controller:
             context=context,
         )
 
+    @schema_method
     async def put_file_start_multipart(
         self,
-        file_path: str,
-        part_count: int,
-        expires_in: int = 3600,
-        ttl: int = None,
+        file_path: str = PydanticField(
+            ...,
+            description="Path where the file will be stored. Example: 'uploads/large-file.zip'. Do not include workspace prefix."
+        ),
+        part_count: int = PydanticField(
+            ...,
+            description="Total number of parts the file will be split into for upload. Must be between 1 and 10000.",
+            ge=1,
+            le=10000
+        ),
+        expires_in: int = PydanticField(
+            3600,
+            description="Time in seconds until the presigned URLs expire. Default is 1 hour (3600 seconds).",
+            gt=0,
+            le=604800
+        ),
+        ttl: Optional[int] = PydanticField(
+            None,
+            description="Time-to-live in seconds. File will be automatically deleted after this period once upload completes.",
+            gt=0
+        ),
         context: dict = None,
-    ) -> dict:
-        """Initiate a multipart upload and return presigned URLs for all parts."""
+    ) -> Dict[str, Any]:
+        """
+        Initiate a multipart upload for large files and get presigned URLs for all parts.
+        
+        Use this method for uploading large files (>100MB) that need to be split into
+        multiple parts. Each part can be uploaded in parallel for better performance.
+        After all parts are uploaded, call put_file_complete_multipart to finalize.
+        
+        Returns:
+            Dictionary with:
+            - upload_id: Unique identifier for this multipart upload session
+            - parts: List of dictionaries with part_number and presigned URL for each part
+            
+        Examples:
+            # Start multipart upload for a 1GB file split into 100 parts
+            result = await put_file_start_multipart("videos/large.mp4", part_count=100)
+            upload_id = result["upload_id"]
+            
+            # Upload each part using the presigned URLs
+            for part in result["parts"]:
+                # Upload data to part["url"] with PUT request
+                # Store the ETag from response headers
+            
+        Raises:
+            ValueError: If workspace not found or part_count out of range
+            PermissionError: If workspace is read-only or user lacks write permission
+            
+        Limitations:
+            - Maximum 10000 parts per upload
+            - Each part must be at least 5MB (except last part)
+            - Maximum file size is 5TB
+            - Requires read_write permission
+        """
         workspace = context["ws"]
         user_info = UserInfo.from_context(context)
 
@@ -1047,13 +1317,53 @@ class S3Controller:
 
             return {"upload_id": upload_id, "parts": parts}
 
+    @schema_method
     async def put_file_complete_multipart(
         self,
-        upload_id: str,
-        parts: list,
+        upload_id: str = PydanticField(
+            ...,
+            description="The upload ID returned from put_file_start_multipart. Identifies the multipart upload session to complete."
+        ),
+        parts: List[Dict[str, Any]] = PydanticField(
+            ...,
+            description="List of uploaded parts with their ETags. Each dict must have 'part_number' (int) and 'etag' (str) from the upload response headers."
+        ),
         context: dict = None,
-    ) -> dict:
-        """Complete a multipart upload."""
+    ) -> Dict[str, Any]:
+        """
+        Complete a multipart upload by assembling all uploaded parts.
+        
+        Call this method after all parts have been successfully uploaded using the
+        presigned URLs from put_file_start_multipart. The parts will be assembled
+        into the final file in S3.
+        
+        Returns:
+            Dictionary with:
+            - success: Boolean indicating if completion was successful
+            - message: Success message
+            - etag: The ETag of the completed file
+            - location: The S3 location of the file
+            
+        Examples:
+            # Complete multipart upload after uploading all parts
+            parts = [
+                {"part_number": 1, "etag": "abc123"},
+                {"part_number": 2, "etag": "def456"},
+                # ... more parts
+            ]
+            result = await put_file_complete_multipart(upload_id, parts)
+            
+        Raises:
+            ValueError: If workspace not found, parts list empty, or upload_id expired
+            PermissionError: If workspace is read-only or user lacks write permission
+            ClientError: If S3 fails to complete the upload (e.g., invalid ETags)
+            
+        Limitations:
+            - Parts must be provided in order by part_number
+            - All parts must have been uploaded successfully
+            - Upload ID expires after the time specified in put_file_start_multipart
+            - Requires read_write permission
+        """
         workspace = context["ws"]
         user_info = UserInfo.from_context(context)
 
@@ -1117,12 +1427,47 @@ class S3Controller:
                 # Let the error propagate with S3's error message
                 raise e
 
+    @schema_method
     async def remove_file(
         self,
-        path: str,
+        path: str = PydanticField(
+            ...,
+            description="Path to file or directory to remove. For directories, can optionally end with '/'. Examples: 'document.pdf', 'folder/', 'data/images'. Admin users can use absolute paths starting with '/'."
+        ),
         context: dict = None,
-    ) -> dict:
-        """Remove a file or directory from S3. Combines functionality of delete_file and delete_directory."""
+    ) -> Dict[str, Any]:
+        """
+        Remove a file or directory from S3 storage.
+        
+        This unified method handles deletion of both files and directories. It automatically
+        detects whether the path refers to a file or directory and performs the appropriate
+        deletion. For directories, all contents are recursively deleted.
+        
+        Returns:
+            Dictionary with:
+            - success: Boolean indicating if deletion was successful
+            - message: Description of what was deleted or error details
+            
+        Examples:
+            # Remove a single file
+            result = await remove_file("documents/old-report.pdf")
+            
+            # Remove an entire directory
+            result = await remove_file("temp/")
+            
+            # Remove directory without trailing slash
+            result = await remove_file("old-data")
+            
+        Raises:
+            ValueError: If workspace not found
+            PermissionError: If workspace is read-only or user lacks write permission
+            
+        Limitations:
+            - Requires read_write permission on the workspace
+            - Workspace must not be read-only
+            - Admin permission required for absolute paths
+            - Deletion is permanent and cannot be undone
+        """
         workspace = context["ws"]
         user_info = UserInfo.from_context(context)
 
@@ -1306,10 +1651,11 @@ class S3Controller:
         self.start_cleanup_task()
 
     def get_s3_service(self):
-        """Get s3 controller."""
+        """Get s3 controller service definition."""
         svc = {
             "id": "s3-storage",
-            "name": "S3 Storage",
+            "name": "S3 Storage Service",
+            "description": "S3-compatible object storage service for managing files and directories in Hypha workspaces. Provides secure file upload/download, presigned URLs, and multipart upload support for large files.",
             "config": {"visibility": "public", "require_context": True},
             "list_files": self.list_files,
             "delete_directory": self.delete_directory,  # deprecated, use remove_file instead

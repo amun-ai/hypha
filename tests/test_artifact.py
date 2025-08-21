@@ -3684,6 +3684,151 @@ async def test_get_zip_file_content_endpoint_large_scale(
     await artifact_manager.delete(artifact_id=collection.id)
 
 
+async def test_get_zip_file_content_very_large(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test retrieving content from very large ZIP files (>200MB with >4000 files) that trigger partial ZIP loading."""
+    
+    # Connect and get the artifact manager service
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+    
+    # Create a collection for testing
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest={
+            "name": "Very Large ZIP Test Collection",
+            "description": "A collection for testing very large ZIP file handling",
+        },
+        config={"permissions": {"*": "r", "@": "rw+"}},
+    )
+    
+    # Create a dataset within the collection
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={
+            "name": "Very Large ZIP Test Dataset",
+            "description": "A dataset with a very large ZIP file",
+        },
+        version="stage",
+    )
+    
+    # Create a very large ZIP file (>200MB with >4000 files)
+    # This simulates the OME-Zarr file structure mentioned in the issue
+    zip_buffer = BytesIO()
+    with ZipFile(
+        zip_buffer, "w", compression=zipfile.ZIP_STORED
+    ) as zip_file:
+        # Create a zarr-like structure with many chunk files
+        # Create .zattrs file (metadata)
+        zip_file.writestr("data.zarr/.zattrs", json.dumps({
+            "multiscales": [{"version": "0.4"}],
+            "omero": {"channels": []},
+        }))
+        
+        # Create .zarray file
+        zip_file.writestr("data.zarr/.zarray", json.dumps({
+            "chunks": [1, 256, 256],
+            "compressor": {"id": "zlib"},
+            "dtype": "<u2",
+            "shape": [100, 2048, 2048],
+            "zarr_format": 2
+        }))
+        
+        # Create many chunk files (4000+ files to simulate real OME-Zarr)
+        # Each chunk represents a piece of the array data
+        # Use uncompressed storage to ensure we hit the 200MB size requirement
+        chunk_data = b"x" * (50 * 1024)  # 50KB per chunk
+        
+        # Create chunks in a hierarchical structure
+        for t in range(20):  # 20 time points
+            for z in range(10):  # 10 z-slices  
+                for y in range(8):  # 8 y-chunks
+                    for x in range(8):  # 8 x-chunks
+                        chunk_path = f"data.zarr/{t}/{z}/{y}/{x}"
+                        # Add some variation in chunk size to make it more realistic
+                        if (t + z + y + x) % 3 == 0:
+                            chunk_content = chunk_data + b"y" * (10 * 1024)  # 60KB
+                        else:
+                            chunk_content = chunk_data
+                        zip_file.writestr(chunk_path, chunk_content)
+        
+        # Add some additional metadata files
+        for i in range(10):
+            zip_file.writestr(f"metadata/info_{i}.json", json.dumps({
+                "index": i,
+                "data": "metadata content" * 100
+            }))
+    
+    zip_buffer.seek(0)
+    zip_content = zip_buffer.getvalue()
+    
+    # Verify the ZIP is large enough to trigger partial loading
+    assert len(zip_content) > 200 * 1024 * 1024, f"ZIP file is too small: {len(zip_content)} bytes"
+    
+    # Upload the ZIP file to the artifact
+    zip_file_path = "very-large-ome-zarr"
+    put_url = await artifact_manager.put_file(
+        artifact_id=dataset.id,
+        file_path=f"{zip_file_path}.zip",
+        download_weight=0,
+    )
+    
+    # Upload the large ZIP file
+    async with httpx.AsyncClient(timeout=300) as client:
+        response = await client.put(put_url, data=zip_content)
+        assert response.status_code == 200, response.text
+    
+    # Commit the dataset artifact  
+    await artifact_manager.commit(artifact_id=dataset.id)
+    
+    # Test 1: List the root directory of the ZIP
+    async with httpx.AsyncClient(timeout=300) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files/{zip_file_path}.zip/~/"
+        )
+        assert response.status_code == 200, response.text
+        items = response.json()
+        assert any(item["name"] == "data.zarr" for item in items), "data.zarr directory not found"
+        assert any(item["name"] == "metadata" for item in items), "metadata directory not found"
+    
+    # Test 2: Access the .zattrs file (this is what fails in the bug report)
+    async with httpx.AsyncClient(timeout=300) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files/{zip_file_path}.zip/~/data.zarr/.zattrs"
+        )
+        assert response.status_code == 200, f"Failed to get .zattrs file: {response.status_code} - {response.text}"
+        content = response.json()
+        assert "multiscales" in content, "Missing multiscales in .zattrs"
+    
+    # Test 3: Access a chunk file deep in the hierarchy
+    async with httpx.AsyncClient(timeout=300) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files/{zip_file_path}.zip/~/data.zarr/0/0/0/0"
+        )
+        assert response.status_code == 200, f"Failed to get chunk file: {response.status_code}"
+        content = await response.aread()
+        assert len(content) >= 50 * 1024, f"Chunk content too small: {len(content)} bytes"
+    
+    # Test 4: List a nested directory
+    async with httpx.AsyncClient(timeout=300) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files/{zip_file_path}.zip/~/data.zarr/0/"
+        )
+        assert response.status_code == 200, response.text
+        items = response.json()
+        # Should have 10 z-slice directories (0-9)
+        dirs = [item for item in items if item["type"] == "directory"]
+        assert len(dirs) == 10, f"Expected 10 z-slice directories, got {len(dirs)}"
+    
+    # Clean up
+    await artifact_manager.delete(artifact_id=dataset.id)
+    await artifact_manager.delete(artifact_id=collection.id)
+
+
 async def test_edit_version_behavior(minio_server, fastapi_server, test_user_token):
     """Test edit function version handling behavior - when to update vs create new versions."""
     api = await connect_to_server(

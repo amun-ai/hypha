@@ -64,8 +64,10 @@ from hypha.core import (
 )
 from hypha.vectors import VectorSearchEngine
 from hypha_rpc.utils import ObjectProxy
+from hypha_rpc.utils.schema import schema_method
 from jsonschema import validate
 from sqlmodel import SQLModel, Field, Relationship, UniqueConstraint
+from pydantic import Field as PydanticField
 from typing import Optional, Union, List, Any, Dict
 import asyncio
 import struct
@@ -726,20 +728,21 @@ class ArtifactController:
 
                         # Fetch the ZIP's central directory from cache or download if not cached
                         cache_key = f"zip_tail:{self.workspace_bucket}:{s3_key}:{content_length}"
-                        zip_tail = await self._cache.get(cache_key)
-                        if zip_tail is None:
-                            zip_tail = await zip_utils.fetch_zip_tail(
+                        zip_tail_data = await self._cache.get(cache_key)
+                        if zip_tail_data is None:
+                            zip_tail_data = await zip_utils.fetch_zip_tail(
                                 s3_client, self.workspace_bucket, s3_key, content_length
                             )
-                            await self._cache.set(cache_key, zip_tail, ttl=60)
+                            await self._cache.set(cache_key, zip_tail_data, ttl=60)
 
                         # Process zip file using the utility function
+                        # Pass the full tuple to get_zip_file_content
                         return await zip_utils.get_zip_file_content(
                             s3_client,
                             self.workspace_bucket,
                             s3_key,
                             path=path,
-                            zip_tail=zip_tail,
+                            zip_tail=zip_tail_data,  # Pass the tuple directly
                             cache_instance=self._cache,
                         )
 
@@ -2305,34 +2308,103 @@ class ArtifactController:
                     version_key + "/",
                 )
 
+    @schema_method
     async def create(
         self,
-        alias: str = None,
-        artifact_id: str = None,  # Alternative to workspace + alias
-        workspace: str = None,
-        parent_id: str = None,
-        manifest: dict = None,
-        type="generic",
-        config: dict = None,
-        secrets: dict = None,
-        version: str = None,
-        comment: str = None,
-        overwrite: bool = False,
-        stage: bool = False,  # Add stage parameter
-        context: dict = None,
-    ):
-        """Create a new artifact and store its manifest in the database.
+        alias: Optional[str] = PydanticField(
+            None,
+            description="Unique alias for the artifact within the workspace (e.g., 'my-dataset', 'model-v2'). If not provided, a random alias will be generated. Must contain only alphanumeric characters, hyphens, and underscores."
+        ),
+        artifact_id: Optional[str] = PydanticField(
+            None,
+            description="Full artifact identifier in format 'workspace/alias'. Use this OR alias+workspace, not both. Example: 'public/my-dataset'."
+        ),
+        workspace: Optional[str] = PydanticField(
+            None,
+            description="Target workspace for the artifact. Ignored if parent_id is provided (inherits parent's workspace). Defaults to current workspace from context."
+        ),
+        parent_id: Optional[str] = PydanticField(
+            None,
+            description="Parent collection ID to create this artifact under. Format: 'workspace/collection-alias'. When provided, artifact inherits parent's workspace and permissions."
+        ),
+        manifest: Optional[Dict[str, Any]] = PydanticField(
+            None,
+            description="Artifact metadata including name, description, version, authors, etc. Must conform to artifact type schema."
+        ),
+        type: str = PydanticField(
+            "generic",
+            description="Artifact type. Options: 'generic' (default), 'collection' (folder-like container), 'application' (Hypha app), 'model' (ML model), 'dataset' (data collection)."
+        ),
+        config: Optional[Dict[str, Any]] = PydanticField(
+            None,
+            description="Configuration options including permissions, visibility, and storage settings. Example: {'permissions': {'*': 'r'}} for public read access."
+        ),
+        secrets: Optional[Dict[str, str]] = PydanticField(
+            None,
+            description="Secret key-value pairs stored encrypted. Use for API keys, credentials, etc. Only accessible to users with write permission."
+        ),
+        version: Optional[str] = PydanticField(
+            None,
+            description="Version tag for the artifact (e.g., 'v1.0', 'latest'). Creates a versioned snapshot. Use 'stage' for staging mode (deprecated - use stage parameter instead)."
+        ),
+        comment: Optional[str] = PydanticField(
+            None,
+            description="Version comment or changelog entry. Stored with version metadata for tracking changes."
+        ),
+        overwrite: bool = PydanticField(
+            False,
+            description="Whether to overwrite existing artifact with same alias. If False, raises error if artifact exists."
+        ),
+        stage: bool = PydanticField(
+            False,
+            description="Create artifact in staging mode. Staged changes can be committed or discarded later. Useful for multi-step artifact creation."
+        ),
+        context: Optional[dict] = PydanticField(
+            None,
+            description="Context containing user info and workspace. Usually provided automatically by the system."
+        ),
+    ) -> Dict[str, Any]:
+        """Create a new artifact in the artifact storage system.
         
-        Important: When creating a child artifact in a parent collection, the artifact 
-        will be created in the parent's workspace, not the user's current workspace.
-        The returned artifact ID will be in the format 'parent_workspace/alias'.
-        You must use this full ID for subsequent operations like put_file(), not just the alias.
+        This method creates a new artifact with metadata, configuration, and optional parent relationships.
+        Artifacts can be files, collections, applications, models, or datasets. When created under a parent
+        collection, the artifact inherits the parent's workspace and base permissions.
         
-        Args:
-            alias: The artifact alias (without workspace prefix)
-            artifact_id: Full artifact ID (workspace/alias). Alternative to using alias + workspace.
-            workspace: The workspace to create the artifact in (ignored if parent_id is provided)
-            parent_id: The parent collection ID (if provided, artifact inherits parent's workspace)
+        Returns:
+            Dictionary containing artifact details including:
+            - id: Full artifact identifier (workspace/alias)
+            - alias: The artifact alias
+            - workspace: The workspace containing the artifact
+            - manifest: The artifact metadata
+            - download_count, view_count: Usage statistics
+            - created_at, last_modified: Timestamps
+            
+        Examples:
+            # Create a simple artifact
+            artifact = await create(
+                alias="my-dataset",
+                manifest={"name": "My Dataset", "description": "Training data"},
+                type="dataset"
+            )
+            
+            # Create artifact in a collection
+            artifact = await create(
+                alias="image-001",
+                parent_id="public/image-collection",
+                manifest={"name": "Sample Image"}
+            )
+            
+            # Create with public read permissions
+            artifact = await create(
+                alias="public-model",
+                config={"permissions": {"*": "r"}},
+                manifest={"name": "Public Model"}
+            )
+            
+        Raises:
+            ValueError: If both artifact_id and alias/workspace are specified
+            PermissionError: If user lacks permission to create in the workspace
+            HTTPException: If artifact with alias already exists and overwrite=False
         """
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
@@ -2681,8 +2753,40 @@ class ArtifactController:
             workspace = context["ws"]
             return f"{workspace}/{artifact_id}"
 
-    async def reset_stats(self, artifact_id, context: dict):
-        """Reset the artifact's download count and view count."""
+    @schema_method
+    async def reset_stats(
+        self,
+        artifact_id: str = PydanticField(
+            ...,
+            description="Artifact to reset statistics for. Format: 'workspace/alias' or just 'alias' (uses current workspace)."
+        ),
+        context: dict = PydanticField(
+            ...,
+            description="Context containing user info and workspace. Usually provided automatically by the system."
+        ),
+    ) -> Dict[str, str]:
+        """Reset usage statistics for an artifact.
+        
+        This method resets the download count and view count to zero. Useful for
+        restarting statistics tracking after major updates or for testing purposes.
+        Requires write permission on the artifact.
+        
+        Returns:
+            Dictionary with status message confirming statistics were reset
+            
+        Examples:
+            # Reset stats for an artifact
+            await reset_stats("my-dataset")
+            
+            # Reset after major version update
+            await edit("my-model", manifest={"version": "2.0"})
+            await reset_stats("my-model")
+            
+        Raises:
+            ValueError: If artifact_id is invalid or context missing
+            PermissionError: If user lacks write permission
+            HTTPException: If artifact not found
+        """
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         user_info = UserInfo.from_context(context)
@@ -2704,19 +2808,86 @@ class ArtifactController:
         finally:
             await session.close()
 
+    @schema_method
     async def edit(
         self,
-        artifact_id,
-        manifest=None,
-        type=None,
-        config: dict = None,
-        secrets: dict = None,
-        version: str = None,
-        comment: str = None,
-        stage: bool = False,
-        context: dict = None,
-    ):
-        """Edit the artifact's manifest and save it in the database."""
+        artifact_id: str = PydanticField(
+            ...,
+            description="Artifact identifier to edit. Format: 'workspace/alias' or just 'alias' (uses current workspace)."
+        ),
+        manifest: Optional[Dict[str, Any]] = PydanticField(
+            None,
+            description="Updated manifest metadata. Merged with existing manifest. Set individual fields to update them."
+        ),
+        type: Optional[str] = PydanticField(
+            None,
+            description="Change artifact type. Options: 'generic', 'collection', 'application', 'model', 'dataset'. Use with caution as it may affect artifact behavior."
+        ),
+        config: Optional[Dict[str, Any]] = PydanticField(
+            None,
+            description="Updated configuration including permissions. Merged with existing config. Example: {'permissions': {'user123': 'rw'}} to grant read-write access."
+        ),
+        secrets: Optional[Dict[str, str]] = PydanticField(
+            None,
+            description="Updated secret key-value pairs. Stored encrypted. Replaces all existing secrets if provided."
+        ),
+        version: Optional[str] = PydanticField(
+            None,
+            description="Version tag for this edit (e.g., 'v2.0'). Creates a new version snapshot. Use 'stage' for staging mode (deprecated - use stage parameter)."
+        ),
+        comment: Optional[str] = PydanticField(
+            None,
+            description="Version comment or changelog for this edit. Stored with version metadata."
+        ),
+        stage: bool = PydanticField(
+            False,
+            description="Edit in staging mode. Changes are not immediately visible and must be committed. Useful for multi-step edits."
+        ),
+        context: Optional[dict] = PydanticField(
+            None,
+            description="Context containing user info and workspace. Usually provided automatically by the system."
+        ),
+    ) -> Dict[str, Any]:
+        """Edit an existing artifact's metadata, configuration, or type.
+        
+        This method updates an artifact's properties. Changes can be staged for later commit
+        or applied immediately. When editing in stage mode, changes accumulate until committed
+        or discarded. Manifest and config updates are merged with existing values.
+        
+        Returns:
+            Dictionary containing updated artifact information
+            
+        Examples:
+            # Update manifest metadata
+            await edit(
+                "my-dataset",
+                manifest={"description": "Updated description", "version": "2.0"}
+            )
+            
+            # Stage multiple edits
+            await edit("my-model", manifest={"status": "training"}, stage=True)
+            await edit("my-model", config={"visibility": "private"}, stage=True)
+            await commit("my-model")  # Apply all staged changes
+            
+            # Update permissions
+            await edit(
+                "shared-doc",
+                config={"permissions": {"team-alpha": "r", "admin": "rw"}}
+            )
+            
+            # Create a new version with changes
+            await edit(
+                "production-model",
+                manifest={"accuracy": 0.95},
+                version="v2.0",
+                comment="Improved model accuracy"
+            )
+            
+        Raises:
+            ValueError: If artifact_id is invalid or context missing
+            PermissionError: If user lacks write permission
+            HTTPException: If artifact not found
+        """
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         user_info = UserInfo.from_context(context)
@@ -2913,15 +3084,69 @@ class ArtifactController:
         finally:
             await session.close()
 
+    @schema_method
     async def read(
         self,
-        artifact_id,
-        silent=False,
-        version: str = None,
-        stage: bool = False,
-        context: dict = None,
-    ):
-        """Read the artifact's data including manifest and config."""
+        artifact_id: str = PydanticField(
+            ...,
+            description="Artifact identifier. Can be: 1) Full ID 'workspace/alias', 2) Just alias (uses current workspace), 3) Special alias like 'applications' for collections."
+        ),
+        silent: bool = PydanticField(
+            False,
+            description="If True, does not increment view count statistics. Use for automated/background reads."
+        ),
+        version: Optional[str] = PydanticField(
+            None,
+            description="Version to read (e.g., 'v1.0', 'latest'). Use 'stage' to read staged changes. If not specified, reads current committed version."
+        ),
+        stage: bool = PydanticField(
+            False,
+            description="Read staged (uncommitted) changes. Equivalent to version='stage'. Cannot be used with other version values."
+        ),
+        context: Optional[dict] = PydanticField(
+            None,
+            description="Context containing user info and workspace. Usually provided automatically by the system."
+        ),
+    ) -> Dict[str, Any]:
+        """Read an artifact's metadata, manifest, and configuration.
+        
+        This method retrieves complete artifact information including metadata, manifest,
+        configuration, and statistics. Supports reading specific versions or staged changes.
+        Automatically increments view count unless silent=True.
+        
+        Returns:
+            Dictionary containing:
+            - id: Full artifact identifier
+            - alias: Artifact alias
+            - workspace: Containing workspace
+            - manifest: Artifact metadata and content
+            - config: Configuration including permissions
+            - download_count, view_count: Usage statistics
+            - created_at, last_modified: Timestamps
+            - versions: List of available versions (if any)
+            - parent_id: Parent collection ID (if applicable)
+            
+        Examples:
+            # Read an artifact from current workspace
+            artifact = await read("my-dataset")
+            
+            # Read from specific workspace
+            artifact = await read("public/shared-model")
+            
+            # Read specific version
+            artifact = await read("my-model", version="v1.0")
+            
+            # Read staged changes
+            artifact = await read("my-dataset", stage=True)
+            
+            # Silent read (no stats increment)
+            artifact = await read("config-file", silent=True)
+            
+        Raises:
+            ValueError: If artifact_id is invalid or context missing
+            PermissionError: If user lacks read permission
+            HTTPException: If artifact not found
+        """
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
@@ -3018,14 +3243,57 @@ class ArtifactController:
         finally:
             await session.close()
 
+    @schema_method
     async def commit(
         self,
-        artifact_id,
-        version: str = None,
-        comment: str = None,
-        context: dict = None,
-    ):
-        """Commit the artifact by finalizing the staged manifest and files."""
+        artifact_id: str = PydanticField(
+            ...,
+            description="Artifact identifier to commit. Format: 'workspace/alias' or just 'alias' (uses current workspace)."
+        ),
+        version: Optional[str] = PydanticField(
+            None,
+            description="Version tag for this commit (e.g., 'v1.0', 'release-2024'). If not specified, updates the current version."
+        ),
+        comment: Optional[str] = PydanticField(
+            None,
+            description="Commit message or changelog entry describing the changes. Stored with version metadata for tracking."
+        ),
+        context: Optional[dict] = PydanticField(
+            None,
+            description="Context containing user info and workspace. Usually provided automatically by the system."
+        ),
+    ) -> Dict[str, Any]:
+        """Commit staged changes to an artifact.
+        
+        This method finalizes all staged changes (manifest, files, config) and makes them
+        permanent. After commit, staged changes become visible to other users with read
+        permission. Optionally creates a new version snapshot. This operation moves files
+        from staging to permanent storage.
+        
+        Returns:
+            Dictionary containing:
+            - status: Commit status message
+            - version: The version that was committed
+            - artifact_id: Full artifact identifier
+            
+        Examples:
+            # Commit staged changes
+            await edit("my-dataset", manifest={"status": "validated"}, stage=True)
+            await put_file("my-dataset", "data.csv", stage=True)
+            await commit("my-dataset", comment="Added validated data")
+            
+            # Commit with version tag
+            await edit("model", manifest={"accuracy": 0.95}, stage=True)
+            await commit("model", version="v2.0", comment="Improved model")
+            
+            # Simple commit without version
+            await commit("config-file")
+            
+        Raises:
+            ValueError: If artifact_id is invalid or version='stage'
+            PermissionError: If user lacks commit permission
+            HTTPException: If artifact not found or no staged changes exist
+        """
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
@@ -3285,15 +3553,57 @@ class ArtifactController:
         finally:
             await session.close()
 
+    @schema_method
     async def delete(
         self,
-        artifact_id,
-        delete_files=False,
-        recursive=False,
-        version=None,
-        context: dict = None,
-    ):
-        """Delete an artifact from the database and S3."""
+        artifact_id: str = PydanticField(
+            ...,
+            description="Artifact identifier to delete. Format: 'workspace/alias' or just 'alias' (uses current workspace)."
+        ),
+        delete_files: bool = PydanticField(
+            False,
+            description="If True, also delete all files stored in S3 for this artifact. If False, only removes database entry."
+        ),
+        recursive: bool = PydanticField(
+            False,
+            description="For collections: if True, recursively delete all child artifacts. If False, only delete if collection is empty."
+        ),
+        version: Optional[str] = PydanticField(
+            None,
+            description="Specific version to delete. If not specified, deletes entire artifact with all versions."
+        ),
+        context: Optional[dict] = PydanticField(
+            None,
+            description="Context containing user info and workspace. Usually provided automatically by the system."
+        ),
+    ) -> Dict[str, str]:
+        """Delete an artifact and optionally its associated files.
+        
+        This method removes an artifact from the database and optionally from S3 storage.
+        For collections, can recursively delete all children. Deletion is permanent and
+        cannot be undone. Requires delete permission on the artifact.
+        
+        Returns:
+            Dictionary with status message confirming deletion
+            
+        Examples:
+            # Delete artifact (keep files in S3)
+            await delete("old-dataset")
+            
+            # Delete artifact and all its files
+            await delete("temp-data", delete_files=True)
+            
+            # Delete a specific version
+            await delete("my-model", version="v1.0")
+            
+            # Recursively delete collection and contents
+            await delete("old-collection", recursive=True, delete_files=True)
+            
+        Raises:
+            ValueError: If artifact_id is invalid or context missing
+            PermissionError: If user lacks delete permission
+            HTTPException: If artifact not found or collection not empty (when recursive=False)
+        """
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
@@ -3477,33 +3787,78 @@ class ArtifactController:
         finally:
             await session.close()
 
+    @schema_method
     async def duplicate(
         self,
-        source_artifact_id: str,
-        target_alias: str = None,
-        target_workspace: str = None,
-        target_parent_id: str = None,
-        overwrite: bool = False,
-        remove_secrets: bool = True,
-        stage: bool = False,
-        context: dict = None,
-    ):
-        """Duplicate an artifact from one workspace to another or within the same workspace.
+        source_artifact_id: str = PydanticField(
+            ...,
+            description="Source artifact to duplicate. Format: 'workspace/alias' or just 'alias' (uses current workspace)."
+        ),
+        target_alias: Optional[str] = PydanticField(
+            None,
+            description="Alias for the duplicated artifact. If not provided, generates one like 'original-alias-copy-1'."
+        ),
+        target_workspace: Optional[str] = PydanticField(
+            None,
+            description="Target workspace for the duplicate. If not provided, uses source artifact's workspace."
+        ),
+        target_parent_id: Optional[str] = PydanticField(
+            None,
+            description="Parent collection for the duplicate. Format: 'workspace/collection-alias'. Overrides target_workspace if provided."
+        ),
+        overwrite: bool = PydanticField(
+            False,
+            description="Whether to overwrite if artifact with target_alias already exists."
+        ),
+        remove_secrets: bool = PydanticField(
+            True,
+            description="Whether to remove secrets from the duplicate. Recommended True when copying to different workspace."
+        ),
+        stage: bool = PydanticField(
+            False,
+            description="Create duplicate in staging mode. Useful for reviewing before committing."
+        ),
+        context: Optional[dict] = PydanticField(
+            None,
+            description="Context containing user info and workspace. Usually provided automatically by the system."
+        ),
+    ) -> Dict[str, Any]:
+        """Duplicate an artifact with all its files and metadata.
         
-        Args:
-            source_artifact_id: The ID of the artifact to duplicate
-            target_alias: The alias for the new artifact (optional, will auto-generate if not provided)
-            target_workspace: The workspace to duplicate to (optional, defaults to source workspace)
-            target_parent_id: The parent artifact ID for the new artifact (optional)
-            overwrite: Whether to overwrite an existing artifact with the same alias
-            remove_secrets: Whether to remove secrets from the duplicated artifact (default True)
-            stage: Whether to leave the duplicated artifact in stage mode (default False). 
-                   If True, the artifact will remain staged and can be discarded or committed later.
-                   Useful when the target collection doesn't allow commit permission for the current user.
-            context: The context containing user and workspace information
+        This method creates a complete copy of an artifact, including all files, manifest,
+        and configuration. Can copy within the same workspace or to a different workspace.
+        Secrets are removed by default for security when copying across workspaces.
         
         Returns:
-            The ID of the newly created artifact
+            Dictionary containing the new artifact's information
+            
+        Examples:
+            # Simple duplicate in same workspace
+            copy = await duplicate("my-dataset")
+            
+            # Copy to different workspace
+            copy = await duplicate(
+                "public/template",
+                target_workspace="my-workspace",
+                target_alias="my-copy"
+            )
+            
+            # Copy into a collection
+            copy = await duplicate(
+                "source-file",
+                target_parent_id="my-workspace/my-collection"
+            )
+            
+            # Overwrite existing artifact
+            copy = await duplicate(
+                "v2-model",
+                target_alias="latest-model",
+                overwrite=True
+            )
+            
+        Raises:
+            PermissionError: If user lacks read permission on source or write permission on target
+            HTTPException: If source not found or target exists (when overwrite=False)
         """
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
@@ -3817,17 +4172,78 @@ class ArtifactController:
         finally:
             await session.close()
 
+    @schema_method
     async def put_file(
         self,
-        artifact_id,
-        file_path,
-        download_weight: float = 0,
-        use_proxy=None,
-        use_local_url=False,
-        expires_in: int = 3600,
-        context: dict = None,
-    ):
-        """Generate a pre-signed URL to upload a file to an artifact in S3."""
+        artifact_id: str = PydanticField(
+            ...,
+            description="Artifact identifier to upload file to. Format: 'workspace/alias' or just 'alias' (uses current workspace)."
+        ),
+        file_path: str = PydanticField(
+            ...,
+            description="Path where to store the file within the artifact. Use forward slashes for nested paths (e.g., 'data/train.csv', 'models/weights.pt')."
+        ),
+        download_weight: float = PydanticField(
+            0,
+            description="Weight factor for download statistics. Higher weights indicate more important files. Used for calculating weighted download counts.",
+            ge=0
+        ),
+        use_proxy: Optional[bool] = PydanticField(
+            None,
+            description="If True, returns a proxy URL that goes through Hypha server. If False, returns direct S3 URL. Default auto-selects based on setup."
+        ),
+        use_local_url: bool = PydanticField(
+            False,
+            description="If True, returns localhost URL instead of public URL. Useful for server-side uploads."
+        ),
+        expires_in: int = PydanticField(
+            3600,
+            description="URL expiration time in seconds. Default 1 hour. Maximum 7 days (604800 seconds).",
+            ge=60,
+            le=604800
+        ),
+        context: Optional[dict] = PydanticField(
+            None,
+            description="Context containing user info and workspace. Usually provided automatically by the system."
+        ),
+    ) -> str:
+        """Generate a presigned URL for uploading a file to an artifact.
+        
+        This method creates a temporary upload URL that allows direct file upload to S3
+        storage. The URL expires after the specified time. Use HTTP PUT request with
+        the file content to upload. For large files (>100MB), consider using multipart upload.
+        
+        Returns:
+            Presigned URL string for file upload
+            
+        Examples:
+            # Get upload URL for a simple file
+            url = await put_file("my-dataset", "data.csv")
+            # Upload using httpx or requests:
+            # httpx.put(url, content=file_content)
+            
+            # Upload to nested path
+            url = await put_file("my-model", "checkpoints/epoch-10.pt")
+            
+            # Upload with custom expiration
+            url = await put_file(
+                "temp-data",
+                "upload.bin",
+                expires_in=300  # 5 minutes
+            )
+            
+            # Track important files with weight
+            url = await put_file(
+                "dataset",
+                "train-data.csv",
+                download_weight=1.0  # Full weight for main file
+            )
+            
+        Raises:
+            ValueError: If artifact_id invalid or download_weight negative
+            PermissionError: If user lacks write permission
+            HTTPException: If artifact not found
+        """
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
@@ -4129,8 +4545,50 @@ class ArtifactController:
         finally:
             await session.close()
 
-    async def remove_file(self, artifact_id, file_path, context: dict = None):
-        """Remove a file from the artifact and update the staged manifest."""
+    @schema_method
+    async def remove_file(
+        self,
+        artifact_id: str = PydanticField(
+            ...,
+            description="Artifact to remove file from. Format: 'workspace/alias' or just 'alias' (uses current workspace)."
+        ),
+        file_path: str = PydanticField(
+            ...,
+            description="Path to the file to remove. Use forward slashes for nested paths (e.g., 'data/old.csv', 'temp/cache.bin')."
+        ),
+        context: Optional[dict] = PydanticField(
+            None,
+            description="Context containing user info and workspace. Usually provided automatically by the system."
+        ),
+    ) -> Dict[str, str]:
+        """Remove a file from an artifact.
+        
+        This method removes a file from the artifact's storage. The removal is staged
+        and must be committed to take permanent effect. File removal updates the
+        artifact's file count in the staging manifest.
+        
+        Returns:
+            Dictionary with status message confirming file removal
+            
+        Examples:
+            # Remove a single file
+            await remove_file("my-dataset", "obsolete-data.csv")
+            await commit("my-dataset", comment="Removed obsolete data")
+            
+            # Remove file from nested directory
+            await remove_file("my-project", "temp/debug.log")
+            
+            # Remove multiple files (call multiple times)
+            await remove_file("cleanup-target", "file1.txt")
+            await remove_file("cleanup-target", "file2.txt")
+            await commit("cleanup-target")
+            
+        Raises:
+            ValueError: If artifact_id is invalid
+            PermissionError: If user lacks write permission
+            AssertionError: If artifact not in staging mode
+            HTTPException: If artifact or file not found
+        """
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
@@ -4255,19 +4713,84 @@ class ArtifactController:
         finally:
             await session.close()
 
+    @schema_method
     async def get_file(
         self,
-        artifact_id,
-        file_path,
-        silent=False,
-        version=None,
-        stage: bool = False,
-        use_proxy=None,
-        use_local_url: Union[bool, str] = False,
-        expires_in: int = 3600,
-        context: dict = None,
-    ):
-        """Generate a pre-signed URL to download a file from an artifact in S3."""
+        artifact_id: str = PydanticField(
+            ...,
+            description="Artifact identifier to download file from. Format: 'workspace/alias' or just 'alias' (uses current workspace)."
+        ),
+        file_path: str = PydanticField(
+            ...,
+            description="Path to the file within the artifact. Use forward slashes for nested paths (e.g., 'data/train.csv', 'models/weights.pt')."
+        ),
+        silent: bool = PydanticField(
+            False,
+            description="If True, does not increment download count statistics. Use for automated/background downloads."
+        ),
+        version: Optional[str] = PydanticField(
+            None,
+            description="Version to download from (e.g., 'v1.0', 'latest'). If not specified, uses current version."
+        ),
+        stage: bool = PydanticField(
+            False,
+            description="Download from staged (uncommitted) files. Cannot be used with version parameter."
+        ),
+        use_proxy: Optional[bool] = PydanticField(
+            None,
+            description="If True, returns a proxy URL that goes through Hypha server. If False, returns direct S3 URL. Default auto-selects."
+        ),
+        use_local_url: Union[bool, str] = PydanticField(
+            False,
+            description="If True, returns localhost URL. If 'absolute', returns absolute file path. Default returns public URL."
+        ),
+        expires_in: int = PydanticField(
+            3600,
+            description="URL expiration time in seconds. Default 1 hour. Maximum 7 days (604800 seconds).",
+            ge=60,
+            le=604800
+        ),
+        context: Optional[dict] = PydanticField(
+            None,
+            description="Context containing user info and workspace. Usually provided automatically by the system."
+        ),
+    ) -> str:
+        """Generate a presigned URL for downloading a file from an artifact.
+        
+        This method creates a temporary download URL that allows direct file access from S3
+        storage. The URL expires after the specified time. Automatically tracks download
+        statistics unless silent=True. Supports versioned and staged file access.
+        
+        Returns:
+            Presigned URL string for file download
+            
+        Examples:
+            # Download a file
+            url = await get_file("my-dataset", "data.csv")
+            # Download using httpx or browser:
+            # response = httpx.get(url)
+            
+            # Download from specific version
+            url = await get_file("my-model", "weights.pt", version="v1.0")
+            
+            # Silent download (no stats tracking)
+            url = await get_file("config", "settings.json", silent=True)
+            
+            # Download staged file
+            url = await get_file("work-in-progress", "draft.txt", stage=True)
+            
+            # Get local file path (for server-side processing)
+            path = await get_file(
+                "local-data",
+                "process.csv",
+                use_local_url="absolute"
+            )
+            
+        Raises:
+            ValueError: If artifact_id invalid or stage used with version
+            PermissionError: If user lacks read permission
+            HTTPException: If artifact or file not found
+        """
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
@@ -4355,17 +4878,75 @@ class ArtifactController:
         finally:
             await session.close()
 
+    @schema_method
     async def list_files(
         self,
-        artifact_id: str,
-        dir_path: str = None,
-        limit: int = 1000,
-        version: str = None,
-        stage: bool = False,
-        include_pending: bool = False,
-        context: dict = None,
-    ):
-        """List files in the specified artifact's S3 path."""
+        artifact_id: str = PydanticField(
+            ...,
+            description="Artifact identifier to list files from. Format: 'workspace/alias' or just 'alias' (uses current workspace)."
+        ),
+        dir_path: Optional[str] = PydanticField(
+            None,
+            description="Subdirectory path within the artifact to list. Use forward slashes (e.g., 'data/images'). If None, lists root directory."
+        ),
+        limit: int = PydanticField(
+            1000,
+            description="Maximum number of files to return. Range: 1-10000.",
+            ge=1,
+            le=10000
+        ),
+        version: Optional[str] = PydanticField(
+            None,
+            description="Version to list files from (e.g., 'v1.0'). If not specified, lists from current version."
+        ),
+        stage: bool = PydanticField(
+            False,
+            description="List files from staged (uncommitted) storage. Cannot be used with version parameter."
+        ),
+        include_pending: bool = PydanticField(
+            False,
+            description="Include pending file operations in the listing (uploads in progress, scheduled deletions)."
+        ),
+        context: Optional[dict] = PydanticField(
+            None,
+            description="Context containing user info and workspace. Usually provided automatically by the system."
+        ),
+    ) -> Dict[str, Any]:
+        """List files stored in an artifact.
+        
+        This method lists all files within an artifact or a specific directory. Returns
+        file metadata including names, sizes, and modification times. Supports listing
+        from specific versions or staged storage. Results include both regular files
+        and directories.
+        
+        Returns:
+            Dictionary containing:
+            - items: List of file/directory objects with metadata
+            - truncated: Boolean indicating if results were truncated due to limit
+            
+        Examples:
+            # List all files in artifact
+            files = await list_files("my-dataset")
+            
+            # List files in subdirectory
+            files = await list_files("my-project", dir_path="data/processed")
+            
+            # List files from specific version
+            files = await list_files("my-model", version="v1.0")
+            
+            # List staged files
+            files = await list_files("work-in-progress", stage=True)
+            
+            # List with pagination
+            files = await list_files("large-dataset", limit=100)
+            if files['truncated']:
+                print("More files available")
+            
+        Raises:
+            ValueError: If artifact_id invalid or stage used with version
+            PermissionError: If user lacks read permission
+            HTTPException: If artifact not found
+        """
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
@@ -4640,28 +5221,103 @@ class ArtifactController:
             return and_(*conditions)
         return None
 
+    @schema_method
     async def list_children(
         self,
-        parent_id=None,
-        keywords=None,
-        filters=None,
-        mode="AND",
-        offset: int = 0,
-        limit: int = 100,
-        order_by: str = None,
-        silent: bool = False,
-        pagination: bool = False,
-        stage: bool = False,
-        context: dict = None,
-    ):
-        """
-        List artifacts within a collection under a specific artifact_id.
-
-        Parameters:
-            stage: Controls which artifacts to return based on their staging status
-                - True: Return only staged artifacts
-                - False: Return only committed artifacts
-                - 'all': Return both staged and committed artifacts
+        parent_id: Optional[str] = PydanticField(
+            None,
+            description="Parent collection ID to list children from. Format: 'workspace/collection-alias'. If None, lists root artifacts in workspace."
+        ),
+        keywords: Optional[List[str]] = PydanticField(
+            None,
+            description="Keywords to search for in artifact names and descriptions. Performs text search across manifest fields."
+        ),
+        filters: Optional[Dict[str, Any]] = PydanticField(
+            None,
+            description="Filter criteria for artifacts. Examples: {'type': 'dataset'}, {'manifest.status': 'published'}, {'created_by': 'user123'}."
+        ),
+        mode: str = PydanticField(
+            "AND",
+            description="How to combine multiple filters. 'AND' requires all conditions to match, 'OR' requires any condition to match."
+        ),
+        offset: int = PydanticField(
+            0,
+            description="Number of items to skip for pagination. Use with limit to implement paging.",
+            ge=0
+        ),
+        limit: int = PydanticField(
+            100,
+            description="Maximum number of items to return. Range: 1-1000.",
+            ge=1,
+            le=1000
+        ),
+        order_by: Optional[str] = PydanticField(
+            None,
+            description="Field to sort results by. Format: 'field' or '-field' for descending. Examples: 'created_at', '-download_count', 'manifest.name'."
+        ),
+        silent: bool = PydanticField(
+            False,
+            description="If True, does not increment view count for the parent collection."
+        ),
+        pagination: bool = PydanticField(
+            False,
+            description="If True, returns pagination metadata (total count, has_next, has_previous) along with items."
+        ),
+        stage: Union[bool, str] = PydanticField(
+            False,
+            description="Control which artifacts to return: False=committed only (default), True=staged only, 'all'=both staged and committed."
+        ),
+        context: Optional[dict] = PydanticField(
+            None,
+            description="Context containing user info and workspace. Usually provided automatically by the system."
+        ),
+    ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
+        """List child artifacts within a collection or workspace.
+        
+        This method retrieves artifacts within a parent collection or at the workspace root.
+        Supports filtering, searching, sorting, and pagination. Returns artifact summaries
+        with key metadata fields for efficient listing.
+        
+        Returns:
+            If pagination=False: List of artifact dictionaries
+            If pagination=True: Dictionary with 'items' list and pagination metadata
+            
+        Examples:
+            # List all artifacts in a collection
+            items = await list_children("public/datasets")
+            
+            # Search with keywords
+            items = await list_children(
+                "public/models",
+                keywords=["neural", "network"]
+            )
+            
+            # Filter by type and status
+            items = await list_children(
+                "my-collection",
+                filters={"type": "dataset", "manifest.status": "validated"}
+            )
+            
+            # Paginated results
+            result = await list_children(
+                "large-collection",
+                offset=20,
+                limit=10,
+                pagination=True
+            )
+            print(f"Showing {len(result['items'])} of {result['total']} items")
+            
+            # Sort by download count
+            popular = await list_children(
+                "public/apps",
+                order_by="-download_count",
+                limit=10
+            )
+            
+        Raises:
+            ValueError: If parent_id is invalid or filters malformed
+            PermissionError: If user lacks read permission on parent
+            HTTPException: If parent collection not found
         """
         logger.info(f"list_children implementation: stage parameter value = {stage}")
 
@@ -5023,10 +5679,58 @@ class ArtifactController:
         finally:
             await session.close()
 
+    @schema_method
     async def publish(
-        self, artifact_id: str, to: str = None, metadata=None, context: dict = None
-    ):
-        """Publish the artifact to a public archive like Zenodo."""
+        self,
+        artifact_id: str = PydanticField(
+            ...,
+            description="Artifact to publish. Format: 'workspace/alias' or just 'alias' (uses current workspace)."
+        ),
+        to: Optional[str] = PydanticField(
+            None,
+            description="Target platform for publishing. Currently supports: 'zenodo' for Zenodo archive. More platforms coming soon."
+        ),
+        metadata: Optional[Dict[str, Any]] = PydanticField(
+            None,
+            description="Additional metadata for the publication. Platform-specific fields like DOI metadata for Zenodo."
+        ),
+        context: Optional[dict] = PydanticField(
+            None,
+            description="Context containing user info and workspace. Usually provided automatically by the system."
+        ),
+    ) -> Dict[str, Any]:
+        """Publish an artifact to an external archive or repository.
+        
+        This method publishes artifacts to external platforms like Zenodo for permanent
+        archival and DOI assignment. The artifact must have complete metadata including
+        name and description. Publishing creates a permanent, citable record of the artifact.
+        
+        Returns:
+            Dictionary containing publication details including:
+            - status: Publication status
+            - doi: Digital Object Identifier (if assigned)
+            - url: Public URL of the published artifact
+            
+        Examples:
+            # Publish to Zenodo
+            result = await publish(
+                "my-dataset",
+                to="zenodo",
+                metadata={
+                    "creators": [{"name": "Smith, John"}],
+                    "license": "CC-BY-4.0"
+                }
+            )
+            print(f"Published with DOI: {result['doi']}")
+            
+            # Simple publication with minimal metadata
+            result = await publish("research-data", to="zenodo")
+            
+        Raises:
+            ValueError: If manifest missing required fields (name, description)
+            PermissionError: If user lacks publish permission
+            HTTPException: If artifact not found or publication fails
+        """
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
@@ -5269,12 +5973,44 @@ class ArtifactController:
         finally:
             await session.close()
 
+    @schema_method
     async def discard(
         self,
-        artifact_id,
-        context: dict = None,
-    ):
-        """Discard staged changes for an artifact, reverting to the last committed state."""
+        artifact_id: str = PydanticField(
+            ...,
+            description="Artifact with staged changes to discard. Format: 'workspace/alias' or just 'alias' (uses current workspace)."
+        ),
+        context: Optional[dict] = PydanticField(
+            None,
+            description="Context containing user info and workspace. Usually provided automatically by the system."
+        ),
+    ) -> Dict[str, str]:
+        """Discard all staged changes and revert to last committed state.
+        
+        This method removes all uncommitted changes including staged files, manifest edits,
+        and configuration changes. The artifact reverts to its last committed state.
+        This operation cannot be undone - staged changes are permanently lost.
+        
+        Returns:
+            Dictionary with status message confirming changes were discarded
+            
+        Examples:
+            # Discard all staged changes
+            await edit("my-doc", manifest={"status": "draft"}, stage=True)
+            await put_file("my-doc", "draft.txt", stage=True)
+            # Changed mind - discard everything
+            await discard("my-doc")
+            
+            # Discard after reviewing staged changes
+            staged_data = await read("experiment", stage=True)
+            if not validate(staged_data):
+                await discard("experiment")
+            
+        Raises:
+            ValueError: If artifact_id is invalid
+            PermissionError: If user lacks write permission
+            HTTPException: If artifact not found or no staged changes exist
+        """
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)

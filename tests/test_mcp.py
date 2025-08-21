@@ -141,9 +141,6 @@ async def test_mcp_service_registration(fastapi_server, test_user_token):
     assert service["type"] == "mcp"
     assert "test-mcp-service" in service["id"]
 
-    # Now test using the actual MCP client
-    from mcp.client.streamable_http import streamablehttp_client
-    from mcp.client.session import ClientSession
 
     # Create MCP client session
     base_url = f"{SERVER_URL}/{workspace}/mcp/test-mcp-service/mcp"
@@ -380,9 +377,6 @@ async def test_mcp_schema_function_service(fastapi_server, test_user_token):
     assert "schema-mcp-service" in service["id"]
     assert service["id"].startswith(workspace)
 
-    # Now test using the actual MCP client
-    from mcp.client.streamable_http import streamablehttp_client
-    from mcp.client.session import ClientSession
 
     # Create MCP client session
     base_url = f"{SERVER_URL}/{workspace}/mcp/schema-mcp-service/mcp"
@@ -551,9 +545,6 @@ async def test_mcp_inline_config_service(fastapi_server, test_user_token):
     assert "inline-mcp-service" in service["id"]
     assert service["id"].startswith(workspace)
 
-    # Now test using the actual MCP client
-    from mcp.client.streamable_http import streamablehttp_client
-    from mcp.client.session import ClientSession
 
     # Create MCP client session
     base_url = f"{SERVER_URL}/{workspace}/mcp/inline-mcp-service/mcp"
@@ -1665,8 +1656,6 @@ async def test_mcp_real_client_integration(fastapi_server, test_user_token):
         }
     )
 
-    from mcp.client.streamable_http import streamablehttp_client
-    from mcp.client.session import ClientSession
 
     # Create MCP client session
     base_url = f"{SERVER_URL}/{workspace}/mcp/weather-service/mcp"
@@ -1737,8 +1726,6 @@ async def test_mcp_real_client_integration(fastapi_server, test_user_token):
 
 async def test_mcp_nested_services(fastapi_server, test_user_token):
     """Test that services with nested callable functions are properly exposed via MCP when converted."""
-    from mcp.client.streamable_http import streamablehttp_client
-    from mcp.client.session import ClientSession
     
     # Connect to the Hypha server
     api = await connect_to_server(
@@ -1877,8 +1864,7 @@ async def test_mcp_nested_services(fastapi_server, test_user_token):
 
 async def test_mcp_invalid_type_validation(fastapi_server, test_user_token):
     """Test that services with type='mcp' but invalid structure throw an error."""
-    from mcp.client.streamable_http import streamablehttp_client
-    from mcp.client.session import ClientSession
+
     
     # Connect to the Hypha server
     api = await connect_to_server(
@@ -2002,8 +1988,7 @@ async def test_mcp_invalid_type_validation(fastapi_server, test_user_token):
 
 async def test_mcp_arbitrary_service_conversion(fastapi_server, test_user_token):
     """Test that ANY service (without explicit type=mcp) can be accessed via MCP endpoints."""
-    from mcp.client.streamable_http import streamablehttp_client
-    from mcp.client.session import ClientSession
+
     
     # Connect to the Hypha server
     api = await connect_to_server(
@@ -2139,4 +2124,188 @@ async def test_mcp_arbitrary_service_conversion(fastapi_server, test_user_token)
     
     # Clean up
     await api.unregister_service(service_info["id"])
+    await api.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_mcp_service_with_docs_field(fastapi_server, test_user_token):
+    """Test that a service with a docs field exposes it as an MCP resource."""
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+    
+    workspace = api.config.workspace
+    
+    docs_content = """
+# Service Documentation
+
+This service processes data according to specific rules.
+
+## Usage
+```python
+result = await service.process(data)
+```
+"""
+    
+    # Use a schema_function to ensure proper function wrapping
+    @schema_function
+    def process(x: int) -> int:
+        """Process a value."""
+        return x * 2
+    
+    service_info = await api.register_service(
+        {
+            "id": "docs-service",
+            "name": "Service with Documentation",
+            # Don't specify type - let it be auto-wrapped as MCP
+            "docs": docs_content,
+            "description": "A service with documentation field",
+            "config": {"visibility": "public"},
+            "process": process,  # Use the schema_function
+        }
+    )
+    
+    # Wait a moment for the service to be fully registered
+    await asyncio.sleep(1.0)  # Increase wait time
+    
+    # Connect to the MCP endpoint
+    service_id = service_info['id'].split('/')[-1]  # Get just the service ID part
+    base_url = f"{SERVER_URL}/{workspace}/mcp/{service_id}/mcp"
+    
+    async with streamablehttp_client(base_url) as (
+        read_stream,
+        write_stream,
+        get_session_id,
+    ):
+        async with ClientSession(read_stream, write_stream) as session:
+            # Initialize the session
+            await session.initialize()
+            
+            # First verify the service has tools (the process function)
+            tools_result = await session.list_tools()
+            assert tools_result is not None
+            assert hasattr(tools_result, "tools")
+            assert len(tools_result.tools) > 0, "Service should have at least one tool"
+            
+            # List resources - should include the docs field
+            resources_result = await session.list_resources()
+            assert resources_result is not None
+            assert hasattr(resources_result, "resources")
+            
+            # Find the docs resource
+            docs_resource = None
+            for resource in resources_result.resources:
+                # Convert AnyUrl to string for comparison
+                if str(resource.uri) == "resource://docs":
+                    docs_resource = resource
+                    break
+            
+            assert docs_resource is not None, f"Docs resource not found. Available resources: {[str(r.uri) for r in resources_result.resources]}"
+            assert "Documentation" in docs_resource.name
+            assert docs_resource.mimeType == "text/plain"
+            
+            # Read the docs resource
+            read_result = await session.read_resource(uri="resource://docs")
+            assert read_result is not None
+            assert hasattr(read_result, "contents")
+            assert len(read_result.contents) > 0
+            assert read_result.contents[0].text == docs_content
+    await api.disconnect()
+
+@pytest.mark.asyncio
+async def test_mcp_service_with_nested_string_resources(fastapi_server, test_user_token):
+    """Test that services with nested string fields expose them as MCP resources."""
+
+    api = await connect_to_server(
+        {"server_url": WS_SERVER_URL, "client_id": "test-client-nested", "token": test_user_token}
+    )
+    
+    workspace = api.config.workspace
+    
+    # Use a schema_function to ensure proper function wrapping
+    @schema_function
+    def process(x: int) -> int:
+        """Process a value."""
+        return x * 2
+    
+    # Register a non-MCP service with nested string fields
+    service_info = await api.register_service(
+        {
+            "id": "nested-service",
+            "name": "Service with Nested Resources",
+            # Don't specify type - let it be auto-wrapped as MCP
+            "description": "A service with nested string resources",
+            "config": {"visibility": "public"},
+            "metadata": {
+                "version": "1.0.0",
+                "author": "Test Author",
+                "nested": {
+                    "info": "Some nested information",
+                    "details": "More details here"
+                }
+            },
+            "settings": {
+                "feature_flags": ["flag1", "flag2"],
+                "configuration": "Production configuration"
+            },
+            "process": process,  # Use the schema_function
+        }
+    )
+    
+    # Wait a moment for the service to be fully registered
+    await asyncio.sleep(1.0)  # Increase wait time
+    
+    # Connect to the MCP endpoint
+    service_id = service_info['id'].split('/')[-1]  # Get just the service ID part
+    base_url = f"{SERVER_URL}/{workspace}/mcp/{service_id}/mcp"
+    
+    async with streamablehttp_client(base_url) as (
+        read_stream,
+        write_stream,
+        get_session_id,
+    ):
+        async with ClientSession(read_stream, write_stream) as session:
+            # Initialize the session
+            await session.initialize()
+            
+            # First verify the service has tools (the process function)
+            tools_result = await session.list_tools()
+            assert tools_result is not None
+            assert hasattr(tools_result, "tools")
+            assert len(tools_result.tools) > 0, "Service should have at least one tool"
+            
+            # List resources - should include nested string fields
+            resources_result = await session.list_resources()
+            assert resources_result is not None
+            assert hasattr(resources_result, "resources")
+            assert len(resources_result.resources) > 0, f"No resources found! Service should have string resources"
+            
+            # Check for expected resources with hierarchical URIs
+            expected_resources = {
+                "resource://metadata/version": "1.0.0",
+                "resource://metadata/author": "Test Author", 
+                "resource://metadata/nested/info": "Some nested information",
+                "resource://metadata/nested/details": "More details here",
+                "resource://settings/feature_flags/0": "flag1",
+                "resource://settings/feature_flags/1": "flag2",
+                "resource://settings/configuration": "Production configuration"
+            }
+            
+            # Build a map of actual resources
+            # Convert AnyUrl objects to strings for comparison
+            actual_resources = {}
+            for resource in resources_result.resources:
+                uri_str = str(resource.uri)  # Convert AnyUrl to string
+                actual_resources[uri_str] = resource
+            
+            # Verify all expected resources are present
+            for uri, expected_content in expected_resources.items():
+                assert uri in actual_resources, f"Expected resource {uri} not found. Available: {list(actual_resources.keys())}"
+                
+                # Read the resource and verify content
+                read_result = await session.read_resource(uri=uri)
+                assert read_result is not None
+                assert hasattr(read_result, "contents")
+                assert len(read_result.contents) > 0
+                assert read_result.contents[0].text == expected_content
     await api.disconnect()

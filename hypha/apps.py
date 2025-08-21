@@ -699,13 +699,52 @@ class ServerAppController:
         except Exception as e:
             logger.error(f"Failed to monitor worker health: {e}")
 
+    @schema_method
     async def get_server_app_workers(
         self, 
-        app_type: str = None, 
-        random_select: bool = False,
-        selection_config: Optional[WorkerSelectionConfig] = None,
-        context: dict = None, 
+        app_type: str = Field(
+            None,
+            description="The type of application worker to retrieve (e.g., 'browser', 'terminal', 'conda'). If not specified, returns all available workers."
+        ),
+        random_select: bool = Field(
+            False,
+            description="If True, randomly selects one worker from the available workers. Returns a single worker instead of a list."
+        ),
+        selection_config: Optional[WorkerSelectionConfig] = Field(
+            None,
+            description="Configuration for worker selection strategy. Modes: 'random', 'first', 'last', 'exact', 'min_load', or 'select:criteria:function'."
+        ),
+        context: dict = None,
     ):
+        """Get available server app workers for running applications.
+        
+        This method retrieves server app workers from either the current workspace or 
+        the public workspace. It supports filtering by application type and various 
+        selection strategies for load balancing.
+        
+        Returns:
+            Union[List[Dict[str, Any]], Dict[str, Any], None]: 
+            - If random_select is False: List of worker service objects
+            - If random_select is True: Single worker service object or None if no workers found
+            - Empty list or None if no workers are available
+            
+        Examples:
+            >>> # Get all available workers
+            >>> workers = await app_controller.get_server_app_workers()
+            >>> 
+            >>> # Get a random browser worker
+            >>> worker = await app_controller.get_server_app_workers(
+            ...     app_type="browser", 
+            ...     random_select=True
+            ... )
+            >>> 
+            >>> # Get worker with minimum load
+            >>> config = WorkerSelectionConfig(mode="min_load")
+            >>> worker = await app_controller.get_server_app_workers(
+            ...     app_type="conda",
+            ...     selection_config=config
+            ... )
+        """
         # Ensure worker manager is started
         await self._ensure_worker_manager_started()
         

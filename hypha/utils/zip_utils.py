@@ -37,7 +37,7 @@ logger = logging.getLogger("zip_utils")
 
 async def fetch_zip_tail(
     s3_client, bucket: str, key: str, content_length: int, cache_instance=None
-) -> bytes:
+) -> tuple[bytes, int]:
     """
     Fetch the tail part of the zip file that contains the central directory.
     Uses an adaptive approach to find the central directory, supporting both standard ZIP and ZIP64 formats.
@@ -50,15 +50,15 @@ async def fetch_zip_tail(
         cache_instance: Optional Redis cache instance
 
     Returns:
-        bytes: The ZIP file tail containing the central directory
+        tuple: (zip_tail_bytes, tail_start_offset) where tail_start_offset is where the tail begins in the full file
     """
     # Check cache first if provided
     if cache_instance:
         cache_key = f"zip_tail:{bucket}:{key}:{content_length}"
-        cached_tail = await cache_instance.get(cache_key)
-        if cached_tail:
+        cached_data = await cache_instance.get(cache_key)
+        if cached_data:
             logger.debug(f"Using cached ZIP tail for {key}")
-            return cached_tail
+            return cached_data
 
     # For small files (< 50MB), just download the entire file
     # This is more reliable for tests and small files
@@ -79,14 +79,15 @@ async def fetch_zip_tail(
                         f"Successfully loaded complete ZIP file ({len(complete_zip)} bytes) with {num_files} files"
                     )
 
-                # Cache the entire file
+                # Cache the entire file with tail start offset of 0 (full file)
+                result = (complete_zip, 0)
                 if cache_instance:
                     logger.debug(f"Caching entire ZIP file for {key}")
                     await cache_instance.set(
-                        cache_key, complete_zip, ttl=3600
+                        cache_key, result, ttl=3600
                     )  # Cache for 1 hour
 
-                return complete_zip
+                return result
             except zipfile.BadZipFile as e:
                 logger.error(f"Downloaded file is not a valid ZIP file: {str(e)}")
                 # Continue with partial download approach
@@ -126,29 +127,32 @@ async def fetch_zip_tail(
     found = False
     zip_tail = b""
     current_offset = content_length
+    tail_start_offset = max(content_length - tail_length, 0)  # Initialize properly
 
     # Adaptive approach: start small and increase until we find the central directory
     while tail_length <= MAX_TAIL:
-        central_directory_offset = max(content_length - tail_length, 0)
+        new_tail_start = max(content_length - tail_length, 0)
         # Only fetch the new part if we've already read a smaller tail
-        if zip_tail and central_directory_offset < current_offset:
+        if zip_tail and new_tail_start < current_offset:
             # Fetch only the missing part
-            range_header = f"bytes={central_directory_offset}-{current_offset - 1}"
+            range_header = f"bytes={new_tail_start}-{current_offset - 1}"
             logger.debug(f"Fetching additional ZIP tail: {range_header}")
             response = await s3_client.get_object(
                 Bucket=bucket, Key=key, Range=range_header
             )
             new_part = await response["Body"].read()
             zip_tail = new_part + zip_tail
-            current_offset = central_directory_offset
+            current_offset = new_tail_start
+            tail_start_offset = new_tail_start  # Update tail_start_offset
         else:
-            range_header = f"bytes={central_directory_offset}-{content_length - 1}"
+            range_header = f"bytes={new_tail_start}-{content_length - 1}"
             logger.debug(f"Fetching ZIP tail: {range_header}")
             response = await s3_client.get_object(
                 Bucket=bucket, Key=key, Range=range_header
             )
             zip_tail = await response["Body"].read()
-            current_offset = central_directory_offset
+            current_offset = new_tail_start
+            tail_start_offset = new_tail_start  # Update tail_start_offset
 
         # First check for regular ZIP EOCD signature
         eocd_offset = zip_tail.rfind(EOCD_SIGNATURE)
@@ -184,6 +188,7 @@ async def fetch_zip_tail(
         try:
             response = await s3_client.get_object(Bucket=bucket, Key=key)
             zip_tail = await response["Body"].read()
+            tail_start_offset = 0  # Full file
 
             # Verify this is a valid ZIP file
             try:
@@ -210,17 +215,19 @@ async def fetch_zip_tail(
     try:
         with zipfile.ZipFile(BytesIO(zip_tail)) as zf:
             num_files = len(zf.namelist())
-            logger.debug(f"Validated ZIP tail contains {num_files} files")
+            logger.debug(f"Validated ZIP tail contains {num_files} files, tail starts at offset {tail_start_offset}")
     except zipfile.BadZipFile as e:
         logger.error(f"Invalid ZIP file structure: {str(e)}")
         # We'll still return what we have, the caller will handle the error
 
+    result = (zip_tail, tail_start_offset)
+    
     # Cache result if cache instance provided and we found something valid
     if cache_instance and found:
         logger.debug(f"Caching ZIP tail for {key}")
-        await cache_instance.set(cache_key, zip_tail, ttl=3600)  # Cache for 1 hour
+        await cache_instance.set(cache_key, result, ttl=3600)  # Cache for 1 hour
 
-    return zip_tail
+    return result
 
 
 async def get_zip_file_content(
@@ -228,7 +235,7 @@ async def get_zip_file_content(
     bucket: str,
     key: str,
     path: str = "",
-    zip_tail: Optional[bytes] = None,
+    zip_tail: Optional[Union[bytes, Tuple[bytes, int]]] = None,
     cache_instance=None,
 ) -> Response:
     """
@@ -239,7 +246,7 @@ async def get_zip_file_content(
         bucket: S3 bucket name
         key: S3 object key for the ZIP file
         path: Path within the ZIP file to retrieve
-        zip_tail: Optional pre-fetched ZIP tail data
+        zip_tail: Optional pre-fetched ZIP tail data (can be bytes or tuple of (bytes, offset))
         cache_instance: Optional Redis cache instance
 
     Returns:
@@ -273,7 +280,7 @@ async def get_zip_file_content(
         # Fetch the ZIP's central directory if not provided
         if not zip_tail:
             try:
-                zip_tail = await fetch_zip_tail(
+                zip_tail, tail_start_offset = await fetch_zip_tail(
                     s3_client, bucket, key, content_length, cache_instance
                 )
             except Exception as e:
@@ -285,9 +292,20 @@ async def get_zip_file_content(
                         "detail": f"Failed to fetch ZIP file structure: {str(e)}",
                     },
                 )
+        else:
+            # Handle both tuple and bytes formats
+            if isinstance(zip_tail, tuple):
+                # If it's already a tuple, unpack it
+                zip_tail, tail_start_offset = zip_tail
+            else:
+                # If zip_tail was provided as bytes, assume it's the full file
+                # (this is for backward compatibility with existing callers)
+                tail_start_offset = 0
 
         # Open the in-memory ZIP tail and parse it
         try:
+            # Create a tuple for backward compatibility with the streaming functions
+            zip_tail_with_offset = (zip_tail, tail_start_offset)
             with zipfile.ZipFile(BytesIO(zip_tail)) as zip_file:
                 # If `path` ends with "/" or is empty, treat it as a directory listing
                 if not path or path.endswith("/"):
@@ -423,7 +441,7 @@ async def get_zip_file_content(
                 # Stream the file data
                 return StreamingResponse(
                     stream_file_from_zip(
-                        s3_client, bucket, key, zip_info, zip_tail, chunk_size
+                        s3_client, bucket, key, zip_info, zip_tail_with_offset, chunk_size
                     ),
                     media_type=content_type,
                     headers={
@@ -448,7 +466,7 @@ async def get_zip_file_content(
         )
 
 
-async def read_file_from_zip(s3_client, bucket, key, zip_info, zip_tail):
+async def read_file_from_zip(s3_client, bucket, key, zip_info, zip_tail_data):
     """
     Extract a file from a ZIP archive efficiently by directly reading the compressed data
     and decompressing it on the fly.
@@ -458,12 +476,15 @@ async def read_file_from_zip(s3_client, bucket, key, zip_info, zip_tail):
         bucket: S3 bucket name
         key: S3 object key for the ZIP file
         zip_info: ZipInfo object for the file to extract
-        zip_tail: The ZIP central directory data
+        zip_tail_data: Tuple of (zip_tail, tail_start_offset)
 
     Returns:
         bytes: The decompressed file content
     """
     try:
+        # Unpack the tuple
+        zip_tail, tail_start_offset = zip_tail_data
+            
         # Get the total ZIP file size to determine if zip_tail contains the full file
         try:
             zip_file_metadata = await s3_client.head_object(Bucket=bucket, Key=key)
@@ -475,7 +496,7 @@ async def read_file_from_zip(s3_client, bucket, key, zip_info, zip_tail):
 
         # Only use the simple approach if zip_tail contains the full ZIP file
         # AND the file inside the ZIP is small
-        zip_tail_is_full_file = len(zip_tail) == total_zip_size
+        zip_tail_is_full_file = (tail_start_offset == 0 and len(zip_tail) == total_zip_size)
 
         if (
             zip_tail_is_full_file and zip_info.file_size < 10 * 1024 * 1024
@@ -486,7 +507,7 @@ async def read_file_from_zip(s3_client, bucket, key, zip_info, zip_tail):
         # For larger files or when zip_tail is partial, use streaming approach
         chunks = []
         async for chunk in stream_file_chunks_from_zip(
-            s3_client, bucket, key, zip_info, zip_tail
+            s3_client, bucket, key, zip_info, (zip_tail, tail_start_offset)
         ):
             chunks.append(chunk)
         return b"".join(chunks)
@@ -496,7 +517,7 @@ async def read_file_from_zip(s3_client, bucket, key, zip_info, zip_tail):
 
 
 async def stream_file_from_zip(
-    s3_client, bucket, key, zip_info, zip_tail, chunk_size=64 * 1024
+    s3_client, bucket, key, zip_info, zip_tail_data, chunk_size=64 * 1024
 ):
     """
     Stream a file from a ZIP archive, yielding chunks of decompressed data.
@@ -506,13 +527,16 @@ async def stream_file_from_zip(
         bucket: S3 bucket name
         key: S3 object key for the ZIP file
         zip_info: ZipInfo object for the file to extract
-        zip_tail: The ZIP central directory data
+        zip_tail_data: Tuple of (zip_tail, tail_start_offset)
         chunk_size: Size of decompressed chunks to yield
 
     Yields:
         bytes: Chunks of decompressed file data
     """
     try:
+        # Unpack the tuple
+        zip_tail, tail_start_offset = zip_tail_data
+            
         # Get the total ZIP file size to determine if zip_tail contains the full file
         try:
             zip_file_metadata = await s3_client.head_object(Bucket=bucket, Key=key)
@@ -524,7 +548,7 @@ async def stream_file_from_zip(
 
         # Only use the simple approach if zip_tail contains the full ZIP file
         # AND the file inside the ZIP is small or uncompressed
-        zip_tail_is_full_file = len(zip_tail) == total_zip_size
+        zip_tail_is_full_file = (tail_start_offset == 0 and len(zip_tail) == total_zip_size)
 
         if zip_tail_is_full_file and (
             zip_info.file_size < 1 * 1024 * 1024
@@ -538,7 +562,7 @@ async def stream_file_from_zip(
 
         # For larger files or when zip_tail is partial, use the streaming implementation
         async for chunk in stream_file_chunks_from_zip(
-            s3_client, bucket, key, zip_info, zip_tail, chunk_size
+            s3_client, bucket, key, zip_info, (zip_tail, tail_start_offset), chunk_size
         ):
             yield chunk
     except Exception as e:
@@ -547,7 +571,7 @@ async def stream_file_from_zip(
 
 
 async def stream_file_chunks_from_zip(
-    s3_client, bucket, key, zip_info, zip_tail, chunk_size=64 * 1024
+    s3_client, bucket, key, zip_info, zip_tail_data, chunk_size=64 * 1024
 ):
     """
     Stream a file from a ZIP archive using true streaming without loading the entire file into memory.
@@ -558,65 +582,141 @@ async def stream_file_chunks_from_zip(
         bucket: S3 bucket name
         key: S3 object key for the ZIP file
         zip_info: ZipInfo object for the file to extract
-        zip_tail: The ZIP central directory data
+        zip_tail_data: Tuple of (zip_tail, tail_start_offset)
         chunk_size: Size of decompressed chunks to yield
 
     Yields:
         bytes: Chunks of decompressed file data
     """
+    # Unpack the tuple
+    zip_tail, tail_start_offset = zip_tail_data
+        
+    # Get the total size of the ZIP file
+    try:
+        zip_file_metadata = await s3_client.head_object(Bucket=bucket, Key=key)
+        total_zip_size = zip_file_metadata["ContentLength"]
+    except Exception as e:
+        logger.error(f"Failed to get ZIP file size: {str(e)}")
+        raise
+    
+    # Determine if we have a partial ZIP based on tail_start_offset
+    # This is more reliable than comparing lengths
+    zip_tail_is_partial = tail_start_offset > 0
+    
     # Get the local header offset from the central directory
     file_header_offset = zip_info.header_offset
+    
+    # Handle partial ZIP files where Python's zipfile gives us adjusted offsets
+    if zip_tail_is_partial and file_header_offset < tail_start_offset:
+        # When we have a partial ZIP, Python's zipfile module adjusts offsets
+        # The offsets in the central directory are relative to the start of the tail
+        # We need to calculate the actual offset in the full ZIP file
+        
+        # The offset is adjusted by Python to be relative to the tail start
+        # To get the actual offset: add back the tail_start_offset
+        actual_offset = tail_start_offset + file_header_offset
+        
+        logger.info(
+            f"Partial ZIP offset adjustment for {zip_info.filename}: "
+            f"header_offset={file_header_offset} (from central dir), "
+            f"tail_start={tail_start_offset}, "
+            f"actual_offset={actual_offset} (in full ZIP)"
+        )
+        file_header_offset = actual_offset
+    else:
+        logger.debug(
+            f"Using direct offset for {zip_info.filename}: "
+            f"header_offset={file_header_offset}, "
+            f"tail_start={tail_start_offset}, "
+            f"is_partial={zip_tail_is_partial}"
+        )
 
     # Calculate data offset: header offset + size of the local file header + filename length + extra field length
     try:
-        with zipfile.ZipFile(BytesIO(zip_tail)) as zf:
-            # Get header data to calculate size
-            file_header = zf._RealGetContents()[zip_info.filename]
-            local_header_size = 30  # Fixed size of the local file header
-            filename_length = len(zip_info.filename)
-            extra_field_length = len(zip_info.extra)
-
+        # Read the local file header from S3 to get the exact extra field length
+        # The local header format is:
+        # 4 bytes: signature (0x04034b50)
+        # 2 bytes: version needed
+        # 2 bytes: general purpose bit flag
+        # 2 bytes: compression method
+        # 2 bytes: last mod file time
+        # 2 bytes: last mod file date
+        # 4 bytes: crc-32
+        # 4 bytes: compressed size
+        # 4 bytes: uncompressed size
+        # 2 bytes: filename length
+        # 2 bytes: extra field length
+        # Total: 30 bytes
+        
+        local_header_size = 30
+        
+        # Fetch the local file header to get the actual filename and extra field lengths
+        range_header = f"bytes={file_header_offset}-{file_header_offset + local_header_size - 1}"
+        response = await s3_client.get_object(Bucket=bucket, Key=key, Range=range_header)
+        local_header = await response["Body"].read()
+        
+        # Parse the local header to get the actual lengths
+        if len(local_header) >= 30:
+            # Check signature
+            signature = struct.unpack('<I', local_header[0:4])[0]
+            if signature != 0x04034b50:
+                logger.error(f"Invalid local header signature: {hex(signature)}")
+                raise ValueError(f"Invalid ZIP local header for {zip_info.filename}")
+            
+            # Unpack the filename length and extra field length from the local header
+            # These are at bytes 26-27 and 28-29 respectively
+            filename_len_local = struct.unpack('<H', local_header[26:28])[0]
+            extra_field_len_local = struct.unpack('<H', local_header[28:30])[0]
+            
             # Calculate the offset where the actual file data begins
             data_offset = (
                 file_header_offset
                 + local_header_size
-                + filename_length
-                + extra_field_length
+                + filename_len_local
+                + extra_field_len_local
+            )
+        else:
+            # Fallback: use the lengths from the central directory
+            logger.warning(f"Could not read full local header, using central directory values")
+            data_offset = (
+                file_header_offset
+                + local_header_size
+                + len(zip_info.filename)
+                + len(zip_info.extra)
             )
 
-            compression_method = zip_info.compress_type
-            compressed_size = zip_info.compress_size
-            uncompressed_size = zip_info.file_size
+        compression_method = zip_info.compress_type
+        compressed_size = zip_info.compress_size
+        uncompressed_size = zip_info.file_size
 
-            logger.debug(
-                f"Streaming file {zip_info.filename}, "
-                f"compression: {compression_method}, "
-                f"compressed size: {compressed_size}, "
-                f"uncompressed size: {uncompressed_size}, "
-                f"data offset: {data_offset}"
-            )
+        logger.info(
+            f"Streaming file from ZIP: filename={zip_info.filename}, "
+            f"compression={compression_method}, "
+            f"compressed_size={compressed_size}, "
+            f"uncompressed_size={uncompressed_size}, "
+            f"data_offset={data_offset}, "
+            f"zip_size={total_zip_size}, "
+            f"tail_size={len(zip_tail)}, "
+            f"is_partial={zip_tail_is_partial}"
+        )
     except Exception as e:
         logger.error(f"Error calculating data offset: {str(e)}")
         # Fall back to simple approach only if zip_tail contains the full ZIP file
-        try:
-            zip_file_metadata = await s3_client.head_object(Bucket=bucket, Key=key)
-            total_zip_size = zip_file_metadata["ContentLength"]
-            zip_tail_is_full_file = len(zip_tail) == total_zip_size
-
-            if zip_tail_is_full_file:
+        if not zip_tail_is_partial:
+            try:
                 with zipfile.ZipFile(BytesIO(zip_tail)) as zf:
                     file_content = zf.read(zip_info.filename)
                     for i in range(0, len(file_content), chunk_size):
                         yield file_content[i : i + chunk_size]
                 return
-            else:
-                logger.error(
-                    f"Cannot use fallback approach: zip_tail is partial (size: {len(zip_tail)}, full size: {total_zip_size})"
-                )
-                raise e  # Re-raise the original exception since fallback is not possible
-        except Exception as fallback_error:
-            logger.error(f"Fallback approach also failed: {str(fallback_error)}")
-            raise e  # Re-raise the original exception
+            except Exception as fallback_error:
+                logger.error(f"Fallback approach also failed: {str(fallback_error)}")
+                raise e  # Re-raise the original exception
+        else:
+            logger.error(
+                f"Cannot use fallback approach: zip_tail is partial (size: {len(zip_tail)}, full size: {total_zip_size})"
+            )
+            raise e  # Re-raise the original exception since fallback is not possible
 
     # For DEFLATE compression, we need to use zlib to decompress
     if compression_method == zipfile.ZIP_DEFLATED:
@@ -703,25 +803,21 @@ async def stream_file_chunks_from_zip(
         logger.info(
             f"Unsupported compression method {compression_method}, falling back to zipfile module"
         )
-        try:
-            zip_file_metadata = await s3_client.head_object(Bucket=bucket, Key=key)
-            total_zip_size = zip_file_metadata["ContentLength"]
-            zip_tail_is_full_file = len(zip_tail) == total_zip_size
-
-            if zip_tail_is_full_file:
+        if not zip_tail_is_partial:
+            try:
                 with zipfile.ZipFile(BytesIO(zip_tail)) as zf:
                     file_content = zf.read(zip_info.filename)
                     for i in range(0, len(file_content), chunk_size):
                         yield file_content[i : i + chunk_size]
-            else:
-                logger.error(
-                    f"Cannot use zipfile fallback: zip_tail is partial (size: {len(zip_tail)}, full size: {total_zip_size})"
-                )
+            except Exception as fallback_error:
+                logger.error(f"Zipfile fallback failed: {str(fallback_error)}")
                 raise ValueError(
-                    f"Unsupported compression method {compression_method} and zip_tail is partial"
+                    f"Unsupported compression method {compression_method}: {str(fallback_error)}"
                 )
-        except Exception as fallback_error:
-            logger.error(f"Zipfile fallback failed: {str(fallback_error)}")
+        else:
+            logger.error(
+                f"Cannot use zipfile fallback: zip_tail is partial (size: {len(zip_tail)}, full size: {total_zip_size})"
+            )
             raise ValueError(
-                f"Unsupported compression method {compression_method}: {str(fallback_error)}"
+                f"Unsupported compression method {compression_method} and zip_tail is partial"
             )

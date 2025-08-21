@@ -86,73 +86,71 @@ async def test_unified_auth_with_templates(tmp_path):
             server_proc.kill()
             raise TimeoutError(f"Server failed to start and didn't terminate gracefully. Last error: {last_error}")
     
-    try:
-        # Test that config contains login_service_url (for unified auth)
-        assert "login_service_url" in config, "login_service_url should be in config"
-        assert "hypha-login" in config["login_service_url"], "Should use hypha-login service"
+    # Test that config contains login_service_url (for unified auth)
+    assert "login_service_url" in config, "login_service_url should be in config"
+    assert "hypha-login" in config["login_service_url"], "Should use hypha-login service"
+    
+    # Test that templates are served correctly
+    response = requests.get(f"{server_url}/", timeout=5)
+    assert response.status_code == 200
+    html_content = response.text
+    
+    # Check that the template uses hypha-rpc instead of Auth0
+    assert "hypha-rpc-websocket.js" in html_content, "Should load hypha-rpc library"
+    assert "hyphaWebsocketClient.login" in html_content, "Should use hypha-rpc login"
+    assert "auth0" not in html_content.lower(), "Should not contain Auth0 references"
+    
+    # Test the login flow using hypha-rpc
+    async with connect_to_server({
+        "client_id": "test-unified-auth",
+        "server_url": ws_url,
+    }) as api:
+        # Get the hypha-login service
+        services = await api.list_services("public")
+        service_ids = [s["id"] for s in services]
+        hypha_login_found = any("hypha-login" in sid for sid in service_ids)
+        assert hypha_login_found, "hypha-login service should be available"
         
-        # Test that templates are served correctly
-        response = requests.get(f"{server_url}/", timeout=5)
-        assert response.status_code == 200
-        html_content = response.text
+        # Test signup
+        hypha_login_service_id = next(sid for sid in service_ids if "hypha-login" in sid)
+        login_service = await api.get_service(hypha_login_service_id)
         
-        # Check that the template uses hypha-rpc instead of Auth0
-        assert "hypha-rpc-websocket.js" in html_content, "Should load hypha-rpc library"
-        assert "hyphaWebsocketClient.login" in html_content, "Should use hypha-rpc login"
-        assert "auth0" not in html_content.lower(), "Should not contain Auth0 references"
+        result = await login_service.signup(
+            name="Test User",
+            email="test@example.com",
+            password="testpass123"
+        )
+        assert result["success"] is True, f"Signup failed: {result.get('error')}"
         
-        # Test the login flow using hypha-rpc
-        async with connect_to_server({
-            "client_id": "test-unified-auth",
-            "server_url": ws_url,
-        }) as api:
-            # Get the hypha-login service
-            services = await api.list_services("public")
-            service_ids = [s["id"] for s in services]
-            hypha_login_found = any("hypha-login" in sid for sid in service_ids)
-            assert hypha_login_found, "hypha-login service should be available"
-            
-            # Test signup
-            hypha_login_service_id = next(sid for sid in service_ids if "hypha-login" in sid)
-            login_service = await api.get_service(hypha_login_service_id)
-            
-            result = await login_service.signup(
-                name="Test User",
-                email="test@example.com",
-                password="testpass123"
-            )
-            assert result["success"] is True, f"Signup failed: {result.get('error')}"
-            
-            # Test the unified login API
-            # This simulates what the template JavaScript does
-            login_session = await login_service.start(expires_in=3600)
-            assert "login_url" in login_session
-            assert "key" in login_session
-            
-            # Simulate direct login (as would happen in the popup)
-            login_result = await login_service.login(
-                email="test@example.com",
-                password="testpass123",
-                key=login_session["key"]
-            )
-            assert login_result["success"] is True
-            assert "token" in login_result
-            
-            # Check that the session was updated
-            token = await login_service.check(key=login_session["key"], timeout=0)
-            assert token is not None, "Token should be available after login"
-            
-        # Test that the workspace template also works
-        response = requests.get(f"{server_url}/ws-user-test", timeout=5)
-        assert response.status_code == 200
-        ws_html = response.text
+        # Test the unified login API
+        # This simulates what the template JavaScript does
+        login_session = await login_service.start(expires_in=3600)
+        assert "login_url" in login_session
+        assert "key" in login_session
         
-        # Check that workspace template has localStorage fallback for tokens
-        assert "localStorage.getItem('hypha_token')" in ws_html, "Should have localStorage fallback"
+        # Simulate direct login (as would happen in the popup)
+        login_result = await login_service.login(
+            email="test@example.com",
+            password="testpass123",
+            key=login_session["key"]
+        )
+        assert login_result["success"] is True
+        assert "token" in login_result
         
-    finally:
-        server_proc.terminate()
-        server_proc.wait()
+        # Check that the session was updated
+        token = await login_service.check(key=login_session["key"], timeout=0)
+        assert token is not None, "Token should be available after login"
+        
+    # Test that the workspace template also works
+    response = requests.get(f"{server_url}/ws-user-test", timeout=5)
+    assert response.status_code == 200
+    ws_html = response.text
+    
+    # Check that workspace template has localStorage fallback for tokens
+    assert "localStorage.getItem('hypha_token')" in ws_html, "Should have localStorage fallback"
+    
+    server_proc.terminate()
+    server_proc.wait()
 
 
 @pytest.mark.asyncio
@@ -225,90 +223,88 @@ async def test_login_function_compatibility():
             server_proc.kill()
             raise TimeoutError(f"Server failed to start and didn't terminate gracefully. Last error: {last_error}")
     
-    try:
-        # First create a user
-        async with connect_to_server({
-            "client_id": "test-create-user",
-            "server_url": ws_url,
-        }) as api:
-            services = await api.list_services("public")
-            service_ids = [s["id"] for s in services]
-            hypha_login_service_id = next(sid for sid in service_ids if "hypha-login" in sid)
-            login_service = await api.get_service(hypha_login_service_id)
-            
-            await login_service.signup(
-                name="API Test User",
-                email="apitest@example.com",
-                password="apipass123"
-            )
+    # First create a user
+    async with connect_to_server({
+        "client_id": "test-create-user",
+        "server_url": ws_url,
+    }) as api:
+        services = await api.list_services("public")
+        service_ids = [s["id"] for s in services]
+        hypha_login_service_id = next(sid for sid in service_ids if "hypha-login" in sid)
+        login_service = await api.get_service(hypha_login_service_id)
         
-        # Now test the login() function with a mock callback
-        login_completed = False
-        received_token = None
+        await login_service.signup(
+            name="API Test User",
+            email="apitest@example.com",
+            password="apipass123"
+        )
+    
+    # Now test the login() function with a mock callback
+    login_completed = False
+    received_token = None
+    
+    async def mock_login_callback(context):
+        """Mock callback that simulates automatic login."""
+        nonlocal login_completed, received_token
         
-        async def mock_login_callback(context):
-            """Mock callback that simulates automatic login."""
-            nonlocal login_completed, received_token
+        # Extract key from login URL
+        login_url = context.get("login_url", "")
+        key_start = login_url.find("key=")
+        if key_start != -1:
+            key = login_url[key_start + 4:].split("&")[0]
             
-            # Extract key from login URL
-            login_url = context.get("login_url", "")
-            key_start = login_url.find("key=")
-            if key_start != -1:
-                key = login_url[key_start + 4:].split("&")[0]
+            # Connect and login directly
+            async with connect_to_server({
+                "client_id": "test-login-callback",
+                "server_url": ws_url,
+            }) as api:
+                services = await api.list_services("public")
+                service_ids = [s["id"] for s in services]
+                hypha_login_service_id = next(sid for sid in service_ids if "hypha-login" in sid)
+                login_service = await api.get_service(hypha_login_service_id)
                 
-                # Connect and login directly
-                async with connect_to_server({
-                    "client_id": "test-login-callback",
-                    "server_url": ws_url,
-                }) as api:
-                    services = await api.list_services("public")
-                    service_ids = [s["id"] for s in services]
-                    hypha_login_service_id = next(sid for sid in service_ids if "hypha-login" in sid)
-                    login_service = await api.get_service(hypha_login_service_id)
-                    
-                    # Perform login
-                    result = await login_service.login(
-                        email="apitest@example.com",
-                        password="apipass123",
-                        key=key
-                    )
-                    
-                    if result["success"]:
-                        received_token = result["token"]
-                        login_completed = True
-                    else:
-                        print("Failed to login:", result.get("error"))
+                # Perform login
+                result = await login_service.login(
+                    email="apitest@example.com",
+                    password="apipass123",
+                    key=key
+                )
+                
+                if result["success"]:
+                    received_token = result["token"]
+                    login_completed = True
+                else:
+                    print("Failed to login:", result.get("error"))
 
-        # Test the unified login function
-        token = await login({
-            "server_url": ws_url,
-            "login_callback": mock_login_callback,
-            "login_timeout": 10
-        })
+    # Test the unified login function
+    token = await login({
+        "server_url": ws_url,
+        "login_callback": mock_login_callback,
+        "login_timeout": 10
+    })
+    
+    assert token is not None, "Should receive a token"
+    assert login_completed is True, "Login should have completed"
+    assert received_token == token, "Token should match"
+    
+    # Verify the token works
+    async with connect_to_server({
+        "client_id": "test-with-token",
+        "server_url": ws_url,
+        "token": token
+    }) as api:
+        # Should be able to connect with the token
+        # Parse the token to verify user info
+        user_info = await api.parse_token(token)
+        assert user_info["email"] == "apitest@example.com"
+        assert user_info["is_anonymous"] is False
         
-        assert token is not None, "Should receive a token"
-        assert login_completed is True, "Login should have completed"
-        assert received_token == token, "Token should match"
-        
-        # Verify the token works
-        async with connect_to_server({
-            "client_id": "test-with-token",
-            "server_url": ws_url,
-            "token": token
-        }) as api:
-            # Should be able to connect with the token
-            # Parse the token to verify user info
-            user_info = await api.parse_token(token)
-            assert user_info["email"] == "apitest@example.com"
-            assert user_info["is_anonymous"] is False
-            
-            # Also verify we can list services
-            services = await api.list_services("public")
-            assert len(services) > 0, "Should be able to list services with token"
-            
-    finally:
-        server_proc.terminate()
-        server_proc.wait()
+        # Also verify we can list services
+        services = await api.list_services("public")
+        assert len(services) > 0, "Should be able to list services with token"
+    
+    server_proc.terminate()
+    server_proc.wait()
 
 
 if __name__ == "__main__":

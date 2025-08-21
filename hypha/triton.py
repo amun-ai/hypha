@@ -1,11 +1,13 @@
 """Provide the triton proxy."""
 
 import random
-from typing import Any, List
+from typing import Any, List, Optional, Dict
 
 import httpx
 from fastapi import APIRouter, Depends, Request, Response
 from pyotritonclient import execute, get_config
+from pydantic import Field
+from hypha_rpc.utils.schema import schema_method
 
 from hypha.core.store import RedisStore
 
@@ -78,10 +80,38 @@ class TritonProxy:
         store.register_router(router)
         store.register_public_service(self.get_triton_service())
 
+    @schema_method
     async def execute(
-        self, model_name: str, inputs: List[Any], server_url=None, **kwargs
-    ):
-        """Execute the triton inference."""
+        self,
+        model_name: str = Field(
+            ...,
+            description="Name of the Triton model to execute inference on"
+        ),
+        inputs: List[Any] = Field(
+            ...,
+            description="List of input tensors for the model. Format depends on the specific model requirements"
+        ),
+        server_url: Optional[str] = Field(
+            None,
+            description="Optional Triton server URL. If not provided, a random server from the pool will be selected"
+        ),
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Execute inference on a Triton model.
+        
+        This method sends input tensors to a specified Triton model for inference
+        and returns the prediction results.
+        
+        Returns:
+            Dictionary containing the inference results from the model
+            
+        Examples:
+            # Execute inference on an image classification model
+            results = await execute(
+                model_name="resnet50",
+                inputs=[preprocessed_image_tensor]
+            )
+        """
         if server_url is None:
             server_url = random.choice(self.servers)
         results = await execute(
@@ -93,8 +123,37 @@ class TritonProxy:
         )
         return results
 
-    async def get_config(self, model_name: str, server_url=None, **kwargs):
-        """Return the config for the triton model."""
+    @schema_method
+    async def get_config(
+        self,
+        model_name: str = Field(
+            ...,
+            description="Name of the Triton model to get configuration for"
+        ),
+        server_url: Optional[str] = Field(
+            None,
+            description="Optional Triton server URL. If not provided, a random server from the pool will be selected"
+        ),
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Get the configuration of a Triton model.
+        
+        This method retrieves the model configuration including input/output
+        specifications, data types, and dimensions.
+        
+        Returns:
+            Dictionary containing the model configuration including:
+            - Input/output tensor specifications
+            - Data types and shapes
+            - Model version information
+            - Other model-specific settings
+            
+        Examples:
+            # Get configuration for a model
+            config = await get_config(model_name="bert-base")
+            print(f"Model inputs: {config['input']}")
+            print(f"Model outputs: {config['output']}")
+        """
         if server_url is None:
             server_url = random.choice(self.servers)
         return await get_config(server_url=server_url, model_name=model_name, **kwargs)
@@ -104,7 +163,7 @@ class TritonProxy:
         return {
             "id": "triton-client",
             "name": "Triton Client",
-            "description": "Triton Inference Server Client",
+            "description": "Triton Inference Server Client for executing machine learning models. Provides access to GPU-accelerated inference on models deployed in Triton servers.",
             "config": {"visibility": "public"},
             "execute": self.execute,
             "get_config": self.get_config,
