@@ -341,13 +341,9 @@ class WorkspaceManager:
             check_interval=60     # 1 minute - configurable in future
         )
 
-
-
     async def _get_sql_session(self):
         """Return an async session for the database."""
         return self.SessionLocal()
-
-
 
     def get_client_id(self):
         assert self._client_id, "client id must not be empty."
@@ -371,6 +367,7 @@ class WorkspaceManager:
             {"notify": False},
         )
         self._service_info = ServiceInfo.model_validate(_service_info)
+        self._service_info.id = "~"
         if self._sql_engine:
             async with self._sql_engine.begin() as conn:
                 await conn.run_sync(EventLog.metadata.create_all)
