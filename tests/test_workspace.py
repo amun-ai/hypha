@@ -1474,12 +1474,7 @@ async def test_workspace_manager_tilde_shortcut(fastapi_server, test_user_token)
     try:
         ws_manager_info = await api.get_service_info("~")
         assert ws_manager_info is not None
-        assert ws_manager_info.id is not None
-        # The workspace manager is registered in the "*" workspace
-        # Should be in the format "*/manager-{server_id}:default"
-        assert "/" in ws_manager_info.id
-        assert ":default" in ws_manager_info.id
-        assert ws_manager_info.id.startswith("*/")
+        assert ws_manager_info.id == "~"
         print(f"✅ Successfully got workspace manager info: {ws_manager_info.id}")
     except Exception as e:
         print(f"Failed to get workspace manager info using '~': {e}")
@@ -1515,10 +1510,7 @@ async def test_workspace_manager_tilde_shortcut(fastapi_server, test_user_token)
             assert service_info is not None
             # Should contain service information
             assert "id" in service_info
-            assert "/" in service_info["id"]
-            assert ":default" in service_info["id"]
-            # The workspace manager is in the "*" workspace
-            assert service_info["id"].startswith("*/")
+            assert "~" == service_info["id"]
             print(f"✅ HTTP endpoint returned workspace manager info: {service_info['id']}")
     except Exception as e:
         print(f"Failed to access HTTP endpoint with '~': {e}")
