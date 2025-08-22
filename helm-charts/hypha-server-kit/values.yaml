@@ -67,6 +67,8 @@ hypha-server:
     storageClass: ""
     accessModes:
       - ReadWriteOnce
+    annotations:
+      "helm.sh/resource-policy": keep
   
   # Hypha environment configuration - matching the actual hypha-server chart
   env:
@@ -152,6 +154,8 @@ minio:
     enabled: true
     size: 50Gi
     storageClass: ""
+    annotations:
+      "helm.sh/resource-policy": keep
   
   service:
     type: ClusterIP
@@ -197,6 +201,8 @@ postgresql:
       enabled: true
       size: 20Gi
       storageClass: ""
+      annotations:
+        "helm.sh/resource-policy": keep
     
     resources:
       requests:
@@ -226,6 +232,8 @@ redis:
       enabled: true
       size: 8Gi
       storageClass: ""
+      annotations:
+        "helm.sh/resource-policy": keep
     
     resources:
       requests:
