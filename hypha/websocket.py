@@ -49,14 +49,7 @@ class WebsocketServer:
             reconnection_token: str = Query(None),
         ):
             await websocket.accept()
-            
-            # Try to extract token using custom function if available
-            if not token and not reconnection_token:
 
-                custom_token = await extract_token_from_scope(websocket.scope)
-                if custom_token:
-                    token = custom_token
-            
             # If none of the authentication parameters are provided, wait for the first message
             if not workspace and not client_id and not token and not reconnection_token:
                 # Wait for the first message which should contain the authentication information
