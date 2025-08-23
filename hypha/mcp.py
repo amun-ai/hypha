@@ -15,8 +15,7 @@ from dataclasses import dataclass
 from uuid import uuid4
 import time
 
-from starlette.applications import Starlette
-from starlette.routing import Route, Mount
+from starlette.routing import Route, Match
 from starlette.types import ASGIApp, Scope, Receive, Send
 from starlette.requests import Request
 from pydantic import AnyUrl
@@ -1067,6 +1066,12 @@ class MCPRoutingMiddleware:
         self._mcp_cache = {}  # cache_key -> (mcp_app, api_context, api_task)
         
         # MCP route patterns
+        # Redirect route for base MCP path without trailing slash: /{workspace}/mcp
+        mcp_base_redirect_route = (
+            self.base_path.rstrip("/") + "/{workspace}/mcp"
+        )
+        self.mcp_base_redirect_route = Route(mcp_base_redirect_route, endpoint=None)
+        
         # Main route for streamable HTTP: /{workspace}/mcp/{service_id}/mcp
         mcp_route = (
             self.base_path.rstrip("/") + "/{workspace}/mcp/{service_id:path}/mcp"
@@ -1125,7 +1130,21 @@ class MCPRoutingMiddleware:
             logger.debug(f"MCP Middleware: Processing HTTP request to {path}")
             
             # Check if the current request path matches any MCP route
-            from starlette.routing import Match
+            
+            # Check for base MCP path redirect (/{workspace}/mcp -> /{workspace}/mcp/)
+            redirect_match, redirect_params = self.mcp_base_redirect_route.matches(scope)
+            if redirect_match == Match.FULL:
+                path_params = redirect_params.get("path_params", {})
+                workspace = path_params["workspace"]
+                
+                logger.debug(
+                    f"MCP Middleware: Redirecting from /{workspace}/mcp to /{workspace}/mcp/"
+                )
+                
+                # Send 301 redirect to the path with trailing slash
+                redirect_url = f"/{workspace}/mcp/"
+                await self._send_redirect(send, redirect_url)
+                return
             
             # Check SSE message route first (/{workspace}/mcp/{service_id}/sse/messages/) - most specific
             sse_message_match, sse_message_params = self.sse_message_route.matches(scope)
@@ -1196,17 +1215,44 @@ class MCPRoutingMiddleware:
         # Continue to next middleware if not an MCP route
         await self.app(scope, receive, send)
     
+    async def _send_redirect(self, send, redirect_url):
+        """Send a 301 redirect response."""
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 301,
+                "headers": [
+                    [b"location", redirect_url.encode()],
+                ],
+            }
+        )
+        await send(
+            {
+                "type": "http.response.body",
+                "body": b"",
+            }
+        )
+
     async def _send_helpful_404(self, send, workspace, service_id):
         """Send a helpful 404 message with endpoint information."""
-        message = {
-            "error": "MCP endpoint not found",
-            "message": f"The MCP service '{service_id}' endpoint was not found at this path.",
-            "available_endpoints": {
-                "streamable_http": f"/{workspace}/mcp/{service_id}/mcp",
-                "sse": f"/{workspace}/mcp/{service_id}/sse",
-            },
-            "help": "Use the streamable HTTP endpoint for MCP communication.",
-        }
+        # Handle empty service_id case
+        if not service_id:
+            message = {
+                "error": "MCP service ID required",
+                "message": "No service ID was provided in the URL.",
+                "help": "Please specify a service ID. URL format: /{workspace}/mcp/{service_id}/mcp",
+                "example": f"/{workspace}/mcp/your-service-id/mcp"
+            }
+        else:
+            message = {
+                "error": "MCP endpoint not found",
+                "message": f"The MCP service '{service_id}' endpoint was not found at this path.",
+                "available_endpoints": {
+                    "streamable_http": f"/{workspace}/mcp/{service_id}/mcp",
+                    "sse": f"/{workspace}/mcp/{service_id}/sse",
+                },
+                "help": "Use the streamable HTTP endpoint for MCP communication.",
+            }
         response_body = json.dumps(message, indent=2).encode()
         await send(
             {
