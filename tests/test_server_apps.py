@@ -1,15 +1,9 @@
 import asyncio
 import pytest
-import os
-import sys
 import httpx
 from hypha_rpc import connect_to_server
-import re
 from . import (
-    WS_SERVER_URL,
     SERVER_URL,
-    SERVER_URL_SQLITE,
-    find_item,
     SIO_PORT,
 )
 
@@ -96,7 +90,7 @@ async def test_apps_and_lazy_worker_discovery(
     print(f"App session started: {session_id}")
     
     # Stop the app
-    await controller.stop(session_id, raise_exception=False)
+    await controller.stop(session_id)
     
     # Cleanup
     await controller.uninstall(browser_app_id)
@@ -178,7 +172,7 @@ async def test_lazy_loading_with_get_service(
     assert isinstance(services_after_start, list), "Should work after app start"
     print(f"Services after app start: {len(services_after_start)}")
     
-    await controller.stop(session["id"], raise_exception=False)
+    await controller.stop(session["id"])
     
     await controller.uninstall(app_id)
     
@@ -536,4 +530,216 @@ async def test_terminal_app(minio_server, fastapi_server, test_user_token):
     await controller.uninstall(terminal_app_info["id"])
     await controller.uninstall(interactive_app_info["id"])
 
+    await api.disconnect()
+
+
+async def test_llm_proxy_app(minio_server, fastapi_server, test_user_token):
+    """Test LLM proxy app installation and operation."""
+    # Connect to the server
+    api = await connect_to_server({
+        "name": "test llm proxy app",
+        "server_url": SERVER_URL,
+        "token": test_user_token
+    })
+    
+    # Get the server apps controller
+    controller = await api.get_service("public/server-apps")
+    
+    # Define the LLM proxy app with litellm's mock response feature
+    llm_app_source = """
+<config lang="json">
+{
+    "name": "Test LLM Proxy App",
+    "type": "llm-proxy",
+    "version": "1.0.0",
+    "description": "LLM proxy app for integration testing",
+    "config": {
+        "model_list": [
+            {
+                "model_name": "test-model",
+                "litellm_params": {
+                    "model": "gpt-3.5-turbo",
+                    "mock_response": "This is a test response from the LLM proxy"
+                }
+            },
+            {
+                "model_name": "test-model-streaming",
+                "litellm_params": {
+                    "model": "gpt-3.5-turbo",
+                    "mock_response": "Streaming test response",
+                    "stream": true
+                }
+            }
+        ],
+        "litellm_settings": {
+            "debug": false,
+            "drop_params": true,
+            "routing_strategy": "simple-shuffle",
+            "num_retries": 0,
+            "timeout": 10
+        }
+    }
+}
+</config>
+"""
+    
+    # Install the LLM proxy app
+    llm_app_info = await controller.install(
+        source=llm_app_source,
+        wait_for_service=False,
+        timeout=20,
+        overwrite=True
+    )
+    
+    assert llm_app_info["id"], "App should have an ID"
+    assert llm_app_info["name"] == "Test LLM Proxy App"
+    print(f"Installed LLM proxy app: {llm_app_info['id']}")
+    
+    # Start the LLM proxy app
+    try:
+        session = await controller.start(
+            llm_app_info["id"],
+            wait_for_service=True,
+            timeout=30
+        )
+        
+        assert session["id"], "Session should have an ID"
+        session_id = session["id"]
+        
+        print(f"Started LLM proxy session: {session_id}")
+        
+        # Test 1: Find the actual LLM service from the registered services
+        services = await api.list_services(
+            query={"workspace": api.config.workspace},
+            include_app_services=True
+        )
+        service_ids = [s.get("id") for s in services if s.get("id")]
+        print(f"Available services in workspace: {service_ids}")
+        
+        # Find the LLM service for this session
+        llm_service_id = None
+        llm_service_full_id = None
+        for svc in services:
+            svc_id = svc.get("id", "")
+            # Check if this is an LLM service for our session
+            if session_id in svc_id and ":llm-" in svc_id:
+                # Extract the service name part (llm-{uuid})
+                parts = svc_id.split(":")
+                if len(parts) >= 2:
+                    service_name = parts[1].split("@")[0]  # Remove app_id suffix if present
+                    if service_name.startswith("llm-"):
+                        llm_service_id = service_name
+                        llm_service_full_id = svc_id
+                        print(f"Found LLM service: {llm_service_full_id}")
+                        break
+        
+        if not llm_service_id:
+            # This should not happen if the service is properly registered
+            raise AssertionError(f"Could not find LLM service for session {session_id} in services: {service_ids}")
+        
+        # Test 2: Make HTTP requests to the LLM endpoints
+        # The URL pattern is: /workspace/llm/<service_id>/...
+        base_url = f"http://127.0.0.1:{SIO_PORT}/{api.config.workspace}/llm/{llm_service_id}"
+        
+        headers = {
+            "Authorization": f"Bearer {test_user_token}",
+            "Content-Type": "application/json"
+        }
+        
+        async with httpx.AsyncClient() as client:
+            # Test health endpoint
+            health_response = await client.get(
+                f"{base_url}/health",
+                headers=headers,
+                timeout=10
+            )
+            
+            print(f"Health check status: {health_response.status_code}")
+            if health_response.status_code == 200:
+                health_data = health_response.json()
+                print(f"Health response: {health_data}")
+            
+            # Test models endpoint
+            models_response = await client.get(
+                f"{base_url}/v1/models",
+                headers=headers,
+                timeout=10
+            )
+            
+            print(f"Models endpoint status: {models_response.status_code}")
+            if models_response.status_code == 200:
+                models_data = models_response.json()
+                print(f"Available models: {models_data}")
+                
+                # Verify our test models are listed
+                model_ids = [m["id"] for m in models_data.get("data", [])]
+                assert "test-model" in model_ids, "test-model should be in model list"
+            
+            # Test chat completions endpoint
+            chat_url = f"{base_url}/v1/chat/completions"
+            chat_request = {
+                "model": "test-model",
+                "messages": [
+                    {"role": "user", "content": "Hello, this is a test"}
+                ],
+                "temperature": 0.7,
+                "max_tokens": 50
+            }
+            
+            chat_resp = await client.post(
+                chat_url,
+                headers=headers,
+                json=chat_request,
+                timeout=10
+            )
+            
+            assert chat_resp.status_code == 200, f"Chat completions returned {chat_resp.status_code}: {chat_resp.text}"
+            
+            chat_data = chat_resp.json()
+            print(f"Chat completion response: {chat_data}")
+            
+            # Verify we got the mock response
+            message = chat_data["choices"][0]["message"]["content"]
+            assert "test response" in message.lower(), f"Should contain 'test response', got: {message}"
+            print("Chat completions test passed")
+        
+        # Test 4: Get logs from the session
+        logs = await controller.get_logs(session_id)
+        print(f"Session logs: {logs}")
+        
+        # Test 5: Test streaming (even though mock responses might not stream properly)
+        async with httpx.AsyncClient() as client:
+            stream_request = {
+                "model": "test-model-streaming",
+                "messages": [{"role": "user", "content": "Test streaming"}],
+                "stream": True
+            }
+            
+            stream_resp = await client.post(
+                f"{base_url}/v1/chat/completions",
+                headers=headers,
+                json=stream_request,
+                timeout=10
+            )
+            
+            print(f"Streaming response status: {stream_resp.status_code}")
+            if stream_resp.status_code == 200:
+                # For streaming, we'd normally read the SSE events
+                # but with mock responses it might just return regular JSON
+                print("Streaming endpoint accessible")
+        
+        # Stop the session
+        await controller.stop(session_id)
+        
+    except Exception as e:
+        print(f"Error during LLM proxy test: {e}")
+        # Try to clean up if session was started
+        if 'session_id' in locals():
+            await controller.stop(session_id)
+        raise e
+    
+    # Uninstall the app
+    await controller.uninstall(llm_app_info["id"])
+    
+    # Disconnect
     await api.disconnect()

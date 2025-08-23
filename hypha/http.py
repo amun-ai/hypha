@@ -832,6 +832,31 @@ class HTTPProxy:
                 raise
         else:
             logger.info("MCP middleware not enabled (enable_mcp=False)")
+        
+        # Add LLM middleware for LLM services if enabled
+        enable_llm = enable_mcp  # Use same flag as MCP for now, can be separated later
+        logger.info(f"enable_llm = {enable_llm}")
+        if enable_llm:
+            try:
+                from hypha.llm import LLMRoutingMiddleware
+
+                logger.info("Adding LLMRoutingMiddleware to the app")
+                app.add_middleware(
+                    LLMRoutingMiddleware,
+                    base_path=base_path,
+                    store=store,
+                )
+                logger.info("LLMRoutingMiddleware added successfully")
+            except ImportError as e:
+                logger.error(f"Failed to import LLMRoutingMiddleware: {e}")
+                # Don't raise, LLM is optional
+                logger.warning("LLM middleware not available, continuing without it")
+            except Exception as e:
+                logger.error(f"Failed to add LLMRoutingMiddleware: {e}")
+                # Don't raise, LLM is optional
+                logger.warning("LLM middleware failed to initialize, continuing without it")
+        else:
+            logger.info("LLM middleware not enabled (enable_llm=False)")
 
         @app.get(norm_url("/{workspace}/apps/{service_id}"))
         async def get_app_info(
