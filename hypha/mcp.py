@@ -1417,7 +1417,7 @@ class MCPRoutingMiddleware:
             }
         )
 
-    async def _send_helpful_404(self, send, workspace, service_id, adapter_summary=None):
+    async def _send_helpful_404(self, send, workspace, service_id):
         """Send a helpful 404 message with endpoint information."""
         # Handle empty service_id case
         if not service_id:
@@ -1437,11 +1437,6 @@ class MCPRoutingMiddleware:
                 },
                 "help": "Use the streamable HTTP endpoint for MCP communication.",
             }
-            
-            # Include adapter summary if available
-            if adapter_summary:
-                message["service_info"] = adapter_summary
-                
         response_body = json.dumps(message, indent=2).encode()
         await send(
             {
