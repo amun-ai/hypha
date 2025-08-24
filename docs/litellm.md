@@ -10,6 +10,17 @@ The LLM proxy feature allows you to:
 - Use the same API interface regardless of the underlying LLM provider
 - Deploy scalable LLM services with automatic session management
 - Access services via both HTTP REST API and Hypha's WebSocket RPC
+- Automatically discover and expose 35+ litellm endpoints including audio, images, fine-tuning, and more
+
+## Server Setup
+
+To enable LLM proxy support in your Hypha server, start it with the `--enable-llm-proxy` flag:
+
+```bash
+python -m hypha.server --enable-llm-proxy --enable-s3 --enable-server-apps
+```
+
+This automatically registers the LLM proxy worker, making it available for creating LLM proxy applications.
 
 ## Quick Start
 
@@ -204,11 +215,24 @@ curl -X POST "https://your-server/workspace/apps/my-llm-service/v1/completions" 
 
 ### Available Endpoints
 
+The LLM proxy automatically discovers and exposes all litellm endpoints. Common endpoints include:
+
 - `GET /v1/models` - List available models
 - `POST /v1/chat/completions` - Chat completions (OpenAI format)
+- `POST /v1/messages` - Claude/Anthropic messages format
 - `POST /v1/completions` - Text completions
 - `POST /v1/embeddings` - Generate embeddings
+- `POST /v1/audio/speech` - Text-to-speech generation
+- `POST /v1/audio/transcriptions` - Speech-to-text transcription
+- `POST /v1/images/generations` - Image generation
+- `POST /v1/images/edits` - Image editing
+- `POST /v1/fine_tuning/jobs` - Fine-tuning management
+- `POST /v1/batches` - Batch processing
+- `POST /v1/moderations` - Content moderation
+- `GET /v1/vector_stores` - Vector store operations
 - `GET /health` - Health check endpoint
+
+And 20+ more endpoints for assistants, threads, MCP integration, and advanced features.
 
 ### Using with OpenAI SDK
 
