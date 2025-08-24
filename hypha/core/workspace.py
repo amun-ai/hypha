@@ -2033,7 +2033,8 @@ class WorkspaceManager:
         context: Optional[dict] = None,
     ):
         """Get the service info."""
-        self.validate_context(context, permission=UserPermission.read)
+        # Note: We validate context later, after determining if service is public
+        assert context is not None, "Context is required"
         assert isinstance(service_id, str), "Service ID must be a string."     
         assert service_id.count("/") <= 1, "Service id must contain at most one '/'"
         assert service_id.count(":") <= 1, "Service id must contain at most one ':'"
@@ -2170,6 +2171,8 @@ class WorkspaceManager:
             )
         # Check access permissions
         if not key.startswith(b"services:public|"):
+            # For non-public services, validate context permission
+            self.validate_context(context, permission=UserPermission.read)
             # First check if user has read permission in the service's workspace
             has_workspace_permission = user_info.check_permission(workspace, UserPermission.read)
             
@@ -2590,13 +2593,12 @@ class WorkspaceManager:
         context=None,
     ):
         """Get a service based on the service_id"""
-        self.validate_context(context, permission=UserPermission.read)
+        # Note: We don't validate context here because get_service_info will handle it
+        # and properly check if the service is public
+        assert context is not None, "Context is required"
         assert (
             service_id != "*"
         ), "Invalid service id: {service_id}, it cannot be a wildcard."
-
-        # no need to validate the context
-        # self.validate_context(context, permission=UserPermission.read)
         try:
             config = config or GetServiceConfig()
             # Permission check will be handled by the get_service_api function

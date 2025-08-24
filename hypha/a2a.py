@@ -430,8 +430,17 @@ class A2ARoutingMiddleware:
                             logger.info(
                                 f"A2A Middleware: Looking up service '{service_id}' in workspace '{workspace}' (current workspace: '{user_info.scope.current_workspace}')"
                             )
+                            # Create context for the API call
+                            # The 'from' field is required for permission checks
+                            # We need to pass the target workspace in the context for service lookup
+                            # For public services, this should work even if user doesn't have permission
+                            context = {
+                                "ws": workspace,  # Use target workspace for service lookup
+                                "from": f"{workspace}/a2a-middleware",
+                                "user": user_info.model_dump() if user_info else None,
+                            }
                             service_info = await api.get_service_info(
-                                service_id, {"mode": _mode}
+                                service_id, {"mode": _mode}, context=context
                             )
                             logger.info(
                                 f"A2A Middleware: Found service '{service_id}' of type '{service_info.type}'"

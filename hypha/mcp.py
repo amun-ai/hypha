@@ -1331,8 +1331,17 @@ class MCPRoutingMiddleware:
                 api = await api_context
                 
                 try:
+                    # Create context for the API call
+                    # The 'from' field is required for permission checks
+                    # We need to pass the target workspace in the context for service lookup
+                    # For public services, this should work even if user doesn't have permission
+                    context = {
+                        "ws": workspace,  # Use target workspace for service lookup
+                        "from": f"{workspace}/mcp-middleware",
+                        "user": user_info.model_dump() if user_info else None,
+                    }
                     service_info = await api.get_service_info(
-                        service_id, {"mode": _mode}
+                        service_id, {"mode": _mode}, context=context
                     )
                     logger.debug(
                         f"MCP Middleware: Found service '{service_id}' of type '{service_info.type}'"
@@ -1454,8 +1463,17 @@ class MCPRoutingMiddleware:
                 api = await api_context
                 
                 try:
+                    # Create context for the API call
+                    # The 'from' field is required for permission checks
+                    # We need to pass the target workspace in the context for service lookup
+                    # For public services, this should work even if user doesn't have permission
+                    context = {
+                        "ws": workspace,  # Use target workspace for service lookup
+                        "from": f"{workspace}/mcp-middleware",
+                        "user": user_info.model_dump() if user_info else None,
+                    }
                     service_info = await api.get_service_info(
-                        service_id, {"mode": None}
+                        service_id, {"mode": None}, context=context
                     )
                     logger.debug(
                         f"MCP Middleware: Found service '{service_id}' of type '{service_info.type}'"
