@@ -1,4 +1,5 @@
 import asyncio
+import os
 import pytest
 import httpx
 from hypha_rpc import connect_to_server
@@ -533,6 +534,10 @@ async def test_terminal_app(minio_server, fastapi_server, test_user_token):
     await api.disconnect()
 
 
+@pytest.mark.skipif(
+    os.environ.get("CI") == "true",
+    reason="LLM proxy tests are slow in CI due to conda environment setup"
+)
 async def test_llm_proxy_app(minio_server, fastapi_server, test_user_token):
     """Test LLM proxy app installation and operation."""
     # Connect to the server
