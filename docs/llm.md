@@ -1,4 +1,4 @@
-# LLM Proxy with litellm
+# LLM Providers via LiteLLM Proxy
 
 Hypha provides built-in support for creating LLM proxy services using [litellm](https://github.com/BerriAI/litellm), enabling you to create unified API endpoints that work with multiple LLM providers like OpenAI, Claude, Gemini, and more.
 
