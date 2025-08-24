@@ -32,6 +32,68 @@ class LLMProxyWorker(BaseWorker):
         self._worker_id = worker_id
         self._sessions = {}
         self._cleanup_task = None
+
+    def _get_litellm_endpoints(self, service_id: str) -> Dict[str, str]:
+        """Programmatically get all available litellm endpoints.
+        
+        Returns a dictionary mapping endpoint names to their URLs.
+        """
+        import re
+        
+        # Get all routes from the litellm proxy server app
+        app = proxy_server.app
+        endpoints = {}
+        
+        # Track seen paths to avoid duplicates
+        seen_paths = set()
+        
+        for route in app.routes:
+            if hasattr(route, 'path') and '/v1/' in route.path:
+                # Get the original path
+                path = route.path
+                
+                # Skip provider-prefixed routes (they're duplicates)
+                if path.startswith('/{provider}/'):
+                    continue
+                
+                # Create a simplified name from the path
+                # Remove /v1/ prefix and parameters
+                name_parts = path.replace('/v1/', '').split('/')
+                
+                # Filter out path parameters and create a name
+                clean_parts = []
+                for part in name_parts:
+                    if part and not part.startswith('{'):
+                        clean_parts.append(part)
+                
+                if clean_parts:
+                    # Create a descriptive name
+                    endpoint_name = '_'.join(clean_parts)
+                    
+                    # Replace path parameters with wildcards for display
+                    display_path = re.sub(r'\{[^}]+\}', '*', path)
+                    
+                    # Only add unique paths
+                    if display_path not in seen_paths:
+                        seen_paths.add(display_path)
+                        # Construct the actual URL with service_id
+                        url = f"/apps/{service_id}{display_path}"
+                        endpoints[endpoint_name] = url
+        
+        # Add some common aliases for important endpoints
+        common_endpoints = {
+            "openai_chat": f"/apps/{service_id}/v1/chat/completions",
+            "claude_messages": f"/apps/{service_id}/v1/messages", 
+            "completions": f"/apps/{service_id}/v1/completions",
+            "embeddings": f"/apps/{service_id}/v1/embeddings",
+            "models": f"/apps/{service_id}/v1/models",
+            "health": f"/apps/{service_id}/health",
+        }
+        
+        # Merge common endpoints (they override auto-generated ones)
+        endpoints.update(common_endpoints)
+        
+        return endpoints
     
     @property
     def supported_types(self) -> List[str]:
@@ -400,14 +462,7 @@ class LLMProxyWorker(BaseWorker):
                 "service_id": service_id,
                 "models": [m.get("model_name") for m in session["model_list"]],
                 "providers": list(configured_providers),
-                "endpoints": {
-                    "openai_chat": f"/apps/{service_id}/v1/chat/completions",
-                    "claude_messages": f"/apps/{service_id}/v1/messages",
-                    "completions": f"/apps/{service_id}/v1/completions",
-                    "embeddings": f"/apps/{service_id}/v1/embeddings",
-                    "models": f"/apps/{service_id}/v1/models",
-                    "health": f"/apps/{service_id}/health",
-                },
+                "endpoints": self._get_litellm_endpoints(service_id),
                 "base_url": f"/apps/{service_id}",
             }
             
