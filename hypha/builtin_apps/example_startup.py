@@ -4,10 +4,10 @@ This file demonstrates how to use internal apps with Hypha's startup system.
 You can use this as a template or reference.
 
 To use this startup file:
-    hypha --startup-functions=hypha.apps.example_startup:hypha_startup
+    hypha --startup-functions=hypha.builtin_apps.example_startup:hypha_startup
 
 Or set the environment variable:
-    export HYPHA_STARTUP_FUNCTIONS="hypha.apps.example_startup:hypha_startup"
+    export HYPHA_STARTUP_FUNCTIONS="hypha.builtin_apps.example_startup:hypha_startup"
 """
 
 import os
@@ -32,7 +32,7 @@ async def hypha_startup(server):
     # Example 1: Install LLM proxy if enabled
     if os.environ.get("HYPHA_ENABLE_LLM_PROXY", "").lower() == "true":
         try:
-            from hypha.apps.llm_proxy import hypha_startup as llm_startup
+            from hypha.builtin_apps.llm_proxy import hypha_startup as llm_startup
             await llm_startup(server)
             logger.info("LLM proxy installed via startup")
         except Exception as e:
@@ -47,7 +47,7 @@ async def hypha_startup(server):
             
         try:
             # Dynamically import and run the app's startup function
-            module = __import__(f"hypha.apps.{app_name}", fromlist=["hypha_startup"])
+            module = __import__(f"hypha.builtin_apps.{app_name}", fromlist=["hypha_startup"])
             if hasattr(module, "hypha_startup"):
                 await module.hypha_startup(server)
                 logger.info(f"App '{app_name}' installed via startup")

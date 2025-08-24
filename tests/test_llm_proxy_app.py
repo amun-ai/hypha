@@ -5,13 +5,13 @@ import json
 import os
 import asyncio
 from hypha_rpc import connect_to_server
-from hypha.apps.llm_proxy import (
+from hypha.builtin_apps.llm_proxy import (
     create_llm_proxy_app,
     install_llm_proxy,
     LLM_PROXY_MANIFEST,
     LLM_PROXY_SCRIPT,
 )
-from hypha.apps.llm_proxy.startup import hypha_startup, register_llm_proxy_app
+from hypha.builtin_apps.llm_proxy.startup import hypha_startup, register_llm_proxy_app
 from tests import SIO_PORT
 
 
@@ -218,7 +218,7 @@ async def test_llm_proxy_startup_function():
             "OPENAI_API_KEY": "test-key",
             "HYPHA_LLM_PROXY_AUTO_START": "true"
         }):
-            with patch("hypha.apps.llm_proxy.llm_proxy_app.install_llm_proxy", 
+            with patch("hypha.builtin_apps.llm_proxy.llm_proxy_app.install_llm_proxy", 
                       AsyncMock(return_value="llm-proxy-id")) as mock_install:
                 await hypha_startup(server)
                 

@@ -7,7 +7,7 @@ This directory contains internal applications that can be automatically installe
 Each internal app should be in its own subdirectory with the following structure:
 
 ```
-apps/
+builtin_apps/
 ├── app_name/
 │   ├── __init__.py          # Package init with exports
 │   ├── app_name_app.py      # Main app definition
@@ -37,7 +37,7 @@ A conda-based LiteLLM proxy server that provides unified access to various LLM A
 
 To add a new internal app:
 
-1. Create a new subdirectory under `apps/`
+1. Create a new subdirectory under `builtin_apps/`
 2. Create the app module with manifest and script
 3. Create a `startup.py` with a `hypha_startup` function:
 

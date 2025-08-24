@@ -140,7 +140,7 @@ def start_builtin_services(
             # Schedule LLM proxy installation after server startup
             async def install_llm_proxy():
                 try:
-                    from hypha.apps.llm_proxy import install_llm_proxy
+                    from hypha.builtin_apps.llm_proxy import install_llm_proxy
                     await asyncio.sleep(5)  # Wait for server to be fully ready
                     logger.info("Installing LLM proxy application...")
                     
