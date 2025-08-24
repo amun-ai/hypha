@@ -102,19 +102,51 @@ async def test_llm_worker_start_stop(llm_worker):
         """Mock async connect_to_server function."""
         mock_client = AsyncMock()
         mock_service_info = {"id": "test-service-id"}
+        
+        # Mock the register_service method
         mock_client.register_service = AsyncMock(return_value=mock_service_info)
+        
+        # Mock the config property
+        mock_client.config = MagicMock()
+        mock_client.config.workspace = config.get("workspace", "test-workspace")
+        mock_client.config.client_id = config.get("client_id", "test-client")
+        
+        # Mock serve method for ASGI service
+        mock_client.serve = AsyncMock()
+        
+        # Mock disconnect
+        mock_client.disconnect = AsyncMock()
+        
+        # Mock get_env for workspace secrets (should not have any in this test)
+        mock_client.get_env = AsyncMock(side_effect=KeyError("No secrets configured"))
+        
         return mock_client
     
-    with patch('hypha_rpc.connect_to_server', side_effect=mock_connect_to_server):
-        # Start the session with the config
+    # Patch connect_to_server
+    with patch('hypha.workers.llm_proxy.connect_to_server', side_effect=mock_connect_to_server):
+        # Start the worker - returns just the session_id string
         session_id = await llm_worker.start(start_config, context=context)
         
+        # Check that a session was created
         assert session_id is not None
+        assert isinstance(session_id, str)
+        
+        # Check that the worker has registered the session
         assert session_id in llm_worker._sessions
-    
-    # Stop the session
-    await llm_worker.stop(session_id)
-    assert session_id not in llm_worker._sessions
+        
+        # Check the session data
+        session_data = llm_worker._sessions[session_id]
+        assert session_data is not None
+        assert "app" in session_data
+        assert session_data["service_id"] == "test-llm-service"
+        # The info dict exists
+        assert "info" in session_data
+        
+        # Stop the worker
+        await llm_worker.stop(session_id, context=context)
+        
+        # Check that the session was removed
+        assert session_id not in llm_worker._sessions
 
 
 async def test_llm_worker_compile(llm_worker):
@@ -329,8 +361,7 @@ async def test_llm_proxy_installation_and_basic_operation(
     # Get the server apps controller
     controller = await api.get_service("public/server-apps")
     
-    # Create an LLM proxy app with mock configuration
-    # This uses litellm's mock response feature for testing
+    # Test 1: Basic LLM proxy with mock responses
     llm_app_source = """
 <config lang="json">
 {
@@ -388,33 +419,23 @@ async def test_llm_proxy_installation_and_basic_operation(
     await asyncio.sleep(2)
     
     try:
-        # Test 1: Access the LLM service through Hypha's API
-        # The service should be registered as an ASGI service
+        # Test basic functionality
         if service_id:
             # Extract the actual service name from the full service_id
-            # Format: workspace/client_id:service_name@app_id
-            # We want the full client_id:service_name part for the get_service call
             if "@" in service_id:
-                # Extract everything before @app_id
                 service_path = service_id.split("@")[0]
-                # Try to get the specific service
                 llm_service = await api.get_service(service_path)
                 assert llm_service is not None, "Service should be registered"
                 print(f"Service found: {service_path}")
             else:
-                # Fallback to using service_id as-is
                 llm_service = await api.get_service(service_id)
                 assert llm_service is not None, "LLM service should be registered"
                 print(f"LLM service found: {service_id}")
         
-        # Test 2: Make direct HTTP requests to the LLM endpoint
-        # We know the service_id from our manifest config
+        # Test HTTP requests to the LLM endpoint
         llm_service_id = "test-llm-service"
-        
-        # The URL pattern is: /workspace/apps/<service_id>/...
         base_url = f"http://127.0.0.1:{SIO_PORT}/{api.config.workspace}/apps/{llm_service_id}"
         
-        # Create an HTTP client with auth header
         headers = {
             "Authorization": f"Bearer {test_user_token}"
         }
@@ -426,9 +447,6 @@ async def test_llm_proxy_installation_and_basic_operation(
                 headers=headers,
                 timeout=10
             )
-            
-            # The health check might fail if middleware is not properly set up
-            # but we should at least get a response
             print(f"Health check status: {health_response.status_code}")
             
             # Test the models endpoint
@@ -442,7 +460,6 @@ async def test_llm_proxy_installation_and_basic_operation(
                 models_data = models_response.json()
                 print(f"Available models: {models_data}")
                 
-                # Verify our test models are listed
                 model_ids = [m["id"] for m in models_data.get("data", [])]
                 assert "test-gpt-3.5" in model_ids, "test-gpt-3.5 should be in model list"
                 assert "test-gpt-4" in model_ids, "test-gpt-4 should be in model list"
@@ -468,13 +485,10 @@ async def test_llm_proxy_installation_and_basic_operation(
                 chat_data = chat_response.json()
                 print(f"Chat response: {chat_data}")
                 
-                # Verify we got the mock response
                 message_content = chat_data["choices"][0]["message"]["content"]
                 assert "mock response" in message_content.lower(), "Should return mock response"
         
-        # Test 3: Use litellm directly with the proxy endpoint
-        # This tests if the service can be used as an OpenAI-compatible endpoint
-        # Configure litellm to use our proxy
+        # Use litellm directly with the proxy endpoint
         response = await litellm.acompletion(
             model="openai/test-gpt-3.5",
             api_base=f"{base_url}/v1",
@@ -486,30 +500,216 @@ async def test_llm_proxy_installation_and_basic_operation(
         print(f"Direct litellm response: {response}")
         assert response is not None, "Should get response from litellm"
         
-        # Test 4: Verify service listing includes the LLM service
-        # (Already fetched services above, but re-fetch for this test)
+        # Verify service listing includes the LLM service
         services = await api.list_services(
             query={"workspace": api.config.workspace},
             include_app_services=True
         )
         
         service_ids = [s.get("id") for s in services]
-        # Check that the test-llm-service exists for this session
         llm_services = [s for s in service_ids if "test-llm-service" in s]
         assert len(llm_services) > 0, "Should have the test-llm-service registered"
         
-        # Test 5: Get logs from the LLM proxy
+        # Get logs from the LLM proxy
         logs = await controller.get_logs(session_id)
         print(f"LLM proxy logs: {logs}")
         
-    finally:
-        # Always clean up: stop the app
+    except Exception as e:
+        print(f"Test failed with error: {e}")
+        # Clean up on failure
         await controller.stop(session_id)
-        
-        # Optionally uninstall the app
-        await controller.uninstall(app_id)
+        raise
     
-    print("LLM proxy integration test completed successfully")
+    # Clean up after successful test
+    await controller.stop(session_id)
+        
+    # Test 2: LLM proxy with workspace secrets
+    print("\n=== Testing LLM proxy with workspace secrets ===")
+    
+    # Set workspace environment variables using the api directly
+    await api.set_env("TEST_OPENAI_KEY", "sk-test-openai-key-123456")
+    await api.set_env("TEST_CLAUDE_KEY", "sk-ant-test-claude-key-789012")
+    await api.set_env("TEST_GEMINI_KEY", "test-gemini-api-key-345678")
+    
+    # Create LLM proxy app with HYPHA_SECRET: prefixed API keys
+    llm_app_with_secrets = """
+<config lang="json">
+{
+    "name": "Test LLM Proxy with Secrets",
+    "type": "llm-proxy",
+    "version": "1.0.0",
+    "description": "LLM proxy using workspace secrets for API keys",
+    "config": {
+        "service_id": "test-llm-secrets",
+        "model_list": [
+            {
+                "model_name": "secret-gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4",
+                    "api_key": "HYPHA_SECRET:TEST_OPENAI_KEY",
+                    "mock_response": "Mock response with resolved OpenAI secret"
+                }
+            },
+            {
+                "model_name": "secret-claude",
+                "litellm_params": {
+                    "model": "anthropic/claude-3-opus",
+                    "api_key": "HYPHA_SECRET:TEST_CLAUDE_KEY",
+                    "mock_response": "Mock response with resolved Claude secret"
+                }
+            },
+            {
+                "model_name": "secret-gemini",
+                "litellm_params": {
+                    "model": "gemini/gemini-pro",
+                    "api_key": "HYPHA_SECRET:TEST_GEMINI_KEY",
+                    "mock_response": "Mock response with resolved Gemini secret"
+                }
+            },
+            {
+                "model_name": "direct-key-model",
+                "litellm_params": {
+                    "model": "gpt-3.5-turbo",
+                    "api_key": "direct-api-key-no-secret",
+                    "mock_response": "Mock response with direct API key"
+                }
+            }
+        ],
+        "litellm_settings": {
+            "debug": false,
+            "drop_params": true
+        }
+    }
+}
+</config>
+"""
+    
+    # Install the app with secrets
+    app_info_secrets = await controller.install(
+        source=llm_app_with_secrets,
+        wait_for_service=False,
+        timeout=20,
+        overwrite=True,
+    )
+    
+    app_id_secrets = app_info_secrets["id"]
+    print(f"Installed LLM proxy app with secrets: {app_id_secrets}")
+    
+    # Start the app - this should resolve the secrets
+    session_secrets = await controller.start(
+        app_id_secrets, 
+        wait_for_service="test-llm-secrets", 
+        timeout=30
+    )
+    session_id_secrets = session_secrets["id"]
+    
+    print(f"Started LLM proxy with secrets session: {session_id_secrets}")
+    
+    # Wait for service to be ready
+    await asyncio.sleep(2)
+    
+    try:
+        # Test that the models are available (secrets were resolved)
+        base_url_secrets = f"http://127.0.0.1:{SIO_PORT}/{api.config.workspace}/apps/test-llm-secrets"
+        
+        async with httpx.AsyncClient() as client:
+            # Get models list
+            models_response = await client.get(
+                f"{base_url_secrets}/v1/models",
+                headers=headers,
+                timeout=10
+            )
+            
+            if models_response.status_code == 200:
+                models_data = models_response.json()
+                print(f"Models with secrets: {models_data}")
+                
+                # Verify all models with secrets are available
+                model_ids = [m["id"] for m in models_data.get("data", [])]
+                assert "secret-gpt-4" in model_ids, "secret-gpt-4 should be available"
+                assert "secret-claude" in model_ids, "secret-claude should be available"
+                assert "secret-gemini" in model_ids, "secret-gemini should be available"
+                assert "direct-key-model" in model_ids, "direct-key-model should be available"
+            
+            # Test a chat completion with a model using secrets
+            chat_request = {
+                "model": "secret-gpt-4",
+                "messages": [
+                    {"role": "user", "content": "Test with workspace secret"}
+                ],
+                "max_tokens": 50
+            }
+            
+            chat_response = await client.post(
+                f"{base_url_secrets}/v1/chat/completions",
+                headers=headers,
+                json=chat_request,
+                timeout=10
+            )
+            
+            if chat_response.status_code == 200:
+                chat_data = chat_response.json()
+                print(f"Chat response with secrets: {chat_data}")
+                
+                # Should get mock response since we're using mock_response
+                message_content = chat_data["choices"][0]["message"]["content"]
+                assert "mock response" in message_content.lower(), "Should return mock response"
+                print("✓ Successfully resolved workspace secrets for API keys")
+        
+        # Test error handling for missing secret
+        llm_app_missing_secret = """
+<config lang="json">
+{
+    "name": "Test LLM Missing Secret",
+    "type": "llm-proxy",
+    "version": "1.0.0",
+    "config": {
+        "service_id": "test-missing-secret",
+        "model_list": [{
+            "model_name": "missing-secret-model",
+            "litellm_params": {
+                "model": "gpt-4",
+                "api_key": "HYPHA_SECRET:NONEXISTENT_KEY"
+            }
+        }]
+    }
+}
+</config>
+"""
+        
+        # Try to install and start app with missing secret - should fail
+        try:
+            app_missing = await controller.install(
+                source=llm_app_missing_secret,
+                wait_for_service="test-missing-secret",
+                timeout=20,
+                overwrite=True,
+            )
+            assert False, "Should have failed with missing secret during install"
+        except Exception as e:
+            print(f"✓ Correctly failed with missing secret: {e}")
+            assert "NONEXISTENT_KEY" in str(e) or "not found" in str(e).lower(), "Error should mention missing key"
+        
+    except Exception as e:
+        print(f"Test failed with error: {e}")
+        # Clean up on failure
+        await controller.stop(session_id_secrets)
+        await controller.uninstall(app_id_secrets)
+        await controller.uninstall(app_id)
+        await api.set_env("TEST_OPENAI_KEY", None)
+        await api.set_env("TEST_CLAUDE_KEY", None)
+        await api.set_env("TEST_GEMINI_KEY", None)
+        raise
+    
+    # Clean up after successful test
+    await controller.stop(session_id_secrets)
+    await controller.uninstall(app_id_secrets)
+    await controller.uninstall(app_id)
+    await api.set_env("TEST_OPENAI_KEY", None)
+    await api.set_env("TEST_CLAUDE_KEY", None)
+    await api.set_env("TEST_GEMINI_KEY", None)
+    
+    print("LLM proxy integration test with secrets completed successfully")
 
 
 async def test_llm_proxy_with_real_models(
@@ -639,9 +839,16 @@ async def test_llm_proxy_with_real_models(
             
             print(f"Streaming response status: {stream_response.status_code}")
             
-    finally:
+    except Exception as e:
+        print(f"Test failed with error: {e}")
+        # Clean up on failure
         await controller.stop(session_id)
         await controller.uninstall(app_id)
+        raise
+    
+    # Clean up after successful test
+    await controller.stop(session_id)
+    await controller.uninstall(app_id)
     
     print("Multi-provider LLM proxy test completed")
 
@@ -794,8 +1001,15 @@ async def test_llm_proxy_workspace_isolation(
             if response.status_code == 200:
                 print("User 1 can access their own service")
             
-    finally:
+    except Exception as e:
+        print(f"Test failed with error: {e}")
+        # Clean up on failure
         await controller1.stop(session1_id)
         await controller1.uninstall(app1_id)
+        raise
+    
+    # Clean up after successful test
+    await controller1.stop(session1_id)
+    await controller1.uninstall(app1_id)
     
     print("Workspace isolation test completed")
