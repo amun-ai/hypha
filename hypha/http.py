@@ -832,6 +832,7 @@ class HTTPProxy:
                 raise
         else:
             logger.info("MCP middleware not enabled (enable_mcp=False)")
+        
         @app.get(norm_url("/{workspace}/apps/{service_id}"))
         async def get_app_info(
             workspace: str,

@@ -17,6 +17,7 @@ from litellm.router import Router
 
 from hypha.core import UserInfo
 from hypha.workers.base import BaseWorker
+from hypha_rpc import connect_to_server
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,49 @@ class LLMProxyWorker(BaseWorker):
         endpoints.update(common_endpoints)
         
         return endpoints
+
+    async def _resolve_secrets_in_model_list(self, model_list: List[Dict], server) -> List[Dict]:
+        """Resolve HYPHA_SECRET: prefixed values in model_list by fetching from workspace env.
+        
+        Args:
+            model_list: List of model configurations
+            server: The connected server instance to fetch env variables from
+            
+        Returns:
+            Updated model_list with resolved secrets
+        """
+        resolved_list = []
+        
+        for model_config in model_list:
+            # Deep copy to avoid modifying the original
+            resolved_model = model_config.copy()
+            
+            # Check litellm_params for secrets
+            if "litellm_params" in resolved_model:
+                litellm_params = resolved_model["litellm_params"].copy()
+                
+                # Check each parameter for HYPHA_SECRET: prefix
+                for param_key, param_value in litellm_params.items():
+                    if isinstance(param_value, str) and param_value.startswith("HYPHA_SECRET:"):
+                        # Extract the env variable name
+                        env_key = param_value[len("HYPHA_SECRET:"):]
+                        
+                        try:
+                            # Use the server directly to access workspace env
+                            # The server has get_env method exposed directly
+                            actual_value = await server.get_env(env_key)
+                            litellm_params[param_key] = actual_value
+                            logger.info(f"Resolved secret for model {resolved_model.get('model_name')}: {param_key} from workspace env key: {env_key}")
+                        except Exception as e:
+                            logger.error(f"Failed to resolve secret for {param_key} from workspace env key '{env_key}': {e}")
+                            # Keep the original value or raise an error
+                            raise ValueError(f"Could not resolve workspace secret '{env_key}' for parameter '{param_key}': {e}")
+                
+                resolved_model["litellm_params"] = litellm_params
+            
+            resolved_list.append(resolved_model)
+        
+        return resolved_list
     
     @property
     def supported_types(self) -> List[str]:
@@ -334,9 +378,6 @@ class LLMProxyWorker(BaseWorker):
         """Start an LLM proxy session with multi-provider support."""
         assert context is not None
         
-        # Import here to avoid circular dependency
-        from hypha_rpc import connect_to_server
-        
         # Extract session_id from the config (it was added during compile)
         session_id = config.get("manifest", {}).get("session_id")
         if not session_id:
@@ -383,10 +424,6 @@ class LLMProxyWorker(BaseWorker):
         
         # Now start the LLM proxy service
         try:
-            # Create the FastAPI app with litellm router
-            app = await self._create_litellm_app(session_id)
-            session["app"] = app
-            
             # Get service_id from manifest config, or use default pattern
             manifest = config.get("manifest", {})
             service_id = manifest.get("config", {}).get("service_id", f"llm-{session_id}")
@@ -436,6 +473,18 @@ class LLMProxyWorker(BaseWorker):
             # Store client in session for cleanup
             session["client"] = client
             
+            # Resolve any HYPHA_SECRET: prefixed values in model_list
+            # This must be done after connecting to the server
+            resolved_model_list = await self._resolve_secrets_in_model_list(
+                session["model_list"], 
+                client
+            )
+            session["model_list"] = resolved_model_list
+            
+            # Re-create the litellm app with resolved secrets
+            app = await self._create_litellm_app(session_id)
+            session["app"] = app
+            
             # Register the LLM service as an ASGI service (type="asgi")
             service_info = await client.register_service({
                 "id": service_id,
@@ -448,7 +497,7 @@ class LLMProxyWorker(BaseWorker):
                     "require_context": True,
                 },
                 "app_id": app_id,  # Associate with the app
-            }, overwrite=True)
+            })
             
             # Store the full service ID including the client ID path
             full_service_id = service_info["id"]

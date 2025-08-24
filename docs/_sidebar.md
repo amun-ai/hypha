@@ -12,7 +12,7 @@
  * [Zip Streaming](/zip-streaming)
  * [Agent2Agent](/a2a)
  * [Model Context Protocol](/mcp)
- * [LLM Proxy (litellm)](/litellm)
+ * [LLM Providers](/llm)
  * [Workers](/workers)
  * [Conda Environment Worker](/conda-worker)
  * [Kubernetes Worker](/k8s)

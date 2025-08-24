@@ -298,9 +298,56 @@ Configure multiple instances of the same model for load balancing:
 }
 ```
 
-### Environment Variables
+### Workspace Secrets
 
-Store sensitive keys in environment variables:
+Store sensitive API keys as workspace environment variables and reference them securely:
+
+```json
+{
+  "model_name": "gpt-4",
+  "litellm_params": {
+    "model": "gpt-4",
+    "api_key": "HYPHA_SECRET:OPENAI_API_KEY"
+  }
+}
+```
+
+To use workspace secrets:
+
+1. **Set workspace environment variables:**
+```javascript
+// Set the secret in your workspace
+await api.set_env("OPENAI_API_KEY", "sk-your-actual-api-key")
+await api.set_env("CLAUDE_API_KEY", "sk-ant-your-actual-key")
+```
+
+2. **Reference in your model configuration:**
+```json
+{
+  "model_list": [
+    {
+      "model_name": "gpt-4",
+      "litellm_params": {
+        "model": "gpt-4",
+        "api_key": "HYPHA_SECRET:OPENAI_API_KEY"
+      }
+    },
+    {
+      "model_name": "claude-3-opus",
+      "litellm_params": {
+        "model": "anthropic/claude-3-opus",
+        "api_key": "HYPHA_SECRET:CLAUDE_API_KEY"
+      }
+    }
+  ]
+}
+```
+
+The secrets are resolved automatically when the LLM proxy starts. If a referenced secret is not found, the proxy will fail to start with a clear error message.
+
+### System Environment Variables
+
+You can also use system environment variables (set on the server):
 
 ```json
 {
@@ -386,10 +433,11 @@ await controller.stop(sessionId)
 
 ## Security Considerations
 
-1. **API Keys**: Store sensitive API keys in environment variables or secure configuration
+1. **API Keys**: Use workspace secrets (`HYPHA_SECRET:`) to store sensitive API keys securely within your workspace
 2. **Workspace Isolation**: Services are isolated by workspace by default
 3. **Authentication**: All requests require valid Hypha authentication tokens
 4. **Rate Limiting**: Configure appropriate rate limits in litellm settings
+5. **Secret Management**: Never hardcode API keys in manifests - use workspace environment variables instead
 
 ## Troubleshooting
 
