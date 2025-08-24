@@ -92,17 +92,21 @@ class LLMProxyWorker(BaseWorker):
                     # Unregister services before disconnecting
                     if "registered_service_id" in session:
                         try:
-                            await client.unregister_service(session["registered_service_id"])
-                            logger.info(f"Unregistered service {session['registered_service_id']}")
+                            service_id_to_unregister = session["registered_service_id"]
+                            logger.info(f"Attempting to unregister service: {service_id_to_unregister}")
+                            await client.unregister_service(service_id_to_unregister)
+                            logger.info(f"Successfully unregistered service: {service_id_to_unregister}")
                         except Exception as e:
-                            logger.warning(f"Failed to unregister service: {e}")
+                            logger.warning(f"Failed to unregister service {session.get('registered_service_id')}: {e}")
                     
                     if "default_service_id" in session:
                         try:
-                            await client.unregister_service(session["default_service_id"])
-                            logger.info(f"Unregistered default service {session['default_service_id']}")
+                            default_id_to_unregister = session["default_service_id"]
+                            logger.info(f"Attempting to unregister default service: {default_id_to_unregister}")
+                            await client.unregister_service(default_id_to_unregister)
+                            logger.info(f"Successfully unregistered default service: {default_id_to_unregister}")
                         except Exception as e:
-                            logger.warning(f"Failed to unregister default service: {e}")
+                            logger.warning(f"Failed to unregister default service {session.get('default_service_id')}: {e}")
                     
                     # Disconnect the client
                     await client.disconnect()
@@ -392,8 +396,10 @@ class LLMProxyWorker(BaseWorker):
                 "app_id": app_id,  # Associate with the app
             }, overwrite=True)
             
-            logger.info(f"Registered LLM proxy service: {service_info['id']}")
-            session["registered_service_id"] = service_info["id"]
+            # Store the full service ID including the client ID path
+            full_service_id = service_info["id"]
+            logger.info(f"Registered LLM proxy service with full ID: {full_service_id}")
+            session["registered_service_id"] = full_service_id
             
             # Also register a "default" service that the app controller expects
             # This is a simpler service that just indicates the app is ready
@@ -410,8 +416,10 @@ class LLMProxyWorker(BaseWorker):
                 "setup": lambda context=None: None,  # Simple no-op setup that accepts context
             }, overwrite=True)
             
-            logger.info(f"Registered default service for app controller: {default_service_info['id']}")
-            session["default_service_id"] = default_service_info["id"]
+            # Store the full default service ID including the client ID path
+            full_default_service_id = default_service_info["id"]
+            logger.info(f"Registered default service with full ID: {full_default_service_id}")
+            session["default_service_id"] = full_default_service_id
             
             # Update session info
             session["info"]["status"] = "running"
