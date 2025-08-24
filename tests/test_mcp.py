@@ -2309,3 +2309,149 @@ async def test_mcp_service_with_nested_string_resources(fastapi_server, test_use
                 assert len(read_result.contents) > 0
                 assert read_result.contents[0].text == expected_content
     await api.disconnect()
+
+
+async def test_mcp_non_absolute_service_id(fastapi_server, test_user_token):
+    """Test that MCP endpoint works with non-absolute service IDs (without client_id)."""
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+    
+    workspace = api.config.workspace
+    
+    # Define a simple MCP service
+    async def list_tools() -> List[types.Tool]:
+        return [
+            types.Tool(
+                name="echo",
+                description="Echo back the input",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "message": {"type": "string", "description": "Message to echo"}
+                    },
+                    "required": ["message"]
+                }
+            )
+        ]
+    
+    async def call_tool(name: str, arguments: Dict[str, Any]) -> List[types.ContentBlock]:
+        if name == "echo":
+            message = arguments.get("message", "")
+            return [types.TextContent(type="text", text=f"Echo: {message}")]
+        else:
+            raise ValueError(f"Unknown tool: {name}")
+    
+    # Register the MCP service with a simple name
+    service_id = "echo-service"
+    await api.register_service({
+        "id": service_id,
+        "type": "mcp",
+        "config": {
+            "visibility": "protected",  # Protected visibility to test workspace isolation
+        },
+        "list_tools": list_tools,
+        "call_tool": call_tool,
+    })
+    
+    # Get the full service info to verify registration
+    service_info = await api.get_service_info(service_id)
+    assert service_info is not None
+    full_service_id = service_info.id  # This will be workspace/client_id:service_id
+    
+    # Test 1: Access using just the service name (non-absolute ID)
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{SERVER_URL}/{workspace}/mcp/{service_id}/mcp",  # Just service name
+            json={
+                "jsonrpc": "2.0",
+                "id": "test-1",
+                "method": "tools/list",
+                "params": {},
+            },
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                "Authorization": f"Bearer {test_user_token}",  # Need auth for protected service
+            },
+        )
+        
+        assert response.status_code == 200, f"Failed with status {response.status_code}: {response.text}"
+        data = response.json()
+        assert data["jsonrpc"] == "2.0"
+        assert "result" in data
+        assert "tools" in data["result"]
+        assert len(data["result"]["tools"]) == 1
+        assert data["result"]["tools"][0]["name"] == "echo"
+        
+        # Test 2: Call the tool using non-absolute service ID
+        response = await client.post(
+            f"{SERVER_URL}/{workspace}/mcp/{service_id}/mcp",  # Just service name
+            json={
+                "jsonrpc": "2.0",
+                "id": "test-2",
+                "method": "tools/call",
+                "params": {
+                    "name": "echo",
+                    "arguments": {"message": "Hello from non-absolute ID"}
+                },
+            },
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                "Authorization": f"Bearer {test_user_token}",
+            },
+        )
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert "result" in data
+        assert "content" in data["result"]
+        assert data["result"]["content"][0]["text"] == "Echo: Hello from non-absolute ID"
+    
+    # Test 3: Register multiple services with same name from different clients
+    # This tests the service selection logic
+    api2 = await connect_to_server(
+        {"name": "test client 2", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+    
+    # Register another service with the same name from a different client
+    await api2.register_service({
+        "id": service_id,
+        "type": "mcp",
+        "config": {
+            "visibility": "protected",
+        },
+        "list_tools": list_tools,
+        "call_tool": lambda name, args: [
+            types.TextContent(type="text", text="Response from client 2")
+        ] if name == "echo" else None,
+    })
+    
+    # Test that we can still access the service (it should select one based on mode)
+    async with httpx.AsyncClient() as client:
+        # Test with different selection modes
+        for mode in ["random", "first", "last"]:
+            response = await client.post(
+                f"{SERVER_URL}/{workspace}/mcp/{service_id}/mcp?_mode={mode}",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"test-mode-{mode}",
+                    "method": "tools/list",
+                    "params": {},
+                },
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                    "Authorization": f"Bearer {test_user_token}",
+                },
+            )
+            
+            assert response.status_code == 200, f"Failed with mode {mode}: {response.text}"
+            data = response.json()
+            assert "result" in data
+            assert "tools" in data["result"]
+    
+    # Clean up
+    await api.disconnect()
+    await api2.disconnect()
