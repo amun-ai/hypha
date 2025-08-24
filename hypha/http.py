@@ -244,7 +244,7 @@ class ASGIRoutingMiddleware:
                     ) as api:
                         # Call get_service to trigger lazy loading if needed
                         service = await api.get_service(
-                            workspace + "/" + service_id, {"mode": _mode}
+                            workspace + "/" + service_id, {"mode": _mode or "first"}
                         )
                         # intercept the request if it's an ASGI service
                         # Check multiple possible ways the service type might be stored
