@@ -554,6 +554,7 @@ async def test_llm_proxy_app(minio_server, fastapi_server, test_user_token):
     "version": "1.0.0",
     "description": "LLM proxy app for integration testing",
     "config": {
+        "service_id": "test-llm",
         "model_list": [
             {
                 "model_name": "test-model",
@@ -586,7 +587,7 @@ async def test_llm_proxy_app(minio_server, fastapi_server, test_user_token):
     # Install the LLM proxy app
     llm_app_info = await controller.install(
         source=llm_app_source,
-        wait_for_service=False,
+        wait_for_service="test-llm",
         timeout=20,
         overwrite=True
     )
@@ -599,7 +600,7 @@ async def test_llm_proxy_app(minio_server, fastapi_server, test_user_token):
     try:
         session = await controller.start(
             llm_app_info["id"],
-            wait_for_service=True,
+            wait_for_service="test-llm",
             timeout=30
         )
         
@@ -617,29 +618,24 @@ async def test_llm_proxy_app(minio_server, fastapi_server, test_user_token):
         print(f"Available services in workspace: {service_ids}")
         
         # Find the LLM service for this session
-        llm_service_id = None
+        # We know the service ID from our config
+        llm_service_id = "test-llm"
         llm_service_full_id = None
         for svc in services:
             svc_id = svc.get("id", "")
-            # Check if this is an LLM service for our session
-            if session_id in svc_id and ":llm-" in svc_id:
-                # Extract the service name part (llm-{uuid})
-                parts = svc_id.split(":")
-                if len(parts) >= 2:
-                    service_name = parts[1].split("@")[0]  # Remove app_id suffix if present
-                    if service_name.startswith("llm-"):
-                        llm_service_id = service_name
-                        llm_service_full_id = svc_id
-                        print(f"Found LLM service: {llm_service_full_id}")
-                        break
+            # Check if this is our test-llm service for this session
+            if session_id in svc_id and ":test-llm" in svc_id:
+                llm_service_full_id = svc_id
+                print(f"Found LLM service: {llm_service_full_id}")
+                break
         
-        if not llm_service_id:
+        if not llm_service_full_id:
             # This should not happen if the service is properly registered
-            raise AssertionError(f"Could not find LLM service for session {session_id} in services: {service_ids}")
+            raise AssertionError(f"Could not find test-llm service for session {session_id} in services: {service_ids}")
         
         # Test 2: Make HTTP requests to the LLM endpoints
-        # The URL pattern is: /workspace/llm/<service_id>/...
-        base_url = f"http://127.0.0.1:{SIO_PORT}/{api.config.workspace}/llm/{llm_service_id}"
+        # The URL pattern is: /workspace/apps/<service_id>/...
+        base_url = f"http://127.0.0.1:{SIO_PORT}/{api.config.workspace}/apps/{llm_service_id}"
         
         headers = {
             "Authorization": f"Bearer {test_user_token}",
