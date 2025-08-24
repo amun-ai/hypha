@@ -79,7 +79,7 @@ setup(
         ],
         "server-apps": [
             "redis==6.2.0",
-            "aioboto3==13.1.1",
+            "aioboto3==14.0.0",
             "aiobotocore>=2.1.0",
             "aiortc>=1.9.0",
             "requests>=2.26.0",
