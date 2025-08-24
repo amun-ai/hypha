@@ -199,7 +199,6 @@ async def test_hypha_app(minio_server, fastapi_server, test_user_token):
 <script lang="python">
 from hypha_rpc import api
 import asyncio
-import os
 
 # Test shared state
 state = {"setup_called": False, "run_count": 0}
