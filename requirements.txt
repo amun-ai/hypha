@@ -47,4 +47,4 @@ jupyter_client>=8.0.0
 kubernetes>=24.2.0
 psutil>=5.9.0
 ptyprocess==0.7.0
-litellm[proxy]>=1.52.0
+litellm[proxy]==1.76.0
