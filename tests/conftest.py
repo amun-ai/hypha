@@ -428,7 +428,6 @@ def fastapi_server_fixture(minio_server, postgres_server):
             "hypha.workers.terminal:hypha_startup",
             "hypha.workers.mcp_proxy:hypha_startup",
             "hypha.workers.a2a_proxy:hypha_startup",
-            "hypha.workers.llm_proxy:hypha_startup",
         ],
         env=test_env,
     ) as proc:
@@ -613,6 +612,59 @@ def fastapi_subpath_server_fixture(minio_server):
             timeout -= 0.1
             time.sleep(0.1)
         yield
+        proc.kill()
+        proc.terminate()
+
+
+@pytest_asyncio.fixture(name="fastapi_server_llm_proxy", scope="session")
+def fastapi_server_llm_proxy_fixture(minio_server, postgres_server):
+    """Start server with LLM proxy enabled as test fixture."""
+    test_env_llm = test_env.copy()
+    test_env_llm["HYPHA_ENABLE_LLM_PROXY"] = "true"
+    test_env_llm["HYPHA_LLM_PROXY_AUTO_START"] = "false"  # Don't auto-start for tests
+    
+    # Use a different port to avoid conflicts
+    llm_proxy_port = SIO_PORT + 100
+    
+    with subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "hypha.server",
+            f"--port={llm_proxy_port}",
+            "--enable-server-apps",
+            "--enable-s3",
+            "--enable-llm-proxy",  # Enable LLM proxy
+            f"--database-uri={POSTGRES_URI}",
+            "--migrate-database=head",
+            "--reset-redis",
+            f"--endpoint-url={MINIO_SERVER_URL}",
+            f"--access-key-id={MINIO_ROOT_USER}",
+            f"--secret-access-key={MINIO_ROOT_PASSWORD}",
+            f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
+            "--enable-s3-proxy",
+            f"--workspace-bucket=my-workspaces",
+            "--s3-admin-type=minio",
+            "--startup-functions",
+            "hypha.workers.conda:hypha_startup",
+        ],
+        env=test_env_llm,
+    ) as proc:
+        timeout = 20
+        while timeout > 0:
+            try:
+                response = requests.get(f"http://127.0.0.1:{llm_proxy_port}/health/readiness")
+                if response.ok:
+                    break
+            except RequestException:
+                pass
+            timeout -= 0.1
+            time.sleep(0.1)
+        if timeout <= 0:
+            raise TimeoutError("Server with LLM proxy did not start in time")
+        response = requests.get(f"http://127.0.0.1:{llm_proxy_port}/health/liveness")
+        assert response.ok
+        yield llm_proxy_port  # Return the port so tests can connect
         proc.kill()
         proc.terminate()
 

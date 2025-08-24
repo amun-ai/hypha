@@ -40,21 +40,45 @@ async def hypha_startup(server: Dict[str, Any]) -> None:
     
     try:
         # Get the app controller service
-        app_controller = await server.get_service("server-apps")
+        # Handle both dict-like interface and object interface
+        if isinstance(server, dict):
+            get_service = server.get("get_service")
+            if get_service:
+                app_controller = await get_service("server-apps")
+            else:
+                logger.warning("Server does not have get_service method")
+                return
+        else:
+            app_controller = await server.get_service("server-apps")
         if not app_controller:
             logger.warning("Server apps controller not found, skipping LLM proxy installation")
             return
         
         # Check if conda worker is available
         try:
-            conda_worker = await server.get_service("conda-worker")
+            # Handle both dict-like interface and object interface
+            if isinstance(server, dict):
+                get_service = server.get("get_service")
+                register_service = server.get("register_service")
+                if get_service:
+                    conda_worker = await get_service("conda-worker")
+                else:
+                    conda_worker = None
+            else:
+                conda_worker = await server.get_service("conda-worker")
+                register_service = server.register_service
+                
             if not conda_worker:
                 # Try to register conda worker if not available
                 logger.info("Conda worker not found, attempting to register...")
                 from hypha.workers.conda import CondaWorker
                 conda_worker_instance = CondaWorker()
-                await server.register_service(conda_worker_instance.get_worker_service())
-                logger.info("Conda worker registered successfully")
+                if register_service:
+                    await register_service(conda_worker_instance.get_worker_service())
+                    logger.info("Conda worker registered successfully")
+                else:
+                    logger.error("Cannot register conda worker - no register_service method")
+                    return
         except Exception as e:
             logger.error(f"Failed to setup conda worker: {e}")
             return
@@ -133,7 +157,13 @@ async def register_llm_proxy_app(
         if not conda_worker:
             from hypha.workers.conda import CondaWorker
             conda_worker = CondaWorker()
-            await server.register_service(conda_worker.get_worker_service())
+            # Handle both dict-like interface and object interface
+            if isinstance(server, dict):
+                register_service = server.get("register_service")
+                if register_service:
+                    await register_service(conda_worker.get_worker_service())
+            else:
+                await server.register_service(conda_worker.get_worker_service())
         
         # Import and install the app
         from .llm_proxy_app import install_llm_proxy

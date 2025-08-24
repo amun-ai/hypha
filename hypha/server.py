@@ -665,11 +665,6 @@ def get_argparser(add_help=True):
         help="enable local authentication provider with user management",
     )
     parser.add_argument(
-        "--enable-llm-proxy",
-        action="store_true",
-        help="enable LLM proxy worker for multi-provider LLM support via litellm",
-    )
-    parser.add_argument(
         "--interactive",
         action="store_true",
         help="start an interactive shell with the hypha store",
