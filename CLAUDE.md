@@ -343,7 +343,7 @@ interface = {
 
 1. **`protected`** (DEFAULT) - Only accessible by clients in the same workspace
 2. **`public`** - Accessible by all authenticated users across workspaces
-3. **`unlisted`** - Hidden from discovery but accessible to workspace members
+3. **`unlisted`** - Same as public, accessible for all users, but not discoverable 
 
 ### When Additional Permission Checks Are Required
 
