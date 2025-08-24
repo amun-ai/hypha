@@ -122,13 +122,34 @@ def start_builtin_services(
 
         browser_worker = BrowserWorker(in_docker=args.in_docker)
         store.register_public_service(browser_worker.get_worker_service())
-        ServerAppController(
+        app_controller = ServerAppController(
             store,
             port=args.port,
             in_docker=args.in_docker,
             artifact_manager=artifact_manager,
             disable_ssl=args.disable_ssl,
         )
+        
+        # Enable LLM proxy if requested
+        if args.enable_llm_proxy:
+            # Import and register conda worker for LLM proxy
+            from hypha.workers.conda import CondaWorker
+            conda_worker = CondaWorker(in_docker=args.in_docker)
+            store.register_public_service(conda_worker.get_worker_service())
+            
+            # Schedule LLM proxy installation after server startup
+            async def install_llm_proxy():
+                try:
+                    from hypha.apps.llm_proxy_app import install_llm_proxy
+                    await asyncio.sleep(5)  # Wait for server to be fully ready
+                    logger.info("Installing LLM proxy application...")
+                    await install_llm_proxy(app_controller, workspace="public")
+                    logger.info("LLM proxy application installed successfully")
+                except Exception as e:
+                    logger.error(f"Failed to install LLM proxy: {e}")
+            
+            # Schedule the installation
+            asyncio.create_task(install_llm_proxy())
 
     HTTPProxy(
         store,
@@ -478,6 +499,11 @@ def get_argparser(add_help=True):
         "--enable-server-apps",
         action="store_true",
         help="enable server applications",
+    )
+    parser.add_argument(
+        "--enable-llm-proxy",
+        action="store_true",
+        help="enable LLM proxy service (requires --enable-server-apps)",
     )
     parser.add_argument(
         "--enable-s3",
