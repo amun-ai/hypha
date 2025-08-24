@@ -89,7 +89,7 @@ class LLMProxyWorker(BaseWorker):
             client = session.get("client")
             if client:
                 try:
-                    # Unregister services before disconnecting
+                    # Unregister the LLM service before disconnecting
                     if "registered_service_id" in session:
                         try:
                             service_id_to_unregister = session["registered_service_id"]
@@ -98,15 +98,6 @@ class LLMProxyWorker(BaseWorker):
                             logger.info(f"Successfully unregistered service: {service_id_to_unregister}")
                         except Exception as e:
                             logger.warning(f"Failed to unregister service {session.get('registered_service_id')}: {e}")
-                    
-                    if "default_service_id" in session:
-                        try:
-                            default_id_to_unregister = session["default_service_id"]
-                            logger.info(f"Attempting to unregister default service: {default_id_to_unregister}")
-                            await client.unregister_service(default_id_to_unregister)
-                            logger.info(f"Successfully unregistered default service: {default_id_to_unregister}")
-                        except Exception as e:
-                            logger.warning(f"Failed to unregister default service {session.get('default_service_id')}: {e}")
                     
                     # Disconnect the client
                     await client.disconnect()
@@ -334,8 +325,9 @@ class LLMProxyWorker(BaseWorker):
             app = await self._create_litellm_app(session_id)
             session["app"] = app
             
-            # Store the service ID for this session
-            service_id = f"llm-{session_id}"
+            # Get service_id from manifest config, or use default pattern
+            manifest = config.get("manifest", {})
+            service_id = manifest.get("config", {}).get("service_id", f"llm-{session_id}")
             session["service_id"] = service_id
             
             # Determine which providers are configured
@@ -382,11 +374,11 @@ class LLMProxyWorker(BaseWorker):
             # Store client in session for cleanup
             session["client"] = client
             
-            # Register the LLM service with its specific ID
+            # Register the LLM service as an ASGI service (type="asgi")
             service_info = await client.register_service({
                 "id": service_id,
                 "name": f"LLM Proxy - {session_id}",
-                "type": "llm-proxy",
+                "type": "asgi",  # Changed from "llm-proxy" to "asgi" to use existing ASGI middleware
                 "description": f"LLM proxy service with {len(session['model_list'])} models",
                 "serve": serve_llm,  # ASGI handler function
                 "config": {
@@ -401,27 +393,7 @@ class LLMProxyWorker(BaseWorker):
             logger.info(f"Registered LLM proxy service with full ID: {full_service_id}")
             session["registered_service_id"] = full_service_id
             
-            # Also register a "default" service that the app controller expects
-            # This is a simpler service that just indicates the app is ready
-            default_service_info = await client.register_service({
-                "id": "default",
-                "name": "Default LLM Proxy Service",
-                "type": "default",
-                "description": "Default service for app controller",
-                "config": {
-                    "visibility": "protected",
-                    "require_context": True,
-                },
-                "app_id": app_id,  # Associate with the app
-                "setup": lambda context=None: None,  # Simple no-op setup that accepts context
-            }, overwrite=True)
-            
-            # Store the full default service ID including the client ID path
-            full_default_service_id = default_service_info["id"]
-            logger.info(f"Registered default service with full ID: {full_default_service_id}")
-            session["default_service_id"] = full_default_service_id
-            
-            # Update session info
+            # Update session info - using /apps/ path now instead of /llm/
             session["info"]["status"] = "running"
             session["info"]["logs"] = f"LLM proxy service ready with ID: {service_id}"
             session["info"]["outputs"] = {
@@ -429,14 +401,14 @@ class LLMProxyWorker(BaseWorker):
                 "models": [m.get("model_name") for m in session["model_list"]],
                 "providers": list(configured_providers),
                 "endpoints": {
-                    "openai_chat": f"/llm/{service_id}/v1/chat/completions",
-                    "claude_messages": f"/llm/{service_id}/v1/messages",
-                    "completions": f"/llm/{service_id}/v1/completions",
-                    "embeddings": f"/llm/{service_id}/v1/embeddings",
-                    "models": f"/llm/{service_id}/v1/models",
-                    "health": f"/llm/{service_id}/health",
+                    "openai_chat": f"/apps/{service_id}/v1/chat/completions",
+                    "claude_messages": f"/apps/{service_id}/v1/messages",
+                    "completions": f"/apps/{service_id}/v1/completions",
+                    "embeddings": f"/apps/{service_id}/v1/embeddings",
+                    "models": f"/apps/{service_id}/v1/models",
+                    "health": f"/apps/{service_id}/health",
                 },
-                "base_url": f"/llm/{service_id}",
+                "base_url": f"/apps/{service_id}",
             }
             
             session["logs"].append(f"LLM proxy started with service ID: {service_id}")
@@ -470,11 +442,9 @@ class LLMProxyWorker(BaseWorker):
     
     def get_app_for_service(self, service_id: str):
         """Get the FastAPI app for a given service ID."""
-        # Extract session_id from service_id (format: llm-{session_id})
-        if service_id.startswith("llm-"):
-            session_id = service_id[4:]
-            session = self._sessions.get(session_id)
-            if session:
+        # Look for the session that has this service_id
+        for session_id, session in self._sessions.items():
+            if session.get("service_id") == service_id:
                 return session.get("app")
         return None
     

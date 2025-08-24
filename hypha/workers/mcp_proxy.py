@@ -50,7 +50,6 @@ logger = logging.getLogger("mcp_proxy")
 logger.setLevel(LOGLEVEL)
 
 # Import MCP SDK - let it fail directly if not available
-import mcp.types as mcp_types
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.client.session import ClientSession
 from mcp.client.sse import sse_client
