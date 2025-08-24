@@ -2,7 +2,7 @@
 
 import pytest
 import json
-from hypha.apps.llm_proxy_app import (
+from hypha.apps.llm_proxy import (
     create_llm_proxy_app,
     LLM_PROXY_MANIFEST,
     LLM_PROXY_SCRIPT,

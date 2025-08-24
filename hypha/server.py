@@ -140,10 +140,20 @@ def start_builtin_services(
             # Schedule LLM proxy installation after server startup
             async def install_llm_proxy():
                 try:
-                    from hypha.apps.llm_proxy_app import install_llm_proxy
+                    from hypha.apps.llm_proxy import install_llm_proxy
                     await asyncio.sleep(5)  # Wait for server to be fully ready
                     logger.info("Installing LLM proxy application...")
-                    await install_llm_proxy(app_controller, workspace="public")
+                    
+                    # Gather configuration from environment
+                    config = {}
+                    api_keys = {}
+                    for key in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"]:
+                        if env.get(key):
+                            api_keys[key] = env[key]
+                    if api_keys:
+                        config["api_keys"] = api_keys
+                    
+                    await install_llm_proxy(app_controller, workspace="public", config=config)
                     logger.info("LLM proxy application installed successfully")
                 except Exception as e:
                     logger.error(f"Failed to install LLM proxy: {e}")

@@ -216,13 +216,19 @@ async def create_llm_proxy_app() -> Dict[str, Any]:
     }
 
 
-async def install_llm_proxy(app_controller, workspace: str = "public", context: Optional[dict] = None) -> str:
+async def install_llm_proxy(
+    app_controller, 
+    workspace: str = "public", 
+    context: Optional[dict] = None,
+    config: Optional[Dict[str, Any]] = None
+) -> str:
     """Install the LLM proxy application in the specified workspace.
     
     Args:
         app_controller: The ServerAppController instance
         workspace: The workspace to install the app in (default: "public")
         context: Optional context dictionary for authorization
+        config: Optional configuration to pass to the LLM proxy
     
     Returns:
         The app ID of the installed application
