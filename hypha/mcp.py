@@ -1272,7 +1272,7 @@ class MCPRoutingMiddleware:
         )
     
     async def _handle_mcp_request(self, scope, receive, send, workspace, service_id):
-        """Handle MCP streamable HTTP requests."""
+        """Handle regular MCP HTTP requests (JSON-RPC)."""
         try:
             # Prepare scope for the MCP service
             scope = {
@@ -1307,32 +1307,22 @@ class MCPRoutingMiddleware:
             if cache_key in self._mcp_cache:
                 # Use cached MCP app
                 mcp_app, api_context, api_task = self._mcp_cache[cache_key]
-                try:
-                    # Handle the request with the cached MCP app
-                    await mcp_app(scope, receive, send)
-                except Exception as e:
-                    # If the cached connection failed, clean it up and retry
-                    logger.warning(f"Cached MCP app failed, recreating: {e}")
-                    
-                    # Clean up old context
-                    try:
-                        if api_context:
-                            await api_context.__aexit__(None, None, None)
-                    except:
-                        pass
-                    del self._mcp_cache[cache_key]
-                    
-                    # Retry with fresh connection
-                    await self._handle_mcp_request(scope, receive, send, workspace, service_id)
+                # Handle the request with the cached MCP app
+                await mcp_app(scope, receive, send)
             else:
                 # Create new MCP app with persistent API connection
-                api_context_manager = self.store.get_workspace_interface(user_info, workspace)
+                # Use the user's current workspace for the interface but query the full service ID
+                api_context_manager = self.store.get_workspace_interface(
+                    user_info, user_info.scope.current_workspace
+                )
                 api_context = api_context_manager.__aenter__()
                 api = await api_context
                 
                 try:
+                    # For cross-workspace service access, use the full service ID
+                    full_service_id = f"{workspace}/{service_id}"
                     service_info = await api.get_service_info(
-                        service_id, {"mode": _mode}
+                        full_service_id, {"mode": _mode}
                     )
                     logger.debug(
                         f"MCP Middleware: Found service '{service_id}' of type '{service_info.type}'"
@@ -1341,9 +1331,9 @@ class MCPRoutingMiddleware:
                     # Clean up on error
                     await api_context_manager.__aexit__(None, None, None)
                     logger.error(f"MCP Middleware: Service lookup failed: {e}")
-                    if "Service not found" in str(e):
+                    if "Service not found" in str(e) or "Permission denied" in str(e):
                         await self._send_error_response(
-                            send, 404, f"Service {service_id} not found"
+                            send, 404, f"Service {service_id} not found or not accessible"
                         )
                         return
                     else:
@@ -1449,13 +1439,18 @@ class MCPRoutingMiddleware:
                     await self._handle_sse_request(scope, receive, send, workspace, service_id)
             else:
                 # Create new MCP app with persistent API connection
-                api_context_manager = self.store.get_workspace_interface(user_info, workspace)
+                # Use the user's current workspace for the interface but query the full service ID
+                api_context_manager = self.store.get_workspace_interface(
+                    user_info, user_info.scope.current_workspace
+                )
                 api_context = api_context_manager.__aenter__()
                 api = await api_context
                 
                 try:
+                    # For cross-workspace service access, use the full service ID
+                    full_service_id = f"{workspace}/{service_id}"
                     service_info = await api.get_service_info(
-                        service_id, {"mode": None}
+                        full_service_id, {"mode": None}
                     )
                     logger.debug(
                         f"MCP Middleware: Found service '{service_id}' of type '{service_info.type}'"
@@ -1464,9 +1459,9 @@ class MCPRoutingMiddleware:
                     # Clean up on error
                     await api_context_manager.__aexit__(None, None, None)
                     logger.error(f"MCP Middleware: Service lookup failed: {e}")
-                    if "Service not found" in str(e):
+                    if "Service not found" in str(e) or "Permission denied" in str(e):
                         await self._send_error_response(
-                            send, 404, f"Service {service_id} not found"
+                            send, 404, f"Service {service_id} not found or not accessible"
                         )
                         return
                     else:
