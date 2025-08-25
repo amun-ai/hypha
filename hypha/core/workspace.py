@@ -1247,7 +1247,8 @@ class WorkspaceManager:
         target_workspace = client_id.split("/")[0]
         
         # Only validate permissions if trying to ping a client in a different workspace
-        if target_workspace != ws:
+        # Skip permission check for internal system operations (e.g., check-client-exists)
+        if target_workspace != ws and not context.get("from", "").endswith("/check-client-exists"):
             self.validate_context(context, permission=UserPermission.read)
             user_info = UserInfo.from_context(context)
             if not user_info.check_permission(target_workspace, UserPermission.read):
