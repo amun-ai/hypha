@@ -140,7 +140,7 @@ class RedisEventStore(EventStore):
         self,
         last_event_id: EventId,
         send_callback: EventCallback,
-    ) -> StreamId | None:
+    ) -> Optional[StreamId]:
         """Replay events that occurred after the specified event ID."""
         # Get event info
         event_key = self._get_event_key(last_event_id)
