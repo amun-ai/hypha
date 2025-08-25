@@ -592,12 +592,12 @@ from hypha_rpc import api
 import asyncio
 
 async def setup():
-    """Setup LLM proxy test service."""
+    '''Setup LLM proxy test service.'''
     # For testing, we just need a minimal service
     # The actual LLM proxy functionality would come from litellm
     
     async def chat_completion(messages, model="test-model", **kwargs):
-        """Mock chat completion for testing."""
+        '''Mock chat completion for testing.'''
         return {
             "choices": [{
                 "message": {
