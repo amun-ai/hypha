@@ -318,6 +318,217 @@ Alternative authentication system for deployments without Auth0.
 - Comprehensive metrics and monitoring via Prometheus-compatible endpoints
 
 
+## Security Architecture and Permission System
+
+### Core Security Principles
+
+Hypha implements a multi-layered security model with workspace isolation as the foundation. All services have **default protection** through workspace visibility settings, with additional fine-grained permission controls available for sensitive operations.
+
+### Default Protection: Workspace Isolation
+
+**By default, all services are `protected`**, meaning they are only accessible to clients within the same workspace. This provides automatic protection against unauthorized cross-workspace access without requiring explicit permission checks in every method.
+
+```python
+# Services created with default protected visibility
+interface = {
+    "config": {
+        "require_context": True,
+        "visibility": "protected",  # Default: only accessible within workspace
+    },
+    # Service methods...
+}
+```
+
+### Service Visibility Levels
+
+1. **`protected`** (DEFAULT) - Only accessible by clients in the same workspace
+2. **`public`** - Accessible by all authenticated users across workspaces
+3. **`unlisted`** - Hidden from discovery but accessible to workspace members
+
+### When Additional Permission Checks Are Required
+
+While workspace isolation provides baseline security, **additional permission validation is required for**:
+
+1. **Administrative Operations** - Workspace deletion, token generation, configuration changes
+2. **Cross-Workspace Access** - When services need to access resources in other workspaces
+3. **Sensitive Data Operations** - User data modification, credential access, system configuration
+4. **Public Services** - Services exposed as `public` MUST implement their own access controls
+
+### Permission Validation Methods
+
+1. **Using `validate_context()` method** - For operations requiring specific permission levels
+```python
+@schema_method
+async def delete_workspace(self, workspace: str, context: dict = None):
+    """Admin operation requiring explicit permission check."""
+    self.validate_context(context, permission=UserPermission.admin)
+    # Method implementation
+```
+
+2. **Using `UserInfo.check_permission()`** - For custom permission logic
+```python
+@schema_method
+async def access_resource(self, resource_id: str, context: dict = None):
+    """Custom permission validation."""
+    user_info = UserInfo.from_context(context)
+    if not user_info.check_permission(workspace, UserPermission.read_write):
+        raise PermissionError(f"Insufficient permissions")
+    # Method implementation
+```
+
+### Worker Security Requirements
+
+Workers in `hypha/workers/` must implement appropriate security:
+
+1. **Default Configuration** - All workers should use `protected` visibility
+```python
+# Worker service configuration
+config = {
+    "visibility": "protected",  # Restrict to same workspace
+    "require_context": True,
+}
+```
+
+2. **Cross-Workspace Workers** - Use `authorized_workspaces` for controlled access
+```python
+# Allow specific workspaces to access this worker
+config = {
+    "visibility": "protected",
+    "authorized_workspaces": ["trusted-workspace-1", "trusted-workspace-2"],
+}
+```
+
+3. **Shared Infrastructure Workers** - Carefully validate all operations
+```python
+# Workers managing shared resources (e.g., K8s, conda environments)
+async def execute_code(self, code: str, context: dict = None):
+    # Validate workspace quota
+    if not self.check_workspace_quota(context["ws"]):
+        raise PermissionError("Workspace quota exceeded")
+    
+    # Sandbox execution based on workspace
+    sandbox = self.get_workspace_sandbox(context["ws"])
+    return await sandbox.execute(code)
+```
+
+### Permission Levels
+
+- **`UserPermission.read`** - View workspace resources and services
+- **`UserPermission.read_write`** - Create/modify services and data
+- **`UserPermission.admin`** - Full workspace control including deletion
+
+### Context Structure
+
+Every service method receives a `context` dictionary:
+- `ws` - Current workspace ID
+- `from` - Client identifier (format: `workspace/client_id`)
+- `user` - User information including permissions
+
+### Security Patterns
+
+#### 1. Workspace Isolation (Default)
+Services are automatically isolated by workspace through `protected` visibility:
+```python
+# Check if service is public or user has permission
+if not key.startswith(b"services:public|"):
+    has_permission = user_info.check_permission(workspace, UserPermission.read)
+    if not has_permission:
+        # Check authorized_workspaces for protected services
+        if not (authorized_workspaces and user_workspace in authorized_workspaces):
+            raise PermissionError(f"Permission denied for workspace {workspace}")
+```
+
+#### 2. Authorized Workspaces Pattern
+For controlled cross-workspace access:
+```python
+# Service configuration with authorized workspaces
+config = {
+    "visibility": "protected",
+    "authorized_workspaces": ["workspace-1", "workspace-2"],
+}
+```
+
+#### 3. Event Subscription Security
+Prevent cross-workspace event snooping:
+```python
+def _validate_event_subscription(self, event_type: str, workspace: str):
+    """Validate workspace-safe event subscriptions."""
+    forbidden_patterns = ["ws-", "/", ":"]
+    for pattern in forbidden_patterns:
+        if pattern in event_type and not event_type.startswith(f"{workspace}/"):
+            raise ValueError(f"Cross-workspace subscription forbidden")
+```
+
+#### 4. Token Security
+- Tokens scoped to specific workspaces and permissions
+- Admin permission required for token generation
+- Token revocation with Redis expiration
+
+### Security Checklist for Service Development
+
+When creating new services:
+- [ ] **Choose appropriate visibility** (`protected` for most cases, `public` only when necessary)
+- [ ] **Add permission checks** for sensitive operations beyond basic workspace access
+- [ ] **Use `authorized_workspaces`** for controlled cross-workspace access
+- [ ] **Validate and sanitize** all user inputs to prevent injection attacks
+- [ ] **Log security events** for audit trails
+- [ ] **Handle errors securely** without leaking sensitive information
+- [ ] **Test workspace isolation** to ensure no unauthorized access
+
+### Example: Secure Service Implementation
+```python
+@schema_method
+async def delete_resource(
+    self,
+    resource_id: str = Field(..., description="Resource to delete"),
+    context: Optional[dict] = None,
+):
+    """Delete a resource with proper permission checks."""
+    assert context is not None
+    
+    # 1. Validate basic permissions
+    self.validate_context(context, permission=UserPermission.read_write)
+    
+    # 2. Extract user and workspace info
+    user_info = UserInfo.from_context(context)
+    workspace = context["ws"]
+    
+    # 3. Load resource and verify ownership
+    resource = await self.load_resource(resource_id)
+    if resource.workspace != workspace:
+        raise PermissionError("Cannot delete resources from other workspaces")
+    
+    # 4. Check additional permissions if needed
+    if resource.protected and not user_info.check_permission(workspace, UserPermission.admin):
+        raise PermissionError("Admin permission required for protected resources")
+    
+    # 5. Perform the operation
+    await self._delete_resource(resource_id)
+    
+    # 6. Log the security-relevant event
+    await self.log_event("resource_deleted", {"resource_id": resource_id}, context=context)
+```
+
+### Common Security Vulnerabilities to Avoid
+
+1. **Bypassing Default Protection** - Don't set services to `public` without careful consideration
+2. **Missing Permission Checks** - Validate permissions for sensitive operations
+3. **Information Leakage** - Never reveal details about resources user can't access
+4. **Injection Attacks** - Always sanitize and validate user inputs
+5. **Unauthorized Cross-Workspace Access** - Maintain strict workspace isolation
+6. **Privilege Escalation** - Never allow users to grant themselves higher permissions
+
+### Security Summary
+
+Hypha's security model operates on multiple levels:
+
+1. **Default Protection**: All services are `protected` by default, automatically restricting access to the same workspace
+2. **Additional Validation**: Sensitive operations require explicit permission checks beyond workspace isolation
+3. **Worker Security**: Workers must implement appropriate visibility and use `authorized_workspaces` for controlled access
+4. **Defense in Depth**: Multiple security layers ensure robust protection even if one layer fails
+
+**Key Principle**: Start with the default `protected` visibility for all services. Only expose services as `public` when absolutely necessary, and always implement additional access controls for public services. For workers and shared infrastructure, carefully control access using `authorized_workspaces` and validate all operations based on workspace context.
+
 ## Service Documentation and Type Annotations for LLM Agents
 
 Type annotations in Hypha services are crucial for enabling LLM agents to autonomously discover and use services. Hypha uses `@schema_method` and `@schema_function` decorators with Pydantic Field descriptions to provide rich context for AI agents.
