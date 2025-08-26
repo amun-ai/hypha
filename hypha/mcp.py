@@ -641,27 +641,44 @@ class HyphaMCPAdapter:
         tools = collect_tools(self.service)
         
         if tools:
-            # Filter out tools without valid schemas
-            valid_tools = {}
-            skipped_tools = []
-            for key, func in tools.items():
-                tool_def = self._extract_tool_from_function(key, func)
-                if tool_def:
-                    valid_tools[key] = func
-                else:
-                    skipped_tools.append(key)
-                    self.excluded_functions.append({
-                        "name": key,
-                        "reason": "No schema information available. Functions must be decorated with @schema_function or have schema in service_schema."
-                    })
-            
-            if skipped_tools:
-                logger.debug(f"Skipped {len(skipped_tools)} functions without schemas: {skipped_tools}")
-                self.warnings.append(f"Excluded {len(skipped_tools)} functions without proper schemas. Use @schema_function decorator to expose them via MCP.")
-            
-            if valid_tools:
-                self.tool_handlers = valid_tools
+            # For MCP services, strict validation - let exceptions propagate
+            if getattr(self.service_info, "type", None) == "mcp":
+                self.tool_handlers = {}
+                for key, func in tools.items():
+                    # This will raise an exception if the function doesn't have proper schema
+                    tool_def = self._extract_tool_from_function(key, func)
+                    if tool_def:
+                        self.tool_handlers[key] = func
+            else:
+                # For non-MCP services (auto-wrapped), filter out tools without valid schemas
+                valid_tools = {}
+                skipped_tools = []
+                for key, func in tools.items():
+                    try:
+                        tool_def = self._extract_tool_from_function(key, func)
+                        if tool_def:
+                            valid_tools[key] = func
+                        else:
+                            skipped_tools.append(key)
+                            self.excluded_functions.append({
+                                "name": key,
+                                "reason": "No schema information available. Functions must be decorated with @schema_function or have schema in service_schema."
+                            })
+                    except ValueError:
+                        # This shouldn't happen for non-MCP services, but handle it gracefully
+                        skipped_tools.append(key)
+                        self.excluded_functions.append({
+                            "name": key,
+                            "reason": "Failed to extract schema information."
+                        })
                 
+                if skipped_tools:
+                    logger.debug(f"Skipped {len(skipped_tools)} functions without schemas: {skipped_tools}")
+                    self.warnings.append(f"Excluded {len(skipped_tools)} functions without proper schemas. Use @schema_function decorator to expose them via MCP.")
+                
+                self.tool_handlers = valid_tools
+            
+            if self.tool_handlers:
                 @self.server.list_tools()
                 async def list_tools() -> List[types.Tool]:
                     tool_list = []
@@ -761,6 +778,11 @@ class HyphaMCPAdapter:
         # Check if function has schema (from @schema_function decorator)
         if hasattr(func, "__schema__"):
             schema = func.__schema__
+            # For services explicitly marked as MCP type, enforce strict validation
+            if getattr(self.service_info, "type", None) == "mcp" and not schema:
+                raise ValueError(f"Tool function '{name}' must be a @schema_function decorated function. "
+                               f"Use the @schema_function decorator from hypha_rpc.utils.schema to define the function schema.")
+            
             if schema:  # Only process if schema is not None
                 tool_def = {
                     "name": name,
@@ -773,7 +795,12 @@ class HyphaMCPAdapter:
                 }
                 return tool_def
         
-        # For functions without schema, try to extract from service_schema if available
+        # For MCP services, functions without __schema__ are invalid
+        if getattr(self.service_info, "type", None) == "mcp":
+            raise ValueError(f"Tool function '{name}' must be a @schema_function decorated function. "
+                           f"Use the @schema_function decorator from hypha_rpc.utils.schema to define the function schema.")
+        
+        # For non-MCP services (auto-wrapped), try to extract from service_schema if available
         # This handles services that have schema information but not as decorators
         if isinstance(self.service, dict) and "service_schema" in self.service:
             service_schema = self.service.get("service_schema", {})
@@ -794,7 +821,7 @@ class HyphaMCPAdapter:
                         }
                         return tool_def
         
-        # If no schema available, return None to indicate this function should be skipped
+        # If no schema available for non-MCP services, return None to indicate this function should be skipped
         return None
     
     async def _call_service_function(self, function_name: str, kwargs: Dict[str, Any]) -> Any:
@@ -1379,10 +1406,10 @@ class MCPRoutingMiddleware:
                 await mcp_app(scope, receive, send)
             else:
                 # Create new MCP app with persistent API connection
-                # Use the workspace from the URL path for the interface
-                # This ensures we're looking up services in the correct workspace
+                # Use the user's own workspace for the interface
+                # This allows us to access services in other workspaces if they're public/accessible
                 api_context_manager = self.store.get_workspace_interface(
-                    user_info, workspace  # Use workspace from URL, not user's current workspace
+                    user_info, user_info.scope.current_workspace
                 )
                 api_context = api_context_manager.__aenter__()
                 api = await api_context
@@ -1418,7 +1445,7 @@ class MCPRoutingMiddleware:
                 # No longer require explicit type="mcp" - any service can be exposed as MCP
                 # Services with type="mcp" get special handling, others are auto-wrapped
                 
-                service = await api.get_service(service_info.id)
+                service = await api.get_service(full_service_id)
                 
                 # Check if it's MCP compatible
                 if not is_mcp_compatible_service(service):
@@ -1515,10 +1542,10 @@ class MCPRoutingMiddleware:
                     await self._handle_sse_request(scope, receive, send, workspace, service_id)
             else:
                 # Create new MCP app with persistent API connection
-                # Use the workspace from the URL path for the interface
-                # This ensures we're looking up services in the correct workspace
+                # Use the user's own workspace for the interface
+                # This allows us to access services in other workspaces if they're public/accessible
                 api_context_manager = self.store.get_workspace_interface(
-                    user_info, workspace  # Use workspace from URL, not user's current workspace
+                    user_info, user_info.scope.current_workspace
                 )
                 api_context = api_context_manager.__aenter__()
                 api = await api_context
@@ -1547,7 +1574,7 @@ class MCPRoutingMiddleware:
                 # No longer require explicit type="mcp" - any service can be exposed as MCP
                 # Services with type="mcp" get special handling, others are auto-wrapped
                 
-                service = await api.get_service(service_info.id)
+                service = await api.get_service(full_service_id)
                 
                 # Check if it's MCP compatible
                 if not is_mcp_compatible_service(service):
