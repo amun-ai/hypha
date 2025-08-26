@@ -153,6 +153,9 @@ async def test_sqlite_create_and_search_artifacts(
     for dataset in datasets:
         await artifact_manager.delete(artifact_id=dataset.id)
     await artifact_manager.delete(artifact_id=collection.id)
+    
+    # Disconnect from the server to clean up properly
+    await api.disconnect()
 
 
 async def test_serve_artifact_endpoint(minio_server, fastapi_server, test_user_token):
@@ -240,6 +243,9 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server, test_user_t
         f"{SERVER_URL}/{api.config.workspace}/artifacts/{private_dataset.alias}"
     )
     assert response.status_code == 403
+    
+    # Disconnect from the server to clean up properly
+    await api.disconnect()
 
 
 async def test_http_file_and_directory_endpoint(

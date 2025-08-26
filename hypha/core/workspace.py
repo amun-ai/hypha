@@ -1239,7 +1239,10 @@ class WorkspaceManager:
     ):
         """Ping a client."""
         assert context is not None
-        ws = context["ws"]
+        ws = context.get("ws", "")
+        if not ws:
+            return "Failed to ping client: no workspace in context"
+            
         if "/" not in client_id:
             client_id = ws + "/" + client_id
         
@@ -1249,11 +1252,19 @@ class WorkspaceManager:
         # Only validate permissions if trying to ping a client in a different workspace
         # Skip permission check for internal system operations (e.g., check-client-exists)
         from_client = context.get("from", "")
-        if target_workspace != ws and not (from_client and from_client.endswith("/check-client-exists")):
-            self.validate_context(context, permission=UserPermission.read)
-            user_info = UserInfo.from_context(context)
-            if not user_info.check_permission(target_workspace, UserPermission.read):
-                raise PermissionError(f"Permission denied for workspace {target_workspace}")
+        is_internal_check = from_client and (
+            from_client.endswith("/check-client-exists") or 
+            from_client == "check-client-exists"
+        )
+        if target_workspace != ws and not is_internal_check:
+            try:
+                self.validate_context(context, permission=UserPermission.read)
+                user_info = UserInfo.from_context(context)
+                if not user_info.check_permission(target_workspace, UserPermission.read):
+                    raise PermissionError(f"Permission denied for workspace {target_workspace}")
+            except Exception as e:
+                logger.warning(f"Permission check failed in ping_client: {e}")
+                return f"Failed to ping client {client_id}: {e}"
         
         try:
             svc = await self._rpc.get_remote_service(
