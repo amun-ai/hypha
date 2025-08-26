@@ -211,6 +211,10 @@ class HyphaMCPAdapter:
         self.resource_handlers = {}
         self.prompt_handlers = {}
         
+        # Track excluded functions and warnings
+        self.excluded_functions = []
+        self.warnings = []
+        
         # Setup handlers based on service configuration
         self._setup_handlers()
         
@@ -637,29 +641,49 @@ class HyphaMCPAdapter:
         tools = collect_tools(self.service)
         
         if tools:
-            self.tool_handlers = tools
-            
-            @self.server.list_tools()
-            async def list_tools() -> List[types.Tool]:
-                tool_list = []
-                for key, func in self.tool_handlers.items():
-                    tool_def = self._extract_tool_from_function(key, func)
-                    tool_list.append(types.Tool(**tool_def))
-                return tool_list
-            
-            @self.server.call_tool()
-            async def call_tool(name: str, arguments: dict) -> List[types.ContentBlock]:
-                if name not in self.tool_handlers:
-                    raise ValueError(f"Tool '{name}' not found")
-                
-                func = self.tool_handlers[name]
-                result = await self._call_function(func, arguments)
-                
-                # Convert result to content blocks
-                if isinstance(result, list):
-                    return self._ensure_content_blocks(result)
+            # Filter out tools without valid schemas
+            valid_tools = {}
+            skipped_tools = []
+            for key, func in tools.items():
+                tool_def = self._extract_tool_from_function(key, func)
+                if tool_def:
+                    valid_tools[key] = func
                 else:
-                    return [types.TextContent(type="text", text=str(result))]
+                    skipped_tools.append(key)
+                    self.excluded_functions.append({
+                        "name": key,
+                        "reason": "No schema information available. Functions must be decorated with @schema_function or have schema in service_schema."
+                    })
+            
+            if skipped_tools:
+                logger.debug(f"Skipped {len(skipped_tools)} functions without schemas: {skipped_tools}")
+                self.warnings.append(f"Excluded {len(skipped_tools)} functions without proper schemas. Use @schema_function decorator to expose them via MCP.")
+            
+            if valid_tools:
+                self.tool_handlers = valid_tools
+                
+                @self.server.list_tools()
+                async def list_tools() -> List[types.Tool]:
+                    tool_list = []
+                    for key, func in self.tool_handlers.items():
+                        tool_def = self._extract_tool_from_function(key, func)
+                        if tool_def:  # Double-check in case something changed
+                            tool_list.append(types.Tool(**tool_def))
+                    return tool_list
+                
+                @self.server.call_tool()
+                async def call_tool(name: str, arguments: dict) -> List[types.ContentBlock]:
+                    if name not in self.tool_handlers:
+                        raise ValueError(f"Tool '{name}' not found")
+                    
+                    func = self.tool_handlers[name]
+                    result = await self._call_function(func, arguments)
+                    
+                    # Convert result to content blocks
+                    if isinstance(result, list):
+                        return self._ensure_content_blocks(result)
+                    else:
+                        return [types.TextContent(type="text", text=str(result))]
         
         # Collect string resources (including docs and other string fields)
         string_resources = collect_string_resources(self.service)
@@ -734,23 +758,44 @@ class HyphaMCPAdapter:
     
     def _extract_tool_from_function(self, name: str, func: Callable) -> Dict[str, Any]:
         """Extract MCP tool definition from a function."""
-        # Validate that the function is a schema function
-        if not hasattr(func, "__schema__"):
-            raise ValueError(f"Tool function '{name}' must be a @schema_function decorated function. "
-                           f"Use the @schema_function decorator from hypha_rpc.utils.schema to define the function schema.")
+        # Check if function has schema (from @schema_function decorator)
+        if hasattr(func, "__schema__"):
+            schema = func.__schema__
+            if schema:  # Only process if schema is not None
+                tool_def = {
+                    "name": name,
+                    "description": schema.get("description", func.__doc__ or f"Function {name}"),
+                    "inputSchema": schema.get("parameters", {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    })
+                }
+                return tool_def
         
-        schema = getattr(func, "__schema__", {})
-        tool_def = {
-            "name": name,
-            "description": schema.get("description", func.__doc__ or f"Function {name}"),
-            "inputSchema": schema.get("parameters", {
-                "type": "object",
-                "properties": {},
-                "required": []
-            })
-        }
+        # For functions without schema, try to extract from service_schema if available
+        # This handles services that have schema information but not as decorators
+        if isinstance(self.service, dict) and "service_schema" in self.service:
+            service_schema = self.service.get("service_schema", {})
+            if name in service_schema and service_schema[name]:
+                func_schema = service_schema[name]
+                # Check if func_schema is a dict before trying to access its properties
+                if isinstance(func_schema, dict) and func_schema.get("type") == "function":
+                    function_def = func_schema.get("function", {})
+                    if function_def and isinstance(function_def, dict):
+                        tool_def = {
+                            "name": name,
+                            "description": function_def.get("description", func.__doc__ or f"Function {name}"),
+                            "inputSchema": function_def.get("parameters", {
+                                "type": "object",
+                                "properties": {},
+                                "required": []
+                            })
+                        }
+                        return tool_def
         
-        return tool_def
+        # If no schema available, return None to indicate this function should be skipped
+        return None
     
     async def _call_service_function(self, function_name: str, kwargs: Dict[str, Any]) -> Any:
         """Call a service function and handle async/sync appropriately."""
@@ -847,6 +892,24 @@ class HyphaMCPAdapter:
                 blocks.append(types.TextContent(type="text", text=str(item)))
         
         return blocks
+    
+    def get_adapter_summary(self) -> Dict[str, Any]:
+        """Get a summary of the MCP adapter including warnings and excluded functions."""
+        summary = {
+            "service_id": self.service_info.id,
+            "service_type": getattr(self.service_info, "type", "unknown"),
+            "tools_count": len(self.tool_handlers),
+            "resources_count": len(getattr(self, "string_resources", {})),
+            "prompts_count": len(self.prompt_handlers),
+        }
+        
+        if self.warnings:
+            summary["warnings"] = self.warnings
+        
+        if self.excluded_functions:
+            summary["excluded_functions"] = self.excluded_functions
+            
+        return summary
     
     def _ensure_prompt_result(self, result: Any) -> types.GetPromptResult:
         """Ensure the result is a proper MCP GetPromptResult object."""
@@ -1233,7 +1296,7 @@ class MCPRoutingMiddleware:
             }
         )
 
-    async def _send_helpful_404(self, send, workspace, service_id):
+    async def _send_helpful_404(self, send, workspace, service_id, adapter_summary=None):
         """Send a helpful 404 message with endpoint information."""
         # Handle empty service_id case
         if not service_id:
@@ -1253,6 +1316,11 @@ class MCPRoutingMiddleware:
                 },
                 "help": "Use the streamable HTTP endpoint for MCP communication.",
             }
+            
+            # Include adapter summary if available
+            if adapter_summary:
+                message["service_info"] = adapter_summary
+                
         response_body = json.dumps(message, indent=2).encode()
         await send(
             {
@@ -1311,16 +1379,24 @@ class MCPRoutingMiddleware:
                 await mcp_app(scope, receive, send)
             else:
                 # Create new MCP app with persistent API connection
-                # Use the user's current workspace for the interface but query the full service ID
+                # Use the workspace from the URL path for the interface
+                # This ensures we're looking up services in the correct workspace
                 api_context_manager = self.store.get_workspace_interface(
-                    user_info, user_info.scope.current_workspace
+                    user_info, workspace  # Use workspace from URL, not user's current workspace
                 )
                 api_context = api_context_manager.__aenter__()
                 api = await api_context
                 
                 try:
-                    # For cross-workspace service access, use the full service ID
-                    full_service_id = f"{workspace}/{service_id}"
+                    # Check if service_id already contains workspace/client info (fully qualified)
+                    # e.g., "squid-control-server-squid-control-reef-aacc8300-b6c2-45c0-b32a-9a253fa4e0ca:squid-control-reef"
+                    if "/" in service_id or ":" in service_id:
+                        # Service ID is already fully qualified, use as-is
+                        full_service_id = service_id
+                    else:
+                        # Service ID is relative, prepend workspace
+                        full_service_id = f"{workspace}/{service_id}"
+                    
                     service_info = await api.get_service_info(
                         full_service_id, {"mode": _mode}
                     )
@@ -1439,9 +1515,10 @@ class MCPRoutingMiddleware:
                     await self._handle_sse_request(scope, receive, send, workspace, service_id)
             else:
                 # Create new MCP app with persistent API connection
-                # Use the user's current workspace for the interface but query the full service ID
+                # Use the workspace from the URL path for the interface
+                # This ensures we're looking up services in the correct workspace
                 api_context_manager = self.store.get_workspace_interface(
-                    user_info, user_info.scope.current_workspace
+                    user_info, workspace  # Use workspace from URL, not user's current workspace
                 )
                 api_context = api_context_manager.__aenter__()
                 api = await api_context
