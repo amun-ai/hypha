@@ -1415,13 +1415,20 @@ class MCPRoutingMiddleware:
                 api = await api_context
                 
                 try:
-                    # Check if service_id already contains workspace/client info (fully qualified)
-                    # e.g., "squid-control-server-squid-control-reef-aacc8300-b6c2-45c0-b32a-9a253fa4e0ca:squid-control-reef"
-                    if "/" in service_id or ":" in service_id:
-                        # Service ID is already fully qualified, use as-is
+                    # Build the full service ID based on what's provided
+                    # Service IDs can be in several formats:
+                    # 1. Simple service name: "my-service"
+                    # 2. Client-qualified: "client-id:service-name"
+                    # 3. Workspace-qualified: "workspace/service-name" or "workspace/client-id:service-name"
+                    
+                    if "/" in service_id:
+                        # Already has workspace prefix, use as-is
                         full_service_id = service_id
+                    elif ":" in service_id:
+                        # Has client ID but no workspace, prepend workspace
+                        full_service_id = f"{workspace}/{service_id}"
                     else:
-                        # Service ID is relative, prepend workspace
+                        # Simple service name, prepend workspace
                         full_service_id = f"{workspace}/{service_id}"
                     
                     service_info = await api.get_service_info(
@@ -1551,8 +1558,22 @@ class MCPRoutingMiddleware:
                 api = await api_context
                 
                 try:
-                    # For cross-workspace service access, use the full service ID
-                    full_service_id = f"{workspace}/{service_id}"
+                    # Build the full service ID based on what's provided
+                    # Service IDs can be in several formats:
+                    # 1. Simple service name: "my-service"
+                    # 2. Client-qualified: "client-id:service-name"
+                    # 3. Workspace-qualified: "workspace/service-name" or "workspace/client-id:service-name"
+                    
+                    if "/" in service_id:
+                        # Already has workspace prefix, use as-is
+                        full_service_id = service_id
+                    elif ":" in service_id:
+                        # Has client ID but no workspace, prepend workspace
+                        full_service_id = f"{workspace}/{service_id}"
+                    else:
+                        # Simple service name, prepend workspace
+                        full_service_id = f"{workspace}/{service_id}"
+                    
                     service_info = await api.get_service_info(
                         full_service_id, {"mode": None}
                     )
