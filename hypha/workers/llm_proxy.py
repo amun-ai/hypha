@@ -339,6 +339,15 @@ class LLMProxyWorker(BaseWorker):
         model_list = session["model_list"]
         litellm_settings = session.get("litellm_settings", {})
         
+        # Ensure each model has an API key to prevent initialization errors
+        # For models with mock_response, use a dummy key
+        for model in model_list:
+            if "litellm_params" in model:
+                params = model["litellm_params"]
+                # If there's a mock_response and no api_key, add a dummy one
+                if "mock_response" in params and not params.get("api_key"):
+                    params["api_key"] = "dummy-key-for-mock"
+        
         # Create a Router with our model configuration
         # The Router handles load balancing and model selection
         router = Router(
