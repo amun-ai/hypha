@@ -140,7 +140,7 @@ class RedisEventStore(EventStore):
         self,
         last_event_id: EventId,
         send_callback: EventCallback,
-    ) -> StreamId | None:
+    ) -> Optional[StreamId]:
         """Replay events that occurred after the specified event ID."""
         # Get event info
         event_key = self._get_event_key(last_event_id)
@@ -210,6 +210,10 @@ class HyphaMCPAdapter:
         self.tool_handlers = {}
         self.resource_handlers = {}
         self.prompt_handlers = {}
+        
+        # Track excluded functions and warnings
+        self.excluded_functions = []
+        self.warnings = []
         
         # Setup handlers based on service configuration
         self._setup_handlers()
@@ -637,29 +641,66 @@ class HyphaMCPAdapter:
         tools = collect_tools(self.service)
         
         if tools:
-            self.tool_handlers = tools
-            
-            @self.server.list_tools()
-            async def list_tools() -> List[types.Tool]:
-                tool_list = []
-                for key, func in self.tool_handlers.items():
+            # For MCP services, strict validation - let exceptions propagate
+            if getattr(self.service_info, "type", None) == "mcp":
+                self.tool_handlers = {}
+                for key, func in tools.items():
+                    # This will raise an exception if the function doesn't have proper schema
                     tool_def = self._extract_tool_from_function(key, func)
-                    tool_list.append(types.Tool(**tool_def))
-                return tool_list
+                    if tool_def:
+                        self.tool_handlers[key] = func
+            else:
+                # For non-MCP services (auto-wrapped), filter out tools without valid schemas
+                valid_tools = {}
+                skipped_tools = []
+                for key, func in tools.items():
+                    try:
+                        tool_def = self._extract_tool_from_function(key, func)
+                        if tool_def:
+                            valid_tools[key] = func
+                        else:
+                            skipped_tools.append(key)
+                            self.excluded_functions.append({
+                                "name": key,
+                                "reason": "No schema information available. Functions must be decorated with @schema_function or have schema in service_schema."
+                            })
+                    except ValueError:
+                        # This shouldn't happen for non-MCP services, but handle it gracefully
+                        skipped_tools.append(key)
+                        self.excluded_functions.append({
+                            "name": key,
+                            "reason": "Failed to extract schema information."
+                        })
+                
+                if skipped_tools:
+                    logger.debug(f"Skipped {len(skipped_tools)} functions without schemas: {skipped_tools}")
+                    self.warnings.append(f"Excluded {len(skipped_tools)} functions without proper schemas. Use @schema_function decorator to expose them via MCP.")
+                
+                self.tool_handlers = valid_tools
             
-            @self.server.call_tool()
-            async def call_tool(name: str, arguments: dict) -> List[types.ContentBlock]:
-                if name not in self.tool_handlers:
-                    raise ValueError(f"Tool '{name}' not found")
+            if self.tool_handlers:
+                @self.server.list_tools()
+                async def list_tools() -> List[types.Tool]:
+                    tool_list = []
+                    for key, func in self.tool_handlers.items():
+                        tool_def = self._extract_tool_from_function(key, func)
+                        if tool_def:  # Double-check in case something changed
+                            tool_list.append(types.Tool(**tool_def))
+                    return tool_list
                 
-                func = self.tool_handlers[name]
-                result = await self._call_function(func, arguments)
-                
-                # Convert result to content blocks
-                if isinstance(result, list):
-                    return self._ensure_content_blocks(result)
-                else:
-                    return [types.TextContent(type="text", text=str(result))]
+                @self.server.call_tool()
+                async def call_tool(name: str, arguments: dict) -> List[types.ContentBlock]:
+                    if name not in self.tool_handlers:
+                        raise ValueError(f"Tool '{name}' not found")
+                    
+                    func = self.tool_handlers[name]
+                    result = await self._call_function(func, arguments)
+                    
+                    # Convert result to content blocks
+                    if isinstance(result, list):
+                        return self._ensure_content_blocks(result)
+                    else:
+                        return [types.TextContent(type="text", text=str(result))]
         
         # Collect string resources (including docs and other string fields)
         string_resources = collect_string_resources(self.service)
@@ -734,23 +775,54 @@ class HyphaMCPAdapter:
     
     def _extract_tool_from_function(self, name: str, func: Callable) -> Dict[str, Any]:
         """Extract MCP tool definition from a function."""
-        # Validate that the function is a schema function
-        if not hasattr(func, "__schema__"):
+        # Check if function has schema (from @schema_function decorator)
+        if hasattr(func, "__schema__"):
+            schema = func.__schema__
+            # For services explicitly marked as MCP type, enforce strict validation
+            if getattr(self.service_info, "type", None) == "mcp" and not schema:
+                raise ValueError(f"Tool function '{name}' must be a @schema_function decorated function. "
+                               f"Use the @schema_function decorator from hypha_rpc.utils.schema to define the function schema.")
+            
+            if schema:  # Only process if schema is not None
+                tool_def = {
+                    "name": name,
+                    "description": schema.get("description", func.__doc__ or f"Function {name}"),
+                    "inputSchema": schema.get("parameters", {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    })
+                }
+                return tool_def
+        
+        # For MCP services, functions without __schema__ are invalid
+        if getattr(self.service_info, "type", None) == "mcp":
             raise ValueError(f"Tool function '{name}' must be a @schema_function decorated function. "
                            f"Use the @schema_function decorator from hypha_rpc.utils.schema to define the function schema.")
         
-        schema = getattr(func, "__schema__", {})
-        tool_def = {
-            "name": name,
-            "description": schema.get("description", func.__doc__ or f"Function {name}"),
-            "inputSchema": schema.get("parameters", {
-                "type": "object",
-                "properties": {},
-                "required": []
-            })
-        }
+        # For non-MCP services (auto-wrapped), try to extract from service_schema if available
+        # This handles services that have schema information but not as decorators
+        if isinstance(self.service, dict) and "service_schema" in self.service:
+            service_schema = self.service.get("service_schema", {})
+            if name in service_schema and service_schema[name]:
+                func_schema = service_schema[name]
+                # Check if func_schema is a dict before trying to access its properties
+                if isinstance(func_schema, dict) and func_schema.get("type") == "function":
+                    function_def = func_schema.get("function", {})
+                    if function_def and isinstance(function_def, dict):
+                        tool_def = {
+                            "name": name,
+                            "description": function_def.get("description", func.__doc__ or f"Function {name}"),
+                            "inputSchema": function_def.get("parameters", {
+                                "type": "object",
+                                "properties": {},
+                                "required": []
+                            })
+                        }
+                        return tool_def
         
-        return tool_def
+        # If no schema available for non-MCP services, return None to indicate this function should be skipped
+        return None
     
     async def _call_service_function(self, function_name: str, kwargs: Dict[str, Any]) -> Any:
         """Call a service function and handle async/sync appropriately."""
@@ -847,6 +919,24 @@ class HyphaMCPAdapter:
                 blocks.append(types.TextContent(type="text", text=str(item)))
         
         return blocks
+    
+    def get_adapter_summary(self) -> Dict[str, Any]:
+        """Get a summary of the MCP adapter including warnings and excluded functions."""
+        summary = {
+            "service_id": self.service_info.id,
+            "service_type": getattr(self.service_info, "type", "unknown"),
+            "tools_count": len(self.tool_handlers),
+            "resources_count": len(getattr(self, "string_resources", {})),
+            "prompts_count": len(self.prompt_handlers),
+        }
+        
+        if self.warnings:
+            summary["warnings"] = self.warnings
+        
+        if self.excluded_functions:
+            summary["excluded_functions"] = self.excluded_functions
+            
+        return summary
     
     def _ensure_prompt_result(self, result: Any) -> types.GetPromptResult:
         """Ensure the result is a proper MCP GetPromptResult object."""
@@ -1233,7 +1323,7 @@ class MCPRoutingMiddleware:
             }
         )
 
-    async def _send_helpful_404(self, send, workspace, service_id):
+    async def _send_helpful_404(self, send, workspace, service_id, adapter_summary=None):
         """Send a helpful 404 message with endpoint information."""
         # Handle empty service_id case
         if not service_id:
@@ -1253,6 +1343,11 @@ class MCPRoutingMiddleware:
                 },
                 "help": "Use the streamable HTTP endpoint for MCP communication.",
             }
+            
+            # Include adapter summary if available
+            if adapter_summary:
+                message["service_info"] = adapter_summary
+                
         response_body = json.dumps(message, indent=2).encode()
         await send(
             {
@@ -1272,7 +1367,7 @@ class MCPRoutingMiddleware:
         )
     
     async def _handle_mcp_request(self, scope, receive, send, workspace, service_id):
-        """Handle MCP streamable HTTP requests."""
+        """Handle regular MCP HTTP requests (JSON-RPC)."""
         try:
             # Prepare scope for the MCP service
             scope = {
@@ -1307,41 +1402,37 @@ class MCPRoutingMiddleware:
             if cache_key in self._mcp_cache:
                 # Use cached MCP app
                 mcp_app, api_context, api_task = self._mcp_cache[cache_key]
-                try:
-                    # Handle the request with the cached MCP app
-                    await mcp_app(scope, receive, send)
-                except Exception as e:
-                    # If the cached connection failed, clean it up and retry
-                    logger.warning(f"Cached MCP app failed, recreating: {e}")
-                    
-                    # Clean up old context
-                    try:
-                        if api_context:
-                            await api_context.__aexit__(None, None, None)
-                    except:
-                        pass
-                    del self._mcp_cache[cache_key]
-                    
-                    # Retry with fresh connection
-                    await self._handle_mcp_request(scope, receive, send, workspace, service_id)
+                # Handle the request with the cached MCP app
+                await mcp_app(scope, receive, send)
             else:
                 # Create new MCP app with persistent API connection
-                api_context_manager = self.store.get_workspace_interface(user_info, workspace)
+                # Use the user's own workspace for the interface
+                # This allows us to access services in other workspaces if they're public/accessible
+                api_context_manager = self.store.get_workspace_interface(
+                    user_info, user_info.scope.current_workspace
+                )
                 api_context = api_context_manager.__aenter__()
                 api = await api_context
                 
                 try:
-                    # Create context for the API call
-                    # The 'from' field is required for permission checks
-                    # We need to pass the target workspace in the context for service lookup
-                    # For public services, this should work even if user doesn't have permission
-                    context = {
-                        "ws": workspace,  # Use target workspace for service lookup
-                        "from": f"{workspace}/mcp-middleware",
-                        "user": user_info.model_dump() if user_info else None,
-                    }
+                    # Build the full service ID based on what's provided
+                    # Service IDs can be in several formats:
+                    # 1. Simple service name: "my-service"
+                    # 2. Client-qualified: "client-id:service-name"
+                    # 3. Workspace-qualified: "workspace/service-name" or "workspace/client-id:service-name"
+                    
+                    if "/" in service_id:
+                        # Already has workspace prefix, use as-is
+                        full_service_id = service_id
+                    elif ":" in service_id:
+                        # Has client ID but no workspace, prepend workspace
+                        full_service_id = f"{workspace}/{service_id}"
+                    else:
+                        # Simple service name, prepend workspace
+                        full_service_id = f"{workspace}/{service_id}"
+                    
                     service_info = await api.get_service_info(
-                        service_id, {"mode": _mode}, context=context
+                        full_service_id, {"mode": _mode}
                     )
                     logger.debug(
                         f"MCP Middleware: Found service '{service_id}' of type '{service_info.type}'"
@@ -1350,9 +1441,9 @@ class MCPRoutingMiddleware:
                     # Clean up on error
                     await api_context_manager.__aexit__(None, None, None)
                     logger.error(f"MCP Middleware: Service lookup failed: {e}")
-                    if "Service not found" in str(e):
+                    if "Service not found" in str(e) or "Permission denied" in str(e):
                         await self._send_error_response(
-                            send, 404, f"Service {service_id} not found"
+                            send, 404, f"Service {service_id} not found or not accessible"
                         )
                         return
                     else:
@@ -1361,7 +1452,7 @@ class MCPRoutingMiddleware:
                 # No longer require explicit type="mcp" - any service can be exposed as MCP
                 # Services with type="mcp" get special handling, others are auto-wrapped
                 
-                service = await api.get_service(service_info.id)
+                service = await api.get_service(full_service_id)
                 
                 # Check if it's MCP compatible
                 if not is_mcp_compatible_service(service):
@@ -1458,22 +1549,33 @@ class MCPRoutingMiddleware:
                     await self._handle_sse_request(scope, receive, send, workspace, service_id)
             else:
                 # Create new MCP app with persistent API connection
-                api_context_manager = self.store.get_workspace_interface(user_info, workspace)
+                # Use the user's own workspace for the interface
+                # This allows us to access services in other workspaces if they're public/accessible
+                api_context_manager = self.store.get_workspace_interface(
+                    user_info, user_info.scope.current_workspace
+                )
                 api_context = api_context_manager.__aenter__()
                 api = await api_context
                 
                 try:
-                    # Create context for the API call
-                    # The 'from' field is required for permission checks
-                    # We need to pass the target workspace in the context for service lookup
-                    # For public services, this should work even if user doesn't have permission
-                    context = {
-                        "ws": workspace,  # Use target workspace for service lookup
-                        "from": f"{workspace}/mcp-middleware",
-                        "user": user_info.model_dump() if user_info else None,
-                    }
+                    # Build the full service ID based on what's provided
+                    # Service IDs can be in several formats:
+                    # 1. Simple service name: "my-service"
+                    # 2. Client-qualified: "client-id:service-name"
+                    # 3. Workspace-qualified: "workspace/service-name" or "workspace/client-id:service-name"
+                    
+                    if "/" in service_id:
+                        # Already has workspace prefix, use as-is
+                        full_service_id = service_id
+                    elif ":" in service_id:
+                        # Has client ID but no workspace, prepend workspace
+                        full_service_id = f"{workspace}/{service_id}"
+                    else:
+                        # Simple service name, prepend workspace
+                        full_service_id = f"{workspace}/{service_id}"
+                    
                     service_info = await api.get_service_info(
-                        service_id, {"mode": None}, context=context
+                        full_service_id, {"mode": None}
                     )
                     logger.debug(
                         f"MCP Middleware: Found service '{service_id}' of type '{service_info.type}'"
@@ -1482,9 +1584,9 @@ class MCPRoutingMiddleware:
                     # Clean up on error
                     await api_context_manager.__aexit__(None, None, None)
                     logger.error(f"MCP Middleware: Service lookup failed: {e}")
-                    if "Service not found" in str(e):
+                    if "Service not found" in str(e) or "Permission denied" in str(e):
                         await self._send_error_response(
-                            send, 404, f"Service {service_id} not found"
+                            send, 404, f"Service {service_id} not found or not accessible"
                         )
                         return
                     else:
@@ -1493,7 +1595,7 @@ class MCPRoutingMiddleware:
                 # No longer require explicit type="mcp" - any service can be exposed as MCP
                 # Services with type="mcp" get special handling, others are auto-wrapped
                 
-                service = await api.get_service(service_info.id)
+                service = await api.get_service(full_service_id)
                 
                 # Check if it's MCP compatible
                 if not is_mcp_compatible_service(service):

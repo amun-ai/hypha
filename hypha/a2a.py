@@ -423,24 +423,21 @@ class A2ARoutingMiddleware:
                     user_info = await self.store.login_optional(request)
 
                     # Get the A2A service
+                    # For public services, we need to create a workspace interface
+                    # that allows accessing services in that workspace
+                    # We use the user's current workspace as the base for the interface
+                    # but query services from the target workspace
                     async with self.store.get_workspace_interface(
-                        user_info, workspace
+                        user_info, user_info.scope.current_workspace
                     ) as api:
                         try:
                             logger.info(
                                 f"A2A Middleware: Looking up service '{service_id}' in workspace '{workspace}' (current workspace: '{user_info.scope.current_workspace}')"
                             )
-                            # Create context for the API call
-                            # The 'from' field is required for permission checks
-                            # We need to pass the target workspace in the context for service lookup
-                            # For public services, this should work even if user doesn't have permission
-                            context = {
-                                "ws": workspace,  # Use target workspace for service lookup
-                                "from": f"{workspace}/a2a-middleware",
-                                "user": user_info.model_dump() if user_info else None,
-                            }
+                            # For cross-workspace service access, use the full service ID
+                            full_service_id = f"{workspace}/{service_id}"
                             service_info = await api.get_service_info(
-                                service_id, {"mode": _mode}, context=context
+                                full_service_id, {"mode": _mode}
                             )
                             logger.info(
                                 f"A2A Middleware: Found service '{service_id}' of type '{service_info.type}'"
@@ -448,7 +445,7 @@ class A2ARoutingMiddleware:
                         except (KeyError, Exception) as e:
                             logger.error(f"A2A Middleware: Service lookup failed: {e}")
                             # Handle both KeyError and RemoteException
-                            if "Service not found" in str(e):
+                            if "Service not found" in str(e) or "Permission denied" in str(e):
                                 # List all services for debugging
                                 try:
                                     all_services = await api.list_services()
@@ -461,7 +458,7 @@ class A2ARoutingMiddleware:
                                     )
 
                                 await self._send_error_response(
-                                    send, 404, f"Service {service_id} not found"
+                                    send, 404, f"Service {service_id} not found or not accessible"
                                 )
                                 return
                             else:

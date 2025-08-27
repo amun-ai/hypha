@@ -654,6 +654,251 @@ async def test_mcp_ghost_services_after_stop(fastapi_server, test_user_token):
     await api.disconnect()
 
 
+async def test_mcp_non_schema_function_exclusion(fastapi_server, test_user_token):
+    """Test that non-MCP services with functions lacking schemas are handled gracefully."""
+    
+    # Connect to the Hypha server
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    workspace = api.config.workspace
+
+    # Step 1: Create a service with mixed functions (some with schema, some without)
+    @schema_function
+    def valid_function(x: int) -> int:
+        """A function with proper schema."""
+        return x * 2
+
+    # Function without schema decorator
+    def no_schema_function(y: int) -> int:
+        """A function without schema decorator."""
+        return y * 3
+
+    # Register a non-MCP service with mixed functions
+    mixed_service_info = await api.register_service(
+        {
+            "id": "mixed-schema-service",
+            "name": "Mixed Schema Service",
+            "description": "Service with both schema and non-schema functions",
+            "type": "generic",  # Not explicitly MCP type
+            "config": {"visibility": "public"},
+            "valid_function": valid_function,
+            "no_schema_function": no_schema_function,
+        }
+    )
+
+    print(f"✓ Registered mixed service: {mixed_service_info['id']}")
+
+    # Step 2: Test MCP endpoint directly via HTTP
+    service_id = mixed_service_info['id'].split('/')[-1]
+    mcp_endpoint_url = f"{SERVER_URL}/{workspace}/mcp/{service_id}/mcp"
+    
+    print(f"Testing MCP endpoint: {mcp_endpoint_url}")
+    
+    # Test MCP initialize request
+    import httpx
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            mcp_endpoint_url,
+            json={
+                "jsonrpc": "2.0",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "1.0.0",
+                    "capabilities": {"tools": {}},
+                    "clientInfo": {
+                        "name": "test-client",
+                        "version": "1.0.0"
+                    }
+                },
+                "id": 1
+            },
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                "Authorization": f"Bearer {test_user_token}"  # Include auth token
+            }
+        )
+        
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
+        init_result = response.json()
+        assert "result" in init_result, f"Expected result in response: {init_result}"
+        
+        # Test list_tools
+        response = await client.post(
+            mcp_endpoint_url,
+            json={
+                "jsonrpc": "2.0",
+                "method": "tools/list",
+                "params": {},
+                "id": 2
+            },
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                "Authorization": f"Bearer {test_user_token}"  # Include auth token
+            }
+        )
+        
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
+        tools_result = response.json()
+        assert "result" in tools_result, f"Expected result in response: {tools_result}"
+        
+        tools = tools_result["result"]["tools"]
+        tool_names = [tool["name"] for tool in tools]
+        
+        # Check that valid_function is exposed
+        assert "valid_function" in tool_names, f"valid_function should be exposed, got: {tool_names}"
+        
+        # Check that no_schema_function is NOT exposed
+        assert "no_schema_function" not in tool_names, f"no_schema_function should NOT be exposed, got: {tool_names}"
+        
+        print(f"✓ Tools list: {tool_names}")
+        
+        # Test calling the valid function
+        response = await client.post(
+            mcp_endpoint_url,
+            json={
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "params": {
+                    "name": "valid_function",
+                    "arguments": {"x": 3}
+                },
+                "id": 3
+            },
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                "Authorization": f"Bearer {test_user_token}"  # Include auth token
+            }
+        )
+        
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
+        call_result = response.json()
+        assert "result" in call_result, f"Expected result in response: {call_result}"
+        
+        # Check the result content
+        content = call_result["result"]["content"]
+        assert len(content) > 0, "Expected content in result"
+        assert "6" in str(content[0]["text"]), f"Expected result 6, got: {content}"
+
+    print("✅ Non-schema functions are correctly excluded from MCP tools")
+
+    # Cleanup
+    await api.unregister_service(mixed_service_info["id"])
+    await api.disconnect()
+
+
+async def test_mcp_service_id_resolution(fastapi_server, test_user_token):
+    """Test that MCP endpoint handles both relative and absolute service IDs correctly."""
+    
+    # Connect to the Hypha server
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    workspace = api.config.workspace
+
+    # Register a simple service with schema function
+    @schema_function
+    def test_function(x: int) -> int:
+        """Test function with schema."""
+        return x * 2
+
+    service_info = await api.register_service(
+        {
+            "id": "test-id-resolution",
+            "name": "Test ID Resolution",
+            "description": "Service for testing ID resolution",
+            "type": "generic",
+            "config": {"visibility": "public"},
+            "test_function": test_function,
+        }
+    )
+
+    print(f"✓ Registered service: {service_info['id']}")
+    
+    # Extract the full service ID (with client ID)
+    full_service_id = service_info['id'].split('/')[-1]  # e.g., "CLIENT_ID:test-id-resolution"
+    relative_service_id = "test-id-resolution"
+    
+    import httpx
+    async with httpx.AsyncClient() as client:
+        # Test 1: Access with relative service ID
+        relative_url = f"{SERVER_URL}/{workspace}/mcp/{relative_service_id}/mcp"
+        print(f"Testing relative URL: {relative_url}")
+        
+        response = await client.post(
+            relative_url,
+            json={
+                "jsonrpc": "2.0",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "1.0.0",
+                    "capabilities": {"tools": {}},
+                    "clientInfo": {"name": "test-client", "version": "1.0.0"}
+                },
+                "id": 1
+            },
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                "Authorization": f"Bearer {test_user_token}"
+            }
+        )
+        
+        assert response.status_code == 200, f"Relative ID failed with {response.status_code}: {response.text}"
+        result = response.json()
+        assert "result" in result, f"Expected result in response: {result}"
+        print("✓ Relative service ID works")
+        
+        # Test 2: Access with fully-qualified service ID
+        absolute_url = f"{SERVER_URL}/{workspace}/mcp/{full_service_id}/mcp"
+        print(f"Testing absolute URL: {absolute_url}")
+        
+        response = await client.post(
+            absolute_url,
+            json={
+                "jsonrpc": "2.0",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "1.0.0",
+                    "capabilities": {"tools": {}},
+                    "clientInfo": {"name": "test-client", "version": "1.0.0"}
+                },
+                "id": 2
+            },
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                "Authorization": f"Bearer {test_user_token}"
+            }
+        )
+        
+        assert response.status_code == 200, f"Absolute ID failed with {response.status_code}: {response.text}"
+        result = response.json()
+        assert "result" in result, f"Expected result in response: {result}"
+        print("✓ Fully-qualified service ID works")
+
+    print("✅ Both relative and absolute service IDs resolve correctly")
+
+    # Cleanup
+    await api.unregister_service(service_info["id"])
+    await api.disconnect()
+
+
 async def test_mcp_cleanup_after_stop(fastapi_server, test_user_token):
     """Test that after stop() the MCP service is not accessible and client is disconnected."""
     
