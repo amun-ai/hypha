@@ -1,13 +1,9 @@
 """Test the LLM Proxy conda application."""
 
 import pytest
-import json
 import os
-import asyncio
-from hypha_rpc import connect_to_server
 from hypha.builtin_apps.llm_proxy import (
     create_llm_proxy_app,
-    install_llm_proxy,
     LLM_PROXY_MANIFEST,
     LLM_PROXY_SCRIPT,
 )

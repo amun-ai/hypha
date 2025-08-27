@@ -141,7 +141,6 @@ def start_builtin_services(
             async def install_llm_proxy():
                 try:
                     from hypha.builtin_apps.llm_proxy import install_llm_proxy
-                    await asyncio.sleep(5)  # Wait for server to be fully ready
                     logger.info("Installing LLM proxy application...")
                     
                     # Gather configuration from environment
@@ -157,7 +156,8 @@ def start_builtin_services(
                     logger.info("LLM proxy application installed successfully")
                 except Exception as e:
                     logger.error(f"Failed to install LLM proxy: {e}")
-            
+                    raise RuntimeError("LLM proxy installation failed") from e
+
             # Schedule the installation
             asyncio.create_task(install_llm_proxy())
 

@@ -6,9 +6,10 @@ LLM proxy application.
 """
 
 import logging
-import asyncio
+import json
 import os
 from typing import Optional, Dict, Any
+from .llm_proxy_app import install_llm_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -78,13 +79,10 @@ async def hypha_startup(server: Dict[str, Any]) -> None:
                     logger.info("Conda worker registered successfully")
                 else:
                     logger.error("Cannot register conda worker - no register_service method")
-                    return
+                    raise RuntimeError("Conda worker registration failed")
         except Exception as e:
             logger.error(f"Failed to setup conda worker: {e}")
-            return
-        
-        # Import the install function
-        from .llm_proxy_app import install_llm_proxy
+            raise RuntimeError("Conda worker setup failed") from e
         
         # Get configuration from environment
         config = {}
@@ -101,7 +99,6 @@ async def hypha_startup(server: Dict[str, Any]) -> None:
             logger.info(f"Found API keys for: {', '.join(api_keys.keys())}")
         
         # Get custom configuration from environment
-        import json
         custom_config = os.environ.get("HYPHA_LLM_PROXY_CONFIG")
         if custom_config:
             try:
@@ -109,7 +106,8 @@ async def hypha_startup(server: Dict[str, Any]) -> None:
                 logger.info("Applied custom LLM proxy configuration")
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse HYPHA_LLM_PROXY_CONFIG: {e}")
-        
+                raise ValueError("Invalid JSON in HYPHA_LLM_PROXY_CONFIG") from e
+
         # Install the LLM proxy application
         logger.info("Installing LLM proxy application...")
         app_id = await install_llm_proxy(
@@ -128,6 +126,7 @@ async def hypha_startup(server: Dict[str, Any]) -> None:
         
     except Exception as e:
         logger.error(f"Failed to install LLM proxy: {e}", exc_info=True)
+        raise RuntimeError("LLM proxy installation failed") from e
 
 
 async def register_llm_proxy_app(
@@ -164,9 +163,6 @@ async def register_llm_proxy_app(
                     await register_service(conda_worker.get_worker_service())
             else:
                 await server.register_service(conda_worker.get_worker_service())
-        
-        # Import and install the app
-        from .llm_proxy_app import install_llm_proxy
         
         app_id = await install_llm_proxy(
             app_controller,

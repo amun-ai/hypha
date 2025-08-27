@@ -4,9 +4,7 @@ This application runs the LiteLLM proxy server in an isolated conda environment,
 allowing it to have its own dependencies without conflicts with the main Hypha server.
 """
 
-import os
 import json
-import asyncio
 from typing import Optional, Dict, Any
 
 # The manifest for the LLM proxy conda application
