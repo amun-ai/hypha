@@ -1495,7 +1495,8 @@ Examples:
             # Set visibility in the correct location (inside config)
             service_config["config"]["visibility"] = args.visibility
             if args.authorized_workspaces:
-                service_config["config"]["authorized_workspaces"] = args.authorized_workspaces
+                authorized_workspaces = [w.strip() for w in args.authorized_workspaces.split(",") if w.strip()]
+                service_config["config"]["authorized_workspaces"] = authorized_workspaces
 
             # Register the service
             print(f"🔄 Registering conda worker with config:")

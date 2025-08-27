@@ -124,6 +124,8 @@ class WebsocketServer:
                     # We operate as the root user to remove and add clients
                     await self.check_client(client_id, workspace_info.id, user_info)
             except Exception as e:
+                # Log the full exception for debugging
+                logger.error(f"Exception during connection setup: {e}", exc_info=True)
                 reason = f"Failed to establish connection: {str(e)}"
                 await self.disconnect(
                     websocket,

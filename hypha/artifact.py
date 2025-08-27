@@ -9,8 +9,7 @@ import re
 import json
 import math
 import asyncio
-from io import BytesIO
-import zipfile
+import pickle
 from pathlib import Path
 from sqlalchemy import (
     event,
@@ -1120,7 +1119,6 @@ class ArtifactController:
             try:
                 # Check cache first for non-stage, public artifacts
                 cache_key = None
-                use_cache = False
                 if not stage and not token and self._cache:
                     # Only cache public, non-stage content
                     cache_key = f"artifact:view:{workspace}:{artifact_alias}:{version or 'latest'}:{file_path or 'index.html'}"
@@ -1128,7 +1126,6 @@ class ArtifactController:
                         cached_content = await self._cache.get(cache_key)
                         if cached_content:
                             # Parse cached response
-                            import pickle
                             cached_response = pickle.loads(cached_content)
                             return Response(
                                 content=cached_response['content'],
@@ -1335,7 +1332,6 @@ class ArtifactController:
                                 
                                 # Also limit cache size - don't cache files larger than 1MB
                                 if should_cache and len(rendered) <= 1024 * 1024:
-                                    import pickle
                                     cache_data = {
                                         'content': rendered,
                                         'media_type': mime_type,

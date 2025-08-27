@@ -429,10 +429,9 @@ class WorkspaceManager:
     ):
         """Log a new event, checking permissions."""
         assert " " not in event_type, "Event type must not contain spaces"
+        self.validate_context(context, permission=UserPermission.read_write)
         workspace = context["ws"]
         user_info = UserInfo.from_context(context)
-        if not user_info.check_permission(workspace, UserPermission.read_write):
-            raise PermissionError(f"Permission denied for workspace {workspace}")
 
         session = await self._get_sql_session()
         try:
@@ -1240,9 +1239,33 @@ class WorkspaceManager:
     ):
         """Ping a client."""
         assert context is not None
-        ws = context["ws"]
+        ws = context.get("ws", "")
+        if not ws:
+            return "Failed to ping client: no workspace in context"
+            
         if "/" not in client_id:
             client_id = ws + "/" + client_id
+        
+        # Validate that the user has permission to access the target workspace
+        target_workspace = client_id.split("/")[0]
+        
+        # Only validate permissions if trying to ping a client in a different workspace
+        # Skip permission check for internal system operations (e.g., check-client-exists)
+        from_client = context.get("from", "")
+        is_internal_check = from_client and (
+            from_client.endswith("/check-client-exists") or 
+            from_client == "check-client-exists"
+        )
+        if target_workspace != ws and not is_internal_check:
+            try:
+                self.validate_context(context, permission=UserPermission.read)
+                user_info = UserInfo.from_context(context)
+                if not user_info.check_permission(target_workspace, UserPermission.read):
+                    raise PermissionError(f"Permission denied for workspace {target_workspace}")
+            except Exception as e:
+                logger.warning(f"Permission check failed in ping_client: {e}")
+                return f"Failed to ping client {client_id}: {e}"
+        
         try:
             svc = await self._rpc.get_remote_service(
                 client_id + ":built-in", {"timeout": timeout}
@@ -2023,10 +2046,21 @@ class WorkspaceManager:
         context: Optional[dict] = None,
     ):
         """Get the service info."""
+        # Don't validate context here - we'll check permissions after determining if service is public
         assert isinstance(service_id, str), "Service ID must be a string."     
         assert service_id.count("/") <= 1, "Service id must contain at most one '/'"
         assert service_id.count(":") <= 1, "Service id must contain at most one ':'"
         assert service_id.count("@") <= 1, "Service id must contain at most one '@'"
+        # Handle special "~" shortcut for workspace manager early
+        # Check if the service_id is just "~" or contains "~" as the service name
+        if service_id == "~" or (isinstance(service_id, str) and service_id.endswith("/~")):
+            # Return the stored service info from registration
+            if not self._service_info:
+                raise RuntimeError("Workspace manager service info not available")
+            
+            # Return the service info directly - no expansion needed
+            return self._service_info
+        
         if "/" not in service_id:
             service_id = f"{context['ws']}/{service_id}"
         if ":" not in service_id:
@@ -2044,17 +2078,6 @@ class WorkspaceManager:
         assert (
             workspace != "*"
         ), "You must specify a workspace for the service query, otherwise please call list_services to find the service."
-                
-        # Handle special "~" shortcut for workspace manager
-        sid = service_id.split(":")[-1]
-        # Check if service_id is "~" or ends with "/~" (for HTTP endpoint calls)
-        if sid == "~" and workspace == context["ws"]:
-            # Return the stored service info from registration
-            if not self._service_info:
-                raise RuntimeError("Workspace manager service info not available")
-            
-            # Return the service info directly - no expansion needed
-            return self._service_info
         
         logger.info("Getting service: %s", service_id)
         config = config or {}
@@ -2160,6 +2183,8 @@ class WorkspaceManager:
             )
         # Check access permissions
         if not key.startswith(b"services:public|"):
+            # For non-public services, validate context and permissions
+            self.validate_context(context, permission=UserPermission.read)
             # First check if user has read permission in the service's workspace
             has_workspace_permission = user_info.check_permission(workspace, UserPermission.read)
             
@@ -2300,7 +2325,7 @@ class WorkspaceManager:
         self, data: Any = Field(..., description="echo an object"), context: Any = None
     ):
         """Log a app message."""
-        self.validate_context(context, permission=UserPermission.read)
+        self.validate_context(context, permission=UserPermission.read_write)
         return data
 
     @schema_method
@@ -2308,6 +2333,7 @@ class WorkspaceManager:
         self, msg: str = Field(..., description="log a message"), context=None
     ):
         """Log a app message."""
+        self.validate_context(context, permission=UserPermission.read_write)
         await self.log_event("log", msg, context=context)
 
     async def load_workspace_info(
@@ -2579,6 +2605,7 @@ class WorkspaceManager:
         context=None,
     ):
         """Get a service based on the service_id"""
+        self.validate_context(context, permission=UserPermission.read)
         assert (
             service_id != "*"
         ), "Invalid service id: {service_id}, it cannot be a wildcard."
@@ -2864,6 +2891,7 @@ class WorkspaceManager:
     async def check_status(self, context=None) -> dict:
         """Check the status of the workspace."""
         assert context is not None, "Context cannot be None"
+        self.validate_context(context, permission=UserPermission.read)
         ws = context["ws"]
 
         # Check if workspace exists
@@ -2939,7 +2967,8 @@ class WorkspaceManager:
             "id": service_id,
             "name": service_name or service_id,
             "description": "Services for managing workspace.",
-            # Note: We make these services public by default, and assuming we will do authorization in each function
+            # IMPORTANT: The workspace manager MUST be public to allow initial client connections
+            # before workspace context is established. Each method implements its own permission checks.
             "config": {
                 "require_context": True,
                 "visibility": "public",
