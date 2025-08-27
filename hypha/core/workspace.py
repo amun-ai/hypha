@@ -1239,7 +1239,10 @@ class WorkspaceManager:
     ):
         """Ping a client."""
         assert context is not None
-        ws = context["ws"]
+        ws = context.get("ws", "")
+        if not ws:
+            return "Failed to ping client: no workspace in context"
+            
         if "/" not in client_id:
             client_id = ws + "/" + client_id
         
@@ -2033,7 +2036,7 @@ class WorkspaceManager:
         context: Optional[dict] = None,
     ):
         """Get the service info."""
-        self.validate_context(context, permission=UserPermission.read)
+        # Don't validate context here - we'll check permissions after determining if service is public
         assert isinstance(service_id, str), "Service ID must be a string."     
         assert service_id.count("/") <= 1, "Service id must contain at most one '/'"
         assert service_id.count(":") <= 1, "Service id must contain at most one ':'"
@@ -2170,6 +2173,8 @@ class WorkspaceManager:
             )
         # Check access permissions
         if not key.startswith(b"services:public|"):
+            # For non-public services, validate context and permissions
+            self.validate_context(context, permission=UserPermission.read)
             # First check if user has read permission in the service's workspace
             has_workspace_permission = user_info.check_permission(workspace, UserPermission.read)
             
