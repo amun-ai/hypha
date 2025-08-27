@@ -199,7 +199,7 @@ class WebsocketServer:
         """Check if the client is already connected."""
         # check if client already exists
         if await self.store.client_exists(client_id, workspace):
-            root_ws = self.store.get_public_api_workspace()
+            root_ws = self.store.get_public_api()
             if await root_ws.ping(f"{workspace}/{client_id}") == "pong":
                 reason = (
                     f"Client already exists and is active: {workspace}/{client_id}"
