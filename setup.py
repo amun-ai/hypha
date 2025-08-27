@@ -85,7 +85,12 @@ setup(
             "playwright>=1.51.0",
             "base58>=2.1.0",
             "pymultihash>=0.8.2",
-            "litellm[proxy]>=1.52.0",
+            "litellm>=1.52.0",
+            "backoff>=2.2.1",
+            "orjson>=3.10.0",
+            "apscheduler>=3.10.0",
+            "cryptography>=42.0.0",
+            "fastapi-sso>=0.15.0",
         ],
         "db": [
             "psycopg2-binary>=2.9.10",
