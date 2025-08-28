@@ -2294,6 +2294,7 @@ class ServerAppController:
         """Start the app and keep it alive."""
         workspace = context["ws"]
         user_info = UserInfo.from_context(context)
+        
 
         # Add "__rlb" suffix to enable load balancing metrics for app clients
         # Add "_rapp_" prefix to identify app clients
@@ -2368,7 +2369,7 @@ class ServerAppController:
                         and session_info.get("workspace") == workspace
                     ):
                         logger.info(
-                            f"Returning existing instance for app {app_id} in workspace {workspace}"
+                            f"Returning existing instance for app {app_id} in workspace {workspace}: {session_info.get('id')}"
                         )
                         # Filter out non-serializable objects like _worker
                         filtered_session_info = {k: v for k, v in session_info.items() if not k.startswith("_")}
@@ -2640,11 +2641,27 @@ class ServerAppController:
                 worker = self._get_worker_from_cache(session_data["worker_id"])
                 if worker:
                     logs = await worker.get_logs(full_client_id, context=context)
+            
+            # IMPORTANT: Clean up any registered services before stopping the worker
+            # This ensures services are unregistered even if the worker stop fails
+            try:
+                # Delete all services for this client to ensure complete cleanup
+                await self.store._workspace_manager.delete_client(
+                    client_id, workspace, user_info, unload=False, context=context
+                )
+                logger.info(f"Cleaned up services for failed app start: {full_client_id}")
+            except Exception as cleanup_error:
+                logger.error(f"Failed to clean up services during app start failure: {cleanup_error}")
+            
             # Clean up session
             if session_data and "worker_id" in session_data:
                 worker = self._get_worker_from_cache(session_data["worker_id"])
                 if worker:
-                    await worker.stop(full_client_id, context=context)
+                    try:
+                        await worker.stop(full_client_id, context=context)
+                    except Exception as stop_error:
+                        logger.error(f"Failed to stop worker during cleanup: {stop_error}")
+            
             # Remove from Redis
             await self._remove_session_from_redis(full_client_id)
 
@@ -2731,6 +2748,24 @@ class ServerAppController:
             context = {"user": self.store.get_root_user().model_dump(), "ws": "public"}
         session_data = await self._get_session_from_redis(session_id)
         if session_data:
+            # Extract workspace and client_id from session_id for service cleanup
+            workspace = session_data.get("workspace")
+            client_id = session_data.get("client_id")
+            
+            # IMPORTANT: Always clean up services first, before trying to stop the worker
+            # This ensures services are removed even if worker stop fails
+            if workspace and client_id:
+                try:
+                    user_info = UserInfo.from_context(context)
+                    # Call delete_client directly on the workspace manager
+                    await self.store._workspace_manager.delete_client(
+                        client_id, workspace, user_info, unload=False, context=context
+                    )
+                    logger.info(f"Cleaned up services for session {session_id}")
+                except Exception as cleanup_error:
+                    logger.error(f"Failed to clean up services for session {session_id}: {cleanup_error}")
+                    # Continue with worker stop even if service cleanup fails
+            
             session_stopped = False
             try:
                 # Get worker from cache first
@@ -2757,26 +2792,28 @@ class ServerAppController:
                     # Worker not available
                     error_msg = f"Worker {session_data['worker_id']} not available for session {session_id}"
                     logger.error(error_msg)
+                    # Mark as stopped since services were already cleaned up and worker is gone
+                    session_stopped = True
                     if raise_exception:
                         # Always raise if raise_exception is True
                         raise Exception(error_msg)
                     else:
-                        # Only log warning and clean up orphaned session if raise_exception is False
+                        # Only log warning if raise_exception is False
                         logger.warning(f"{error_msg}, removing orphaned session")
-                        session_stopped = True  # Mark as stopped since worker is gone
                         
             except Exception as exp:
                 # Log the error
                 logger.error(f"Failed to stop session {session_id}: {exp}")
+                # Mark as stopped if services were cleaned up, even if worker stop failed
+                session_stopped = True
                 if raise_exception:
                     # Re-raise the exception if raise_exception is True
                     raise
                 else:
                     # Only log warning if raise_exception is False
-                    logger.warning(f"Failed to stop browser tab: {exp}")
+                    logger.warning(f"Failed to stop worker: {exp}, but services were cleaned up")
             
-            # Only remove session from Redis if it was successfully stopped
-            # or if we're not raising exceptions and worker is gone
+            # Always remove session from Redis since we cleaned up services
             if session_stopped:
                 await self._remove_session_from_redis(session_id)
                 logger.info(f"Removed session {session_id} from Redis")
@@ -2790,7 +2827,7 @@ class ServerAppController:
                     if not remaining_instances:
                         await self.autoscaling_manager.stop_autoscaling(app_id)
             else:
-                # Session wasn't stopped successfully - keep it in Redis
+                # This should rarely happen now since we mark as stopped after service cleanup
                 logger.warning(f"Session {session_id} was not stopped successfully, keeping in Redis for manual cleanup")
 
         elif raise_exception:
