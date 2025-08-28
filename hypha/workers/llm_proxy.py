@@ -551,6 +551,26 @@ class LLMProxyWorker(BaseWorker):
             return
         
         logger.info(f"Stopping LLM proxy session {session_id}")
+        
+        # Get the session before cleanup
+        session = self._sessions.get(session_id, {})
+        
+        # Try to unregister the service first if we have a client
+        client = session.get("client")
+        if client and "registered_service_id" in session:
+            try:
+                service_id_to_unregister = session["registered_service_id"]
+                logger.info(f"Unregistering service before cleanup: {service_id_to_unregister}")
+                await client.unregister_service(service_id_to_unregister)
+                logger.info(f"Successfully unregistered service: {service_id_to_unregister}")
+            except Exception as e:
+                # More specific error handling
+                if "not found" in str(e).lower():
+                    logger.debug(f"Service {session.get('registered_service_id')} already unregistered or not found")
+                else:
+                    logger.warning(f"Failed to unregister service {session.get('registered_service_id')}: {e}")
+        
+        # Now cleanup the session
         await self._cleanup_session(session_id)
     
     def get_app_for_service(self, service_id: str):
