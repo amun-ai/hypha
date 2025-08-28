@@ -1168,8 +1168,13 @@ class MCPClientRunner(BaseWorker):
             # Unregister services
             services = session_data.get("services", [])
             for service_id in services:
-                await client.unregister_service(service_id)
-                logger.info(f"Unregistered service: {service_id}")
+                try:
+                    await client.unregister_service(service_id)
+                    logger.info(f"Unregistered service: {service_id}")
+                except KeyError:
+                    logger.warning(f"Service {service_id} already unregistered, skipping")
+                except Exception as e:
+                    logger.warning(f"Failed to unregister service {service_id}: {e}")
 
             # Disconnect the Hypha client to prevent memory leak
             await client.disconnect()

@@ -719,7 +719,7 @@ async def test_llm_proxy_lifecycle_management(
     
     # Clean up any leftover instances from previous test runs
     try:
-        instances = await controller.list()
+        instances = await controller.list_apps()
         for instance in instances:
             if instance.get("app_id") and "lifecycle" in str(instance.get("app_id", "")):
                 try:
@@ -784,7 +784,7 @@ async def test_llm_proxy_lifecycle_management(
     
     # Verify services are cleaned up
     await asyncio.sleep(1)
-    instances_after_stop = await controller.list()
+    instances_after_stop = await controller.list_apps()
     print(f"Instances after stop: {[inst['id'] for inst in instances_after_stop if inst.get('app_id') == app_id]}")
     
     await asyncio.sleep(1)
