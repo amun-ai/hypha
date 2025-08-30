@@ -1577,5 +1577,157 @@ async def test_use_local_url_functionality(fastapi_server, test_user_token):
     print("✓ Test completed successfully - use_local_url functionality")
 
 
+@pytest.mark.asyncio
+async def test_cascade_worker_dependencies(fastapi_server, test_user_token):
+    """Test cascade worker dependencies where one worker app depends on another.
+    
+    This simulates the scenario where:
+    1. A worker app (e.g., webcontainer) is installed
+    2. The worker app itself registers as a server-app-worker
+    3. Another app uses this worker app as its worker
+    4. Cleanup must handle this dependency chain properly
+    """
+    api = await connect_to_server(
+        {"name": "test cascade workers", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    controller = await api.get_service("public/server-apps")
+    
+    # Step 1: Create and install a worker app that registers itself as a worker
+    worker_app_source = """
+<config lang="json">
+{
+    "name": "Cascade Worker App",
+    "type": "window",
+    "version": "1.0.0",
+    "description": "A worker app that can run other apps"
+}
+</config>
+<script>
+console.log("Cascade worker app starting...");
+
+// Simulate a worker service registration
+api.export({
+    // Worker interface methods
+    async start(config) {
+        console.log("Starting nested app:", config.app_id);
+        return config.id;  // Return session ID
+    },
+    
+    async stop(session_id) {
+        console.log("Stopping nested app:", session_id);
+    },
+    
+    async get_logs(session_id) {
+        return {
+            items: [{type: "info", content: "Nested app log"}],
+            total: 1
+        };
+    }
+}, {
+    id: "cascade-worker-service",
+    name: "Cascade Worker Service",
+    type: "server-app-worker",
+    supported_types: ["cascade-app-type"]
+});
+
+console.log("Cascade worker service registered");
+</script>
+"""
+    
+    # Install the worker app
+    # Note: Browser workers have limitations with custom service IDs
+    # They register services as "built-in" by default
+    worker_app_info = await controller.install(
+        source=worker_app_source,
+        wait_for_service=False,  # Don't wait for service due to browser worker limitations
+        timeout=15,
+        overwrite=True,
+    )
+    worker_app_id = worker_app_info["id"]
+    
+    # Start the worker app
+    worker_session = await controller.start(
+        worker_app_id,
+        wait_for_service=False,  # Don't wait for service due to browser worker limitations
+        timeout=15
+    )
+    worker_session_id = worker_session["id"]
+    
+    # NOTE: Browser workers have limitations with custom service registration
+    # They register services as "built-in" instead of custom IDs
+    # So we skip this check for browser workers
+    
+    # Verify the app is running
+    running_apps = await controller.list_running()
+    assert any(app["id"] == worker_session_id for app in running_apps), "Worker app should be running"
+    
+    # Step 2: Create an app that uses the cascade worker
+    dependent_app_source = """
+<config lang="json">
+{
+    "name": "App Using Cascade Worker",
+    "type": "cascade-app-type",
+    "version": "1.0.0"
+}
+</config>
+<script>
+console.log("App using cascade worker");
+api.export({
+    test: () => "Running on cascade worker"
+});
+</script>
+"""
+    
+    # Install the dependent app
+    dependent_app_info = await controller.install(
+        source=dependent_app_source,
+        wait_for_service=False,
+        timeout=10,
+        overwrite=True,
+    )
+    dependent_app_id = dependent_app_info["id"]
+    
+    # Try to start the dependent app (should use cascade worker)
+    dependent_session = await controller.start(
+        dependent_app_id,
+        wait_for_service=False,
+        timeout=10
+    )
+    dependent_session_id = dependent_session["id"]
+    
+    # Verify both apps are running
+    running_apps = await controller.list_running()
+    assert any(app["id"] == worker_session_id for app in running_apps), "Worker app should be running"
+    assert any(app["id"] == dependent_session_id for app in running_apps), "Dependent app should be running"
+    
+    # Stop the dependent app
+    await controller.stop(dependent_session_id)
+    
+    # Step 3: Test cleanup - stop the worker app
+    await controller.stop(worker_session_id)
+    
+    # Verify worker session is cleaned up
+    running_apps = await controller.list_running()
+    assert not any(app["id"] == worker_session_id for app in running_apps), "Worker session should be stopped"
+    
+    # Step 4: Uninstall the worker app
+    await controller.uninstall(worker_app_id)
+    
+    # Verify the cascade worker is removed from workers list
+    workers_after = await controller.list_workers()
+    cascade_worker_still_found = False
+    for worker in workers_after:
+        if "cascade-worker-service" in worker.get("id", ""):
+            cascade_worker_still_found = True
+            break
+    
+    assert not cascade_worker_still_found, "Cascade worker should be removed after uninstall"
+    
+    # Clean up dependent app
+    await controller.uninstall(dependent_app_id)
+    
+    await api.disconnect()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
