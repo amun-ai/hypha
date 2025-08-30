@@ -565,7 +565,8 @@ class ServerAppController:
             if session_data and "worker_id" in session_data:
                 # Remove worker from cache if no other sessions use it
                 worker_id = session_data["worker_id"]
-                if await self._is_worker_unused(worker_id):
+                # Exclude the current session when checking if worker is unused
+                if await self._is_worker_unused(worker_id, exclude_session=full_client_id):
                     self._worker_cache.pop(worker_id, None)
             
             await self._redis.delete(key)
@@ -576,13 +577,26 @@ class ServerAppController:
         """Get worker instance from local cache."""
         return self._worker_cache.get(worker_id)
 
-    async def _is_worker_unused(self, worker_id: str) -> bool:
-        """Check if a worker is not used by any other sessions."""
+    async def _is_worker_unused(self, worker_id: str, exclude_session: str = None) -> bool:
+        """Check if a worker is not used by any other sessions.
+        
+        Args:
+            worker_id: The worker ID to check
+            exclude_session: Optional session ID to exclude from the check (e.g., the session being stopped)
+        """
         try:
             # Search for sessions using this worker_id
             pattern = "sessions:*"
             keys = await self._redis.keys(pattern)
             for key in keys:
+                # Extract session ID from key (format: "sessions:workspace/client_id")
+                key_str = key.decode() if isinstance(key, bytes) else key
+                current_session_id = key_str.replace("sessions:", "")
+                
+                # Skip the session we're excluding
+                if exclude_session and current_session_id == exclude_session:
+                    continue
+                    
                 session_data = await self._redis.hgetall(key)
                 if session_data.get(b"worker_id", b"").decode() == worker_id:
                     return False
@@ -2752,6 +2766,9 @@ class ServerAppController:
             workspace = session_data.get("workspace")
             client_id = session_data.get("client_id")
             
+            # Track if services were cleaned up
+            services_cleaned = False
+            
             # IMPORTANT: Always clean up services first, before trying to stop the worker
             # This ensures services are removed even if worker stop fails
             if workspace and client_id:
@@ -2762,11 +2779,14 @@ class ServerAppController:
                         client_id, workspace, user_info, unload=False, context=context
                     )
                     logger.info(f"Cleaned up services for session {session_id}")
+                    services_cleaned = True
                 except Exception as cleanup_error:
                     logger.error(f"Failed to clean up services for session {session_id}: {cleanup_error}")
                     # Continue with worker stop even if service cleanup fails
             
-            session_stopped = False
+            # Try to stop the worker
+            worker_stopped = False
+            worker_error = None
             try:
                 # Get worker from cache first
                 worker = self._get_worker_from_cache(session_data["worker_id"])
@@ -2786,37 +2806,52 @@ class ServerAppController:
                 
                 if worker:
                     await worker.stop(session_id, context=context)
-                    session_stopped = True
-                    logger.info(f"Successfully stopped session {session_id}")
+                    worker_stopped = True
+                    logger.info(f"Successfully stopped worker for session {session_id}")
                 else:
-                    # Worker not available
+                    # Worker not available - this is common when worker has died
                     error_msg = f"Worker {session_data['worker_id']} not available for session {session_id}"
-                    logger.error(error_msg)
-                    # Mark as stopped since services were already cleaned up and worker is gone
-                    session_stopped = True
-                    if raise_exception:
-                        # Always raise if raise_exception is True
-                        raise Exception(error_msg)
-                    else:
-                        # Only log warning if raise_exception is False
-                        logger.warning(f"{error_msg}, removing orphaned session")
+                    logger.warning(error_msg)
+                    worker_error = Exception(error_msg)
                         
             except Exception as exp:
-                # Log the error
-                logger.error(f"Failed to stop session {session_id}: {exp}")
-                # Mark as stopped if services were cleaned up, even if worker stop failed
-                session_stopped = True
-                if raise_exception:
-                    # Re-raise the exception if raise_exception is True
-                    raise
-                else:
-                    # Only log warning if raise_exception is False
-                    logger.warning(f"Failed to stop worker: {exp}, but services were cleaned up")
+                # Log the error but don't fail the whole operation
+                logger.error(f"Failed to stop worker for session {session_id}: {exp}")
+                worker_error = exp
             
-            # Always remove session from Redis since we cleaned up services
-            if session_stopped:
+            # Only remove session from Redis if it's truly cleaned up
+            # For load-balanced sessions (__rlb), check if worker is still used by others
+            should_remove_from_redis = False
+            
+            if services_cleaned:
+                # Services were cleaned, now check if we should remove from Redis
+                if worker_stopped:
+                    # Worker was successfully stopped, safe to remove
+                    should_remove_from_redis = True
+                elif session_data.get("worker_id"):
+                    # Worker wasn't stopped, check if it's still being used by other sessions
+                    worker_id = session_data["worker_id"]
+                    # Check if this is a load-balanced session
+                    if session_id.endswith("__rlb"):
+                        # For load-balanced sessions, only remove if worker is unused by other sessions
+                        is_unused = await self._is_worker_unused(worker_id, exclude_session=session_id)
+                        if is_unused:
+                            should_remove_from_redis = True
+                            logger.info(f"Worker {worker_id} is unused by other sessions, will remove session {session_id} from Redis")
+                        else:
+                            logger.info(f"Worker {worker_id} is still used by other sessions, NOT removing {session_id} from Redis")
+                            # Still mark it for cleanup but don't remove from Redis yet
+                            should_remove_from_redis = False
+                    else:
+                        # Non-load-balanced session, remove if services were cleaned
+                        should_remove_from_redis = True
+                else:
+                    # No worker_id, safe to remove if services were cleaned
+                    should_remove_from_redis = True
+            
+            if should_remove_from_redis:
                 await self._remove_session_from_redis(session_id)
-                logger.info(f"Removed session {session_id} from Redis")
+                logger.info(f"Removed session {session_id} from Redis (services_cleaned={services_cleaned}, worker_stopped={worker_stopped})")
                 
                 # Check if this was the last instance of an app and stop autoscaling
                 app_id = session_data.get("app_id")
@@ -2826,9 +2861,15 @@ class ServerAppController:
                     )
                     if not remaining_instances:
                         await self.autoscaling_manager.stop_autoscaling(app_id)
-            else:
-                # This should rarely happen now since we mark as stopped after service cleanup
-                logger.warning(f"Session {session_id} was not stopped successfully, keeping in Redis for manual cleanup")
+            elif not services_cleaned:
+                # Services weren't cleaned up properly - this is a serious issue
+                logger.error(f"Failed to clean up services for session {session_id}")
+                # Still try to remove from Redis to prevent permanent orphans
+                await self._remove_session_from_redis(session_id)
+            
+            # Raise errors if requested
+            if raise_exception and worker_error and not worker_stopped:
+                raise worker_error
 
         elif raise_exception:
             raise Exception(f"Server app instance not found: {session_id}")
