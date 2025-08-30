@@ -7126,7 +7126,26 @@ license: "MIT"`);
                     }
                     
                     // Get the worker service using the worker_id
-                    const worker = await ws.getService(sessionInfo.worker_id, { case_conversion: 'camel' });
+                    // Note: worker_id contains the full path including workspace, so we need to extract just the service part
+                    // Format: workspace/client_id:services.WorkerName
+                    // We need to call it through the user's workspace, not the public workspace
+                    
+                    // Extract the workspace from the worker_id
+                    const workerIdParts = sessionInfo.worker_id.split('/');
+                    const workerWorkspace = workerIdParts[0];
+                    const serviceIdPart = workerIdParts[1]; // Contains client_id:services.WorkerName
+                    
+                    // Create a new WebSocket connection for the worker's workspace if needed
+                    let workerWs = ws;
+                    if (workerWorkspace !== window.defaultService.getServerConfig().workspace) {
+                        // Need to get service from the worker's workspace
+                        // Use the remoteServer which should have access to the user's workspace
+                        if (window.remoteServer) {
+                            workerWs = window.remoteServer;
+                        }
+                    }
+                    
+                    const worker = await workerWs.getService(sessionInfo.worker_id, { case_conversion: 'camel' });
                     
                     // Call take_screenshot from the worker
                     const screenshotBytes = await worker.takeScreenshot(sessionId);
