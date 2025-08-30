@@ -1347,7 +1347,11 @@ class ServerAppController:
                 manifest = artifact_info.get("manifest", {})
                 
                 # If stage is False, we need to test the app by starting it
-                if not stage:
+                # IMPORTANT: Skip testing for web-app type to prevent recursive installations
+                app_type = manifest.get("type")
+                should_test = not stage and app_type != "web-app"
+                
+                if should_test:
                     _progress_callback(
                         {
                             "type": "info",
@@ -1390,6 +1394,13 @@ class ServerAppController:
                             }
                         )
                         raise
+                elif app_type == "web-app" and not stage:
+                    _progress_callback(
+                        {
+                            "type": "info",
+                            "message": "Skipping test for web-app type to prevent recursive installations",
+                        }
+                    )
                 
                 _progress_callback(
                     {
@@ -2589,13 +2600,38 @@ class ServerAppController:
             # Only wait for events if not in detached mode
             if not detached and event_future is not None:
                 # Now wait for the event that we set up before starting the app
+                # Add a maximum timeout to prevent indefinite blocking
+                MAX_WAIT_FOR_SERVICE_TIMEOUT = 30  # Maximum 30 seconds
+                effective_timeout = min(timeout, MAX_WAIT_FOR_SERVICE_TIMEOUT) if wait_for_service else timeout
+                
+                if effective_timeout < timeout and wait_for_service:
+                    logger.warning(
+                        f"Limiting wait_for_service timeout from {timeout}s to {MAX_WAIT_FOR_SERVICE_TIMEOUT}s "
+                        f"for app {full_client_id} to prevent indefinite blocking"
+                    )
+                
                 logger.info(
-                    f"Waiting for event after starting app: {full_client_id}, timeout: {timeout}, wait_for_service: {wait_for_service}"
+                    f"Waiting for event after starting app: {full_client_id}, timeout: {effective_timeout}, wait_for_service: {wait_for_service}"
                 )
-                await asyncio.wait_for(event_future, timeout=timeout)
-                logger.info(
-                    f"Successfully received event for starting app: {full_client_id}"
-                )
+                
+                try:
+                    await asyncio.wait_for(event_future, timeout=effective_timeout)
+                    logger.info(
+                        f"Successfully received event for starting app: {full_client_id}"
+                    )
+                except asyncio.TimeoutError:
+                    if wait_for_service:
+                        error_msg = (
+                            f"Timeout waiting for service '{wait_for_service}' after {effective_timeout}s. "
+                            f"The external app may have failed to register the expected service."
+                        )
+                        logger.error(error_msg)
+                        # Clean up the session to prevent resource leak
+                        await self._stop(full_client_id, raise_exception=False, context=context)
+                        raise Exception(error_msg)
+                    else:
+                        raise
+                
                 await asyncio.sleep(0.1)  # Brief delay to allow service registration
 
                 _progress_callback(
@@ -3151,6 +3187,8 @@ class ServerAppController:
         - warnings: List of validation warnings (if any)
         - suggestions: List of suggestions for improvement (if any)
         """
+        # Note: context parameter reserved for future use (workspace-specific validation)
+        _ = context  # Mark as intentionally unused
         validation_result = {
             "valid": True,
             "errors": [],
