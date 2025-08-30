@@ -624,26 +624,8 @@ class BrowserWorker(BaseWorker):
             if not manifest.get("entry_point"):
                 raise Exception("web-app type requires 'entry_point' field in manifest")
             
-            # IMPORTANT: Prevent external web-apps from using wait_for_service
-            # External apps cannot guarantee that services will be registered
-            startup_config = manifest.get("startup_config", {})
-            if startup_config and startup_config.get("wait_for_service"):
-                logger.warning(
-                    f"Removing wait_for_service from web-app manifest for {manifest.get('entry_point', 'unknown')} "
-                    "- external web-apps cannot use wait_for_service as it may cause indefinite blocking"
-                )
-                # Remove wait_for_service to prevent blocking
-                startup_config = startup_config.copy()
-                startup_config.pop("wait_for_service", None)
-
             new_manifest = manifest.copy()
             new_manifest["type"] = "web-app"
-            # Update startup_config if it was modified
-            if startup_config:
-                new_manifest["startup_config"] = startup_config
-            elif "startup_config" in new_manifest:
-                # Remove empty startup_config
-                new_manifest.pop("startup_config", None)
             
             # No files needed for web-app type
             new_files = []
