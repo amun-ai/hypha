@@ -427,6 +427,11 @@ class ServerAppController:
             loader=PackageLoader("hypha"), autoescape=select_autoescape()
         )
         self.autoscaling_manager = AutoscalingManager(self)
+        self.worker_manager = WorkerManager(store, cleanup_worker_sessions_callback=self.cleanup_worker_sessions)
+        
+        # Track apps being installed to prevent recursive installations
+        self._installing_apps = set()  # Set of app_ids currently being installed
+
         def shutdown(_) -> None:
             asyncio.ensure_future(self.shutdown())
 
@@ -1347,60 +1352,72 @@ class ServerAppController:
                 manifest = artifact_info.get("manifest", {})
                 
                 # If stage is False, we need to test the app by starting it
-                # IMPORTANT: Skip testing for web-app type to prevent recursive installations
-                app_type = manifest.get("type")
-                should_test = not stage and app_type != "web-app"
-                
-                if should_test:
-                    _progress_callback(
-                        {
-                            "type": "info",
-                            "message": "Testing installed application...",
-                        }
-                    )
-                    
-                    # Test that the app can start
-                    try:
-                        # Extract startup config from kwargs
-                        startup_config_kwargs = extract_startup_config_kwargs(
-                            timeout=timeout,
-                            wait_for_service=wait_for_service,
-                            additional_kwargs=additional_kwargs,
-                            stop_after_inactive=stop_after_inactive,
+                if not stage:
+                    # Check if this app is already being installed to prevent loops
+                    app_key = f"{workspace}:{app_id or artifact_id}"
+                    if app_key in self._installing_apps:
+                        logger.warning(
+                            f"Detected recursive installation attempt for {app_key}. "
+                            "Skipping test to prevent infinite loop."
                         )
-                        
-                        # Try to start the app to verify it works
-                        test_info = await self.start(
-                            duplicated_artifact["id"],
-                            context=context,
-                            **startup_config_kwargs
-                        )
-                        
-                        # Stop the test instance
-                        await self.stop(test_info["id"], context=context, raise_exception=False)
-                        
                         _progress_callback(
                             {
-                                "type": "success",
-                                "message": "Application tested successfully!",
+                                "type": "warning",
+                                "message": "Skipping test due to recursive installation detection",
                             }
                         )
-                    except Exception as e:
-                        # If testing fails, clean up and re-raise
-                        _progress_callback(
-                            {
-                                "type": "error",
-                                "message": f"Application testing failed: {str(e)}",
-                            }
-                        )
-                        raise
-                elif app_type == "web-app" and not stage:
-                    _progress_callback(
-                        {
-                            "type": "info",
-                            "message": "Skipping test for web-app type to prevent recursive installations",
-                        }
-                    )
+                    else:
+                        # Mark this app as being installed
+                        self._installing_apps.add(app_key)
+                        try:
+                            _progress_callback(
+                                {
+                                    "type": "info",
+                                    "message": "Testing installed application...",
+                                }
+                            )
+                            
+                            # Test that the app can start
+                            try:
+                                # Extract startup config from kwargs
+                                startup_config_kwargs = extract_startup_config_kwargs(
+                                    timeout=timeout,
+                                    wait_for_service=wait_for_service,
+                                    additional_kwargs=additional_kwargs,
+                                    stop_after_inactive=stop_after_inactive,
+                                )
+                                
+                                # Add test mode flag to prevent wait_for_service during testing
+                                startup_config_kwargs["test_mode"] = True
+                                
+                                # Try to start the app to verify it works
+                                test_info = await self.start(
+                                    duplicated_artifact["id"],
+                                    context=context,
+                                    **startup_config_kwargs
+                                )
+                                
+                                # Stop the test instance
+                                await self.stop(test_info["id"], context=context, raise_exception=False)
+                                
+                                _progress_callback(
+                                    {
+                                        "type": "success",
+                                        "message": "Application tested successfully!",
+                                    }
+                                )
+                            except Exception as e:
+                                # If testing fails, clean up and re-raise
+                                _progress_callback(
+                                    {
+                                        "type": "error",
+                                        "message": f"Application testing failed: {str(e)}",
+                                    }
+                                )
+                                raise
+                        finally:
+                            # Always remove from installing set
+                            self._installing_apps.discard(app_key)
                 
                 _progress_callback(
                     {
@@ -1980,8 +1997,9 @@ class ServerAppController:
             if progress_callback is not None:
                 start_config["progress_callback"] = progress_callback
 
+            # Add test mode flag to prevent wait_for_service during commit testing
             info = await self.start(
-                app_id, version="stage", context=context, **start_config
+                app_id, version="stage", test_mode=True, context=context, **start_config
             )
             await self.stop(info["id"], context=context)
 
@@ -2318,6 +2336,10 @@ class ServerAppController:
             None,
             description="Mode for selecting the worker. Can be 'random', 'first', 'last', 'exact', 'min_load', or 'select:criteria:function' format (e.g., 'select:min:get_load', 'select:max:get_cpu_usage'). Only used when worker_id is not specified.",
         ),
+        test_mode: bool = Field(
+            False,
+            description="Internal flag to indicate test mode. When True, skips wait_for_service to avoid deadlocks during installation testing.",
+        ),
         context: Optional[dict] = Field(
             None,
             description="Additional context information including user and workspace details. Usually provided automatically by the system.",
@@ -2381,11 +2403,16 @@ class ServerAppController:
             "stop_after_inactive", stop_after_inactive
         )
 
-        # Convert True to "default" after startup_config is applied
-        if wait_for_service is True or wait_for_service is None:
-            wait_for_service = "default"
-        if wait_for_service and ":" in wait_for_service:
-            wait_for_service = wait_for_service.split(":")[1]
+        # In test mode, skip wait_for_service to avoid deadlocks
+        if test_mode:
+            logger.info(f"Test mode enabled for app {app_id} - skipping wait_for_service")
+            wait_for_service = False
+        else:
+            # Convert True to "default" after startup_config is applied
+            if wait_for_service is True or wait_for_service is None:
+                wait_for_service = "default"
+            if wait_for_service and ":" in wait_for_service:
+                wait_for_service = wait_for_service.split(":")[1]
 
         detached = wait_for_service == False
 
