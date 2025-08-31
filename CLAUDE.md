@@ -669,4 +669,4 @@ If you failed to run the tests, warn the user the failure, never conclude to the
 
 When user provide description about error, provide CI error logs, or any other information, the first thing to do is to try to create a test to reproduce the issue, never try to fix it in the first place, always try to reproduce the issue and do a root cause analysis, once you clearly understand the issue, move on to the actual fix.
 
-Commit to git is ok if instructed, but NEVER reset a branch this will cause the lost of commit history.
+Whatever you do, do not cheat, never fix issue by masking out issue, or hide issue. For example do not fix multiple service issue when get_service by setting a default mode, getting service without a mode should correctly raise the issue, it's a designed feature to avoid confusion when multiple services responding to the requests, you should instead look at why there are several services, whether it's because a service clean up issue. there are other cases that you should avoid this type of shallow fix of issue, focus on the root cause.

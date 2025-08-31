@@ -189,37 +189,68 @@ class LLMProxyWorker(BaseWorker):
 
     async def _cleanup_session(self, session_id: str):
         """Clean up a specific session."""
-        session = self._sessions.pop(session_id, None)
-        if session:
-            # Disconnect the client if it exists
-            client = session.get("client")
-            if client:
-                try:
-                    # Unregister the LLM service before disconnecting
-                    if "registered_service_id" in session:
-                        try:
-                            service_id_to_unregister = session["registered_service_id"]
-                            logger.info(f"Attempting to unregister service: {service_id_to_unregister}")
-                            await client.unregister_service(service_id_to_unregister)
-                            logger.info(f"Successfully unregistered service: {service_id_to_unregister}")
-                        except Exception as e:
-                            logger.warning(f"Failed to unregister service {session.get('registered_service_id')}: {e}")
-                    
-                    # Disconnect the client
-                    await client.disconnect()
-                    logger.info(f"Disconnected client for session {session_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to disconnect client: {e}")
+        # Try to get the session by the provided ID (could be either session_id or full_client_id)
+        session = self._sessions.get(session_id)
+        
+        if not session:
+            logger.warning(f"_cleanup_session: Session {session_id} not found for cleanup")
+            return
             
-            # Clean up router if exists
-            router = session.get("router")
-            if router and hasattr(router, 'close'):
-                try:
-                    await router.close()
-                except Exception:
-                    pass
+        # Get both possible keys for this session
+        internal_session_id = session.get("info", {}).get("session_id")
+        full_client_id = session.get("full_client_id")
+        
+        # Remove all references to this session
+        if session_id in self._sessions:
+            del self._sessions[session_id]
+            logger.info(f"Removed session with key: {session_id}")
             
-            logger.info(f"Cleaned up session {session_id}")
+        if internal_session_id and internal_session_id != session_id and internal_session_id in self._sessions:
+            del self._sessions[internal_session_id]
+            logger.info(f"Also removed internal session_id index: {internal_session_id}")
+            
+        if full_client_id and full_client_id != session_id and full_client_id in self._sessions:
+            del self._sessions[full_client_id]
+            logger.info(f"Also removed full_client_id index: {full_client_id}")
+        
+        # Disconnect the client if it exists
+        client = session.get("client")
+        if client:
+            try:
+                # Unregister the LLM service before disconnecting
+                if "registered_service_id" in session:
+                    try:
+                        service_id_to_unregister = session["registered_service_id"]
+                        logger.info(f"_cleanup_session: Attempting to unregister service: {service_id_to_unregister}")
+                        await client.unregister_service(service_id_to_unregister)
+                        logger.info(f"_cleanup_session: Successfully unregistered service: {service_id_to_unregister}")
+                    except Exception as e:
+                        logger.error(f"_cleanup_session: Failed to unregister service {session.get('registered_service_id')}: {e}")
+                        # This is critical for avoiding multiple service registrations
+                        import traceback
+                        logger.error(f"_cleanup_session: Unregistration traceback: {traceback.format_exc()}")
+                
+                # Disconnect the client - this should also trigger cleanup
+                logger.info(f"_cleanup_session: Disconnecting client for session {session_id}")
+                await client.disconnect()
+                logger.info(f"_cleanup_session: Disconnected client for session {session_id}")
+            except Exception as e:
+                logger.error(f"_cleanup_session: Failed to disconnect client: {e}")
+                import traceback
+                logger.error(f"_cleanup_session: Disconnect traceback: {traceback.format_exc()}")
+        else:
+            logger.warning(f"_cleanup_session: Session {session_id} has no client for cleanup")
+        
+        # Clean up router if exists
+        router = session.get("router")
+        if router and hasattr(router, 'close'):
+            try:
+                await router.close()
+                logger.debug(f"_cleanup_session: Closed router for session {session_id}")
+            except Exception as e:
+                logger.warning(f"_cleanup_session: Failed to close router: {e}")
+        
+        logger.info(f"_cleanup_session: Cleaned up session {session_id}")
 
     @schema_method
     async def get_logs(
@@ -357,21 +388,12 @@ class LLMProxyWorker(BaseWorker):
             debug_level=litellm_settings.get("debug_level", "INFO"),
         )
         
-        # Set the global router that the proxy_server endpoints will use
-        proxy_server.llm_router = router
-        proxy_server.llm_model_list = model_list
-        proxy_server.general_settings = litellm_settings
-        
-        # Configure other global settings
-        proxy_server.user_debug = litellm_settings.get("debug", False)
-        proxy_server.user_detailed_debug = litellm_settings.get("detailed_debug", False)
-        proxy_server.user_telemetry = litellm_settings.get("telemetry", False)
-        
-        # Set litellm global settings
-        litellm.drop_params = litellm_settings.get("drop_params", True)
-        litellm.set_verbose = litellm_settings.get("debug", False)
+        # Store session-specific configuration instead of setting global variables
+        session["router"] = router
+        session["litellm_settings"] = litellm_settings
         
         # Get the app - this is the FastAPI app with all routes already configured
+        # We'll handle session-specific routing in the serve function
         app = proxy_server.app
         
         logger.info(f"Configured litellm proxy app for session {session_id} with {len(model_list)} models")
@@ -388,14 +410,32 @@ class LLMProxyWorker(BaseWorker):
         assert context is not None
         
         # Extract session_id from the config (it was added during compile)
-        session_id = config.get("manifest", {}).get("session_id")
-        if not session_id:
-            # If no session_id in manifest, this might be a direct start without compile
-            # Generate a new session_id
-            session_id = str(uuid.uuid4())
+        manifest_session_id = config.get("manifest", {}).get("session_id")
+        logger.info(f"Manifest session_id: {manifest_session_id}")
+        
+        # Get the full client ID for indexing
+        full_client_id = config.get("id", f"{context['ws']}/{config.get('client_id', 'unknown')}")
+        
+        # Check if we have a compiled session with this ID
+        session = None
+        session_id = manifest_session_id
+        
+        if manifest_session_id:
+            session = self._sessions.get(manifest_session_id)
+            logger.info(f"Session lookup for {manifest_session_id}: {'found' if session else 'not found'}")
             
-        # Check if we have a compiled session
-        session = self._sessions.get(session_id)
+            # If we found a session, also index it by full_client_id for cleanup
+            if session:
+                session["full_client_id"] = full_client_id
+                self._sessions[full_client_id] = session
+                logger.info(f"Added full_client_id index for existing session: {full_client_id}")
+            
+        if not session:
+            # No compiled session found (or no session_id in manifest)
+            # Generate a new session_id for this start
+            session_id = str(uuid.uuid4())
+            logger.info(f"Creating new session {session_id} (manifest had: {manifest_session_id})")
+            
         if not session:
             # No compiled session, create one from the manifest
             manifest = config.get("manifest", {})
@@ -418,6 +458,9 @@ class LLMProxyWorker(BaseWorker):
                 "outputs": {}
             }
             
+            # Get the full client ID from config for cleanup purposes
+            full_client_id = config.get("id", f"{context['ws']}/{config.get('client_id', session_id)}")
+            
             self._sessions[session_id] = {
                 "info": session_info,
                 "model_list": model_list,
@@ -425,18 +468,26 @@ class LLMProxyWorker(BaseWorker):
                 "workspace": context["ws"],
                 "user": user_info.id,
                 "last_access": asyncio.get_event_loop().time(),
-                "logs": ["LLM proxy session created"],
+                "logs": [f"LLM proxy session created with ID {session_id} from manifest"],
+                "full_client_id": full_client_id,  # Store for cleanup
             }
             session = self._sessions[session_id]
+            
+            # Also index by full_client_id for cleanup
+            self._sessions[full_client_id] = session
+            
+            logger.info(f"Created session {session_id} from manifest with {len(model_list)} models, indexed as {full_client_id}")
         
         session["last_access"] = asyncio.get_event_loop().time()
         
         # Now start the LLM proxy service
+        logger.info(f"Starting LLM proxy service for session {session_id}")
         try:
             # Get service_id from manifest config, or use default pattern
             manifest = config.get("manifest", {})
             service_id = manifest.get("config", {}).get("service_id", f"llm-{session_id}")
             session["service_id"] = service_id
+            logger.info(f"Will register service with ID: {service_id}")
             
             # Determine which providers are configured
             configured_providers = set()
@@ -456,19 +507,16 @@ class LLMProxyWorker(BaseWorker):
                 elif "llama" in model.lower() or "replicate" in model.lower():
                     configured_providers.add("Replicate/Llama")
             
-            # Create ASGI serve function for this session
-            async def serve_llm(args, context=None):
-                """ASGI handler for the LLM proxy service."""
-                if context:
-                    logger.debug(f'LLM proxy: {context["user"]["id"]} - {args["scope"]["method"]} - {args["scope"]["path"]}')
-                await app(args["scope"], args["receive"], args["send"])
-            
             # Get the connection info from config
             client_id = config.get("client_id", "")
             app_id = config.get("app_id", "")
             workspace = config.get("workspace", context["ws"])
             server_url = config.get("server_url", "")
             token = config.get("token", "")
+            
+            # Store the full client ID for later cleanup
+            full_client_id = config.get("id", f"{workspace}/{client_id}")
+            session["full_client_id"] = full_client_id
             
             # Connect as a client to register services
             client = await connect_to_server({
@@ -494,7 +542,69 @@ class LLMProxyWorker(BaseWorker):
             app = await self._create_litellm_app(session_id)
             session["app"] = app
             
+            # Create session-specific ASGI serve function that uses this session's router
+            def create_session_serve_function(session_id: str):
+                async def serve_llm(args, context=None):
+                    """ASGI handler for the LLM proxy service with session-specific routing."""
+                    if context:
+                        logger.debug(f'LLM proxy: {context["user"]["id"]} - {args["scope"]["method"]} - {args["scope"]["path"]}')
+                    
+                    # Get session-specific configuration
+                    current_session = self._sessions.get(session_id)
+                    if not current_session:
+                        # Session not found - return 404
+                        scope = args["scope"]
+                        receive = args["receive"]
+                        send = args["send"]
+                        
+                        await send({
+                            'type': 'http.response.start',
+                            'status': 404,
+                            'headers': [(b'content-type', b'application/json')],
+                        })
+                        await send({
+                            'type': 'http.response.body',
+                            'body': b'{"error": "Session not found"}',
+                        })
+                        return
+                    
+                    # Temporarily set global variables for this request
+                    # This is a workaround since litellm uses global state
+                    original_router = getattr(proxy_server, 'llm_router', None)
+                    original_model_list = getattr(proxy_server, 'llm_model_list', None)
+                    original_settings = getattr(proxy_server, 'general_settings', None)
+                    
+                    try:
+                        # Set session-specific configuration
+                        proxy_server.llm_router = current_session.get("router")
+                        proxy_server.llm_model_list = current_session.get("model_list", [])
+                        proxy_server.general_settings = current_session.get("litellm_settings", {})
+                        
+                        # Call the actual app
+                        await app(args["scope"], args["receive"], args["send"])
+                        
+                    finally:
+                        # Restore original global state
+                        if original_router is not None:
+                            proxy_server.llm_router = original_router
+                        if original_model_list is not None:
+                            proxy_server.llm_model_list = original_model_list  
+                        if original_settings is not None:
+                            proxy_server.general_settings = original_settings
+                
+                return serve_llm
+            
+            # Create the session-specific serve function
+            serve_llm = create_session_serve_function(session_id)
+            
+            # Check if we already registered this service in a previous start
+            if "registered_service_id" in session and session.get("client"):
+                # Service already registered, just return the session_id
+                logger.info(f"Service {service_id} already registered as {session['registered_service_id']}, skipping registration")
+                return session_id
+            
             # Register the LLM service as an ASGI service (type="asgi")
+            logger.info(f"Registering service {service_id} for app {app_id}")
             service_info = await client.register_service({
                 "id": service_id,
                 "name": f"LLM Proxy - {session_id}",
@@ -510,7 +620,7 @@ class LLMProxyWorker(BaseWorker):
             
             # Store the full service ID including the client ID path
             full_service_id = service_info["id"]
-            logger.info(f"Registered LLM proxy service with full ID: {full_service_id}")
+            logger.info(f"Successfully registered LLM proxy service with full ID: {full_service_id}")
             session["registered_service_id"] = full_service_id
             
             # Update session info - using /apps/ path now instead of /llm/
@@ -527,7 +637,8 @@ class LLMProxyWorker(BaseWorker):
             session["logs"].append(f"LLM proxy started with service ID: {service_id}")
             session["logs"].append(f"Supporting providers: {', '.join(configured_providers)}") 
             
-            # Return the session_id string as expected by the apps controller
+            # Return the actual session_id we're using (not the manifest one)
+            # This is important for restart scenarios where we create a new session
             return session_id
             
         except Exception as e:
@@ -546,32 +657,57 @@ class LLMProxyWorker(BaseWorker):
         context: Optional[dict] = None
     ) -> None:
         """Stop an LLM proxy session."""
-        if session_id not in self._sessions:
-            logger.warning(f"LLM proxy session {session_id} not found for stopping")
-            return
-        
         logger.info(f"Stopping LLM proxy session {session_id}")
         
-        # Get the session before cleanup
-        session = self._sessions.get(session_id, {})
-        
-        # Try to unregister the service first if we have a client
-        client = session.get("client")
-        if client and "registered_service_id" in session:
-            try:
-                service_id_to_unregister = session["registered_service_id"]
-                logger.info(f"Unregistering service before cleanup: {service_id_to_unregister}")
-                await client.unregister_service(service_id_to_unregister)
-                logger.info(f"Successfully unregistered service: {service_id_to_unregister}")
-            except Exception as e:
-                # More specific error handling
-                if "not found" in str(e).lower():
-                    logger.debug(f"Service {session.get('registered_service_id')} already unregistered or not found")
-                else:
-                    logger.warning(f"Failed to unregister service {session.get('registered_service_id')}: {e}")
-        
-        # Now cleanup the session
-        await self._cleanup_session(session_id)
+        # Check if session exists in memory
+        if session_id in self._sessions:
+            # Get the session before cleanup
+            session = self._sessions.get(session_id, {})
+            
+            # Try to unregister the service first if we have a client
+            client = session.get("client")
+            if client and "registered_service_id" in session:
+                try:
+                    service_id_to_unregister = session["registered_service_id"]
+                    logger.info(f"Unregistering service before cleanup: {service_id_to_unregister}")
+                    await client.unregister_service(service_id_to_unregister)
+                    logger.info(f"Successfully unregistered service: {service_id_to_unregister}")
+                except Exception as e:
+                    # More specific error handling
+                    if "not found" in str(e).lower():
+                        logger.debug(f"Service {session.get('registered_service_id')} already unregistered or not found")
+                    else:
+                        logger.error(f"Failed to unregister service {session.get('registered_service_id')}: {e}")
+                        # This is critical - if we can't unregister, we have a problem
+                        import traceback
+                        logger.error(f"Unregistration traceback: {traceback.format_exc()}")
+            else:
+                logger.warning(f"Session {session_id} has no client or registered_service_id for cleanup")
+                logger.warning(f"Session keys: {list(session.keys())}")
+            
+            # Now cleanup the session
+            await self._cleanup_session(session_id)
+        else:
+            # Session not in memory - still try to clean up any registered services
+            logger.warning(f"LLM proxy session {session_id} not found in memory, attempting service cleanup")
+            
+            # Try to connect and clean up any services registered by this session
+            if context and context.get("ws"):
+                try:
+                    from hypha_rpc import connect_to_server
+                    # Extract workspace and client_id from session_id
+                    if "/" in session_id:
+                        workspace, client_id = session_id.split("/", 1)
+                    else:
+                        workspace = context.get("ws")
+                        client_id = session_id
+                    
+                    # We need to clean up any services that might have been registered
+                    # Since we don't have the session data, we can't unregister specific services
+                    # But the workspace manager should clean them up when the client disconnects
+                    logger.info(f"Session {session_id} not in memory, relying on client disconnection for cleanup")
+                except Exception as e:
+                    logger.warning(f"Error during cleanup attempt for {session_id}: {e}")
     
     def get_app_for_service(self, service_id: str):
         """Get the FastAPI app for a given service ID."""

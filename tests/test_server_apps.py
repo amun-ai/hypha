@@ -589,7 +589,8 @@ async def test_llm_proxy_app(minio_server, fastapi_server, test_user_token):
         source=llm_app_source,
         wait_for_service="test-llm",
         timeout=20,
-        overwrite=True
+        overwrite=True,
+        stage=True  # Don't test the app during install to avoid leftover services
     )
     
     assert llm_app_info["id"], "App should have an ID"

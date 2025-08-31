@@ -2125,7 +2125,7 @@ class ServerAppController:
         version: str = None,
         token: str = None,
         timeout: float = None,
-        manifest: dict = None,
+        manifest: BaseModel = None,
         progress_callback: Any = None,
         additional_kwargs: Optional[dict] = None,
         worker: Any = None,
@@ -2195,7 +2195,7 @@ class ServerAppController:
                 "entry_point": entry_point,
                 "artifact_id": artifact_id_for_worker,  # Use full ID for artifact access
                 "timeout": timeout,
-                "manifest": manifest,
+                "manifest": manifest.model_dump(mode="json"),  # Pass as dict for serialization
                 "progress_callback": progress_callback,  # Pass it directly, workers will handle it
                 "disable_ssl": self.disable_ssl,
                 **additional_kwargs,

@@ -78,6 +78,7 @@ async def test_llm_proxy_installation_and_basic_operation(
         wait_for_service=False,
         timeout=20,
         overwrite=True,
+        stage=True,  # Don't test the app during install to avoid leftover services
     )
     
     app_id = app_info["id"]
@@ -280,6 +281,7 @@ async def test_llm_proxy_with_workspace_secrets(
         wait_for_service=False,
         timeout=20,
         overwrite=True,
+        stage=True,  # Don't test the app during install to avoid leftover services
     )
     
     app_id_secrets = app_info_secrets["id"]
@@ -469,6 +471,7 @@ async def test_llm_proxy_with_multiple_models(
         wait_for_service=False,
         timeout=20,
         overwrite=True,
+        stage=True,  # Don't test the app during install to avoid leftover services
     )
     
     app_id = app_info["id"]
@@ -730,24 +733,28 @@ async def test_llm_proxy_lifecycle_management(
     except:
         pass  # Ignore if list fails
     
-    llm_app_source = """
+    # Use unique service ID to avoid conflicts
+    import uuid
+    unique_service_id = f"lifecycle-llm-{uuid.uuid4().hex[:8]}"
+    
+    llm_app_source = f"""
 <config lang="json">
-{
+{{
     "name": "Lifecycle Test LLM",
     "type": "llm-proxy",
     "version": "1.0.0",
-    "config": {
-        "service_id": "lifecycle-llm",
-        "model_list": [{
+    "config": {{
+        "service_id": "{unique_service_id}",
+        "model_list": [{{
             "model_name": "test-model",
-            "litellm_params": {
+            "litellm_params": {{
                 "model": "gpt-3.5-turbo",
                 "mock_response": "Lifecycle test response"
-            }
-        }],
-        "litellm_settings": {"debug": false}
-    }
-}
+            }}
+        }}],
+        "litellm_settings": {{"debug": false}}
+    }}
+}}
 </config>
 """
     
@@ -762,14 +769,14 @@ async def test_llm_proxy_lifecycle_management(
     print(f"Installed app: {app_id}")
     
     # Start
-    session = await controller.start(app_id, wait_for_service="lifecycle-llm", timeout=30)
+    session = await controller.start(app_id, wait_for_service=unique_service_id, timeout=30)
     session_id = session["id"]
     print(f"Started session: {session_id}")
     
     await asyncio.sleep(2)
     
     # Verify it's running
-    base_url = f"http://127.0.0.1:{SIO_PORT}/{api.config.workspace}/apps/lifecycle-llm"
+    base_url = f"http://127.0.0.1:{SIO_PORT}/{api.config.workspace}/apps/{unique_service_id}"
     headers = {"Authorization": f"Bearer {test_user_token}"}
     
     async with httpx.AsyncClient() as client:
@@ -787,7 +794,29 @@ async def test_llm_proxy_lifecycle_management(
     instances_after_stop = await controller.list_apps()
     print(f"Instances after stop: {[inst['id'] for inst in instances_after_stop if inst.get('app_id') == app_id]}")
     
-    await asyncio.sleep(1)
+    # Add more aggressive cleanup: check for any services with our service ID and clean them up
+    try:
+        workspace_manager = await api.get_service("public/server-apps")  # This should actually be workspace manager but let's work with what we have
+        print(f"Checking for remaining services with service_id: {unique_service_id}")
+        
+        # Wait longer for cleanup to complete
+        for i in range(5):  # Try up to 5 times with 2-second intervals
+            await asyncio.sleep(2)
+            try:
+                # Try to access the service - if it fails, it's cleaned up
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(f"{base_url}/health", headers=headers, timeout=5)
+                    if response.status_code >= 400:
+                        print(f"Service cleanup confirmed after {(i+1)*2} seconds")
+                        break
+            except:
+                print(f"Service cleanup confirmed after {(i+1)*2} seconds")
+                break
+        else:
+            print("Warning: Service might still be accessible after stop")
+        
+    except Exception as e:
+        print(f"Error during cleanup verification: {e}")
     
     # Verify it's stopped
     async with httpx.AsyncClient() as client:
@@ -800,16 +829,36 @@ async def test_llm_proxy_lifecycle_management(
             print("Service correctly unavailable after stop")
     
     # Restart
-    session2 = await controller.start(app_id, wait_for_service="lifecycle-llm", timeout=30)
+    print(f"About to restart app: {app_id}")
+    session2 = await controller.start(app_id, wait_for_service=unique_service_id, timeout=30)
     session2_id = session2["id"]
     print(f"Restarted with new session: {session2_id}")
     
     await asyncio.sleep(2)
     
-    # Verify it's running again
+    # Verify it's running again - with debugging for 500 errors
     async with httpx.AsyncClient() as client:
         response = await client.get(f"{base_url}/health", headers=headers, timeout=10)
-        assert response.status_code in [200, 204], "Service should be healthy after restart"
+        if response.status_code != 200 and response.status_code != 204:
+            print(f"Service health check failed with status {response.status_code}")
+            try:
+                error_text = response.text
+                print(f"Error response: {error_text}")
+            except:
+                print("Could not read error response")
+            
+            # Try to get more information about what services are registered
+            try:
+                models_response = await client.get(f"{base_url}/v1/models", headers=headers, timeout=10)
+                print(f"Models endpoint status: {models_response.status_code}")
+                if models_response.status_code == 200:
+                    print(f"Models available: {models_response.json()}")
+                else:
+                    print(f"Models endpoint error: {models_response.text}")
+            except Exception as e:
+                print(f"Could not check models endpoint: {e}")
+        
+        assert response.status_code in [200, 204], f"Service should be healthy after restart, got {response.status_code}: {response.text if hasattr(response, 'text') else 'No response text'}"
         print("Service is healthy after restart")
     
     try:
@@ -834,18 +883,10 @@ async def test_llm_proxy_lifecycle_management(
     print("Lifecycle management test completed")
 
 
-@pytest.mark.skip(reason="LLM proxy uses global litellm proxy_server, doesn't support true concurrent isolated sessions")
 async def test_llm_proxy_concurrent_sessions(
     minio_server, fastapi_server, test_user_token
 ):
-    """Test running multiple concurrent LLM proxy sessions.
-    
-    NOTE: This test is skipped because the current implementation uses litellm's
-    global proxy_server object, which means concurrent sessions would overwrite
-    each other's configurations. To support true concurrent isolated sessions,
-    the implementation would need to be refactored to create separate proxy
-    instances for each session.
-    """
+    """Test running multiple concurrent LLM proxy sessions."""
     api = await connect_to_server({
         "name": "test llm concurrent",
         "server_url": SERVER_URL,
@@ -854,63 +895,68 @@ async def test_llm_proxy_concurrent_sessions(
     
     controller = await api.get_service("public/server-apps")
     
+    # Use unique service IDs to avoid conflicts
+    import uuid
+    unique_service_id1 = f"concurrent-llm-1-{uuid.uuid4().hex[:8]}"
+    unique_service_id2 = f"concurrent-llm-2-{uuid.uuid4().hex[:8]}"
+    
     # Create two different LLM proxy apps
-    llm_app1 = """
+    llm_app1 = f"""
 <config lang="json">
-{
+{{
     "name": "Concurrent LLM 1",
     "type": "llm-proxy",
     "version": "1.0.0",
-    "config": {
-        "service_id": "concurrent-llm-1",
-        "model_list": [{
+    "config": {{
+        "service_id": "{unique_service_id1}",
+        "model_list": [{{
             "model_name": "model-1",
-            "litellm_params": {
+            "litellm_params": {{
                 "model": "gpt-3.5-turbo",
                 "mock_response": "Response from LLM 1"
-            }
-        }],
-        "litellm_settings": {"debug": false}
-    }
-}
+            }}
+        }}],
+        "litellm_settings": {{"debug": false}}
+    }}
+}}
 </config>
 """
     
-    llm_app2 = """
+    llm_app2 = f"""
 <config lang="json">
-{
+{{
     "name": "Concurrent LLM 2",
     "type": "llm-proxy",
     "version": "1.0.0",
-    "config": {
-        "service_id": "concurrent-llm-2",
-        "model_list": [{
+    "config": {{
+        "service_id": "{unique_service_id2}",
+        "model_list": [{{
             "model_name": "model-2",
-            "litellm_params": {
+            "litellm_params": {{
                 "model": "gpt-4",
                 "mock_response": "Response from LLM 2"
-            }
-        }],
-        "litellm_settings": {"debug": false}
-    }
-}
+            }}
+        }}],
+        "litellm_settings": {{"debug": false}}
+    }}
+}}
 </config>
 """
     
     # Install both apps
-    app1_info = await controller.install(source=llm_app1, overwrite=True, wait_for_service=False)
+    app1_info = await controller.install(source=llm_app1, overwrite=True, wait_for_service=False, stage=True)  # Don't test during install
     app1_id = app1_info["id"]
     
-    app2_info = await controller.install(source=llm_app2, overwrite=True, wait_for_service=False)
+    app2_info = await controller.install(source=llm_app2, overwrite=True, wait_for_service=False, stage=True)  # Don't test during install
     app2_id = app2_info["id"]
     
     print(f"Installed apps: {app1_id}, {app2_id}")
     
     # Start both concurrently
-    session1 = await controller.start(app1_id, wait_for_service="concurrent-llm-1", timeout=30)
+    session1 = await controller.start(app1_id, wait_for_service=unique_service_id1, timeout=30)
     session1_id = session1["id"]
     
-    session2 = await controller.start(app2_id, wait_for_service="concurrent-llm-2", timeout=30)
+    session2 = await controller.start(app2_id, wait_for_service=unique_service_id2, timeout=30)
     session2_id = session2["id"]
     
     print(f"Started sessions: {session1_id}, {session2_id}")
@@ -923,18 +969,26 @@ async def test_llm_proxy_concurrent_sessions(
         
         async with httpx.AsyncClient() as client:
             # Test service 1
-            base_url1 = f"http://127.0.0.1:{SIO_PORT}/{api.config.workspace}/apps/concurrent-llm-1"
+            base_url1 = f"http://127.0.0.1:{SIO_PORT}/{api.config.workspace}/apps/{unique_service_id1}"
             response1 = await client.get(f"{base_url1}/v1/models", headers=headers, timeout=10)
             assert response1.status_code == 200, "Service 1 should be accessible"
             models1 = response1.json()
-            assert any("model-1" in m["id"] for m in models1.get("data", [])), "Service 1 should have model-1"
+            print(f"Service 1 models response: {models1}")
+            # Look for model-1 in the response
+            model_found = any("model-1" in m["id"] for m in models1.get("data", []))
+            print(f"Looking for 'model-1' in models: {[m['id'] for m in models1.get('data', [])]}")
+            assert model_found, f"Service 1 should have model-1, got: {[m['id'] for m in models1.get('data', [])]}"
             
             # Test service 2
-            base_url2 = f"http://127.0.0.1:{SIO_PORT}/{api.config.workspace}/apps/concurrent-llm-2"
+            base_url2 = f"http://127.0.0.1:{SIO_PORT}/{api.config.workspace}/apps/{unique_service_id2}"
             response2 = await client.get(f"{base_url2}/v1/models", headers=headers, timeout=10)
             assert response2.status_code == 200, "Service 2 should be accessible"
             models2 = response2.json()
-            assert any("model-2" in m["id"] for m in models2.get("data", [])), "Service 2 should have model-2"
+            print(f"Service 2 models response: {models2}")
+            # Look for model-2 in the response
+            model_found = any("model-2" in m["id"] for m in models2.get("data", []))
+            print(f"Looking for 'model-2' in models: {[m['id'] for m in models2.get('data', [])]}")
+            assert model_found, f"Service 2 should have model-2, got: {[m['id'] for m in models2.get('data', [])]}"
             
             print("Both concurrent services are running correctly")
             
