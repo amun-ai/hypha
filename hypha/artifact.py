@@ -2192,10 +2192,12 @@ class ArtifactController:
                 artifact.id,
                 f"v{version_index}.json",
             )
+            body_data = json.dumps(model_to_dict(artifact)).encode('utf-8')
             await s3_client.put_object(
                 Bucket=s3_config["bucket"],
                 Key=version_key,
-                Body=json.dumps(model_to_dict(artifact)),
+                Body=body_data,
+                ContentLength=len(body_data),
             )
 
         # Check if we're using a custom S3 config (not the default one)
@@ -2219,10 +2221,12 @@ class ArtifactController:
                 )
 
                 # Just save the full artifact data as-is
+                backup_body_data = json.dumps(model_to_dict(artifact)).encode('utf-8')
                 await backup_s3_client.put_object(
                     Bucket=default_s3_config["bucket"],
                     Key=backup_version_key,
-                    Body=json.dumps(model_to_dict(artifact)),
+                    Body=backup_body_data,
+                    ContentLength=len(backup_body_data),
                 )
 
     async def _load_version_from_s3(
@@ -4007,6 +4011,7 @@ class ArtifactController:
                                         Bucket=target_s3_config["bucket"],
                                         Key=target_key,
                                         Body=body,
+                                        ContentLength=len(body),
                                         ContentType=response.get("ContentType", "application/octet-stream"),
                                     )
                                     file_count += 1

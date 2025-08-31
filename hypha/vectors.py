@@ -214,10 +214,12 @@ class VectorSearchEngine:
                     )
 
             vector_key = f"{prefix}{vector_id}.json"
+            body_data = json.dumps(vector_data).encode('utf-8')
             await s3_client.put_object(
                 Bucket=bucket,
                 Key=vector_key,
-                Body=json.dumps(vector_data),
+                Body=body_data,
+                ContentLength=len(body_data),
             )
 
     async def _dump_index(
@@ -247,10 +249,12 @@ class VectorSearchEngine:
             "fields": dump_fields,
         }
         index_key = f"{prefix}_index.json"
+        body_data = json.dumps(index_settings).encode('utf-8')
         await s3_client.put_object(
             Bucket=bucket,
             Key=index_key,
-            Body=json.dumps(index_settings),
+            Body=body_data,
+            ContentLength=len(body_data),
         )
 
     async def dump_collection(

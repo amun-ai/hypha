@@ -75,11 +75,11 @@ setup(
     install_requires=REQUIREMENTS,
     extras_require={
         "s3": [
-            "aiobotocore>=2.1.0",
+            "aiobotocore>=2.18.0",
         ],
         "server-apps": [
             "redis==5.2.0",
-            "aiobotocore>=2.1.0",
+            "aiobotocore>=2.18.0",
             "aiortc>=1.9.0",
             "requests>=2.26.0",
             "playwright>=1.51.0",

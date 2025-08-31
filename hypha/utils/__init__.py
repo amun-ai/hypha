@@ -2,7 +2,10 @@
 
 import copy
 import asyncio
+import base64
 import gzip
+import hashlib
+import json
 import os
 import posixpath
 import secrets
@@ -236,6 +239,31 @@ def list_objects_sync(s3_client, bucket, prefix=None, delimeter="/"):
     return items
 
 
+def calculate_delete_content_md5(delete_dict):
+    """Calculate Content-MD5 for delete_objects request.
+    
+    This is required for boto3/aiobotocore 1.36.0+ which no longer 
+    automatically calculates the Content-MD5 header.
+    
+    Args:
+        delete_dict: The Delete parameter dictionary for delete_objects
+        
+    Returns:
+        Base64-encoded MD5 hash string
+    """
+    # Serialize the Delete parameter to JSON bytes with consistent formatting
+    # Note: AWS expects a specific JSON format, not Python dict string representation
+    delete_json = json.dumps(delete_dict, separators=(',', ':'), sort_keys=True)
+    delete_bytes = delete_json.encode('utf-8')
+    
+    # Calculate MD5 hash
+    md5_hash = hashlib.md5(delete_bytes)
+    
+    # Convert to base64
+    content_md5 = base64.b64encode(md5_hash.digest()).decode('utf-8')
+    return content_md5
+
+
 def remove_objects_sync(s3_client, bucket, prefix, delimeter=""):
     """Remove all objects in a folder."""
     assert prefix != "" and prefix.endswith("/")
@@ -244,18 +272,21 @@ def remove_objects_sync(s3_client, bucket, prefix, delimeter=""):
     )
     items = response.get("Contents", [])
     if len(items) > 0:
+        delete_dict = {
+            "Objects": [
+                {
+                    "Key": item["Key"],
+                    # 'VersionId': 'string'
+                }
+                for item in items
+            ],
+            "Quiet": True,
+        }
+        content_md5 = calculate_delete_content_md5(delete_dict)
         delete_response = s3_client.delete_objects(
             Bucket=bucket,
-            Delete={
-                "Objects": [
-                    {
-                        "Key": item["Key"],
-                        # 'VersionId': 'string'
-                    }
-                    for item in items
-                ],
-                "Quiet": True,
-            },
+            Delete=delete_dict,
+            ContentMD5=content_md5,
         )
         assert (
             "ResponseMetadata" in delete_response
@@ -270,18 +301,21 @@ def remove_objects_sync(s3_client, bucket, prefix, delimeter=""):
         )
         items = response.get("Contents", [])
         if len(items) > 0:
+            delete_dict = {
+                "Objects": [
+                    {
+                        "Key": item["Key"],
+                        # 'VersionId': 'string'
+                    }
+                    for item in items
+                ],
+                "Quiet": True,
+            }
+            content_md5 = calculate_delete_content_md5(delete_dict)
             delete_response = s3_client.delete_objects(
                 Bucket=bucket,
-                Delete={
-                    "Objects": [
-                        {
-                            "Key": item["Key"],
-                            # 'VersionId': 'string'
-                        }
-                        for item in items
-                    ],
-                    "Quiet": True,
-                },
+                Delete=delete_dict,
+                ContentMD5=content_md5,
             )
             assert (
                 "ResponseMetadata" in delete_response
@@ -324,18 +358,21 @@ async def remove_objects_async(s3_client, bucket, prefix, delimeter=""):
     )
     items = response.get("Contents", [])
     if len(items) > 0:
+        delete_dict = {
+            "Objects": [
+                {
+                    "Key": item["Key"],
+                    # 'VersionId': 'string'
+                }
+                for item in items
+            ],
+            "Quiet": True,
+        }
+        content_md5 = calculate_delete_content_md5(delete_dict)
         delete_response = await s3_client.delete_objects(
             Bucket=bucket,
-            Delete={
-                "Objects": [
-                    {
-                        "Key": item["Key"],
-                        # 'VersionId': 'string'
-                    }
-                    for item in items
-                ],
-                "Quiet": True,
-            },
+            Delete=delete_dict,
+            ContentMD5=content_md5,
         )
         assert (
             "ResponseMetadata" in delete_response
@@ -350,18 +387,21 @@ async def remove_objects_async(s3_client, bucket, prefix, delimeter=""):
         )
         items = response.get("Contents", [])
         if len(items) > 0:
+            delete_dict = {
+                "Objects": [
+                    {
+                        "Key": item["Key"],
+                        # 'VersionId': 'string'
+                    }
+                    for item in items
+                ],
+                "Quiet": True,
+            }
+            content_md5 = calculate_delete_content_md5(delete_dict)
             delete_response = await s3_client.delete_objects(
                 Bucket=bucket,
-                Delete={
-                    "Objects": [
-                        {
-                            "Key": item["Key"],
-                            # 'VersionId': 'string'
-                        }
-                        for item in items
-                    ],
-                    "Quiet": True,
-                },
+                Delete=delete_dict,
+                ContentMD5=content_md5,
             )
             assert (
                 "ResponseMetadata" in delete_response
