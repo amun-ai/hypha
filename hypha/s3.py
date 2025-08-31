@@ -225,20 +225,29 @@ class S3Controller:
                     # Other error or max retries reached
                     raise
         
-        # Apply CORS policy if not using MinIO
-        # Note: MinIO handles CORS differently, so we skip it for MinIO instances
-        try:
-            if self.s3_admin_type != "minio":
+        # Apply CORS policy for S3-compatible services
+        # MinIO Community Edition doesn't support bucket-level CORS configuration
+        # It must be configured at the server level or via reverse proxy
+        if self.s3_admin_type == "minio":
+            logger.info(
+                "MinIO detected: Bucket-level CORS is not supported in MinIO Community Edition. "
+                "Please configure CORS at the MinIO server level or use a reverse proxy."
+            )
+        else:
+            # Apply CORS for AWS S3 and other S3-compatible services
+            try:
                 s3client.put_bucket_cors(
                     Bucket=self.workspace_bucket,
                     CORSConfiguration=DEFAULT_CORS_POLICY,
                 )
-        except Exception as ex:
-            # This error is expected with MinIO and can be safely ignored
-            if "MalformedXML" not in str(ex) and "CreateBucketConfiguration" not in str(ex):
-                logger.error("Failed to apply CORS policy: %s", ex)
-            else:
-                logger.debug("Skipping CORS policy for MinIO: %s", ex)
+                logger.info("Successfully applied CORS policy to bucket '%s'", self.workspace_bucket)
+            except Exception as ex:
+                # Log the actual error for non-MinIO services
+                logger.error(
+                    "Failed to apply CORS policy to bucket '%s': %s", 
+                    self.workspace_bucket, 
+                    ex
+                )
 
         if self.minio_client:
             self.minio_client.admin_user_add_sync("root", generate_password())
