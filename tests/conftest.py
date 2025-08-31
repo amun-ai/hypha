@@ -473,7 +473,7 @@ def fastapi_server_sqlite_fixture(minio_server):
             f"--secret-access-key={MINIO_ROOT_PASSWORD}",
             f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
             f"--workspace-bucket=my-workspaces",
-            "--s3-admin-type=generic",
+            "--s3-admin-type=minio",
         ],
         env=test_env,
     ) as proc:
