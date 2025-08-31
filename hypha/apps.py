@@ -2569,11 +2569,25 @@ class ServerAppController:
                 logger.info(
                     f"Waiting for event after starting app: {full_client_id}, timeout: {timeout}, wait_for_service: {wait_for_service}"
                 )
-                await asyncio.wait_for(event_future, timeout=timeout)
-                logger.info(
-                    f"Successfully received event for starting app: {full_client_id}"
-                )
-                await asyncio.sleep(0.1)  # Brief delay to allow service registration
+                try:
+                    await asyncio.wait_for(event_future, timeout=timeout)
+                    logger.info(
+                        f"Successfully received event for starting app: {full_client_id}"
+                    )
+                    await asyncio.sleep(0.1)  # Brief delay to allow service registration
+                except asyncio.TimeoutError:
+                    # Log detailed information about the timeout
+                    error_msg = (
+                        f"Timeout waiting for service '{wait_for_service}' for app '{app_id}'. "
+                        f"The service was not registered within {timeout} seconds."
+                    )
+                    if manifest.type == "web-app" and manifest.entry_point and manifest.entry_point.startswith(("http://", "https://")):
+                        error_msg += (
+                            f" Note: This is a web-app with external URL '{manifest.entry_point}'. "
+                            f"The external page may not be registering the service quickly enough."
+                        )
+                    logger.error(error_msg)
+                    raise asyncio.TimeoutError(error_msg) from None
 
                 _progress_callback(
                     {"type": "info", "message": "Finalizing application startup..."}
