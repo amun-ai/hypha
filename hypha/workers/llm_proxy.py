@@ -225,10 +225,13 @@ class LLMProxyWorker(BaseWorker):
                         await client.unregister_service(service_id_to_unregister)
                         logger.info(f"_cleanup_session: Successfully unregistered service: {service_id_to_unregister}")
                     except Exception as e:
-                        logger.error(f"_cleanup_session: Failed to unregister service {session.get('registered_service_id')}: {e}")
-                        # This is critical for avoiding multiple service registrations
-                        import traceback
-                        logger.error(f"_cleanup_session: Unregistration traceback: {traceback.format_exc()}")
+                        # Service may already be gone if client disconnected
+                        # This is expected behavior, not an error
+                        if "not found" in str(e).lower() or "Service not found" in str(e):
+                            logger.debug(f"_cleanup_session: Service {session.get('registered_service_id')} already cleaned up (expected if client disconnected)")
+                        else:
+                            # Only log as warning if it's not a "not found" issue
+                            logger.warning(f"_cleanup_session: Failed to unregister service {session.get('registered_service_id')}: {e}")
                 
                 # Disconnect the client - this should also trigger cleanup
                 logger.info(f"_cleanup_session: Disconnecting client for session {session_id}")
@@ -673,14 +676,13 @@ class LLMProxyWorker(BaseWorker):
                     await client.unregister_service(service_id_to_unregister)
                     logger.info(f"Successfully unregistered service: {service_id_to_unregister}")
                 except Exception as e:
-                    # More specific error handling
-                    if "not found" in str(e).lower():
-                        logger.debug(f"Service {session.get('registered_service_id')} already unregistered or not found")
+                    # Service may already be gone if client disconnected
+                    # This is expected behavior, not an error
+                    if "not found" in str(e).lower() or "Service not found" in str(e):
+                        logger.debug(f"Service {session.get('registered_service_id')} already cleaned up (expected if client disconnected)")
                     else:
-                        logger.error(f"Failed to unregister service {session.get('registered_service_id')}: {e}")
-                        # This is critical - if we can't unregister, we have a problem
-                        import traceback
-                        logger.error(f"Unregistration traceback: {traceback.format_exc()}")
+                        # Only log as error if it's not a "not found" issue
+                        logger.warning(f"Failed to unregister service {session.get('registered_service_id')}: {e}")
             else:
                 logger.warning(f"Session {session_id} has no client or registered_service_id for cleanup")
                 logger.warning(f"Session keys: {list(session.keys())}")
