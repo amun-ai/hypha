@@ -226,6 +226,7 @@ class S3Controller:
                     raise
         
         # Apply CORS policy if not using MinIO
+        # Note: MinIO handles CORS differently, so we skip it for MinIO instances
         try:
             if self.s3_admin_type != "minio":
                 s3client.put_bucket_cors(
@@ -233,7 +234,11 @@ class S3Controller:
                     CORSConfiguration=DEFAULT_CORS_POLICY,
                 )
         except Exception as ex:
-            logger.error("Failed to apply CORS policy: %s", ex)
+            # This error is expected with MinIO and can be safely ignored
+            if "MalformedXML" not in str(ex) and "CreateBucketConfiguration" not in str(ex):
+                logger.error("Failed to apply CORS policy: %s", ex)
+            else:
+                logger.debug("Skipping CORS policy for MinIO: %s", ex)
 
         if self.minio_client:
             self.minio_client.admin_user_add_sync("root", generate_password())
@@ -781,8 +786,10 @@ class S3Controller:
         if workspace.read_only:
             return
         async with self.create_client_async() as s3_client:
+            body_data = workspace.model_dump_json().encode("utf-8")
             response = await s3_client.put_object(
-                Body=workspace.model_dump_json().encode("utf-8"),
+                Body=body_data,
+                ContentLength=len(body_data),
                 Bucket=self.workspace_bucket,
                 Key=f"{self.workspace_etc_dir}/{workspace.id}/manifest.json",
             )
