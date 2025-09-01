@@ -40,7 +40,8 @@ class WorkerConnection:
         """Close the worker connection."""
         try:
             if self.workspace_interface:
-                await self.workspace_interface.disconnect()
+                # Properly cleanup the workspace interface context manager
+                await self.workspace_interface.__aexit__(None, None, None)
                 logger.debug("Closed connection to worker %s", self.worker_id)
         except Exception as e:
             logger.warning("Error closing worker connection %s: %s", self.worker_id, e)
@@ -89,7 +90,8 @@ class WorkerManager:
         # Close workspace listeners
         for workspace_id, workspace_interface in self._workspace_listeners.items():
             try:
-                await workspace_interface.disconnect()
+                # Use __aexit__ to properly close the context manager
+                await workspace_interface.__aexit__(None, None, None)
                 logger.debug("Closed workspace listener for %s", workspace_id)
             except Exception as e:
                 logger.debug("Error closing workspace listener for %s: %s", workspace_id, e)
@@ -107,17 +109,27 @@ class WorkerManager:
         # Connect to workspace
         if context and workspace != "public":
             user_info = UserInfo.from_context(context)
+            
+            # Create persistent workspace interface (not using async with)
+            # This interface will remain connected until explicitly closed
             workspace_interface = await self.store.get_workspace_interface(
                 user_info, workspace
             ).__aenter__()
             
-            # Set up event listeners - this will handle ALL workers in this workspace
-            await self._setup_workspace_listeners(workspace, workspace_interface)
-            
-            # Do initial worker discovery
-            await self._discover_workspace_workers(workspace, workspace_interface)
-            
-            self._workspace_listeners[workspace] = workspace_interface
+            try:
+                # Set up event listeners - this will handle ALL workers in this workspace
+                await self._setup_workspace_listeners(workspace, workspace_interface)
+                
+                # Do initial worker discovery
+                await self._discover_workspace_workers(workspace, workspace_interface)
+                
+                # Store the interface for later cleanup
+                self._workspace_listeners[workspace] = workspace_interface
+                
+            except Exception:
+                # Clean up the interface if setup fails
+                await workspace_interface.__aexit__(None, None, None)
+                raise
         
         self._monitored_workspaces[workspace] = True
 
@@ -215,6 +227,7 @@ class WorkerManager:
                 
     async def _handle_client_disconnected(self, workspace: str, data: Dict[str, Any]):
         """Handle client disconnected event."""
+        _ = workspace  # workspace parameter is required by the event handler signature
         client_id = data.get("client_id")
         if not client_id:
             return
@@ -395,13 +408,19 @@ class WorkerManager:
             
             user_info = UserInfo.from_context(context)
             
-            # Create persistent workspace interface (don't use async with!)
+            # Create workspace interface - needs to be persistent for worker connection
+            # Note: This interface will be cleaned up when WorkerConnection is released
             workspace_interface = await self.store.get_workspace_interface(
                 user_info, workspace
             ).__aenter__()
             
-            worker_service = await workspace_interface.get_service(worker_id)
-            return WorkerConnection(worker_id, worker_service, workspace_interface)
+            try:
+                worker_service = await workspace_interface.get_service(worker_id)
+                return WorkerConnection(worker_id, worker_service, workspace_interface)
+            except Exception:
+                # Clean up the interface if we fail to get the service
+                await workspace_interface.__aexit__(None, None, None)
+                raise
     
     async def _cleanup_loop(self):
         """Periodically cleanup idle connections."""

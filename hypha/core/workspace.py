@@ -1689,6 +1689,7 @@ class WorkspaceManager:
             if not self._artifact_manager:
                 logger.warning("Artifact manager not available, skipping app services")
                 return services
+            
             try:
                 # Build filters for querying artifacts with service_ids
                 artifact_filters = {
@@ -1708,10 +1709,12 @@ class WorkspaceManager:
                     artifact_filters["alias"] = app_id
                 
                 # Query applications collection for the current workspace only
-                # Use the workspace from the query, not from context
-                app_context = dict(context)
-                if workspace != "*":
-                    app_context["workspace"] = workspace
+                # Create a minimal context for artifact manager (just user and workspace)
+                # This ensures we're only doing a database query without triggering service discovery
+                artifact_context = {
+                    "ws": cws,
+                    "user": context.get("user")
+                }
                 
                 try:
                     # List children artifacts (installed apps) with filters
@@ -1721,7 +1724,7 @@ class WorkspaceManager:
                         filters=artifact_filters,
                         limit=1000,  # Reasonable limit for apps
                         stage=False,  # Only query committed artifacts, not staged
-                        context=app_context
+                        context=artifact_context
                     )
                 except KeyError as e:
                     logger.debug(f"KeyError checking applications collection: {e}")
