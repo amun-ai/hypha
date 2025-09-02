@@ -2572,29 +2572,6 @@ class WorkspaceManager:
             context=context,
         )
 
-    @asynccontextmanager
-    async def _get_service_api(self, service_id: str, context=None):
-        """Get the service api for the service."""
-        self.validate_context(context, permission=UserPermission.read)
-        ws = context["ws"]
-        user_info = UserInfo.from_context(context)
-        # Check if workspace exists
-        if not await self._redis.hexists("workspaces", ws):
-            raise KeyError(f"Workspace {ws} does not exist")
-        # Now launch the app and get the service
-        svc = await self.get_service(service_id, context=context)
-        # Create a rpc client for getting the launcher service as user.
-        rpc = self._create_rpc(
-            "get-service-" + random_id(readable=False),
-            user_info=user_info,
-            workspace=ws,
-            manager_id=self._client_id,
-            silent=True,
-        )
-        api = await rpc.get_remote_service(svc["id"])
-        yield api
-        await rpc.disconnect()
-
     @schema_method
     async def get_service(
         self,
