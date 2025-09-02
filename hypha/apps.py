@@ -776,12 +776,15 @@ class ServerAppController:
             filtered_workspace_svcs = []
             for svc in workspace_svcs:
                 try:
-                    # Get the full service info to access supported_types
-                    # Properly validate user info before passing to get_workspace_interface
+                    # Use get_service_info instead of get_service to avoid triggering auto-launch
+                    # This prevents infinite loops when app is waiting for its own worker service
                     user_info = UserInfo.from_context(context)
                     async with self.store.get_workspace_interface(user_info, workspace) as ws:
-                        full_svc = await ws.get_service(svc["id"])
-                        supported_types = full_svc.get("supported_types", [])
+                        # Get service info without triggering auto-launch
+                        # DO NOT call get_service() here since it may trigger infinite loops for the worker itself
+                        svc_info = await ws.get_service_info(svc["id"], {"mode": "default"}, context=context)
+                        # Extract supported_types from the service info config
+                        supported_types = svc_info.config.get("supported_types", []) if svc_info.config else []
                         if app_type in supported_types:
                             filtered_workspace_svcs.append(svc)
                             logger.info(
@@ -835,9 +838,23 @@ class ServerAppController:
                 filtered_public_svcs = []
                 for svc in public_svcs:
                     try:
-                        # Get the full service info to access supported_types
-                        full_svc = await server.get_service(svc["id"])
-                        supported_types = full_svc.get("supported_types", [])
+                        # Use list_services info directly to get supported_types
+                        # The service info from list_services should contain this
+                        supported_types = svc.get("config", {}).get("supported_types", [])
+                        
+                        # If not in the basic info, try to get service info (not full service)
+                        if not supported_types:
+                            # Note: public services accessed via server API may not have get_service_info
+                            # So we need to be careful here and fallback gracefully
+                            try:
+                                # Try to get the service to check supported_types
+                                # This is for public services, less likely to cause infinite loop
+                                full_svc = await server.get_service(svc["id"])
+                                supported_types = full_svc.get("supported_types", [])
+                            except Exception:
+                                # If we can't get it, skip this service
+                                continue
+                        
                         if app_type in supported_types:
                             filtered_public_svcs.append(svc)
                             logger.info(

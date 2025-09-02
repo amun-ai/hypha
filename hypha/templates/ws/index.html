@@ -4187,6 +4187,7 @@ license: "MIT"`);
                         const headers = JSON.parse(authHeaders);
                         mcpConfig.mcpServers[serverName].headers = headers;
                     } catch (e) {
+                        console.error(e);
                         alert('Invalid JSON in auth headers');
                         return;
                     }
@@ -5328,6 +5329,7 @@ license: "MIT"`);
                     setWorkspaces(await ws.listWorkspaces());
                     setSelectedWorkspaceInfo(null);
                 } catch (error) {
+                    console.error(error);
                     alert(`Failed to delete workspace: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
@@ -7042,7 +7044,8 @@ license: "MIT"`);
                             setRunningApps(running);
                             setWorkers(workers);
                         } catch (e) {
-                            alert(`Failed to list apps: ${e.message}`);
+                            console.error(e);
+                            alert(`Failed to list apps: ${e}`);
                         } finally {
                             setIsLoadingSpinnerVisible(false);
                         }
@@ -7054,6 +7057,7 @@ license: "MIT"`);
                             const files = await s3.listFiles();
                             setFiles(files);
                         } catch (e) {
+                            console.error(e);
                             alert(`Failed to list files: ${e.message}`);
                         } finally {
                             setIsLoadingSpinnerVisible(false);
@@ -7065,6 +7069,7 @@ license: "MIT"`);
                             const am = await ws.getService('public/artifact-manager', { case_conversion: 'camel' });
                             setAM(am);
                         } catch (e) {
+                            console.error(e)
                             alert(`Failed to list artifacts: ${e.message}`);
                         } finally {
                             setIsLoadingSpinnerVisible(false);

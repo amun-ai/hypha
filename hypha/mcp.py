@@ -1153,7 +1153,7 @@ class MCPRoutingMiddleware:
         self.store = store
         
         # Cache MCP adapters and their API connections
-        self._mcp_cache = {}  # cache_key -> (mcp_app, api_context, api_task)
+        self._mcp_cache = {}  # cache_key -> (mcp_app, api_context_manager, api)
         
         # MCP route patterns
         # Redirect route for base MCP path without trailing slash: /{workspace}/mcp
@@ -1305,6 +1305,16 @@ class MCPRoutingMiddleware:
         # Continue to next middleware if not an MCP route
         await self.app(scope, receive, send)
     
+    async def cleanup_cache(self):
+        """Clean up all cached MCP connections."""
+        for cache_key, (mcp_app, api_context_manager, api) in list(self._mcp_cache.items()):
+            try:
+                if api_context_manager:
+                    await api_context_manager.__aexit__(None, None, None)
+            except Exception as e:
+                logger.warning(f"Error cleaning up MCP cache for {cache_key}: {e}")
+        self._mcp_cache.clear()
+    
     async def _send_redirect(self, send, redirect_url):
         """Send a 301 redirect response."""
         await send(
@@ -1401,77 +1411,74 @@ class MCPRoutingMiddleware:
             
             if cache_key in self._mcp_cache:
                 # Use cached MCP app
-                mcp_app, api_context, api_task = self._mcp_cache[cache_key]
+                mcp_app, api_context_manager, api = self._mcp_cache[cache_key]
                 # Handle the request with the cached MCP app
                 await mcp_app(scope, receive, send)
             else:
                 # Create new MCP app with persistent API connection
                 # Use the user's own workspace for the interface
                 # This allows us to access services in other workspaces if they're public/accessible
-                api_context_manager = self.store.get_workspace_interface(
+                async with self.store.get_workspace_interface(
                     user_info, user_info.scope.current_workspace
-                )
-                api_context = api_context_manager.__aenter__()
-                api = await api_context
-                
-                try:
-                    # Build the full service ID based on what's provided
-                    # Service IDs can be in several formats:
-                    # 1. Simple service name: "my-service"
-                    # 2. Client-qualified: "client-id:service-name"
-                    # 3. Workspace-qualified: "workspace/service-name" or "workspace/client-id:service-name"
+                ) as api:
+                    try:
+                        # Build the full service ID based on what's provided
+                        # Service IDs can be in several formats:
+                        # 1. Simple service name: "my-service"
+                        # 2. Client-qualified: "client-id:service-name"
+                        # 3. Workspace-qualified: "workspace/service-name" or "workspace/client-id:service-name"
+                        
+                        if "/" in service_id:
+                            # Already has workspace prefix, use as-is
+                            full_service_id = service_id
+                        elif ":" in service_id:
+                            # Has client ID but no workspace, prepend workspace
+                            full_service_id = f"{workspace}/{service_id}"
+                        else:
+                            # Simple service name, prepend workspace
+                            full_service_id = f"{workspace}/{service_id}"
+                        
+                        service_info = await api.get_service_info(
+                            full_service_id, {"mode": _mode}
+                        )
+                        logger.debug(
+                            f"MCP Middleware: Found service '{service_id}' of type '{service_info.type}'"
+                        )
+                    except (KeyError, Exception) as e:
+                        # Clean up on error
+                        await api_context_manager.__aexit__(None, None, None)
+                        logger.error(f"MCP Middleware: Service lookup failed: {e}")
+                        if "Service not found" in str(e) or "Permission denied" in str(e):
+                            await self._send_error_response(
+                                send, 404, f"Service {service_id} not found or not accessible"
+                            )
+                            return
+                        else:
+                            raise
                     
-                    if "/" in service_id:
-                        # Already has workspace prefix, use as-is
-                        full_service_id = service_id
-                    elif ":" in service_id:
-                        # Has client ID but no workspace, prepend workspace
-                        full_service_id = f"{workspace}/{service_id}"
-                    else:
-                        # Simple service name, prepend workspace
-                        full_service_id = f"{workspace}/{service_id}"
+                    # No longer require explicit type="mcp" - any service can be exposed as MCP
+                    # Services with type="mcp" get special handling, others are auto-wrapped
                     
-                    service_info = await api.get_service_info(
-                        full_service_id, {"mode": _mode}
-                    )
-                    logger.debug(
-                        f"MCP Middleware: Found service '{service_id}' of type '{service_info.type}'"
-                    )
-                except (KeyError, Exception) as e:
-                    # Clean up on error
-                    await api_context_manager.__aexit__(None, None, None)
-                    logger.error(f"MCP Middleware: Service lookup failed: {e}")
-                    if "Service not found" in str(e) or "Permission denied" in str(e):
+                    service = await api.get_service(full_service_id)
+                    
+                    # Check if it's MCP compatible
+                    if not is_mcp_compatible_service(service):
+                        await api_context_manager.__aexit__(None, None, None)
                         await self._send_error_response(
-                            send, 404, f"Service {service_id} not found or not accessible"
+                            send, 400, f"Service {service_id} is not MCP compatible"
                         )
                         return
-                    else:
-                        raise
-                
-                # No longer require explicit type="mcp" - any service can be exposed as MCP
-                # Services with type="mcp" get special handling, others are auto-wrapped
-                
-                service = await api.get_service(full_service_id)
-                
-                # Check if it's MCP compatible
-                if not is_mcp_compatible_service(service):
-                    await api_context_manager.__aexit__(None, None, None)
-                    await self._send_error_response(
-                        send, 400, f"Service {service_id} is not MCP compatible"
+                    
+                    # Create MCP app with the service
+                    mcp_app = await create_mcp_app_from_service(
+                        service, service_info, self.store.get_redis()
                     )
-                    return
-                
-                # Create MCP app with the service
-                mcp_app = await create_mcp_app_from_service(
-                    service, service_info, self.store.get_redis()
-                )
-                
-                # Cache the MCP app and API connection
-                self._mcp_cache[cache_key] = (mcp_app, api_context_manager, api)
-                
-                # Handle the request with the MCP app
-                await mcp_app(scope, receive, send)
+                    
+                    # Cache the MCP app and API connection
+                    self._mcp_cache[cache_key] = (mcp_app, api_context_manager, api)
+                    
+                    # Handle the request with the MCP app
+                    await mcp_app(scope, receive, send)
         
         except Exception as exp:
             logger.exception(f"Error in MCP service: {exp}")
@@ -1528,7 +1535,7 @@ class MCPRoutingMiddleware:
             
             if cache_key in self._mcp_cache:
                 # Use cached MCP app
-                mcp_app, api_context, api_task = self._mcp_cache[cache_key]
+                mcp_app, api_context_manager, api = self._mcp_cache[cache_key]
                 adapter = mcp_app.adapter if hasattr(mcp_app, 'adapter') else mcp_app
                 try:
                     # Handle the SSE request with the cached MCP app
@@ -1539,8 +1546,8 @@ class MCPRoutingMiddleware:
                     
                     # Clean up old context
                     try:
-                        if api_context:
-                            await api_context.__aexit__(None, None, None)
+                        if api_context_manager:
+                            await api_context_manager.__aexit__(None, None, None)
                     except:
                         pass
                     del self._mcp_cache[cache_key]
@@ -1551,71 +1558,68 @@ class MCPRoutingMiddleware:
                 # Create new MCP app with persistent API connection
                 # Use the user's own workspace for the interface
                 # This allows us to access services in other workspaces if they're public/accessible
-                api_context_manager = self.store.get_workspace_interface(
+                async with self.store.get_workspace_interface(
                     user_info, user_info.scope.current_workspace
-                )
-                api_context = api_context_manager.__aenter__()
-                api = await api_context
-                
-                try:
-                    # Build the full service ID based on what's provided
-                    # Service IDs can be in several formats:
-                    # 1. Simple service name: "my-service"
-                    # 2. Client-qualified: "client-id:service-name"
-                    # 3. Workspace-qualified: "workspace/service-name" or "workspace/client-id:service-name"
+                ) as api:
+                    try:
+                        # Build the full service ID based on what's provided
+                        # Service IDs can be in several formats:
+                        # 1. Simple service name: "my-service"
+                        # 2. Client-qualified: "client-id:service-name"
+                        # 3. Workspace-qualified: "workspace/service-name" or "workspace/client-id:service-name"
+                        
+                        if "/" in service_id:
+                            # Already has workspace prefix, use as-is
+                            full_service_id = service_id
+                        elif ":" in service_id:
+                            # Has client ID but no workspace, prepend workspace
+                            full_service_id = f"{workspace}/{service_id}"
+                        else:
+                            # Simple service name, prepend workspace
+                            full_service_id = f"{workspace}/{service_id}"
+                        
+                        service_info = await api.get_service_info(
+                            full_service_id, {"mode": None}
+                        )
+                        logger.debug(
+                            f"MCP Middleware: Found service '{service_id}' of type '{service_info.type}'"
+                        )
+                    except (KeyError, Exception) as e:
+                        # Clean up on error
+                        await api_context_manager.__aexit__(None, None, None)
+                        logger.error(f"MCP Middleware: Service lookup failed: {e}")
+                        if "Service not found" in str(e) or "Permission denied" in str(e):
+                            await self._send_error_response(
+                                send, 404, f"Service {service_id} not found or not accessible"
+                            )
+                            return
+                        else:
+                            raise
                     
-                    if "/" in service_id:
-                        # Already has workspace prefix, use as-is
-                        full_service_id = service_id
-                    elif ":" in service_id:
-                        # Has client ID but no workspace, prepend workspace
-                        full_service_id = f"{workspace}/{service_id}"
-                    else:
-                        # Simple service name, prepend workspace
-                        full_service_id = f"{workspace}/{service_id}"
+                    # No longer require explicit type="mcp" - any service can be exposed as MCP
+                    # Services with type="mcp" get special handling, others are auto-wrapped
                     
-                    service_info = await api.get_service_info(
-                        full_service_id, {"mode": None}
-                    )
-                    logger.debug(
-                        f"MCP Middleware: Found service '{service_id}' of type '{service_info.type}'"
-                    )
-                except (KeyError, Exception) as e:
-                    # Clean up on error
-                    await api_context_manager.__aexit__(None, None, None)
-                    logger.error(f"MCP Middleware: Service lookup failed: {e}")
-                    if "Service not found" in str(e) or "Permission denied" in str(e):
+                    service = await api.get_service(full_service_id)
+                    
+                    # Check if it's MCP compatible
+                    if not is_mcp_compatible_service(service):
+                        await api_context_manager.__aexit__(None, None, None)
                         await self._send_error_response(
-                            send, 404, f"Service {service_id} not found or not accessible"
+                            send, 400, f"Service {service_id} is not MCP compatible"
                         )
                         return
-                    else:
-                        raise
-                
-                # No longer require explicit type="mcp" - any service can be exposed as MCP
-                # Services with type="mcp" get special handling, others are auto-wrapped
-                
-                service = await api.get_service(full_service_id)
-                
-                # Check if it's MCP compatible
-                if not is_mcp_compatible_service(service):
-                    await api_context_manager.__aexit__(None, None, None)
-                    await self._send_error_response(
-                        send, 400, f"Service {service_id} is not MCP compatible"
+                    
+                    # Create MCP app with the service
+                    mcp_app = await create_mcp_app_from_service(
+                        service, service_info, self.store.get_redis()
                     )
-                    return
-                
-                # Create MCP app with the service
-                mcp_app = await create_mcp_app_from_service(
-                    service, service_info, self.store.get_redis()
-                )
-                
-                # Cache the MCP app and API connection
-                self._mcp_cache[cache_key] = (mcp_app, api_context_manager, api)
-                
-                # Handle the SSE request with the MCP app
-                adapter = mcp_app.adapter if hasattr(mcp_app, 'adapter') else mcp_app
-                await adapter.handle_sse_request(scope, receive, send)
+                    
+                    # Cache the MCP app and API connection
+                    self._mcp_cache[cache_key] = (mcp_app, api_context_manager, api)
+                    
+                    # Handle the SSE request with the MCP app
+                    adapter = mcp_app.adapter if hasattr(mcp_app, 'adapter') else mcp_app
+                    await adapter.handle_sse_request(scope, receive, send)
         
         except Exception as exp:
             logger.exception(f"Error in MCP SSE service: {exp}")
