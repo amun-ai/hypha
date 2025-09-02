@@ -27,7 +27,7 @@ logger = logging.getLogger("websocket-server")
 logger.setLevel(LOGLEVEL)
 
 _gauge = Gauge(
-    "websocket_connections", "Number of websocket connections", ["workspace"]
+    "websocket_connections_total", "Total number of websocket connections"
 )
 
 
@@ -304,7 +304,7 @@ class WebsocketServer:
         conn = RedisRPCConnection(event_bus, workspace, client_id, user_info, self.store.get_manager_id(), readonly=is_readonly)
         self._websockets[f"{workspace}/{client_id}"] = websocket
         try:
-            _gauge.labels(workspace=workspace).inc()
+            _gauge.inc()  # Increment total connections without workspace label
             event_bus.on_local(f"unload:{workspace}", force_disconnect)
 
             async def send_bytes(data):
@@ -372,7 +372,12 @@ class WebsocketServer:
         except Exception as e:
             raise e
         finally:
-            _gauge.labels(workspace=workspace).dec()
+            # Decrement the gauge
+            try:
+                _gauge.dec()  # Decrement total connections without workspace label
+            except Exception:
+                pass  # Gauge may not have been incremented
+            
             await conn.disconnect("disconnected")
             event_bus.off_local(f"unload:{workspace}", force_disconnect)
             if (
