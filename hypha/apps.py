@@ -14,7 +14,7 @@ from pathlib import Path
 import base64
 from functools import partial
 
-from hypha import hypha_rpc_version
+
 from jinja2 import Environment, PackageLoader, select_autoescape
 from typing import Any, Dict, List, Optional, Union
 from hypha.core import (
@@ -28,7 +28,6 @@ from hypha.core import (
 from hypha.utils import (
     random_id,
 )
-from hypha.worker_manager import WorkerManager
 import base58
 import random
 from hypha.plugin_parser import extract_files_from_source
@@ -58,7 +57,15 @@ def call_progress_callback(progress_callback: Any, message: dict):
     if not progress_callback:
         return
     if inspect.iscoroutinefunction(progress_callback):
-        asyncio.create_task(progress_callback(message))
+        # Fire and forget, but properly handle the task to avoid warnings
+        task = asyncio.create_task(progress_callback(message))
+        # Add error handler to prevent unhandled exceptions
+        def handle_task_result(t):
+            try:
+                t.result()
+            except Exception as e:
+                logger.error(f"Error in progress callback: {e}")
+        task.add_done_callback(handle_task_result)
     else:
         progress_callback(message)
 
@@ -420,15 +427,10 @@ class ServerAppController:
             loader=PackageLoader("hypha"), autoescape=select_autoescape()
         )
         self.autoscaling_manager = AutoscalingManager(self)
-        self.worker_manager = WorkerManager(store, cleanup_worker_sessions_callback=self.cleanup_worker_sessions)
-
         def shutdown(_) -> None:
             asyncio.ensure_future(self.shutdown())
 
         self.event_bus.on_local("shutdown", shutdown)
-        
-        # Worker manager will be started later when event loop is available
-        self._worker_manager_started = False
         # Worker health monitoring task
         self._health_monitor_task = None
 
@@ -443,14 +445,13 @@ class ServerAppController:
             session_data = await self._get_session_from_redis(full_client_id)
             if session_data:
                 # Get worker from cache
-                worker = self._get_worker_from_cache(session_data["worker_id"])
-                if worker:
-                    # Create context for worker call
-                    context = {
-                        "ws": workspace,
-                        "user": self.store.get_root_user().model_dump(),
-                    }
-                    await worker.stop(full_client_id, context=context)
+                worker = await self.get_worker_by_id(session_data["worker_id"])
+                # Create context for worker call
+                context = {
+                    "ws": workspace,
+                    "user": self.store.get_root_user().model_dump(),
+                }
+                await worker.stop(full_client_id, context=context)
                 
                 # Remove session from Redis
                 await self._remove_session_from_redis(full_client_id)
@@ -474,22 +475,6 @@ class ServerAppController:
 
         self.event_bus.on_local("client_disconnected", client_disconnected)
         store.set_server_app_controller(self)
-
-    async def _ensure_worker_manager_started(self):
-        """Ensure worker manager is started when event loop is available."""
-        if not self._worker_manager_started:
-            try:
-                await self.worker_manager.start()
-                self._worker_manager_started = True
-                logger.debug("Worker manager started successfully")
-                
-                # Start worker health monitoring
-                if not self._health_monitor_task:
-                    self._health_monitor_task = asyncio.create_task(self._worker_health_monitor_loop())
-                    logger.debug("Worker health monitoring started")
-                    
-            except Exception as e:
-                logger.error("Failed to start worker manager: %s", e)
 
     async def _worker_health_monitor_loop(self):
         """Periodic worker health monitoring loop."""
@@ -538,7 +523,7 @@ class ServerAppController:
             # Store session metadata in Redis (excluding worker instance and None values)
             redis_data = {}
             for k, v in session_data.items():
-                if k != "_worker" and v is not None:
+                if not k.startswith("_") and v is not None:
                     # Use key prefixes to indicate data type for explicit deserialization
                     if isinstance(v, list):
                         redis_data[f"json_list:{k}"] = json.dumps(v)
@@ -571,11 +556,6 @@ class ServerAppController:
             await self._redis.delete(key)
         except Exception as e:
             logger.error(f"Failed to remove session {full_client_id} from Redis: {e}")
-
-    def _get_worker_from_cache(self, worker_id: str):
-        """Get worker instance from local cache."""
-        return self._worker_cache.get(worker_id)
-
     async def _is_worker_unused(self, worker_id: str) -> bool:
         """Check if a worker is not used by any other sessions."""
         try:
@@ -678,9 +658,11 @@ class ServerAppController:
             # Check each worker's health
             dead_workers = []
             for worker_id in worker_ids:
-                worker = self._get_worker_from_cache(worker_id)
-                if not worker:
-                    # Worker not in cache, mark as dead
+                try:
+                    # For health check, we need full worker_id from session data
+                    await self.get_worker_by_id(worker_id)
+                except Exception:
+                    # Worker not accessible, mark as dead
                     dead_workers.append(worker_id)
                 else:
                     # Try to ping worker to check if it's alive
@@ -698,6 +680,29 @@ class ServerAppController:
                 
         except Exception as e:
             logger.error(f"Failed to monitor worker health: {e}")
+        
+    async def _get_disabled_key(self, workspace: str) -> str:
+        """Get Redis key for disabled workers in a workspace."""
+        return f"disabled_workers:{workspace}"
+
+
+    async def get_worker_by_id(self, worker_id):
+        """Get a worker by its full ID.
+        
+        Args:
+            worker_id: Full worker ID in format 'workspace/client_id:service_id'
+        """
+        # Ensure worker_id is a full ID
+        assert "/" in worker_id and ":" in worker_id, f"Worker ID must be in format 'workspace/client_id:service_id', got: {worker_id}"
+        assert worker_id.count("/") == 1, f"Worker ID must contain exactly one '/', got: {worker_id}"
+        assert worker_id.count(":") == 1, f"Worker ID must contain exactly one ':', got: {worker_id}"
+        
+        if await self.is_worker_disabled(worker_id):
+            raise ValueError(f"Worker with ID '{worker_id}' is disabled")
+        server = await self.store.get_public_api()
+        worker = await server.get_service(worker_id)
+        worker.id = worker_id
+        return worker
 
     @schema_method
     async def get_server_app_workers(
@@ -706,13 +711,17 @@ class ServerAppController:
             None,
             description="The type of application worker to retrieve (e.g., 'browser', 'terminal', 'conda'). If not specified, returns all available workers."
         ),
-        random_select: bool = Field(
+        select: bool = Field(
             False,
-            description="If True, randomly selects one worker from the available workers. Returns a single worker instead of a list."
+            description="If True, selects one worker from the available workers based on the selection_config. Returns a single worker instead of a list."
         ),
         selection_config: Optional[WorkerSelectionConfig] = Field(
             None,
             description="Configuration for worker selection strategy. Modes: 'random', 'first', 'last', 'exact', 'min_load', or 'select:criteria:function'."
+        ),
+        current_app_id: Optional[str] = Field(
+            None,
+            description="The app_id of the currently starting app to avoid infinite loops when the app's own worker service is being queried."
         ),
         context: dict = None,
     ):
@@ -724,30 +733,11 @@ class ServerAppController:
         
         Returns:
             Union[List[Dict[str, Any]], Dict[str, Any], None]: 
-            - If random_select is False: List of worker service objects
-            - If random_select is True: Single worker service object or None if no workers found
+            - If select is False: List of worker service objects
+            - If select is True: Single worker service object or None if no workers found
             - Empty list or None if no workers are available
-            
-        Examples:
-            >>> # Get all available workers
-            >>> workers = await app_controller.get_server_app_workers()
-            >>> 
-            >>> # Get a random browser worker
-            >>> worker = await app_controller.get_server_app_workers(
-            ...     app_type="browser", 
-            ...     random_select=True
-            ... )
-            >>> 
-            >>> # Get worker with minimum load
-            >>> config = WorkerSelectionConfig(mode="min_load")
-            >>> worker = await app_controller.get_server_app_workers(
-            ...     app_type="conda",
-            ...     selection_config=config
-            ... )
         """
-        # Ensure worker manager is started
-        await self._ensure_worker_manager_started()
-        
+
         workspace = context.get("ws") if context else None
 
         # Get workspace service info first (fast, no get_service calls yet)
@@ -763,11 +753,6 @@ class ServerAppController:
                     f"Found {len(workspace_svcs)} server-app-worker services in workspace {workspace}: {[svc['id'] for svc in workspace_svcs]}"
                 )
                 
-                # Ensure worker manager is monitoring this workspace for worker death detection
-                if workspace_svcs and workspace != "public":
-                    # Trigger workspace monitoring in worker manager
-                    await self.worker_manager._ensure_workspace_monitoring(workspace, context)
-                    
             except Exception as e:
                 logger.warning(f"Failed to get workspace workers: {e}")
 
@@ -775,24 +760,28 @@ class ServerAppController:
         if app_type and workspace_svcs:
             filtered_workspace_svcs = []
             for svc in workspace_svcs:
+                # Skip if this service belongs to the current app to avoid infinite loop
+                if current_app_id and svc.get("app_id") == current_app_id:
+                    logger.debug(f"Skipping service {svc['id']} from current app {current_app_id} to avoid infinite loop")
+                    continue
+                
                 try:
-                    # Use get_service_info instead of get_service to avoid triggering auto-launch
-                    # This prevents infinite loops when app is waiting for its own worker service
+                    # We need to get the actual service object to access supported_types
                     user_info = UserInfo.from_context(context)
                     async with self.store.get_workspace_interface(user_info, workspace) as ws:
-                        # Get service info without triggering auto-launch
-                        # DO NOT call get_service() here since it may trigger infinite loops for the worker itself
-                        svc_info = await ws.get_service_info(svc["id"], {"mode": "default"}, context=context)
-                        # Extract supported_types from the service info config
-                        supported_types = svc_info.config.get("supported_types", []) if svc_info.config else []
+                        # Get the actual service object
+                        worker_service = await ws.get_service(svc["id"])
+                        # Now we can access the supported_types property
+                        supported_types = getattr(worker_service, "supported_types", [])
+                        logger.debug(f"Service {svc['id']} has supported_types: {supported_types}, checking for app_type: {app_type}")
                         if app_type in supported_types:
                             filtered_workspace_svcs.append(svc)
-                            logger.info(
+                            logger.debug(
                                 f"Workspace service {svc['id']} supports app_type {app_type}"
                             )
                 except Exception as e:
                     logger.warning(
-                        f"Failed to get full workspace service info for {svc['id']}: {e}"
+                        f"Failed to get full workspace service for {svc['id']}: {e}", exc_info=True
                     )
                     # Skip services we can't get info for
                     continue
@@ -803,24 +792,21 @@ class ServerAppController:
                     f"Found {len(filtered_workspace_svcs)} workspace services for app_type {app_type}"
                 )
                 selected_svcs = filtered_workspace_svcs
-                use_workspace = True
             else:
                 selected_svcs = []
-                use_workspace = False
         elif workspace_svcs:
             # If no app_type specified, use all workspace services
             logger.info(
                 f"Found {len(workspace_svcs)} workspace services (no app_type filter)"
             )
             selected_svcs = workspace_svcs
-            use_workspace = True
         else:
             selected_svcs = []
-            use_workspace = False
-
+        
+        server = await self.store.get_public_api()
         # Fallback to public workers if no workspace workers found
         if not selected_svcs:
-            server = await self.store.get_public_api()
+            
             public_svcs = await server.list_services(
                 {"type": "server-app-worker"},
                 include_app_services=True  # Include workers from app manifests
@@ -831,7 +817,7 @@ class ServerAppController:
 
             if not public_svcs:
                 logger.warning("No public workers found either")
-                return [] if not random_select else None
+                return [] if not select else None
 
             # Filter public services by app_type if specified
             if app_type:
@@ -839,18 +825,18 @@ class ServerAppController:
                 for svc in public_svcs:
                     try:
                         # Use list_services info directly to get supported_types
-                        # The service info from list_services should contain this
-                        supported_types = svc.get("config", {}).get("supported_types", [])
+                        # The service info from list_services should contain this at root level
+                        supported_types = svc.get("supported_types", [])
                         
-                        # If not in the basic info, try to get service info (not full service)
+                        # If not in the basic info, try to get the actual service
                         if not supported_types:
-                            # Note: public services accessed via server API may not have get_service_info
-                            # So we need to be careful here and fallback gracefully
+                            # For server-app-worker services, we need to get the actual service
+                            # to check its supported_types property
                             try:
-                                # Try to get the service to check supported_types
-                                # This is for public services, less likely to cause infinite loop
-                                full_svc = await server.get_service(svc["id"])
-                                supported_types = full_svc.get("supported_types", [])
+                                # Get the actual service object which has supported_types
+                                worker_svc = await server.get_service(svc["id"])
+                                # Check if it has supported_types attribute/property
+                                supported_types = worker_svc.supported_types
                             except Exception:
                                 # If we can't get it, skip this service
                                 continue
@@ -874,10 +860,8 @@ class ServerAppController:
             else:
                 selected_svcs = public_svcs
 
-            use_workspace = False
-
         if not selected_svcs:
-            return [] if not random_select else None
+            return [] if not select else None
 
         # Now get the actual worker objects (slow operation, but only for selected services)
         workers = []
@@ -885,44 +869,48 @@ class ServerAppController:
             try:
                 # Use WorkerManager for persistent connections
                 # If use_workspace is True, use workspace from context, otherwise use public
-                from_workspace = None if use_workspace else "public"
-                worker = await self.worker_manager.get_worker_ref(
-                    svc["id"], context, from_workspace=from_workspace
+                worker = await server.get_service(
+                    svc["id"]
                 )
+                # ensure worker has an service id
+                worker.id = svc["id"]
                 if worker is not None:
                     workers.append(worker)
             except Exception as e:
                 logger.warning(f"Failed to get worker service {svc['id']}: {e}")
 
         if not workers:
-            return [] if not random_select else None
+            return [] if not select else None
 
         # Apply worker selection logic
-        if random_select or (selection_config and selection_config.mode == "random"):
+        if not select:
+            return workers
+        
+        if not selection_config or not selection_config.mode or selection_config.mode == "random":
             selected_worker = random.choice(workers)
-            logger.info(f"Randomly selected worker: {selected_worker.get('id')}")
-            return selected_worker if random_select else [selected_worker]
-        elif selection_config and selection_config.mode:
+            logger.info(f"Randomly selected worker: {selected_worker.id}")
+            return selected_worker
+        elif selection_config.mode:
             # Apply selection mode
             mode = selection_config.mode
             if mode == "first":
                 selected_worker = workers[0]
-                logger.debug(f"Selected first worker: {selected_worker.get('id')}")
+                logger.debug(f"Selected first worker: {selected_worker.id}")
             elif mode == "last":
                 selected_worker = workers[-1]
-                logger.debug(f"Selected last worker: {selected_worker.get('id')}")
+                logger.debug(f"Selected last worker: {selected_worker.id}")
             elif mode == "exact":
                 if len(workers) != 1:
                     raise ValueError(
                         f"Multiple workers found for app_type {app_type}, but mode is 'exact'. "
-                        f"Found workers: {[w.get('id') for w in workers[:5]]}. "
+                        f"Found workers: {[w.id for w in workers[:5]]}. "
                         f"You can specify mode as 'random', 'first', 'last', 'min_load', or use 'select:criteria:function' format."
                     )
                 selected_worker = workers[0]
-                logger.debug(f"Selected exact worker: {selected_worker.get('id')}")
+                logger.debug(f"Selected exact worker: {selected_worker.id}")
             elif mode == "min_load":
                 selected_worker = await self._select_worker_by_load(workers, "min")
-                logger.debug(f"Selected worker with minimum load: {selected_worker.get('id')}")
+                logger.debug(f"Selected worker with minimum load: {selected_worker.id}")
             elif mode.startswith("select:"):
                 # Parse the select syntax: select:criteria:function
                 parts = mode.split(":")
@@ -934,43 +922,52 @@ class ServerAppController:
                 selected_worker = await self._select_worker_by_function(
                     workers, criteria, function_name, selection_config.select_timeout
                 )
-                logger.debug(f"Selected worker using {function_name}: {selected_worker.get('id')}")
+                logger.debug(f"Selected worker using {function_name}: {selected_worker.id}")
             else:
                 raise ValueError(
                     f"Invalid selection mode: {mode}. Mode must be 'random', 'first', 'last', 'exact', 'min_load', or 'select:criteria:function' format (e.g., 'select:min:get_load')"
                 )
-            return selected_worker if random_select else [selected_worker]
+            return selected_worker
+
+    async def disable_worker(self, worker_id: str, disabled: bool) -> None:
+        """Enable/disable a worker and update cache/persistence.
+        
+        Args:
+            worker_id: Full worker ID in format 'workspace/client_id:service_id'
+            disabled: Whether to disable (True) or enable (False) the worker
+        """
+        # Ensure worker_id is a full ID
+        assert "/" in worker_id and ":" in worker_id, f"Worker ID must be in format 'workspace/client_id:service_id', got: {worker_id}"
+        
+        # Extract workspace from the worker_id
+        workspace = worker_id.split("/")[0]
+        
+        redis = self.store.get_redis()
+        key = await self._get_disabled_key(workspace)
+        if disabled:
+            await redis.sadd(key, worker_id)
+            # Also close active connection to prevent use
+            await self.cleanup_worker_sessions(worker_id)
         else:
-            # No selection mode specified, return all workers
-            return workers
+            await redis.srem(key, worker_id)
 
-    async def get_worker_by_id(self, worker_id: str, context: dict = None):
-        """Get a specific worker by ID with persistent connection management."""
-        # Ensure worker manager is started
-        await self._ensure_worker_manager_started()
+    async def is_worker_disabled(self, worker_id: str) -> bool:
+        """Check if a worker is disabled.
         
-        # Respect disabled workers per workspace
-        workspace = context.get("ws") if context else None
-        if workspace and await self.worker_manager.is_worker_disabled(worker_id, workspace):
-            return None
-
-        # Try to get worker with persistent connection from current workspace
-        worker = await self.worker_manager.get_worker_ref(
-            worker_id, context, from_workspace=None
-        )
+        Args:
+            worker_id: Full worker ID in format 'workspace/client_id:service_id'
+        """
+        # Ensure worker_id is a full ID
+        assert "/" in worker_id and ":" in worker_id, f"Worker ID must be in format 'workspace/client_id:service_id', got: {worker_id}"
         
-        if worker is not None:
-            return worker
-            
-        # If workspace failed and we have context, try public fallback
-        if context:
-            worker = await self.worker_manager.get_worker_ref(
-                worker_id, context, from_workspace="public"
-            )
-            if worker is not None:
-                return worker
-            
-        return None
+        # Extract workspace from the worker_id
+        workspace = worker_id.split("/")[0]
+        
+        # Check persistent storage
+        redis = self.store.get_redis()
+        key = await self._get_disabled_key(workspace)
+        is_member = await redis.sismember(key, worker_id)
+        return bool(is_member)
 
     @schema_method
     async def edit_worker(
@@ -987,9 +984,6 @@ class ServerAppController:
         ),
     ) -> None:
         """Enable/disable a worker and cleanup sessions when disabling."""
-        # Ensure worker manager is started
-        await self._ensure_worker_manager_started()
-
         if context is None:
             context = {"user": self.store.get_root_user().model_dump(), "ws": "public"}
         workspace = context.get("ws")
@@ -1002,7 +996,10 @@ class ServerAppController:
         if disabled is None:
             return
 
-        await self.worker_manager.disable_worker(worker_id, workspace, disabled)
+        # Ensure worker_id is a full ID - if not, prepend the workspace
+        if "/" not in worker_id:
+            worker_id = f"{workspace}/{worker_id}"
+        await self.disable_worker(worker_id, disabled)
 
         if disabled:
             # Stop all sessions using this worker
@@ -1065,29 +1062,27 @@ class ServerAppController:
             for svc in workspace_svcs:
                 try:
                     # Get the full service info
-                    # Properly validate user info before passing to get_workspace_interface
-                    user_info = UserInfo.from_context(context)
-                    async with self.store.get_workspace_interface(user_info, workspace) as ws:
-                        full_svc = await ws.get_service(svc["id"])
-                        supported_types = full_svc.get("supported_types", [])
+                    # svc["id"] should already be a full ID from list_services
+                    worker = await self.get_worker_by_id(svc["id"])
+                    supported_types = worker.get("supported_types", [])
+                    # Filter by type if specified
+                    if app_type and app_type not in supported_types:
+                        continue
                         
-                        # Filter by type if specified
-                        if app_type and app_type not in supported_types:
-                            continue
-                            
+                    is_disabled = False
+                    try:
+                        # svc["id"] should already be a full ID from list_services
+                        is_disabled = await self.is_worker_disabled(svc["id"])
+                    except Exception:
                         is_disabled = False
-                        try:
-                            is_disabled = await self.worker_manager.is_worker_disabled(svc["id"], workspace)
-                        except Exception:
-                            is_disabled = False
-                        worker_info = {
-                            "id": svc["id"],
-                            "name": full_svc.get("name", svc["id"]),
-                            "description": full_svc.get("description", ""),
-                            "supported_types": supported_types,
-                            "disabled": is_disabled,
-                        }
-                        workers_info.append(worker_info)
+                    worker_info = {
+                        "id": svc["id"],
+                        "name": worker.get("name", svc["id"]),
+                        "description": worker.get("description", ""),
+                        "supported_types": supported_types,
+                        "disabled": is_disabled,
+                    }
+                    workers_info.append(worker_info)
                 except Exception as e:
                     logger.warning(
                         f"Failed to get full workspace worker info for {svc['id']}: {e}"
@@ -1532,10 +1527,10 @@ class ServerAppController:
         # Try to get worker that supports this app type
         if worker_id:
             # Use specific worker if provided
-            worker = await self.get_worker_by_id(worker_id, context)
-            if not worker:
-                raise ValueError(f"Worker with ID '{worker_id}' not found")
-            
+            # Ensure worker_id is a full ID - if not, prepend the workspace
+            if "/" not in worker_id:
+                worker_id = f"{workspace}/{worker_id}"
+            worker = await self.get_worker_by_id(worker_id)
             # Verify the worker supports the app type
             supported_types = worker.get("supported_types", [])
             if app_type not in supported_types:
@@ -1550,7 +1545,7 @@ class ServerAppController:
                 selection_config = WorkerSelectionConfig(mode=worker_selection_mode)
             
             worker = await self.get_server_app_workers(
-                app_type, random_select=True, selection_config=selection_config, context=context
+                app_type, select=True, selection_config=selection_config, current_app_id=app_id, context=context
             )
             if not worker:
                 raise Exception(f"No server app worker found for app type: {app_type}")
@@ -1575,31 +1570,11 @@ class ServerAppController:
                     "progress_callback": _progress_callback,  # Use the wrapped callback
                 }
 
-                # Use WorkerManager context manager for the compile operation to ensure connection stays alive
-                worker_id = getattr(worker, '_hypha_worker_id', None)
-                if not worker_id:
-                    # Try to get ID from worker object
-                    worker_id = getattr(worker, 'id', None)
-                    if not worker_id and hasattr(worker, 'get'):
-                        worker_id = worker.get('id', None)
-                
-                if worker_id:
-                    async with self.worker_manager.get_worker(
-                        worker_id, context, from_workspace=None
-                    ) as active_worker:
-                        compiled_manifest, app_files = await active_worker.compile(
-                            artifact_manifest, app_files, config=compile_config, context=context
-                        )
-                        # merge the compiled manifest into the artifact_manifest
-                        artifact_manifest.update(compiled_manifest)
-                else:
-                    # Fallback to using the original worker (may fail with connection closed error)
-                    logger.warning("Could not determine worker_id, using original worker (may fail)")
-                    compiled_manifest, app_files = await worker.compile(
-                        artifact_manifest, app_files, config=compile_config, context=context
-                    )
-                    # merge the compiled manifest into the artifact_manifest
-                    artifact_manifest.update(compiled_manifest)
+                compiled_manifest, app_files = await worker.compile(
+                    artifact_manifest, app_files, config=compile_config, context=context
+                )
+                # merge the compiled manifest into the artifact_manifest
+                artifact_manifest.update(compiled_manifest)
 
                 logger.info(f"Worker compiled app with type {app_type}")
             except Exception as e:
@@ -2146,7 +2121,7 @@ class ServerAppController:
                 selection_config = WorkerSelectionConfig(mode=worker_selection_mode)
             
             worker = await self.get_server_app_workers(
-                app_type, random_select=True, selection_config=selection_config, context=context
+                app_type, select=True, selection_config=selection_config, current_app_id=app_id, context=context
             )
             if not worker:
                 raise Exception(f"No server app worker found for type: {app_type}")
@@ -2218,15 +2193,8 @@ class ServerAppController:
             "source_hash": (
                 manifest.source_hash if hasattr(manifest, "source_hash") else None
             ),
-            "worker_id": worker.get("id"),  # Store worker service ID
-            "_worker": worker,  # Keep for local caching
+            "worker_id": worker.id
         }
-        
-        # Cache the worker instance by its service ID (still do this here for immediate availability)
-        worker_id = worker.get("id")
-        if worker_id:
-            self._worker_cache[worker_id] = worker
-
         # Return session_data instead of just the client_id
         # The caller (start method) will store it in Redis after adding services
         return session_data
@@ -2488,9 +2456,10 @@ class ServerAppController:
             # Get worker if worker_id is specified, otherwise use selection mode
             selected_worker = None
             if worker_id:
-                selected_worker = await self.get_worker_by_id(worker_id, context)
-                if not selected_worker:
-                    raise ValueError(f"Worker with ID '{worker_id}' not found")
+                # Ensure worker_id is a full ID - if not, prepend the workspace
+                if "/" not in worker_id:
+                    worker_id = f"{workspace}/{worker_id}"
+                selected_worker = await self.get_worker_by_id(worker_id)
                 
                 # Verify the worker supports the app type
                 supported_types = selected_worker.get("supported_types", [])
@@ -2503,7 +2472,7 @@ class ServerAppController:
                 # Use worker selection mode
                 selection_config = WorkerSelectionConfig(mode=worker_selection_mode)
                 selected_worker = await self.get_server_app_workers(
-                    app_type, random_select=True, selection_config=selection_config, context=context
+                    app_type, select=True, selection_config=selection_config, current_app_id=app_id, context=context
                 )
                 if not selected_worker:
                     raise Exception(f"No server app worker found for app type: {app_type}")
@@ -2654,12 +2623,11 @@ class ServerAppController:
             logs = None
             # Use the session_data we already have (from start_by_type)
             if session_data and "worker_id" in session_data:
-                worker = self._get_worker_from_cache(session_data["worker_id"])
-                if worker:
-                    logs = await worker.get_logs(full_client_id, context=context)
+                worker = await self.get_worker_by_id(session_data["worker_id"])
+                logs = await worker.get_logs(full_client_id, context=context)
             # Clean up session
             if session_data and "worker_id" in session_data:
-                worker = self._get_worker_from_cache(session_data["worker_id"])
+                worker = await self.get_worker_by_id(session_data["worker_id"])
                 if worker:
                     await worker.stop(full_client_id, context=context)
             # Remove from Redis
@@ -2707,10 +2675,7 @@ class ServerAppController:
         _progress_callback(
             {"type": "success", "message": "Application startup completed successfully"}
         )
-
-        # Remove _worker from the response as it cannot be serialized
-        # Create a copy without the _worker field
-        response_data = {k: v for k, v in session_data.items() if not k.startswith('_')}
+        response_data = {k: v for k, v in session_data.items()}
         return response_data
 
     @schema_method
@@ -2750,38 +2715,11 @@ class ServerAppController:
         if session_data:
             session_stopped = False
             try:
-                # Get worker from cache first
-                worker = self._get_worker_from_cache(session_data["worker_id"])
-                
-                # If worker not in cache, try to get it from worker manager
-                if not worker:
-                    logger.warning(f"Worker {session_data['worker_id']} not in cache, attempting to fetch from worker manager")
-                    try:
-                        # Try to get worker using worker manager
-                        worker = await self.get_worker_by_id(session_data["worker_id"], context)
-                        if worker:
-                            # Cache it for future use
-                            self._worker_cache[session_data["worker_id"]] = worker
-                            logger.info(f"Successfully fetched worker {session_data['worker_id']} from worker manager")
-                    except Exception as e:
-                        logger.error(f"Failed to fetch worker {session_data['worker_id']} from worker manager: {e}")
-                
-                if worker:
-                    await worker.stop(session_id, context=context)
-                    session_stopped = True
-                    logger.info(f"Successfully stopped session {session_id}")
-                else:
-                    # Worker not available
-                    error_msg = f"Worker {session_data['worker_id']} not available for session {session_id}"
-                    logger.error(error_msg)
-                    if raise_exception:
-                        # Always raise if raise_exception is True
-                        raise Exception(error_msg)
-                    else:
-                        # Only log warning and clean up orphaned session if raise_exception is False
-                        logger.warning(f"{error_msg}, removing orphaned session")
-                        session_stopped = True  # Mark as stopped since worker is gone
-                        
+                # Get worker using workspace from context
+                worker = await self.get_worker_by_id(session_data["worker_id"])
+                await worker.stop(session_id, context=context)
+                session_stopped = True
+                logger.info(f"Successfully stopped session {session_id}")
             except Exception as exp:
                 # Log the error
                 logger.error(f"Failed to stop session {session_id}: {exp}")
@@ -2855,13 +2793,10 @@ class ServerAppController:
             )
         session_data = await self._get_session_from_redis(session_id)
         if session_data:
-            worker = self._get_worker_from_cache(session_data["worker_id"])
-            if worker:
-                return await worker.get_logs(
-                    session_id, type=type, offset=offset, limit=limit, context=context
-                )
-            else:
-                raise Exception(f"Worker not found for session: {session_id}")
+            worker = await self.get_worker_by_id(session_data["worker_id"])
+            return await worker.get_logs(
+                session_id, type=type, offset=offset, limit=limit, context=context
+            )
         else:
             raise Exception(f"Server app instance not found: {session_id}")
 
@@ -3378,10 +3313,6 @@ class ServerAppController:
         all_sessions = await self._get_all_sessions()
         for app in all_sessions:
             await self.stop(app["id"], raise_exception=False)
-            
-        # Shutdown worker manager
-        await self.worker_manager.shutdown()
-
 
     async def prepare_workspace(self, workspace_info: WorkspaceInfo):
         """Prepare the workspace."""
@@ -3436,7 +3367,7 @@ class ServerAppController:
         for worker in workers:
             try:
                 # Extract workspace and client_id from worker id
-                worker_id = worker.get("id", "")
+                worker_id = worker.id
                 if "/" in worker_id:
                     workspace = worker_id.split("/")[0]
                     client_id = worker_id.split("/")[1].split(":")[0] if ":" in worker_id else worker_id.split("/")[1]
@@ -3446,12 +3377,11 @@ class ServerAppController:
                     continue
 
                 # Get client load
-                from hypha.core import RedisRPCConnection
                 load = RedisRPCConnection.get_client_load(workspace, client_id)
                 worker_values.append((worker, load))
 
             except Exception as e:
-                logger.warning(f"Failed to get load for worker {worker.get('id')}: {e}")
+                logger.warning(f"Failed to get load for worker {worker.id}: {e}")
                 continue
 
         if not worker_values:
@@ -3497,7 +3427,7 @@ class ServerAppController:
                 # Check if the worker has the required function
                 if not hasattr(worker, function_name):
                     logger.warning(
-                        f"Worker {worker.get('id')} does not have function '{function_name}', skipping"
+                        f"Worker {worker.id} does not have function '{function_name}', skipping"
                     )
                     continue
 
@@ -3508,7 +3438,7 @@ class ServerAppController:
                 worker_values.append((worker, result))
 
             except Exception as e:
-                logger.warning(f"Failed to call {function_name} on worker {worker.get('id')}: {e}")
+                logger.warning(f"Failed to call {function_name} on worker {worker.id}: {e}")
                 continue
 
         if not worker_values:

@@ -668,3 +668,5 @@ In case of error, use git diff tool to compare passing branch to compare differe
 If you failed to run the tests, warn the user the failure, never conclude to the user that you completed the task if you haven't actually run and pass the tests.
 
 When user provide description about error, provide CI error logs, or any other information, the first thing to do is to try to create a test to reproduce the issue, never try to fix it in the first place, always try to reproduce the issue and do a root cause analysis, once you clearly understand the issue, move on to the actual fix.
+
+Commit to git is ok if instructed, but NEVER reset a branch this will cause the lost of commit history.

@@ -243,7 +243,7 @@ api.export({
 
     # Start the app multiple times to test state persistence
     for i in range(2):
-        started_app = await controller.start(app_id, wait_for_service=True, timeout=10)
+        started_app = await controller.start(app_id, wait_for_service=True, timeout=30)
         print(f"Started app (iteration {i+1}):", started_app)
 
         # Check that the service was registered

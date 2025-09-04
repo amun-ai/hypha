@@ -452,60 +452,6 @@ async def test_service_registration_basic(fastapi_server):
     await api.disconnect()
 
 
-async def test_worker_manager_system_events(fastapi_server):
-    """Test that WorkerManager properly receives system events after subscribing."""
-    from hypha.worker_manager import WorkerManager
-    from hypha.core import UserInfo
-    
-    api = await connect_to_server({"name": "service manager", "server_url": WS_SERVER_URL})
-    token = await api.generate_token()
-
-    # Create a mock store and worker manager
-    class MockStore:
-        def get_workspace_interface(self, user_info, workspace):
-            # Return an async context manager
-            class MockWorkspaceInterface:
-                def __init__(self):
-                    self.api2 = None
-                    
-                async def __aenter__(self):
-                    self.api2 = await connect_to_server({
-                        "name": "worker_manager_listener",
-                        "server_url": WS_SERVER_URL,
-                        "workspace": workspace,
-                        "token": token,
-                    })
-                    return self.api2
-                    
-                async def __aexit__(self, *args):
-                    if self.api2:
-                        await self.api2.disconnect()
-            
-            return MockWorkspaceInterface()
-
-    # Test that workspace listeners can be set up without errors
-    worker_manager = WorkerManager(MockStore())
-    
-    # This should work now with the subscribe calls
-    await worker_manager._ensure_workspace_monitoring(
-        api.config["workspace"], 
-        {"user": UserInfo.model_validate(api.config["user"]).model_dump()}
-    )
-    
-    # Give a moment for setup
-    await asyncio.sleep(0.1)
-    
-    # If we get here without exceptions, the subscribe calls worked
-    assert api.config["workspace"] in worker_manager._monitored_workspaces
-    assert worker_manager._monitored_workspaces[api.config["workspace"]] is True
-    
-    print("✅ WorkerManager successfully set up workspace monitoring with system events")
-    
-    await worker_manager.shutdown()
-    
-    await api.disconnect()
-
-
 async def test_subscription_security_validation(fastapi_server):
     """Test that clients can only subscribe to allowed event types."""
     api = await connect_to_server({"name": "security tester", "server_url": WS_SERVER_URL})

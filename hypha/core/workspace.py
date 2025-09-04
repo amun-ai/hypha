@@ -4,11 +4,10 @@ import asyncio
 import logging
 import traceback
 import time
-import inspect
+import weakref
 import os
 import sys
 from typing import Optional, Union, List, Any, Dict
-from contextlib import asynccontextmanager
 import random
 import datetime
 import numpy as np
@@ -54,7 +53,9 @@ ANONYMOUS_USER_WS_PREFIX = "ws-user-anonymouz-"
 
 # Ensure the client_id is safe
 _allowed_characters = re.compile(r"^[a-zA-Z0-9-_/|*]*$")
-background_tasks = set()
+# Use WeakSet to automatically clean up completed tasks
+
+background_tasks = weakref.WeakSet()
 
 
 # Function to return a timezone-naive datetime
@@ -272,8 +273,9 @@ class WorkspaceActivityManager:
                     await self.reset_activity(workspace_id)
                     return  # Don't unregister, keep tracking
             
-            # Remove from our tracking
-            self._registrations.pop(workspace_id, None)
+            # Always clean up registration to prevent memory leak
+            if workspace_id in self._registrations:
+                del self._registrations[workspace_id]
             
         except Exception as e:
             logger.error(f"Error cleaning up inactive workspace {workspace_id}: {e}")
@@ -957,8 +959,11 @@ class WorkspaceManager:
             ANONYMOUS_USER_WS_PREFIX
         ) and workspace.persistent:  # Only prepare persistent workspaces
             task = asyncio.create_task(self._prepare_workspace(workspace))
-            background_tasks.add(task)
-            task.add_done_callback(background_tasks.discard)
+            try:
+                background_tasks.add(task)
+            except TypeError:
+                # Fallback if task can't be added to WeakSet
+                pass
         elif workspace.persistent:
             # For persistent workspaces that don't need preparation, set to ready
             await self._set_workspace_status(workspace.id, WorkspaceStatus.READY)
