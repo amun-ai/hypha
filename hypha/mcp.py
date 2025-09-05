@@ -1186,63 +1186,100 @@ class MCPRoutingMiddleware:
         logger.info(f"  - Streamable HTTP: {self.mcp_route.path}")
         logger.info(f"  - SSE: {self.sse_route.path}")
     
-    async def _get_or_create_mcp_app(self, service_id: str, workspace: str, user_info, mode=None):
-        """Get cached MCP app or create new one."""
+    async def _get_or_create_mcp_app(self, service_id: str, workspace: str, user_info, mode=None, is_sse=False):
+        """Get cached MCP app or create new one.
+        
+        Args:
+            service_id: Service identifier
+            workspace: Workspace name
+            user_info: User information
+            mode: Optional mode parameter
+            is_sse: If True, keeps workspace interface alive for SSE sessions
+        """
         cache_key = f"{workspace}/{service_id}"
         
         if cache_key in self.mcp_app_cache:
             logger.debug(f"Using cached MCP app for {cache_key}")
-            return self.mcp_app_cache[cache_key]["app"]
+            cache_entry = self.mcp_app_cache[cache_key]
+            return cache_entry["app"] if isinstance(cache_entry, dict) else cache_entry
         
         logger.debug(f"Creating new MCP app for {cache_key}")
-        # Create new MCP app - DON'T use async with here, we need to keep the API alive
-        api = await self.store.get_workspace_interface(
-            user_info, user_info.scope.current_workspace
-        ).__aenter__()
         
-        try:
-            # Build full service ID
-            if "/" in service_id:
-                full_service_id = service_id
-            elif ":" in service_id:
-                full_service_id = f"{workspace}/{service_id}"
-            else:
-                full_service_id = f"{workspace}/{service_id}"
+        if is_sse:
+            # For SSE, keep workspace interface alive
+            api = await self.store.get_workspace_interface(
+                user_info, user_info.scope.current_workspace
+            ).__aenter__()
             
-            service_info = await api.get_service_info(full_service_id, {"mode": mode})
-            service = await api.get_service(full_service_id)
-            
-            if not is_mcp_compatible_service(service):
-                # Clean up API on error
+            try:
+                # Build full service ID
+                if "/" in service_id:
+                    full_service_id = service_id
+                elif ":" in service_id:
+                    full_service_id = f"{workspace}/{service_id}"
+                else:
+                    full_service_id = f"{workspace}/{service_id}"
+                
+                service_info = await api.get_service_info(full_service_id, {"mode": mode})
+                service = await api.get_service(full_service_id)
+                
+                if not is_mcp_compatible_service(service):
+                    await api.__aexit__(None, None, None)
+                    raise ValueError(f"Service {service_id} is not MCP compatible")
+                
+                mcp_app = await create_mcp_app_from_service(
+                    service, service_info, self.store.get_redis()
+                )
+                
+                # Cache the app AND the API connection for SSE
+                self.mcp_app_cache[cache_key] = {
+                    "app": mcp_app,
+                    "api": api  # Keep the API connection alive for SSE
+                }
+                return mcp_app
+            except Exception:
                 await api.__aexit__(None, None, None)
-                raise ValueError(f"Service {service_id} is not MCP compatible")
-            
-            mcp_app = await create_mcp_app_from_service(
-                service, service_info, self.store.get_redis()
-            )
-            
-            # Cache the app AND the API connection
-            self.mcp_app_cache[cache_key] = {
-                "app": mcp_app,
-                "api": api  # Keep the API connection alive
-            }
-            return mcp_app
-        except Exception:
-            # Clean up API on error
-            await api.__aexit__(None, None, None)
-            raise
+                raise
+        else:
+            # For non-SSE, use normal context manager
+            async with self.store.get_workspace_interface(
+                user_info, user_info.scope.current_workspace
+            ) as api:
+                # Build full service ID
+                if "/" in service_id:
+                    full_service_id = service_id
+                elif ":" in service_id:
+                    full_service_id = f"{workspace}/{service_id}"
+                else:
+                    full_service_id = f"{workspace}/{service_id}"
+                
+                service_info = await api.get_service_info(full_service_id, {"mode": mode})
+                service = await api.get_service(full_service_id)
+                
+                if not is_mcp_compatible_service(service):
+                    raise ValueError(f"Service {service_id} is not MCP compatible")
+                
+                mcp_app = await create_mcp_app_from_service(
+                    service, service_info, self.store.get_redis()
+                )
+                
+                # Cache only the MCP app for non-SSE
+                self.mcp_app_cache[cache_key] = mcp_app
+                return mcp_app
     
     async def _cleanup_mcp_app(self, cache_key: str):
         """Clean up cached MCP app."""
         if cache_key in self.mcp_app_cache:
             logger.debug(f"Cleaning up cached MCP app for {cache_key}")
-            # Clean up API connection
             cache_entry = self.mcp_app_cache[cache_key]
-            if "api" in cache_entry:
+            
+            # If it's a dict with an API connection (SSE case), clean it up
+            if isinstance(cache_entry, dict) and "api" in cache_entry:
                 try:
                     await cache_entry["api"].__aexit__(None, None, None)
                 except Exception as e:
                     logger.warning(f"Error cleaning up API connection: {e}")
+            
             del self.mcp_app_cache[cache_key]
     
     def _get_authorization_header(self, scope):
@@ -1563,10 +1600,10 @@ class MCPRoutingMiddleware:
             # Login and get user info
             user_info = await self.store.login_optional(request)
             
-            # Get or create cached MCP app
+            # Get or create cached MCP app (with is_sse=True to keep workspace interface alive)
             try:
                 mcp_app = await self._get_or_create_mcp_app(
-                    service_id, workspace, user_info, mode=None
+                    service_id, workspace, user_info, mode=None, is_sse=True
                 )
             except (KeyError, Exception) as e:
                 logger.error(f"MCP Middleware: Service lookup failed: {e}")
@@ -1620,7 +1657,8 @@ class MCPRoutingMiddleware:
                 )
                 return
             
-            mcp_app = self.mcp_app_cache[cache_key]["app"]
+            cache_entry = self.mcp_app_cache[cache_key]
+            mcp_app = cache_entry["app"] if isinstance(cache_entry, dict) else cache_entry
             adapter = mcp_app.adapter if hasattr(mcp_app, 'adapter') else mcp_app
             
             # Handle the SSE message POST request
