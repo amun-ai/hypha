@@ -890,6 +890,7 @@
                                                         worker.disabled = !isDisabled;
                                                     }
                                                     catch(err){
+                                                        console.error(err);
                                                         alert(`Failed to ${isDisabled ? 'enable' : 'disable'} worker: ${err.message}`);
                                                     }
                                                     finally{
@@ -3875,6 +3876,7 @@ license: "MIT"`);
                             await refreshArtifacts();
                         }
                     } catch (error) {
+                        console.error(error);
                         alert(`Failed to delete artifact with ID: ${artifactId}. Error: ${error.message || error}`);
                     } finally {
                         window.hideLoadingSpinner();
@@ -5342,6 +5344,7 @@ license: "MIT"`);
                     await ws.createWorkspace({ ...workspaceData }, overwrite);
                     setWorkspaces(await ws.listWorkspaces());
                 } catch (error) {
+                    console.error(error);
                     alert(`Failed to create workspace: ${error}`);
                     throw error;
                 } finally {
@@ -5355,6 +5358,7 @@ license: "MIT"`);
                     const workspaceInfo = await ws.getWorkspaceInfo(workspaceId);
                     setSelectedWorkspaceInfo(workspaceInfo);
                 } catch (error) {
+                    console.error(error);
                     alert(`Failed to get workspace info: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
@@ -5372,6 +5376,7 @@ license: "MIT"`);
                     setWorkspaces(await ws.listWorkspaces());
                     setEditingWorkspace(null); // Close the modal after editing
                 } catch (error) {
+                    console.error(error);
                     alert(`Failed to update workspace: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
@@ -5389,6 +5394,7 @@ license: "MIT"`);
                     const workspaceInfo = await ws.getWorkspaceInfo(workspaceId);
                     setCurrentWorkspaceInfo(workspaceInfo);
                 } catch (error) {
+                    console.error(error);
                     alert(`Failed to bookmark workspace: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
@@ -5406,6 +5412,7 @@ license: "MIT"`);
                     const workspaceInfo = await ws.getWorkspaceInfo(workspaceId);
                     setCurrentWorkspaceInfo(workspaceInfo);
                 } catch (error) {
+                    console.error(error);
                     alert(`Failed to bookmark service: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
@@ -5423,6 +5430,7 @@ license: "MIT"`);
                     const workspaceInfo = await ws.getWorkspaceInfo(workspaceId);
                     setCurrentWorkspaceInfo(workspaceInfo);
                 } catch (error) {
+                    console.error(error);
                     alert(`Failed to unbookmark workspace: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
