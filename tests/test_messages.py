@@ -452,6 +452,69 @@ async def test_service_registration_basic(fastapi_server):
     await api.disconnect()
 
 
+async def test_client_disconnected_event(fastapi_server):
+    """Test that client_disconnected events are properly broadcast to subscribed clients."""
+    # Create a monitoring client
+    monitor_api = await connect_to_server({"name": "monitor", "server_url": WS_SERVER_URL})
+    token = await monitor_api.generate_token()
+    
+    # Create a test client that will disconnect
+    test_client = await connect_to_server({
+        "name": "test_client_to_disconnect",
+        "server_url": WS_SERVER_URL,
+        "workspace": monitor_api.config["workspace"],
+        "token": token,
+    })
+    
+    # Store the client_id of the client that will disconnect
+    client_to_disconnect_id = test_client.config["client_id"]
+    
+    disconnected_events = []
+    
+    def on_client_disconnected(data):
+        disconnected_events.append(data)
+    
+    # Set up event listener on monitor client
+    monitor_api.on("client_disconnected", on_client_disconnected)
+    
+    # Subscribe to client_disconnected events
+    await monitor_api.subscribe("client_disconnected")
+    
+    # Disconnect the test client to trigger the event
+    await test_client.disconnect()
+    await asyncio.sleep(0.5)  # Wait for event propagation
+    
+    # Verify we received the disconnection event
+    assert len(disconnected_events) >= 1, f"Expected at least 1 disconnect event, got {len(disconnected_events)}"
+    
+    # Check that we got information about the disconnected client
+    # The event structure is: {'data': {'id': '<client_id>', 'workspace': '<workspace_id>'}}
+    found_client = False
+    for event in disconnected_events:
+        if isinstance(event, str) and event == client_to_disconnect_id:
+            found_client = True
+            break
+        elif isinstance(event, dict):
+            # Check various possible structures
+            if event.get("client_id") == client_to_disconnect_id:
+                found_client = True
+                break
+            elif event.get("data", {}).get("id") == client_to_disconnect_id:  # The actual structure
+                found_client = True
+                break
+            elif event.get("data", {}).get("client_id") == client_to_disconnect_id:
+                found_client = True
+                break
+            elif event.get("from", "").endswith(f"/{client_to_disconnect_id}"):
+                found_client = True
+                break
+    
+    assert found_client, \
+        f"Expected to find client_id {client_to_disconnect_id} in disconnect events, got events: {disconnected_events}"
+    
+    await monitor_api.disconnect()
+
+
 async def test_subscription_security_validation(fastapi_server):
     """Test that clients can only subscribe to allowed event types."""
     api = await connect_to_server({"name": "security tester", "server_url": WS_SERVER_URL})
