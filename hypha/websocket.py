@@ -27,7 +27,7 @@ logger = logging.getLogger("websocket-server")
 logger.setLevel(LOGLEVEL)
 
 _gauge = Gauge(
-    "websocket_connections_total", "Total number of websocket connections"
+    "websocket_connections", "Total number of websocket connections"
 )
 
 
