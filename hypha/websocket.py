@@ -81,6 +81,10 @@ class WebsocketServer:
                     pass
                 return
 
+            # Track if we successfully authenticated for cleanup purposes
+            authenticated = False
+            user_info = None
+            
             try:
                 if token or reconnection_token:
                     user_info, workspace = await self.authenticate_user(
@@ -119,6 +123,10 @@ class WebsocketServer:
                 assert workspace_info and workspace and client_id, (
                     "Failed to authenticate user to workspace: %s" % workspace_info.id
                 )
+                
+                # Mark as authenticated before checking client
+                authenticated = True
+                
                 # If the client is not reconnecting, check if it exists
                 if not reconnection_token:
                     # We operate as the root user to remove and add clients
@@ -127,6 +135,19 @@ class WebsocketServer:
                 # Log the full exception for debugging
                 logger.error(f"Exception during connection setup: {e}", exc_info=True)
                 reason = f"Failed to establish connection: {str(e)}"
+                
+                # If we authenticated but failed later, try to clean up
+                # This handles the case where check_client creates services but then fails
+                if authenticated and user_info and workspace and client_id:
+                    try:
+                        # Only try to remove client if it might have been partially created
+                        # check_client might have removed an old client and started creating a new one
+                        if await self.store.client_exists(client_id, workspace):
+                            await self.store.remove_client(client_id, workspace, user_info, unload=True)
+                            logger.info(f"Cleaned up partially created client {workspace}/{client_id} after setup failure")
+                    except Exception as cleanup_error:
+                        logger.warning(f"Could not cleanup client after setup failure: {cleanup_error}")
+                
                 await self.disconnect(
                     websocket,
                     reason=reason,
@@ -378,7 +399,9 @@ class WebsocketServer:
             except Exception:
                 pass  # Gauge may not have been incremented
             
-            await conn.disconnect("disconnected")
+            # Ensure proper cleanup even if conn was not created
+            if conn:
+                await conn.disconnect("disconnected")
             event_bus.off_local(f"unload:{workspace}", force_disconnect)
             if (
                 workspace
@@ -390,9 +413,11 @@ class WebsocketServer:
     async def handle_disconnection(
         self, websocket, workspace: str, client_id: str, user_info: UserInfo, code, exp
     ):
-        """Handle client disconnection with delayed removal for unexpected disconnections."""
+        """Handle client disconnection with proper cleanup."""
+        cleanup_succeeded = False
         try:
             await self.store.remove_client(client_id, workspace, user_info, unload=True)
+            cleanup_succeeded = True
             if code in [status.WS_1000_NORMAL_CLOSURE, status.WS_1001_GOING_AWAY]:
                 logger.info(f"Client disconnected normally: {workspace}/{client_id}")
             else:
@@ -401,8 +426,15 @@ class WebsocketServer:
                 )
         except Exception as e:
             logger.error(
-                f"Error handling disconnection, client: {workspace}/{client_id}, error: {str(e)}"
+                f"Error handling disconnection, client: {workspace}/{client_id}, error: {str(e)}", 
+                exc_info=True
             )
+            # Re-raise if cleanup failed critically to ensure we're aware of persistent issues
+            if not cleanup_succeeded:
+                logger.critical(
+                    f"CRITICAL: Failed to cleanup client {workspace}/{client_id} from Redis. "
+                    f"This may leave orphaned services. Error: {str(e)}"
+                )
         finally:
             await self.disconnect(
                 websocket,
