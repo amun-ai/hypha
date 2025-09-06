@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 import asyncio
-import numpy as np
+import os
 
 import pytest
 import requests
@@ -389,3 +389,244 @@ async def test_server_scalability(
     await api.disconnect()
     await api77.disconnect()
     await api88.disconnect()
+
+async def test_root_token_authentication(fastapi_server):
+    """Test root token authentication and admin-utils service access."""
+    
+    # Get the root token from environment (set by conftest.py)
+    root_token = os.environ.get("HYPHA_ROOT_TOKEN")
+    assert root_token, "Root token should be set by conftest.py"
+    
+    # Test 1: Connect with root token
+    api_root = await connect_to_server(
+        {
+            "client_id": "root-client",
+            "server_url": WS_SERVER_URL,
+            "token": root_token,
+        }
+    )
+    
+    # Verify root user properties
+    assert api_root.config["user"]["id"] == "root"
+    assert "admin" in api_root.config["user"]["roles"]
+    assert api_root.config["workspace"] == "ws-user-root"
+    
+    # Test 2: Access admin-utils service in root workspace
+    # The admin-utils service should be available in the root workspace
+    services = await api_root.list_services({"workspace": "ws-user-root"})
+    # Find admin-utils service (it will have the server id prefix)
+    admin_utils = None
+    for svc in services:
+        if "admin-utils" in svc["id"]:
+            admin_utils = svc
+            break
+    assert admin_utils is not None, f"admin-utils service should exist in root workspace. Found services: {[s['id'] for s in services]}"
+    
+    # Test 3: Use admin-utils service (it should resolve correctly)
+    admin_service = await api_root.get_service("admin-utils")
+    
+    # Test listing servers (admin capability)
+    servers = await admin_service.list_servers()
+    assert isinstance(servers, list)
+    assert len(servers) > 0  # At least the current server should be listed
+    
+    # Test 4: List all workspaces using admin-utils
+    all_workspaces = await admin_service.list_workspaces()
+    assert len(all_workspaces) > 0
+    # Should at least have root workspace and public workspace
+    assert find_item(all_workspaces, "id", "ws-user-root")
+    assert find_item(all_workspaces, "id", "public")
+    
+    # Test 5: Create a new workspace using root API
+    test_ws = await api_root.create_workspace(
+        {
+            "name": "test-root-created-workspace",
+            "description": "Workspace created by root user",
+            "owners": ["root"],
+        }
+    )
+    assert test_ws["name"] == "test-root-created-workspace"
+    
+    # Test 6: Generate token for the new workspace (admin capability)
+    new_token = await api_root.generate_token({"workspace": test_ws["name"]})
+    assert new_token is not None
+    
+    # Test 7: Connect with the generated token to verify it works
+    api_test = await connect_to_server(
+        {
+            "client_id": "test-client",
+            "server_url": WS_SERVER_URL,
+            "token": new_token,
+            "workspace": test_ws["name"],
+        }
+    )
+    assert api_test.config["workspace"] == test_ws["name"]
+    
+    # Test 8: Get metrics (admin capability)
+    metrics = await admin_service.get_metrics()
+    assert isinstance(metrics, dict)
+    
+    # Test 9: Clean up - delete the test workspace
+    await api_root.delete_workspace(test_ws["name"])
+    
+    # Verify workspace was deleted
+    remaining_workspaces = await admin_service.list_workspaces()
+    assert not find_item(remaining_workspaces, "name", "test-root-created-workspace")
+    
+    # Disconnect clients
+    await api_test.disconnect()
+    await api_root.disconnect()
+
+
+async def test_root_token_rejection_weak_tokens(fastapi_server):
+    """Test that weak root tokens are properly rejected."""
+    
+    # Test 1: Try to connect with a simple/weak token (should fail)
+    weak_tokens = ["test", "root", "admin123", "password", "12345678901234567890123456789012"]
+    
+    for weak_token in weak_tokens:
+        try:
+            # This should fail because the server was started with a strong token
+            # and these weak tokens won't match
+            api = await connect_to_server(
+                {
+                    "client_id": "test-weak-token",
+                    "server_url": WS_SERVER_URL,
+                    "token": weak_token,
+                }
+            )
+            await api.disconnect()
+            # If we get here, the weak token was accepted (which shouldn't happen)
+            assert False, f"Weak token '{weak_token}' should have been rejected"
+        except Exception as e:
+            # Expected behavior - weak token rejected
+            assert "Permission denied" in str(e) or "Authentication error" in str(e)
+    
+    # Test 2: Try to connect without any token to a non-public workspace
+    try:
+        api = await connect_to_server(
+            {
+                "client_id": "no-token-client",
+                "server_url": WS_SERVER_URL,
+                "workspace": "ws-user-root",  # Root workspace requires authentication
+            }
+        )
+        await api.disconnect()
+        assert False, "Should not be able to access root workspace without token"
+    except Exception as e:
+        # Expected - permission denied
+        assert "Permission denied" in str(e) or "does not exist" in str(e)
+
+
+async def test_root_token_cross_workspace_operations(fastapi_server):
+    """Test root token's ability to perform cross-workspace operations."""
+    import os
+    
+    # Get the root token
+    root_token = os.environ.get("HYPHA_ROOT_TOKEN")
+    assert root_token, "Root token should be set"
+    
+    # Connect as root
+    api_root = await connect_to_server(
+        {
+            "client_id": "root-cross-ws",
+            "server_url": WS_SERVER_URL,
+            "token": root_token,
+        }
+    )
+    
+    admin_service = await api_root.get_service("admin-utils")
+    
+    # Create two test workspaces using root API
+    ws1 = await api_root.create_workspace(
+        {
+            "name": "test-ws-1",
+            "description": "First test workspace",
+            "owners": ["user1@example.com"],
+        }
+    )
+    
+    ws2 = await api_root.create_workspace(
+        {
+            "name": "test-ws-2", 
+            "description": "Second test workspace",
+            "owners": ["user2@example.com"],
+        }
+    )
+    
+    # Test cross-workspace service discovery (root should see all)
+    ws1_services = await api_root.list_services({"workspace": ws1["name"]})
+    ws2_services = await api_root.list_services({"workspace": ws2["name"]})
+    
+    # Root should be able to access both workspaces
+    assert isinstance(ws1_services, list)
+    assert isinstance(ws2_services, list)
+    
+    # Test creating services in different workspaces
+    # Register a service in ws1
+    token1 = await api_root.generate_token({"workspace": ws1["name"]})
+    api_ws1 = await connect_to_server(
+        {
+            "client_id": "ws1-client",
+            "server_url": WS_SERVER_URL,
+            "token": token1,
+            "workspace": ws1["name"],
+        }
+    )
+    
+    await api_ws1.register_service(
+        {
+            "id": "test-service-ws1",
+            "name": "Test Service WS1",
+            "type": "test",
+            "echo": lambda x: f"ws1: {x}",
+        }
+    )
+    
+    # Register a service in ws2
+    token2 = await api_root.generate_token({"workspace": ws2["name"]})
+    api_ws2 = await connect_to_server(
+        {
+            "client_id": "ws2-client",
+            "server_url": WS_SERVER_URL,
+            "token": token2,
+            "workspace": ws2["name"],
+        }
+    )
+    
+    await api_ws2.register_service(
+        {
+            "id": "test-service-ws2",
+            "name": "Test Service WS2",
+            "type": "test",
+            "echo": lambda x: f"ws2: {x}",
+        }
+    )
+    
+    # Root should be able to see services in both workspaces
+    all_ws1_services = await api_root.list_services({"workspace": ws1["name"]})
+    all_ws2_services = await api_root.list_services({"workspace": ws2["name"]})
+    
+    # Check services exist (with full IDs)
+    ws1_service_found = any("test-service-ws1" in s["id"] for s in all_ws1_services)
+    ws2_service_found = any("test-service-ws2" in s["id"] for s in all_ws2_services)
+    
+    assert ws1_service_found, f"test-service-ws1 not found in {[s['id'] for s in all_ws1_services]}"
+    assert ws2_service_found, f"test-service-ws2 not found in {[s['id'] for s in all_ws2_services]}"
+    
+    # Clean up
+    await api_ws1.disconnect()
+    await api_ws2.disconnect()
+    
+    # Delete workspaces (with error handling for potential race conditions)
+    try:
+        await api_root.delete_workspace(ws1["name"])
+    except Exception:
+        pass  # Workspace may already be deleted
+    
+    try:
+        await api_root.delete_workspace(ws2["name"])
+    except Exception:
+        pass  # Workspace may already be deleted
+    
+    await api_root.disconnect()
