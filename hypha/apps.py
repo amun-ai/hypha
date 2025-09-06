@@ -427,8 +427,6 @@ class ServerAppController:
             loader=PackageLoader("hypha"), autoescape=select_autoescape()
         )
         self.autoscaling_manager = AutoscalingManager(self)
-        self.worker_manager = WorkerManager(store, cleanup_worker_sessions_callback=self.cleanup_worker_sessions)
-
         def shutdown(_) -> None:
             asyncio.ensure_future(self.shutdown())
 
@@ -558,11 +556,6 @@ class ServerAppController:
             await self._redis.delete(key)
         except Exception as e:
             logger.error(f"Failed to remove session {full_client_id} from Redis: {e}")
-
-    def _get_worker_from_cache(self, worker_id: str):
-        """Get worker instance from local cache."""
-        return self._worker_cache.get(worker_id)
-
     async def _is_worker_unused(self, worker_id: str) -> bool:
         """Check if a worker is not used by any other sessions."""
         try:
@@ -2125,7 +2118,7 @@ class ServerAppController:
         version: str = None,
         token: str = None,
         timeout: float = None,
-        manifest: BaseModel = None,
+        manifest: dict = None,
         progress_callback: Any = None,
         additional_kwargs: Optional[dict] = None,
         worker: Any = None,
@@ -2195,7 +2188,7 @@ class ServerAppController:
                 "entry_point": entry_point,
                 "artifact_id": artifact_id_for_worker,  # Use full ID for artifact access
                 "timeout": timeout,
-                "manifest": manifest.model_dump(mode="json"),  # Pass as dict for serialization
+                "manifest": manifest,
                 "progress_callback": progress_callback,  # Pass it directly, workers will handle it
                 "disable_ssl": self.disable_ssl,
                 **additional_kwargs,
@@ -2579,25 +2572,11 @@ class ServerAppController:
                 logger.info(
                     f"Waiting for event after starting app: {full_client_id}, timeout: {timeout}, wait_for_service: {wait_for_service}"
                 )
-                try:
-                    await asyncio.wait_for(event_future, timeout=timeout)
-                    logger.info(
-                        f"Successfully received event for starting app: {full_client_id}"
-                    )
-                    await asyncio.sleep(0.1)  # Brief delay to allow service registration
-                except asyncio.TimeoutError:
-                    # Log detailed information about the timeout
-                    error_msg = (
-                        f"Timeout waiting for service '{wait_for_service}' for app '{app_id}'. "
-                        f"The service was not registered within {timeout} seconds."
-                    )
-                    if manifest.type == "web-app" and manifest.entry_point and manifest.entry_point.startswith(("http://", "https://")):
-                        error_msg += (
-                            f" Note: This is a web-app with external URL '{manifest.entry_point}'. "
-                            f"The external page may not be registering the service quickly enough."
-                        )
-                    logger.error(error_msg)
-                    raise asyncio.TimeoutError(error_msg) from None
+                await asyncio.wait_for(event_future, timeout=timeout)
+                logger.info(
+                    f"Successfully received event for starting app: {full_client_id}"
+                )
+                await asyncio.sleep(0.1)  # Brief delay to allow service registration
 
                 _progress_callback(
                     {"type": "info", "message": "Finalizing application startup..."}
@@ -2661,9 +2640,8 @@ class ServerAppController:
             logs = None
             # Use the session_data we already have (from start_by_type)
             if session_data and "worker_id" in session_data:
-                worker = self._get_worker_from_cache(session_data["worker_id"])
-                if worker:
-                    logs = await worker.get_logs(full_client_id, context=context)
+                worker = await self.get_worker_by_id(session_data["worker_id"])
+                logs = await worker.get_logs(full_client_id, context=context)
             # Clean up session
             if session_data and "worker_id" in session_data:
                 worker = await self.get_worker_by_id(session_data["worker_id"])
@@ -2754,38 +2732,11 @@ class ServerAppController:
         if session_data:
             session_stopped = False
             try:
-                # Get worker from cache first
-                worker = self._get_worker_from_cache(session_data["worker_id"])
-                
-                # If worker not in cache, try to get it from worker manager
-                if not worker:
-                    logger.warning(f"Worker {session_data['worker_id']} not in cache, attempting to fetch from worker manager")
-                    try:
-                        # Try to get worker using worker manager
-                        worker = await self.get_worker_by_id(session_data["worker_id"], context)
-                        if worker:
-                            # Cache it for future use
-                            self._worker_cache[session_data["worker_id"]] = worker
-                            logger.info(f"Successfully fetched worker {session_data['worker_id']} from worker manager")
-                    except Exception as e:
-                        logger.error(f"Failed to fetch worker {session_data['worker_id']} from worker manager: {e}")
-                
-                if worker:
-                    await worker.stop(session_id, context=context)
-                    session_stopped = True
-                    logger.info(f"Successfully stopped session {session_id}")
-                else:
-                    # Worker not available
-                    error_msg = f"Worker {session_data['worker_id']} not available for session {session_id}"
-                    logger.error(error_msg)
-                    if raise_exception:
-                        # Always raise if raise_exception is True
-                        raise Exception(error_msg)
-                    else:
-                        # Only log warning and clean up orphaned session if raise_exception is False
-                        logger.warning(f"{error_msg}, removing orphaned session")
-                        session_stopped = True  # Mark as stopped since worker is gone
-                        
+                # Get worker using workspace from context
+                worker = await self.get_worker_by_id(session_data["worker_id"])
+                await worker.stop(session_id, context=context)
+                session_stopped = True
+                logger.info(f"Successfully stopped session {session_id}")
             except Exception as exp:
                 # Log the error
                 logger.error(f"Failed to stop session {session_id}: {exp}")
