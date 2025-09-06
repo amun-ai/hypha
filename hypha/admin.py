@@ -298,7 +298,7 @@ class AdminTerminal:
             return {"success": False, "error": str(e)}
 
     @schema_method
-    async def write_to_terminal(
+    async def write_terminal(
         self,
         data: str = Field(..., description="Data to write to terminal"),
     ) -> Dict[str, Any]:
@@ -309,7 +309,7 @@ class AdminTerminal:
         try:
             # Ensure data is a string
             if not isinstance(data, str):
-                logger.warning(f"write_to_terminal received non-string data: {type(data)}")
+                logger.warning(f"write_terminal received non-string data: {type(data)}")
                 data = str(data) if data is not None else ""
             
             # Ensure _current_input is always a string
@@ -344,7 +344,7 @@ class AdminTerminal:
                 
             return {"success": True, "bytes_written": len(data)}
         except Exception as e:
-            logger.error(f"write_to_terminal error: {e}")
+            logger.error(f"write_terminal error: {e}")
             return {"success": False, "error": str(e)}
 
     @schema_method
@@ -518,7 +518,7 @@ class AdminUtilities:
                 "resize_terminal": self.terminal.resize_terminal,
                 "read_terminal": self.terminal.read_terminal,
                 "get_screen_content": self.terminal.get_screen_content,
-                "write_to_terminal": self.terminal.write_to_terminal,
+                "write_terminal": self.terminal.write_terminal,
                 "execute_command": self.terminal.execute_command,
             })
         
