@@ -487,26 +487,31 @@ class RedisStore:
             rpc = self.create_rpc(
                 "root", self._root_user, client_id="server-checker", silent=True
             )
-            for server_id in server_ids:
-                try:
-                    svc = await rpc.get_remote_service(
-                        f"public/{server_id}:built-in", {"timeout": 2}
-                    )
-                    assert await svc.ping("ping") == "pong"
-                except Exception as e:
-                    logger.warning(
-                        f"Server {server_id} is not responding (error: {e}), cleaning up..."
-                    )
-                    # remove root and public services
-                    await self._clear_client_services("public", server_id)
-                    await self._clear_client_services(
-                        self._root_user.get_workspace(), server_id
-                    )
-                else:
-                    if server_id == self._server_id:
-                        raise RuntimeError(
-                            f"Server with the same id ({server_id}) is already running, please use a different server id by passing `--server-id=new-server-id` to the command line."
+            try:
+                for server_id in server_ids:
+                    try:
+                        svc = await rpc.get_remote_service(
+                            f"public/{server_id}:built-in", {"timeout": 2}
                         )
+                        assert await svc.ping("ping") == "pong"
+                    except Exception as e:
+                        logger.warning(
+                            f"Server {server_id} is not responding (error: {e}), cleaning up..."
+                        )
+                        # remove root and public services
+                        await self._clear_client_services("public", server_id)
+                        await self._clear_client_services(
+                            self._root_user.get_workspace(), server_id
+                        )
+                    else:
+                        if server_id == self._server_id:
+                            raise RuntimeError(
+                                f"Server with the same id ({server_id}) is already running, please use a different server id by passing `--server-id=new-server-id` to the command line."
+                            )
+            except Exception as exp:
+                raise exp
+            finally:
+                await rpc.disconnect()
 
     async def _clear_client_services(self, workspace: str, client_id: str):
         """Clear a workspace."""

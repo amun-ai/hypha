@@ -182,13 +182,6 @@ class RedisEventStore(EventStore):
             await send_callback(EventMessage(message, event_id_str))
         
         return stream_id
-    
-    async def cleanup_expired_events(self):
-        """Clean up expired events (called periodically)."""
-        # This is handled automatically by Redis TTL
-        pass
-
-
 
 class HyphaMCPAdapter:
     """Adapter that bridges Hypha services to MCP protocol using the official SDK."""
@@ -239,6 +232,9 @@ class HyphaMCPAdapter:
         
         # Track if session manager is running
         self._session_manager_context = None
+        
+        # Track SSE connections for proper cleanup
+        self._sse_contexts = {}
     
     def _is_mcp_native_service(self) -> bool:
         """Check if service has native MCP protocol functions."""
@@ -1152,8 +1148,10 @@ class MCPRoutingMiddleware:
         self.base_path = base_path.rstrip("/") if base_path else ""
         self.store = store
         
-        # Cache MCP adapters and their API connections
-        self._mcp_cache = {}  # cache_key -> (mcp_app, api_context, api_task)
+        # Cache MCP apps by full service ID to maintain SSE sessions
+        self.mcp_app_cache = {}
+        # Track active SSE connections for cleanup
+        self.active_sse_connections = {}
         
         # MCP route patterns
         # Redirect route for base MCP path without trailing slash: /{workspace}/mcp
@@ -1187,6 +1185,102 @@ class MCPRoutingMiddleware:
         logger.info(f"MCP middleware initialized with route patterns:")
         logger.info(f"  - Streamable HTTP: {self.mcp_route.path}")
         logger.info(f"  - SSE: {self.sse_route.path}")
+    
+    async def _get_or_create_mcp_app(self, service_id: str, workspace: str, user_info, mode=None, is_sse=False):
+        """Get cached MCP app or create new one.
+        
+        Args:
+            service_id: Service identifier
+            workspace: Workspace name
+            user_info: User information
+            mode: Optional mode parameter
+            is_sse: If True, keeps workspace interface alive for SSE sessions
+        """
+        cache_key = f"{workspace}/{service_id}"
+        
+        if cache_key in self.mcp_app_cache:
+            logger.debug(f"Using cached MCP app for {cache_key}")
+            cache_entry = self.mcp_app_cache[cache_key]
+            return cache_entry["app"] if isinstance(cache_entry, dict) else cache_entry
+        
+        logger.debug(f"Creating new MCP app for {cache_key}")
+        
+        if is_sse:
+            # For SSE, keep workspace interface alive
+            api = await self.store.get_workspace_interface(
+                user_info, user_info.scope.current_workspace
+            ).__aenter__()
+            
+            try:
+                # Build full service ID
+                if "/" in service_id:
+                    full_service_id = service_id
+                elif ":" in service_id:
+                    full_service_id = f"{workspace}/{service_id}"
+                else:
+                    full_service_id = f"{workspace}/{service_id}"
+                
+                service_info = await api.get_service_info(full_service_id, {"mode": mode})
+                service = await api.get_service(full_service_id)
+                
+                if not is_mcp_compatible_service(service):
+                    await api.__aexit__(None, None, None)
+                    raise ValueError(f"Service {service_id} is not MCP compatible")
+                
+                mcp_app = await create_mcp_app_from_service(
+                    service, service_info, self.store.get_redis()
+                )
+                
+                # Cache the app AND the API connection for SSE
+                self.mcp_app_cache[cache_key] = {
+                    "app": mcp_app,
+                    "api": api  # Keep the API connection alive for SSE
+                }
+                return mcp_app
+            except Exception:
+                await api.__aexit__(None, None, None)
+                raise
+        else:
+            # For non-SSE, use normal context manager
+            async with self.store.get_workspace_interface(
+                user_info, user_info.scope.current_workspace
+            ) as api:
+                # Build full service ID
+                if "/" in service_id:
+                    full_service_id = service_id
+                elif ":" in service_id:
+                    full_service_id = f"{workspace}/{service_id}"
+                else:
+                    full_service_id = f"{workspace}/{service_id}"
+                
+                service_info = await api.get_service_info(full_service_id, {"mode": mode})
+                service = await api.get_service(full_service_id)
+                
+                if not is_mcp_compatible_service(service):
+                    raise ValueError(f"Service {service_id} is not MCP compatible")
+                
+                mcp_app = await create_mcp_app_from_service(
+                    service, service_info, self.store.get_redis()
+                )
+                
+                # Cache only the MCP app for non-SSE
+                self.mcp_app_cache[cache_key] = mcp_app
+                return mcp_app
+    
+    async def _cleanup_mcp_app(self, cache_key: str):
+        """Clean up cached MCP app."""
+        if cache_key in self.mcp_app_cache:
+            logger.debug(f"Cleaning up cached MCP app for {cache_key}")
+            cache_entry = self.mcp_app_cache[cache_key]
+            
+            # If it's a dict with an API connection (SSE case), clean it up
+            if isinstance(cache_entry, dict) and "api" in cache_entry:
+                try:
+                    await cache_entry["api"].__aexit__(None, None, None)
+                except Exception as e:
+                    logger.warning(f"Error cleaning up API connection: {e}")
+            
+            del self.mcp_app_cache[cache_key]
     
     def _get_authorization_header(self, scope):
         """Extract the Authorization header from the scope."""
@@ -1396,24 +1490,12 @@ class MCPRoutingMiddleware:
             # Login and get user info
             user_info = await self.store.login_optional(request)
             
-            # Check if we have a cached MCP app for this service
-            cache_key = f"{workspace}/{service_id}"
-            
-            if cache_key in self._mcp_cache:
-                # Use cached MCP app
-                mcp_app, api_context, api_task = self._mcp_cache[cache_key]
-                # Handle the request with the cached MCP app
-                await mcp_app(scope, receive, send)
-            else:
-                # Create new MCP app with persistent API connection
-                # Use the user's own workspace for the interface
-                # This allows us to access services in other workspaces if they're public/accessible
-                api_context_manager = self.store.get_workspace_interface(
-                    user_info, user_info.scope.current_workspace
-                )
-                api_context = api_context_manager.__aenter__()
-                api = await api_context
-                
+            # Create new MCP app for each request
+            # Use the user's own workspace for the interface
+            # This allows us to access services in other workspaces if they're public/accessible
+            async with self.store.get_workspace_interface(
+                user_info, user_info.scope.current_workspace
+            ) as api:
                 try:
                     # Build the full service ID based on what's provided
                     # Service IDs can be in several formats:
@@ -1438,8 +1520,6 @@ class MCPRoutingMiddleware:
                         f"MCP Middleware: Found service '{service_id}' of type '{service_info.type}'"
                     )
                 except (KeyError, Exception) as e:
-                    # Clean up on error
-                    await api_context_manager.__aexit__(None, None, None)
                     logger.error(f"MCP Middleware: Service lookup failed: {e}")
                     if "Service not found" in str(e) or "Permission denied" in str(e):
                         await self._send_error_response(
@@ -1456,7 +1536,6 @@ class MCPRoutingMiddleware:
                 
                 # Check if it's MCP compatible
                 if not is_mcp_compatible_service(service):
-                    await api_context_manager.__aexit__(None, None, None)
                     await self._send_error_response(
                         send, 400, f"Service {service_id} is not MCP compatible"
                     )
@@ -1466,9 +1545,6 @@ class MCPRoutingMiddleware:
                 mcp_app = await create_mcp_app_from_service(
                     service, service_info, self.store.get_redis()
                 )
-                
-                # Cache the MCP app and API connection
-                self._mcp_cache[cache_key] = (mcp_app, api_context_manager, api)
                 
                 # Handle the request with the MCP app
                 await mcp_app(scope, receive, send)
@@ -1499,6 +1575,7 @@ class MCPRoutingMiddleware:
     
     async def _handle_sse_request(self, scope, receive, send, workspace, service_id):
         """Handle MCP SSE requests."""
+        cache_key = f"{workspace}/{service_id}"
         try:
             # Prepare scope for the MCP service
             scope = {
@@ -1523,99 +1600,45 @@ class MCPRoutingMiddleware:
             # Login and get user info
             user_info = await self.store.login_optional(request)
             
-            # Check if we have a cached MCP app for this service
-            cache_key = f"{workspace}/{service_id}"
-            
-            if cache_key in self._mcp_cache:
-                # Use cached MCP app
-                mcp_app, api_context, api_task = self._mcp_cache[cache_key]
-                adapter = mcp_app.adapter if hasattr(mcp_app, 'adapter') else mcp_app
-                try:
-                    # Handle the SSE request with the cached MCP app
-                    await adapter.handle_sse_request(scope, receive, send)
-                except Exception as e:
-                    # If the cached connection failed, clean it up and retry
-                    logger.warning(f"Cached MCP app failed for SSE, recreating: {e}")
-                    
-                    # Clean up old context
-                    try:
-                        if api_context:
-                            await api_context.__aexit__(None, None, None)
-                    except:
-                        pass
-                    del self._mcp_cache[cache_key]
-                    
-                    # Retry with fresh connection
-                    await self._handle_sse_request(scope, receive, send, workspace, service_id)
-            else:
-                # Create new MCP app with persistent API connection
-                # Use the user's own workspace for the interface
-                # This allows us to access services in other workspaces if they're public/accessible
-                api_context_manager = self.store.get_workspace_interface(
-                    user_info, user_info.scope.current_workspace
+            # Get or create cached MCP app (with is_sse=True to keep workspace interface alive)
+            try:
+                mcp_app = await self._get_or_create_mcp_app(
+                    service_id, workspace, user_info, mode=None, is_sse=True
                 )
-                api_context = api_context_manager.__aenter__()
-                api = await api_context
-                
-                try:
-                    # Build the full service ID based on what's provided
-                    # Service IDs can be in several formats:
-                    # 1. Simple service name: "my-service"
-                    # 2. Client-qualified: "client-id:service-name"
-                    # 3. Workspace-qualified: "workspace/service-name" or "workspace/client-id:service-name"
-                    
-                    if "/" in service_id:
-                        # Already has workspace prefix, use as-is
-                        full_service_id = service_id
-                    elif ":" in service_id:
-                        # Has client ID but no workspace, prepend workspace
-                        full_service_id = f"{workspace}/{service_id}"
-                    else:
-                        # Simple service name, prepend workspace
-                        full_service_id = f"{workspace}/{service_id}"
-                    
-                    service_info = await api.get_service_info(
-                        full_service_id, {"mode": None}
+            except (KeyError, Exception) as e:
+                logger.error(f"MCP Middleware: Service lookup failed: {e}")
+                if "Service not found" in str(e) or "Permission denied" in str(e):
+                    await self._send_error_response(
+                        send, 404, f"Service {service_id} not found or not accessible"
                     )
-                    logger.debug(
-                        f"MCP Middleware: Found service '{service_id}' of type '{service_info.type}'"
-                    )
-                except (KeyError, Exception) as e:
-                    # Clean up on error
-                    await api_context_manager.__aexit__(None, None, None)
-                    logger.error(f"MCP Middleware: Service lookup failed: {e}")
-                    if "Service not found" in str(e) or "Permission denied" in str(e):
-                        await self._send_error_response(
-                            send, 404, f"Service {service_id} not found or not accessible"
-                        )
-                        return
-                    else:
-                        raise
-                
-                # No longer require explicit type="mcp" - any service can be exposed as MCP
-                # Services with type="mcp" get special handling, others are auto-wrapped
-                
-                service = await api.get_service(full_service_id)
-                
-                # Check if it's MCP compatible
-                if not is_mcp_compatible_service(service):
-                    await api_context_manager.__aexit__(None, None, None)
+                    return
+                elif "not MCP compatible" in str(e):
                     await self._send_error_response(
                         send, 400, f"Service {service_id} is not MCP compatible"
                     )
                     return
-                
-                # Create MCP app with the service
-                mcp_app = await create_mcp_app_from_service(
-                    service, service_info, self.store.get_redis()
-                )
-                
-                # Cache the MCP app and API connection
-                self._mcp_cache[cache_key] = (mcp_app, api_context_manager, api)
-                
-                # Handle the SSE request with the MCP app
+                else:
+                    raise
+            
+            # Track active connection
+            self.active_sse_connections[cache_key] = self.active_sse_connections.get(cache_key, 0) + 1
+            logger.debug(f"SSE connection opened for {cache_key}, active connections: {self.active_sse_connections[cache_key]}")
+            
+            try:
+                # Handle the SSE request with the cached MCP app
                 adapter = mcp_app.adapter if hasattr(mcp_app, 'adapter') else mcp_app
                 await adapter.handle_sse_request(scope, receive, send)
+            finally:
+                # Decrement connection count
+                if cache_key in self.active_sse_connections:
+                    self.active_sse_connections[cache_key] -= 1
+                    logger.debug(f"SSE connection closed for {cache_key}, remaining connections: {self.active_sse_connections[cache_key]}")
+                    # Clean up if no active connections
+                    if self.active_sse_connections[cache_key] <= 0:
+                        del self.active_sse_connections[cache_key]
+                        # Clean up the cached app immediately to prevent memory leaks
+                        # This ensures workspace interface is closed when all SSE connections are done
+                        await self._cleanup_mcp_app(cache_key)
         
         except Exception as exp:
             logger.exception(f"Error in MCP SSE service: {exp}")
@@ -1624,32 +1647,22 @@ class MCPRoutingMiddleware:
     async def _handle_sse_message_request(self, scope, receive, send, workspace, service_id):
         """Handle MCP SSE message POST requests."""
         try:
-            # Get authentication info
-            # Create a mock Request object with the scope
-            request = Request(scope, receive=receive, send=send)
-            
-            # Login and get user info
-            user_info = await self.store.login_optional(request)
-            
-            # Check if we have a cached MCP app for this service
+            # Use cached MCP app
             cache_key = f"{workspace}/{service_id}"
-            
-            if cache_key not in self._mcp_cache:
+            if cache_key not in self.mcp_app_cache:
+                # Connection was lost or app not found, return 404
+                logger.warning(f"SSE session not found for {cache_key}")
                 await self._send_error_response(
-                    send, 404, f"SSE session not found for service {service_id}"
+                    send, 404, f"SSE session not found. Please reconnect."
                 )
                 return
             
-            # Use cached MCP app
-            mcp_app, api_context, api_task = self._mcp_cache[cache_key]
+            cache_entry = self.mcp_app_cache[cache_key]
+            mcp_app = cache_entry["app"] if isinstance(cache_entry, dict) else cache_entry
             adapter = mcp_app.adapter if hasattr(mcp_app, 'adapter') else mcp_app
             
-            try:
-                # Handle the SSE message POST request
-                await adapter.handle_sse_message(scope, receive, send)
-            except Exception as e:
-                logger.error(f"Error handling SSE message: {e}")
-                await self._send_error_response(send, 500, f"Error processing message: {e}")
+            # Handle the SSE message POST request
+            await adapter.handle_sse_message(scope, receive, send)
         
         except Exception as exp:
             logger.exception(f"Error in MCP SSE message service: {exp}")

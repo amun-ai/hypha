@@ -208,31 +208,53 @@
                     
                     // Check if we have a stored token
                     const storedToken = localStorage.getItem('hypha_token');
+                    const storedProfile = localStorage.getItem('hypha_user_profile');
+                    
                     if (storedToken) {
                         try {
-                            // Parse the token to get user info
+                            // Parse the token to check expiration
                             const decodedToken = parseJwt(storedToken);
                             if (decodedToken.exp * 1000 > Date.now()) {
                                 // Token is still valid
-                                const userId = decodedToken.id || decodedToken.sub;
-                                const userEmail = decodedToken.email || decodedToken[`${window.HYPHA_AUTH_NAMESPACE}email`];
+                                // Try to load stored profile data first
+                                if (storedProfile) {
+                                    try {
+                                        const profileData = JSON.parse(storedProfile);
+                                        setUser(profileData);
+                                    } catch (e) {
+                                        // If profile parsing fails, fallback to token data
+                                        const userId = decodedToken.id || decodedToken.sub;
+                                        const userEmail = decodedToken.email || decodedToken[`${window.HYPHA_AUTH_NAMESPACE}email`];
+                                        setUser({
+                                            sub: userId,
+                                            email: userEmail,
+                                            name: userId,
+                                        });
+                                    }
+                                } else {
+                                    // No stored profile, use token data
+                                    const userId = decodedToken.id || decodedToken.sub;
+                                    const userEmail = decodedToken.email || decodedToken[`${window.HYPHA_AUTH_NAMESPACE}email`];
+                                    setUser({
+                                        sub: userId,
+                                        email: userEmail,
+                                        name: userId,
+                                    });
+                                }
                                 
-                                setUser({
-                                    sub: userId,
-                                    email: userEmail,
-                                    name: userId,
-                                });
                                 setIsLoggedIn(true);
                                 // Set cookie for server authentication
                                 const maxAge = decodedToken.exp - Math.floor(Date.now() / 1000);
                                 document.cookie = `access_token=${storedToken}; path=/; max-age=${maxAge}; samesite=lax`;
                             } else {
-                                // Token expired, clear it
+                                // Token expired, clear everything
                                 localStorage.removeItem('hypha_token');
+                                localStorage.removeItem('hypha_user_profile');
                             }
                         } catch (e) {
                             console.error('Error parsing stored token:', e);
                             localStorage.removeItem('hypha_token');
+                            localStorage.removeItem('hypha_user_profile');
                         }
                     }
                 };
@@ -277,18 +299,20 @@
                     });
                     
                     if (userProfile && userProfile.token) {
-                        // Store token
+                        // Store token and profile data
                         localStorage.setItem('hypha_token', userProfile.token);
-                        
-                        // Use profile information directly - no need to parse JWT
-                        setUser({
+                        const profileData = {
                             sub: userProfile.user_id,
                             email: userProfile.email,
                             name: userProfile.name,
                             nickname: userProfile.nickname,
                             picture: userProfile.picture,
                             email_verified: userProfile.email_verified
-                        });
+                        };
+                        localStorage.setItem('hypha_user_profile', JSON.stringify(profileData));
+                        
+                        // Use profile information directly - no need to parse JWT
+                        setUser(profileData);
                         setIsLoggedIn(true);
                         
                         // Set cookie for server authentication
@@ -309,8 +333,9 @@
                 document.cookie = 'access_token=; path=/; max-age=0; samesite=lax';
                 document.cookie = 'hypha_version=; path=/; max-age=0; samesite=lax';
                 
-                // Clear localStorage token
+                // Clear localStorage token and profile
                 localStorage.removeItem('hypha_token');
+                localStorage.removeItem('hypha_user_profile');
                 
                 // Clear React state
                 setIsLoggedIn(false);
@@ -322,6 +347,7 @@
                 document.cookie = 'access_token=; path=/; max-age=0; samesite=lax';
                 document.cookie = 'hypha_version=; path=/; max-age=0; samesite=lax';
                 localStorage.removeItem('hypha_token');
+                localStorage.removeItem('hypha_user_profile');
                 
                 // Clear React state
                 setIsLoggedIn(false);

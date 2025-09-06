@@ -462,16 +462,14 @@ class RedisRPCConnection:
     
     _connections = {}  # Global registry of active connections: {workspace/client_id: connection}
 
-    _counter = Counter("rpc_call", "Counts the RPC calls", ["workspace"])
+    _counter = Counter("rpc_call_total", "Total RPC calls across all workspaces")
     _client_request_counter = Counter(
         "client_requests_total",
-        "Total requests from clients",
-        ["workspace", "client_id"],
+        "Total requests from all clients"
     )
     _client_load_gauge = Gauge(
-        "client_load",
-        "Current load per client (requests per minute)",
-        ["workspace", "client_id"],
+        "client_load_current",
+        "Current load (requests per minute)"
     )
     _connections_created_total = Counter(
         "redis_rpc_connections_created_total",
@@ -668,12 +666,9 @@ class RedisRPCConnection:
         # Use Redis event bus routing (local handlers are attached there)
         await self._event_bus.emit(f"{target_id}:msg", packed_message)
             
-        RedisRPCConnection._counter.labels(workspace=self._workspace).inc()
-
-        # Track client requests
-        RedisRPCConnection._client_request_counter.labels(
-            workspace=self._workspace, client_id=self._client_id
-        ).inc()
+        # Increment counters without creating per-workspace/client labels
+        RedisRPCConnection._counter.inc()
+        RedisRPCConnection._client_request_counter.inc()
 
         # Update load based on message rate (requests per minute) only for load balancing enabled clients
         if self._is_load_balancing_enabled():
@@ -712,9 +707,8 @@ class RedisRPCConnection:
             time_diff = current_time - metrics["last_time"]
             if time_diff >= 60:
                 rpm = metrics["last_requests"] / (time_diff / 60.0)
-                RedisRPCConnection._client_load_gauge.labels(
-                    workspace=self._workspace, client_id=self._client_id
-                ).set(rpm)
+                # Set gauge value without creating per-client labels
+                RedisRPCConnection._client_load_gauge.set(rpm)
                 metrics["last_time"] = current_time
                 metrics["last_requests"] = 0
         except Exception as e:
@@ -723,9 +717,8 @@ class RedisRPCConnection:
     def update_load(self, load_value: float):
         """Update the current load for this client."""
         if self._is_load_balancing_enabled():
-            RedisRPCConnection._client_load_gauge.labels(
-                workspace=self._workspace, client_id=self._client_id
-            ).set(load_value)
+            # Set gauge value without creating per-client labels
+            RedisRPCConnection._client_load_gauge.set(load_value)
 
     @classmethod
     def get_connection(cls, workspace: str, client_id: str):
@@ -741,10 +734,15 @@ class RedisRPCConnection:
             if not client_id.endswith("__rlb"):
                 return 0.0
 
-            metric = cls._client_load_gauge.labels(
-                workspace=workspace, client_id=client_id
-            )
-            return metric._value._value if hasattr(metric, "_value") else 0.0
+            # Get load from internal tracking instead of creating labels
+            client_key = f"{workspace}/{client_id}"
+            if hasattr(cls, "_client_metrics") and client_key in cls._client_metrics:
+                metrics = cls._client_metrics[client_key]
+                current_time = time.time()
+                time_diff = current_time - metrics["last_time"]
+                if time_diff > 0:
+                    return metrics["last_requests"] / (time_diff / 60.0)
+            return 0.0
         except Exception:
             return 0.0
 
@@ -792,7 +790,7 @@ class RedisRPCConnection:
             if RedisRPCConnection._tracker.is_registered(entity_id, "client"):
                 await RedisRPCConnection._tracker.remove_entity(entity_id, "client")
 
-        # Clean up metrics for load balancing enabled clients only
+        # Clean up load gauge metrics for load balancing enabled clients
         if self._is_load_balancing_enabled():
             client_key = f"{self._workspace}/{self._client_id}"
             if (
@@ -801,9 +799,7 @@ class RedisRPCConnection:
             ):
                 del RedisRPCConnection._client_metrics[client_key]
 
-            RedisRPCConnection._client_load_gauge.labels(
-                workspace=self._workspace, client_id=self._client_id
-            ).set(0)
+            RedisRPCConnection._client_load_gauge.set(0)
 
 
 class RedisEventBus:

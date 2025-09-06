@@ -890,6 +890,7 @@
                                                         worker.disabled = !isDisabled;
                                                     }
                                                     catch(err){
+                                                        console.error(err);
                                                         alert(`Failed to ${isDisabled ? 'enable' : 'disable'} worker: ${err.message}`);
                                                     }
                                                     finally{
@@ -3875,6 +3876,7 @@ license: "MIT"`);
                             await refreshArtifacts();
                         }
                     } catch (error) {
+                        console.error(error);
                         alert(`Failed to delete artifact with ID: ${artifactId}. Error: ${error.message || error}`);
                     } finally {
                         window.hideLoadingSpinner();
@@ -4187,6 +4189,7 @@ license: "MIT"`);
                         const headers = JSON.parse(authHeaders);
                         mcpConfig.mcpServers[serverName].headers = headers;
                     } catch (e) {
+                        console.error(e);
                         alert('Invalid JSON in auth headers');
                         return;
                     }
@@ -5328,6 +5331,7 @@ license: "MIT"`);
                     setWorkspaces(await ws.listWorkspaces());
                     setSelectedWorkspaceInfo(null);
                 } catch (error) {
+                    console.error(error);
                     alert(`Failed to delete workspace: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
@@ -5340,6 +5344,7 @@ license: "MIT"`);
                     await ws.createWorkspace({ ...workspaceData }, overwrite);
                     setWorkspaces(await ws.listWorkspaces());
                 } catch (error) {
+                    console.error(error);
                     alert(`Failed to create workspace: ${error}`);
                     throw error;
                 } finally {
@@ -5353,6 +5358,7 @@ license: "MIT"`);
                     const workspaceInfo = await ws.getWorkspaceInfo(workspaceId);
                     setSelectedWorkspaceInfo(workspaceInfo);
                 } catch (error) {
+                    console.error(error);
                     alert(`Failed to get workspace info: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
@@ -5370,6 +5376,7 @@ license: "MIT"`);
                     setWorkspaces(await ws.listWorkspaces());
                     setEditingWorkspace(null); // Close the modal after editing
                 } catch (error) {
+                    console.error(error);
                     alert(`Failed to update workspace: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
@@ -5387,6 +5394,7 @@ license: "MIT"`);
                     const workspaceInfo = await ws.getWorkspaceInfo(workspaceId);
                     setCurrentWorkspaceInfo(workspaceInfo);
                 } catch (error) {
+                    console.error(error);
                     alert(`Failed to bookmark workspace: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
@@ -5404,6 +5412,7 @@ license: "MIT"`);
                     const workspaceInfo = await ws.getWorkspaceInfo(workspaceId);
                     setCurrentWorkspaceInfo(workspaceInfo);
                 } catch (error) {
+                    console.error(error);
                     alert(`Failed to bookmark service: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
@@ -5421,6 +5430,7 @@ license: "MIT"`);
                     const workspaceInfo = await ws.getWorkspaceInfo(workspaceId);
                     setCurrentWorkspaceInfo(workspaceInfo);
                 } catch (error) {
+                    console.error(error);
                     alert(`Failed to unbookmark workspace: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
@@ -7042,7 +7052,8 @@ license: "MIT"`);
                             setRunningApps(running);
                             setWorkers(workers);
                         } catch (e) {
-                            alert(`Failed to list apps: ${e.message}`);
+                            console.error(e);
+                            alert(`Failed to list apps: ${e}`);
                         } finally {
                             setIsLoadingSpinnerVisible(false);
                         }
@@ -7054,6 +7065,7 @@ license: "MIT"`);
                             const files = await s3.listFiles();
                             setFiles(files);
                         } catch (e) {
+                            console.error(e);
                             alert(`Failed to list files: ${e.message}`);
                         } finally {
                             setIsLoadingSpinnerVisible(false);
@@ -7065,6 +7077,7 @@ license: "MIT"`);
                             const am = await ws.getService('public/artifact-manager', { case_conversion: 'camel' });
                             setAM(am);
                         } catch (e) {
+                            console.error(e)
                             alert(`Failed to list artifacts: ${e.message}`);
                         } finally {
                             setIsLoadingSpinnerVisible(false);

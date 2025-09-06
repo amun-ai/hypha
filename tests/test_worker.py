@@ -1372,6 +1372,10 @@ async def test_worker_death_session_cleanup(fastapi_server, test_user_token):
         def use_local_url(self):
             return True
             
+        @property
+        def visibility(self):
+            return "public"  # Make worker public so it can be accessed from public workspace
+            
         async def start(self, config, context=None):
             """Start a new worker session."""
             if isinstance(config, dict):
@@ -1457,7 +1461,9 @@ api.export({"test": test_function})
     app_id = app_info.get("id") or app_info.get("alias")
     
     # Start the app - it should use our test worker
-    session_info = await controller.start(app_id, worker_id=test_worker.service_id, wait_for_service=False)
+    # The worker_id needs to be in format 'workspace/client_id:service_id' 
+    worker_full_id = f"{worker_api.config.workspace}/{worker_client_id}:{test_worker.service_id}"
+    session_info = await controller.start(app_id, worker_id=worker_full_id, wait_for_service=False)
     session_id = session_info.get("id")
     
     # Verify the session is running
