@@ -32,15 +32,16 @@ jobs:
           - 6338:6379
         options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
       minio:
-        image: minio/minio:latest
+        image: quay.io/minio/minio:latest
         env:
           MINIO_ROOT_USER: minioadmin
           MINIO_ROOT_PASSWORD: minioadmin
+          MINIO_ADDRESS: ":9000"
+          MINIO_CONSOLE_ADDRESS: ":9001"
         ports:
           - 9000:9000
           - 9001:9001
-        options: --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:9000/minio/health/live || exit 1" --health-interval 10s --health-timeout 5s --health-retries 5
-        cmd: ["server", "/data", "--console-address", ":9001"]
+        options: server /data
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}
