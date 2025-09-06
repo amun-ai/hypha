@@ -1460,10 +1460,16 @@ class WorkspaceManager:
         )
 
         # Convert results to dictionaries and return
-        results["items"] = [
-            ServiceInfo.from_redis_dict(doc, in_bytes=False).model_dump()
-            for doc in results["items"]
-        ]
+        converted_items = []
+        for doc in results["items"]:
+            try:
+                service_info = ServiceInfo.from_redis_dict(doc, in_bytes=False)
+                converted_items.append(service_info.model_dump())
+            except Exception as e:
+                logger.warning(f"Failed to parse service from search result: {e}")
+                # Skip invalid service entries
+                continue
+        results["items"] = converted_items
         for item in results["items"]:
             item["id"] = re.sub(r"^[^|]+\|[^:]+:(.+)$", r"\1", item["id"]).split("@")[0]
 
@@ -1471,9 +1477,6 @@ class WorkspaceManager:
         if not include_unlisted:
             filtered_items = []
             for item in results["items"]:
-                # Handle None items gracefully
-                if item is None:
-                    continue
                 service_visibility = item.get("config", {}).get("visibility")
                 if service_visibility != "unlisted":
                     filtered_items.append(item)
