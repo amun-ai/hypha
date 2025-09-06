@@ -17,6 +17,7 @@ from fakeredis import aioredis
 
 from hypha_rpc import RPC
 from hypha_rpc.utils.schema import schema_method
+from hypha_rpc.rpc import RemoteException
 from pydantic import BaseModel, Field
 from hypha.core import RedisRPCConnection
 from sqlalchemy import (
@@ -2689,17 +2690,31 @@ class WorkspaceManager:
                 # Since we ARE the workspace manager, we return ourselves
                 # Pass the context to get_local_service (it's synchronous, not async)
                 return self._rpc.get_local_service("default", context=context)
+            
             service_api = await self._rpc.get_remote_service(
                 svc_info.id,
                 {"timeout": config.timeout, "case_conversion": config.case_conversion},
             )
             assert service_api, f"Failed to get service: {svc_info.id}"
+            
             workspace = svc_info.id.split("/")[0]
             service_api["config"]["workspace"] = workspace
             service_api["config"][
                 "url"
             ] = f"{self._server_info['public_base_url']}/{workspace}/services/{svc_info.id.split('/')[-1]}"
             return service_api
+        except asyncio.CancelledError:
+            # Client disconnected during service retrieval
+            logger.warning(f"Service retrieval cancelled for {service_id}, likely due to client disconnection")
+            raise ConnectionError(f"Client disconnected while retrieving service: {service_id}")
+        except RemoteException as e:
+            # Check if this is a wrapped CancelledError (common when client disconnects)
+            error_str = str(e)
+            if "CancelledError" in error_str and "TimeoutError" in error_str:
+                logger.warning(f"Service retrieval failed for {service_id}, likely due to client disconnection: {e}")
+                raise ConnectionError(f"Client disconnected while retrieving service: {service_id}") from e
+            # Re-raise other RemoteExceptions as-is
+            raise
         except KeyError as exp:
             if "@" in service_id:
                 app_id = service_id.split("@")[1]

@@ -7,12 +7,11 @@ via HTTP endpoints with the proper A2A protocol handling.
 
 import inspect
 import logging
-import os
-import uuid
 import asyncio
-from typing import Any, Dict, Optional, Union, Callable, AsyncGenerator
+from typing import Any, Dict, Optional, Callable
 from starlette.routing import Route
-from starlette.types import ASGIApp, Scope, Receive, Send
+from starlette.types import ASGIApp
+from starlette.routing import Match
 from starlette.requests import Request
 import json
 
@@ -332,12 +331,19 @@ class A2ARoutingMiddleware:
         self.base_path = base_path.rstrip("/") if base_path else ""
         self.store = store
 
-        # A2A route pattern: /{workspace}/a2a/{service_id}/{path:path}
-        # This creates a more specific route pattern for A2A services
-        # We need to handle both cases: with and without path
+        # A2A route patterns
+        # Main route: /{workspace}/a2a/{service_id}/{path:path}
         route = self.base_path.rstrip("/") + "/{workspace}/a2a/{service_id:path}"
         self.route = Route(route, endpoint=None)
-        logger.info(f"A2A middleware initialized with route pattern: {self.route.path}")
+        
+        # Info route for service information: /{workspace}/a2a-info/{service_id}
+        # Using a2a-info to avoid conflicts with the main route
+        info_route = self.base_path.rstrip("/") + "/{workspace}/a2a-info/{service_id}"
+        self.info_route = Route(info_route, endpoint=None)
+        
+        logger.info(f"A2A middleware initialized with route patterns:")
+        logger.info(f"  - Main: {self.route.path}")
+        logger.info(f"  - Info: {self.info_route.path}")
 
     def _get_authorization_header(self, scope):
         """Extract the Authorization header from the scope."""
@@ -368,9 +374,23 @@ class A2ARoutingMiddleware:
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
             path = scope.get("path", "N/A")
-            # Check if the current request path matches the A2A route
-            from starlette.routing import Match
-
+            
+            # Check if the current request path matches the info route first
+            info_match, info_params = self.info_route.matches(scope)
+            if info_match == Match.FULL:
+                path_params = info_params.get("path_params", {})
+                workspace = path_params["workspace"]
+                service_id = path_params["service_id"]
+                
+                logger.debug(
+                    f"A2A Middleware: Info route match - workspace='{workspace}', service_id='{service_id}'"
+                )
+                
+                # Return comprehensive agent information
+                await self._send_agent_info(send, workspace, service_id)
+                return
+            
+            # Check if the current request path matches the main A2A route
             match, params = self.route.matches(scope)
             path_params = params.get("path_params", {})
             if match == Match.FULL:
@@ -505,6 +525,221 @@ class A2ARoutingMiddleware:
             await self._send_error_response(
                 send, 500, f"Internal server error: {str(e)}"
             )
+
+    async def _send_agent_info(self, send, workspace, service_id):
+        """Send comprehensive A2A agent information including agent card, skills, and capabilities."""
+        # Handle empty service_id case
+        if not service_id:
+            message = {
+                "error": "A2A service ID required",
+                "message": "No service ID was provided in the URL.",
+                "help": "Please specify a service ID. URL format: /{workspace}/a2a/{service_id}",
+                "example": f"/{workspace}/a2a/your-service-id"
+            }
+            status_code = 404
+        else:
+            try:
+                # Get authentication info
+                from starlette.requests import Request
+                
+                # Create a minimal scope for auth check
+                scope = {
+                    "type": "http",
+                    "method": "GET",
+                    "headers": [],
+                    "query_string": b"",
+                }
+                
+                # Try to get the service and extract A2A capabilities
+                try:
+                    # Create a mock request for auth
+                    request = Request(scope, receive=None, send=None)
+                    user_info = await self.store.login_optional(request)
+                    
+                    # Get service through workspace interface
+                    async with self.store.get_workspace_interface(
+                        user_info, user_info.scope.current_workspace
+                    ) as api:
+                        # Build full service ID
+                        full_service_id = f"{workspace}/{service_id}"
+                        
+                        # Try to get service info
+                        try:
+                            service_info = await api.get_service_info(full_service_id, {})
+                            
+                            # Verify it's an A2A service
+                            if service_info.type != "a2a":
+                                message = {
+                                    "error": "Not an A2A service",
+                                    "message": f"Service '{service_id}' is not an A2A service (type: '{service_info.type}')",
+                                    "help": "This endpoint is for A2A services only.",
+                                }
+                                status_code = 400
+                            else:
+                                service = await api.get_service(full_service_id)
+                                
+                                # Extract agent card information
+                                agent_card_data = None
+                                
+                                # Try to get agent_card
+                                if "agent_card" in service:
+                                    agent_card_data = service["agent_card"]
+                                    # Handle callable agent_card
+                                    if callable(agent_card_data):
+                                        if inspect.iscoroutinefunction(agent_card_data):
+                                            agent_card_data = await agent_card_data()
+                                        else:
+                                            agent_card_data = agent_card_data()
+                                            if asyncio.isfuture(agent_card_data) or inspect.iscoroutine(agent_card_data):
+                                                agent_card_data = await agent_card_data
+                                elif "extended_agent_card" in service:
+                                    agent_card_data = service["extended_agent_card"]
+                                    # Handle callable extended_agent_card
+                                    if callable(agent_card_data):
+                                        if inspect.iscoroutinefunction(agent_card_data):
+                                            agent_card_data = await agent_card_data()
+                                        else:
+                                            agent_card_data = agent_card_data()
+                                            if asyncio.isfuture(agent_card_data) or inspect.iscoroutine(agent_card_data):
+                                                agent_card_data = await agent_card_data
+                                
+                                # If no agent card found, create default
+                                if not agent_card_data:
+                                    agent_card_data = {
+                                        "protocol_version": "0.3.0",
+                                        "name": service_info.id,
+                                        "description": f"A2A agent for Hypha service {service_info.id}",
+                                        "url": f"/{workspace}/a2a/{service_id}",
+                                        "version": "1.0.0",
+                                        "capabilities": {
+                                            "streaming": True,
+                                            "push_notifications": False,
+                                            "state_transition_history": False,
+                                        },
+                                        "default_input_modes": ["text"],
+                                        "default_output_modes": ["text"],
+                                        "skills": [
+                                            {
+                                                "id": "chat",
+                                                "name": "Chat",
+                                                "description": "Chat with the agent",
+                                                "tags": ["chat"],
+                                                "examples": ["hello", "help"],
+                                            }
+                                        ],
+                                    }
+                                
+                                # Ensure required fields are present
+                                if "capabilities" not in agent_card_data:
+                                    agent_card_data["capabilities"] = {
+                                        "streaming": True,
+                                        "push_notifications": False,
+                                        "state_transition_history": False,
+                                    }
+                                
+                                if "default_input_modes" not in agent_card_data:
+                                    agent_card_data["default_input_modes"] = ["text"]
+                                
+                                if "default_output_modes" not in agent_card_data:
+                                    agent_card_data["default_output_modes"] = ["text"]
+                                
+                                if "skills" not in agent_card_data:
+                                    agent_card_data["skills"] = [
+                                        {
+                                            "id": "chat",
+                                            "name": "Chat",
+                                            "description": "Chat with the agent",
+                                            "tags": ["chat"],
+                                            "examples": ["hello", "help"],
+                                        }
+                                    ]
+                                
+                                # Extract additional service information
+                                service_functions = []
+                                if "run" in service:
+                                    service_functions.append("run")
+                                if "agent_card" in service:
+                                    service_functions.append("agent_card")
+                                if "extended_agent_card" in service:
+                                    service_functions.append("extended_agent_card")
+                                
+                                # Build comprehensive response
+                                message = {
+                                    "service": {
+                                        "id": service_info.id,
+                                        "name": getattr(service_info, 'name', service_info.id),
+                                        "type": "a2a",
+                                        "description": getattr(service_info, 'description', 'A2A agent service'),
+                                    },
+                                    "endpoints": {
+                                        "a2a": f"/{workspace}/a2a/{service_id}",
+                                        "info": f"/{workspace}/a2a-info/{service_id}",
+                                    },
+                                    "agent_card": agent_card_data,
+                                    "service_functions": service_functions,
+                                    "help": "Use the A2A endpoint for agent communication following the A2A protocol.",
+                                }
+                                status_code = 200
+                            
+                        except Exception as e:
+                            if "not found" in str(e).lower() or "permission denied" in str(e).lower():
+                                # Service not found or not accessible
+                                message = {
+                                    "error": "Service not found or not accessible",
+                                    "message": f"The service '{service_id}' was not found in workspace '{workspace}' or you don't have permission to access it.",
+                                    "help": "Ensure the service exists and you have permission to access it.",
+                                }
+                                status_code = 404
+                            else:
+                                raise
+                            
+                except Exception as e:
+                    logger.warning(f"Failed to get service info for {service_id}: {e}")
+                    # Fallback to basic info without service details
+                    message = {
+                        "service": {
+                            "id": service_id,
+                            "workspace": workspace,
+                            "status": "unknown",
+                        },
+                        "endpoints": {
+                            "a2a": f"/{workspace}/a2a/{service_id}",
+                            "info": f"/{workspace}/a2a-info/{service_id}",
+                        },
+                        "help": "Use the A2A endpoint for agent communication.",
+                        "note": "Could not retrieve detailed service information. The service may not be running or accessible.",
+                    }
+                    status_code = 200
+                    
+            except Exception as e:
+                logger.error(f"Error getting A2A service info: {e}")
+                message = {
+                    "error": "Failed to retrieve service information",
+                    "message": str(e),
+                    "endpoints": {
+                        "a2a": f"/{workspace}/a2a/{service_id}",
+                        "info": f"/{workspace}/a2a-info/{service_id}",
+                    },
+                }
+                status_code = 500
+        
+        response_body = json.dumps(message, indent=2).encode()
+        await send(
+            {
+                "type": "http.response.start",
+                "status": status_code,
+                "headers": [
+                    [b"content-type", b"application/json"],
+                    [b"content-length", str(len(response_body)).encode()],
+                ],
+            }
+        )
+        await send(
+            {
+                "type": "http.response.body",
+                "body": response_body,
+            }
+        )
 
     async def _send_error_response(self, send, status_code, message):
         """Send an error response."""

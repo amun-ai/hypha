@@ -1397,7 +1397,7 @@ class TerminalWorker(BaseWorker):
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    async def write_to_terminal(
+    async def write_terminal(
         self,
         session_id: str,
         data: str,
@@ -1678,7 +1678,7 @@ class TerminalWorker(BaseWorker):
         service_config["resize_terminal"] = self.resize_terminal
         service_config["read_terminal"] = self.read_terminal
         service_config["get_screen_content"] = self.get_screen_content
-        service_config["write_to_terminal"] = self.write_to_terminal
+        service_config["write_terminal"] = self.write_terminal
         service_config["list_sessions"] = self.list_sessions
         service_config["attach"] = self.attach
         service_config["execute_stream"] = self.execute_stream
