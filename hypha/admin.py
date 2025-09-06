@@ -255,7 +255,6 @@ class AdminTerminal:
         self,
         rows: int = Field(..., description="Number of rows"),
         cols: int = Field(..., description="Number of columns"),
-        context: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """Resize the terminal window."""
         try:
@@ -268,7 +267,6 @@ class AdminTerminal:
     @schema_method
     async def read_terminal(
         self,
-        context: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """Read output from the terminal."""
         if not self._running:
@@ -289,7 +287,6 @@ class AdminTerminal:
     @schema_method
     async def get_screen_content(
         self,
-        context: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """Get the accumulated screen buffer content."""
         try:
@@ -303,7 +300,6 @@ class AdminTerminal:
     async def write_to_terminal(
         self,
         data: str = Field(..., description="Data to write to terminal"),
-        context: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """Write data to the terminal."""
         if not self._running:
@@ -355,7 +351,6 @@ class AdminTerminal:
         self,
         command: str = Field(..., description="Command to execute"),
         timeout: float = Field(5.0, description="Timeout in seconds"),
-        context: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """Execute a command in the terminal and wait for output.
         
@@ -477,7 +472,7 @@ class AdminUtilities:
         reason: str = Field("Admin requested disconnect", description="Disconnect reason"),
     ):
         """Force disconnect a client from the server."""
-        return self.store.kickout_client(workspace, client_id, code, reason)
+        return await self.store.kickout_client(workspace, client_id, code, reason)
     
     @schema_method
     async def list_workspaces(self):
@@ -505,7 +500,7 @@ class AdminUtilities:
             "id": "admin-utils",
             "name": "Admin Utilities",
             "config": {
-                "visibility": "public",
+                "visibility": "protected",
                 "require_context": False,
             },
             "list_servers": self.list_servers,

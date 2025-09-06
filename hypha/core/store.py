@@ -283,9 +283,9 @@ class RedisStore:
 
 
     @schema_method
-    def kickout_client(self, workspace: str, client_id: str, code: int, reason: str):
+    async def kickout_client(self, workspace: str, client_id: str, code: int, reason: str):
         """Force disconnect a client."""
-        return self._websocket_server.force_disconnect(
+        return await self._websocket_server.force_disconnect(
             workspace, client_id, code, reason
         )
 
