@@ -9,6 +9,7 @@ import tempfile
 import time
 import uuid
 from threading import Thread
+import secrets
 
 # Set JWT_SECRET environment variables BEFORE importing any hypha modules
 # This ensures all modules use the same JWT_SECRET
@@ -395,6 +396,10 @@ def redis_server():
 @pytest_asyncio.fixture(name="fastapi_server", scope="session")
 def fastapi_server_fixture(minio_server, postgres_server):
     """Start server as test fixture and tear down after test."""
+    # Generate a strong root token for testing
+    ROOT_TOKEN = secrets.token_urlsafe(32)
+    os.environ["HYPHA_ROOT_TOKEN"] = ROOT_TOKEN  # Store for tests to use
+    
     with subprocess.Popen(
         [
             sys.executable,
@@ -420,6 +425,7 @@ def fastapi_server_fixture(minio_server, postgres_server):
             f"--triton-servers=http://127.0.0.1:{TRITON_PORT}",
             "--static-mounts=/tests:./tests",
             "--s3-cleanup-period=2",
+            f"--root-token={ROOT_TOKEN}",
             "--startup-functions",
             "hypha.utils:_example_hypha_startup",
             "./tests/example-startup-function.py:hypha_startup",

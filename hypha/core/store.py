@@ -43,10 +43,12 @@ from hypha.core.auth import (
     AUTH0_AUDIENCE,
     AUTH0_ISSUER,
     LOGIN_SERVICE_URL,
+    set_root_token,
 )
 from hypha.core.workspace import WorkspaceManager
 from hypha.startup import run_startup_function
 from hypha.utils import random_id
+from hypha.admin import AdminUtilities, setup_admin_services
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
@@ -147,6 +149,8 @@ class RedisStore:
         reconnection_token_life_time=2 * 24 * 60 * 60,
         activity_check_interval=10,
         enable_s3_for_anonymous_users=False,
+        root_token=None,
+        enable_admin_terminal=False,
     ):
         """Initialize the redis store."""
         self._s3_controller = None
@@ -256,6 +260,7 @@ class RedisStore:
         self._redis_cache = RedisCache(serializer=PickleSerializer())
         self._redis_cache.client = self._redis
         self._root_user = None
+        self._root_token = root_token
         self._event_bus = RedisEventBus(self._redis)
 
         self._tracker = None
@@ -263,16 +268,24 @@ class RedisStore:
         # self._house_keeping_task = None
 
         self._shared_anonymous_user = None
+        self._admin_utils = None
+        self._enable_admin_terminal = enable_admin_terminal
+        
+        # Set root token immediately if provided
+        if self._root_token:
+            set_root_token(self._root_token)
+            logger.info(f"Root token configured in RedisStore.__init__: {self._root_token[:10]}...")
 
     def set_websocket_server(self, websocket_server):
         """Set the websocket server."""
         assert self._websocket_server is None, "Websocket server already set"
         self._websocket_server = websocket_server
 
+
     @schema_method
-    def kickout_client(self, workspace: str, client_id: str, code: int, reason: str):
+    async def kickout_client(self, workspace: str, client_id: str, code: int, reason: str):
         """Force disconnect a client."""
-        return self._websocket_server.force_disconnect(
+        return await self._websocket_server.force_disconnect(
             workspace, client_id, code, reason
         )
 
@@ -540,6 +553,29 @@ class RedisStore:
         self._tracker.register_entity_removed_callback(self._remove_tracker_entity)
 
         await self.setup_root_user()
+        # Set the root token for authentication if provided
+        if self._root_token:
+            # Validate root token complexity
+            if len(self._root_token) < 32:
+                raise ValueError(
+                    "Root token must be at least 32 characters long for security. "
+                    "Use a strong, randomly generated token like: "
+                    "python -c 'import secrets; print(secrets.token_urlsafe(32))'"
+                )
+            # Check for simple/weak tokens
+            simple_tokens = [
+                "test", "root", "admin", "password", "token", "secret", 
+                "123", "abc", "hypha", "default"
+            ]
+            token_lower = self._root_token.lower()
+            for simple in simple_tokens:
+                if simple in token_lower and len(self._root_token) < 64:
+                    raise ValueError(
+                        f"Root token appears to be too simple (contains '{simple}'). "
+                        "Please use a strong, randomly generated token. "
+                        "Generate one with: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
+                    )
+            # Root token is already set in __init__
         await self.check_and_cleanup_servers()
         self._workspace_manager = await self.register_workspace_manager()
 
@@ -674,21 +710,35 @@ class RedisStore:
             silent=False,
             timeout=20,
         )
-        await self._root_workspace_interface.register_service(
-            {
-                "id": "admin-utils",
-                "name": "Admin Utilities",
-                "config": {
-                    "visibility": "protected",
-                    "require_context": False,
-                },
-                "list_servers": self.list_servers,
-                "kickout_client": self.kickout_client,
-                "list_workspaces": self.list_all_workspaces,
-                "unload_workspace": self.unload_workspace,
-                "get_metrics": self.get_metrics,
-            }
+        
+        # Setup admin utilities with optional terminal
+        self._admin_utils = await setup_admin_services(
+            self, 
+            enable_terminal=self._enable_admin_terminal
         )
+        
+        # Register the admin service
+        await self._root_workspace_interface.register_service(
+            self._admin_utils.get_service_api()
+        )
+        
+        # If terminal is enabled, setup the web interface
+        if self._enable_admin_terminal and self._admin_utils.terminal:
+            try:
+                # Start the terminal
+                await self._admin_utils.terminal.start_terminal()
+                
+                # Register the web interface
+                from hypha.admin import register_admin_terminal_web_interface
+                await register_admin_terminal_web_interface(
+                    self._root_workspace_interface,
+                    f"{self._root_user.get_workspace()}/admin-utils",
+                    self.public_base_url,
+                    self._root_user.get_workspace()
+                )
+                logger.info("Admin terminal web interface registered")
+            except Exception as e:
+                logger.error(f"Failed to register admin terminal web interface: {e}")
 
     @schema_method
     async def unload_workspace(self, workspace: str, wait: bool = False, timeout=10):

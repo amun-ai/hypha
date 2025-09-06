@@ -219,6 +219,27 @@ def _parse_token(authorization: str, expected_workspace: str = None):
     
     if not token:
         raise ValueError("Token is empty")
+    
+    # Check if this is the root token FIRST, before any JWT decoding
+    global _current_root_token
+    logger.info(f"_parse_token called with token type: {type(token)}, length: {len(token) if token else 0}")
+    logger.info(f"Token first 50 chars: {repr(token[:50] if token else 'None')}")
+    logger.info(f"Current root token first 50 chars: {repr(_current_root_token[:50] if _current_root_token else 'None')}")
+    logger.info(f"Token match check: current={_current_root_token is not None}, match={token == _current_root_token if _current_root_token else False}")
+    
+    # Try stripping whitespace in case the browser adds some
+    if _current_root_token and (token == _current_root_token or (isinstance(token, str) and token.strip() == _current_root_token)):
+        logger.info("Root token authenticated successfully")
+        # Return root user info
+        return UserInfo(
+            id="root",
+            is_anonymous=False,
+            email=None,
+            parent=None,
+            roles=["admin"],
+            scope=create_scope("*#a", current_workspace=expected_workspace or "ws-user-root"),
+            expires_at=None,
+        )
 
     # If expected_workspace is provided, extract and verify workspace before full validation
     if expected_workspace:
@@ -247,6 +268,7 @@ def _parse_token(authorization: str, expected_workspace: str = None):
 
 
 _current_auth_function = None
+_current_root_token = None
 _current_get_token_function = None
 
 
@@ -255,6 +277,15 @@ async def set_parse_token_function(auth_function: Callable):
     global _current_auth_function
     _current_auth_function = auth_function
     logger.info("Custom parse_token function has been set")
+
+
+def set_root_token(root_token: str):
+    """Set the root token for authentication."""
+    global _current_root_token
+    _current_root_token = root_token
+    if root_token:
+        logger.info("Root token has been configured")
+
 
 async def set_get_token_function(get_token_function: Callable):
     """Set the custom token extraction function.
