@@ -294,7 +294,7 @@ def postgres_server():
                     "-p",
                     f"{POSTGRES_PORT}:5432",
                     "-d",
-                    "postgres:12.21",
+                    "pgvector/pgvector:0.8.1-pg17-trixie",
                 ]
             )
             time.sleep(2)  # Give the container time to initialize
@@ -303,7 +303,7 @@ def postgres_server():
     else:
         # Check if the PostgreSQL image exists locally
         image_exists = subprocess.run(
-            ["docker", "images", "-q", "postgres:12.21"],
+            ["docker", "images", "-q", "pgvector/pgvector:0.8.1-pg17-trixie"],
             capture_output=True,
             text=True,
         ).stdout.strip()
@@ -311,7 +311,7 @@ def postgres_server():
         if not image_exists:
             # Pull the PostgreSQL image if it does not exist locally
             print("Pulling PostgreSQL Docker image...")
-            subprocess.run(["docker", "pull", "postgres:12.21"], check=True)
+            subprocess.run(["docker", "pull", "pgvector/pgvector:0.8.1-pg17-trixie"], check=True)
         else:
             print("PostgreSQL Docker image already exists locally.")
 
@@ -329,7 +329,7 @@ def postgres_server():
                 "-p",
                 f"{POSTGRES_PORT}:5432",
                 "-d",
-                "postgres:12.21",
+                "pgvector/pgvector:0.8.1-pg17-trixie",
             ]
         )
         time.sleep(2)

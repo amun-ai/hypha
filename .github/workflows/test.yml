@@ -18,7 +18,7 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
     services:
       postgres:
-        image: postgres:latest
+        image: pgvector/pgvector:0.8.1-pg17-trixie
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: mysecretpassword

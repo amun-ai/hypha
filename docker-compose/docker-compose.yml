@@ -71,7 +71,7 @@ services:
       start_period: 60s
 
   postgres:
-    image: postgres:15-alpine
+    image: pgvector/pgvector:0.8.1-pg17-trixie
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     environment:

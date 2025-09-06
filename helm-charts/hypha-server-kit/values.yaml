@@ -183,6 +183,13 @@ minio:
 postgresql:
   enabled: true
   
+  # Override the default image to use pgvector
+  image:
+    registry: docker.io
+    repository: pgvector/pgvector
+    tag: 0.8.1-pg17-trixie
+    pullPolicy: IfNotPresent
+  
   auth:
     username: hypha
     database: hypha_db
