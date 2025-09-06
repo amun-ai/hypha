@@ -511,7 +511,8 @@ class RedisStore:
                         logger.warning(
                             f"Server {server_id} is not responding (error: {e}), cleaning up ALL its services..."
                         )
-                        # Clean up all services from the dead server across all workspaces
+                        # Clean up ALL services from the dead server across all workspaces
+                        # When a server is dead, we need to clean up everything it might have left behind
                         patterns = [
                             f"services:*|*:*/{server_id}:*@*",  # Direct server services
                             f"services:*|*:*/{server_id}-*:*@*",  # Services from server-generated clients
@@ -556,17 +557,37 @@ class RedisStore:
             await self._redis.delete(key)
     
     async def _clear_all_server_services(self):
-        """Clear all services registered by this server across all workspaces."""
-        # Pattern to match all services from this server
-        # Services can be registered with server_id or any client_id that starts with server_id
-        patterns = [
-            f"services:*|*:*/{self._server_id}:*@*",  # Direct server services
-            f"services:*|*:*/{self._server_id}-*:*@*",  # Services from server-generated clients
-            f"services:*|*:*/manager-{self._server_id}:*@*",  # Manager services
+        """Clear services registered directly by this server during graceful shutdown.
+        
+        Note: This only cleans up services registered by the server itself,
+        NOT services registered by other clients or servers.
+        """
+        # Only clean up services directly registered by this server
+        # We keep track of specific client IDs that belong to this server
+        server_client_ids = [
+            self._server_id,  # The server's main client ID
+            f"manager-{self._server_id}",  # The manager service client ID
         ]
         
+        # Also include the root and public workspace interface client IDs if they exist
+        if self._root_workspace_interface:
+            try:
+                root_client_id = self._root_workspace_interface.rpc.get_client_info()["id"]
+                server_client_ids.append(root_client_id)
+            except:
+                pass
+                
+        if self._public_workspace_interface:
+            try:
+                public_client_id = self._public_workspace_interface.rpc.get_client_info()["id"]
+                server_client_ids.append(public_client_id)
+            except:
+                pass
+        
         all_keys = []
-        for pattern in patterns:
+        for client_id in server_client_ids:
+            # Pattern to match services from this specific client
+            pattern = f"services:*|*:*/{client_id}:*@*"
             keys = await self._redis.keys(pattern)
             all_keys.extend(keys)
         
@@ -1154,7 +1175,8 @@ class RedisStore:
         self._ready = False
         logger.info(f"Tearing down the redis store for server {self._server_id}...")
         
-        # First, clear all services registered by this server
+        # Clean up all services registered by THIS server during graceful shutdown
+        # This ensures we don't leave orphaned services in Redis
         try:
             logger.info(f"Clearing all services for server {self._server_id}")
             await self._clear_all_server_services()

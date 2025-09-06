@@ -241,8 +241,13 @@ async def test_normal_disconnect_cleanup(fastapi_server):
 async def test_server_disconnection_cleanup(redis_server):
     """Test that dead servers are properly cleaned up during rolling updates."""
     
+    # Parse the redis URL to get the port
+    import urllib.parse
+    parsed_url = urllib.parse.urlparse(redis_server)
+    redis_port = parsed_url.port or 6379
+    
     # Get Redis client for verification
-    redis_client = Redis(host="localhost", port=REDIS_PORT, decode_responses=True)
+    redis_client = Redis(host="localhost", port=redis_port, decode_responses=True)
     
     # Clear any existing data
     redis_client.flushall()
@@ -340,7 +345,8 @@ async def test_server_disconnection_cleanup(redis_server):
     server2_services_after = redis_client.keys("services:*:*/rolling-update-server-2:*")
     assert len(server2_services_after) > 0, "Server 2 services should still exist"
     
-    # Check that we still have the correct number of hypha-login services
+    # Check that we still have hypha-login service from server 2
+    # Note: Server 1's hypha-login was cleaned up during its graceful shutdown
     login_services_after = redis_client.keys("services:*:public/*:hypha-login@*")
     assert len(login_services_after) > 0, "Should still have hypha-login service from server 2"
     
