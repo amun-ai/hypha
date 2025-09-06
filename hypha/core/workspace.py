@@ -352,6 +352,48 @@ class WorkspaceManager:
         assert self._client_id, "client id must not be empty."
         return self._client_id
 
+    async def _ensure_services_collection(self):
+        """Ensure the services vector collection exists."""
+        if not self._enable_service_search or not self._vector_search:
+            return
+        
+        try:
+            # Check if collection exists by trying to get info about it
+            await self._vector_search.get_collection_info("services")
+        except Exception:
+            # Collection doesn't exist, create it
+            logger.info("Services vector collection doesn't exist, creating it...")
+            await self._vector_search.create_collection(
+                collection_name="services",
+                vector_fields=[
+                    {"type": "TAG", "name": "id"},
+                    {"type": "TEXT", "name": "name"},
+                    {"type": "TAG", "name": "type"},
+                    {"type": "TEXT", "name": "description"},
+                    {"type": "TEXT", "name": "docs"},
+                    {"type": "TAG", "name": "app_id"},
+                    {"type": "TEXT", "name": "service_schema"},
+                    {
+                        "type": "VECTOR",
+                        "name": "service_embedding",
+                        "algorithm": "FLAT",
+                        "attributes": {
+                            "TYPE": "FLOAT32",
+                            "DIM": 384,
+                            "DISTANCE_METRIC": "COSINE",
+                        },
+                    },
+                    {"type": "TAG", "name": "visibility"},
+                    {"type": "TAG", "name": "require_context"},
+                    {"type": "TAG", "name": "workspace"},
+                    {"type": "TAG", "name": "flags", "separator": ","},
+                    {"type": "TAG", "name": "singleton"},
+                    {"type": "TEXT", "name": "created_by"},
+                ],
+                overwrite=True,
+            )
+            logger.info("Services vector collection created successfully")
+
     async def setup(
         self,
         service_id="default",
@@ -388,35 +430,7 @@ class WorkspaceManager:
                 prefix=None,
                 cache_dir=self._cache_dir,
             )
-            await self._vector_search.create_collection(
-                collection_name="services",
-                vector_fields=[
-                    {"type": "TAG", "name": "id"},
-                    {"type": "TEXT", "name": "name"},
-                    {"type": "TAG", "name": "type"},
-                    {"type": "TEXT", "name": "description"},
-                    {"type": "TEXT", "name": "docs"},
-                    {"type": "TAG", "name": "app_id"},
-                    {"type": "TEXT", "name": "service_schema"},
-                    {
-                        "type": "VECTOR",
-                        "name": "service_embedding",
-                        "algorithm": "FLAT",
-                        "attributes": {
-                            "TYPE": "FLOAT32",
-                            "DIM": 384,
-                            "DISTANCE_METRIC": "COSINE",
-                        },
-                    },
-                    {"type": "TAG", "name": "visibility"},
-                    {"type": "TAG", "name": "require_context"},
-                    {"type": "TAG", "name": "workspace"},
-                    {"type": "TAG", "name": "flags", "separator": ","},
-                    {"type": "TAG", "name": "singleton"},
-                    {"type": "TEXT", "name": "created_by"},
-                ],
-                overwrite=True,
-            )
+            await self._ensure_services_collection()
         self._initialized = True
         
 
@@ -1434,6 +1448,9 @@ class WorkspaceManager:
         if not self._enable_service_search:
             raise RuntimeError("Service search is not enabled.")
 
+        # Ensure the services collection exists before searching
+        await self._ensure_services_collection()
+
         current_workspace = context["ws"]
         # Generate embedding if text_query is provided
         if isinstance(query, str):
@@ -1477,9 +1494,10 @@ class WorkspaceManager:
         if not include_unlisted:
             filtered_items = []
             for item in results["items"]:
-                service_visibility = item.get("config", {}).get("visibility")
-                if service_visibility != "unlisted":
-                    filtered_items.append(item)
+                if item is not None:  # Skip None items
+                    service_visibility = item.get("config", {}).get("visibility")
+                    if service_visibility != "unlisted":
+                        filtered_items.append(item)
             results["items"] = filtered_items
 
         if pagination:
@@ -2090,6 +2108,8 @@ class WorkspaceManager:
                     vector_data["service_embedding"] = np.frombuffer(vector_data["service_embedding"], dtype=np.float32)
                 logger.info(f"Adding new service to vector search: id={vector_data['id']}, workspace={vector_data['workspace']}, visibility={vector_data['visibility']}, has_embedding={'service_embedding' in vector_data}")
                 try:
+                    # Ensure the services collection exists before adding vectors
+                    await self._ensure_services_collection()
                     await self._vector_search.add_vectors(
                         "services",
                         [vector_data],
