@@ -271,6 +271,7 @@ def create_application(args):
         yield
         # Emit the shutdown event
         await store.get_event_bus().emit_local("shutdown")
+        logger.info(f"Shutting down Hypha server {store._server_id}...")
         await store.teardown()
         await asyncio.sleep(0.1)
         await websocket_server.stop()
