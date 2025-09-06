@@ -1225,14 +1225,34 @@ class WorkspaceManager:
 
     async def _list_client_keys(self, workspace: str):
         """List all client keys in the workspace."""
-        pattern = f"services:*|*:{workspace}/*:built-in@*"
+        # First, try to find all services for this workspace (not just built-in)
+        pattern = f"services:*|*:{workspace}/*:*@*"
         keys = await self._redis.keys(pattern)
         client_keys = set()
         for key in keys:
             # Extract the client ID from the service key
-            key_parts = key.decode("utf-8").split("/")
-            client_id = key_parts[1].split(":")[0]
-            client_keys.add(workspace + "/" + client_id)
+            # Format: services:{visibility}|{service_id}:{workspace}/{client_id}:{service_name}@{app}
+            key_str = key.decode("utf-8")
+            # Split by workspace to find the client part
+            if f":{workspace}/" in key_str:
+                parts_after_ws = key_str.split(f":{workspace}/")[1]
+                # Extract client_id (everything before the next colon)
+                if ":" in parts_after_ws:
+                    client_id = parts_after_ws.split(":")[0]
+                    client_keys.add(workspace + "/" + client_id)
+        
+        # If no services found, check for client keys directly in Redis
+        if not client_keys:
+            # Try alternative pattern for clients
+            client_pattern = f"clients:{workspace}/*"
+            client_keys_raw = await self._redis.keys(client_pattern)
+            for key in client_keys_raw:
+                key_str = key.decode("utf-8")
+                # Extract client_id from clients:{workspace}/{client_id}
+                if f"clients:{workspace}/" in key_str:
+                    client_id = key_str.split(f"clients:{workspace}/")[1]
+                    client_keys.add(workspace + "/" + client_id)
+        
         return list(client_keys)
 
     @schema_method
@@ -1271,12 +1291,45 @@ class WorkspaceManager:
                 logger.warning(f"Permission check failed in ping_client: {e}")
                 return f"Failed to ping client {client_id}: {e}"
         
+        # First try the built-in service
         try:
             svc = await self._rpc.get_remote_service(
                 client_id + ":built-in", {"timeout": timeout}
             )
             return await svc.ping("ping")  # should return "pong"
         except Exception as e:
+            # If built-in service fails, try to find any other service for this client
+            workspace_id, client_name = client_id.split("/")
+            pattern = f"services:*|*:{workspace_id}/{client_name}:*@*"
+            keys = await self._redis.keys(pattern)
+            
+            if keys:
+                # Try to ping using the first available service
+                for key in keys[:3]:  # Try up to 3 services
+                    try:
+                        # Extract service ID from key
+                        key_str = key.decode("utf-8")
+                        # Format: services:{visibility}|{service_id}:{workspace}/{client_id}:{service_name}@{app}
+                        if "|" in key_str:
+                            service_full_id = key_str.split("|")[1].split("@")[0]
+                            # Try to get this service
+                            svc = await self._rpc.get_remote_service(
+                                service_full_id, {"timeout": timeout}
+                            )
+                            # Try to call echo or ping method if available
+                            if hasattr(svc, "ping"):
+                                return await svc.ping("ping")
+                            elif hasattr(svc, "echo"):
+                                result = await svc.echo("ping")
+                                return "pong" if result == "ping" else f"Client responded: {result}"
+                            else:
+                                # Just check if we can get service info - if yes, client is alive
+                                if hasattr(svc, "_config"):
+                                    return "pong"  # Client is alive but no ping method
+                    except Exception:
+                        continue  # Try next service
+            
+            # All attempts failed
             return f"Failed to ping client {client_id}: {e}"
 
     def _convert_filters_to_hybrid_query(self, filters: dict) -> str:
@@ -1441,6 +1494,10 @@ class WorkspaceManager:
         include_app_services: bool = Field(
             False,
             description="Whether to include services from installed applications that are not currently running. These services are discovered from application artifact manifests.",
+        ),
+        prioritize_running_services: bool = Field(
+            False,
+            description="When True and include_app_services is True, prioritize returning running services over non-running app services when both exist for the same client and service ID.",
         ),
         context: Optional[dict] = None,
     ):
@@ -1735,6 +1792,29 @@ class WorkspaceManager:
                 # Process artifacts to extract all services at once
                 existing_service_ids = {svc.get("id") for svc in services}
                 
+                # Build a map of concrete services for abstract filtering
+                concrete_services_map = {}
+                if prioritize_running_services:
+                    # Map service patterns without specific client IDs to track concrete implementations
+                    # E.g., "ws-user-github|478667/_rapp_charm-cathedral-75264096__rlb:webcontainer-compiler-worker"
+                    for svc_id in existing_service_ids:
+                        if svc_id and "/" in svc_id and ":" in svc_id:
+                            # Extract workspace/client:service pattern
+                            parts = svc_id.split("/")
+                            if len(parts) == 2:
+                                ws_part = parts[0]
+                                client_service = parts[1].split(":")
+                                if len(client_service) == 2:
+                                    client_part = client_service[0]
+                                    service_part = client_service[1].split("@")[0]  # Remove @app-id if present
+                                    # Check if this is a concrete service (not containing *)
+                                    if "*" not in client_part:
+                                        # Create a key for the abstract version
+                                        abstract_key = f"{ws_part}/*:{service_part}"
+                                        if abstract_key not in concrete_services_map:
+                                            concrete_services_map[abstract_key] = []
+                                        concrete_services_map[abstract_key].append(svc_id)
+                
                 for artifact in all_artifacts:
                     manifest = artifact.get("manifest", {})
                     app_services = manifest.get("services", [])
@@ -1755,6 +1835,16 @@ class WorkspaceManager:
                                 service_id_with_app = f"{original_service_id}@{artifact_app_id}"
                         else:
                             continue  # Skip if no service ID
+                        
+                        # Check if this is an abstract service and if we should exclude it
+                        if prioritize_running_services and "*" in service_id_with_app:
+                            # Check if a concrete version exists
+                            # Extract the base pattern without @app-id
+                            base_service_id = service_id_with_app.split("@")[0]
+                            if base_service_id in concrete_services_map and concrete_services_map[base_service_id]:
+                                # Concrete implementation exists, skip this abstract service
+                                logger.debug(f"Skipping abstract service {service_id_with_app} because concrete implementations exist: {concrete_services_map[base_service_id]}")
+                                continue
                             
                         service_dict = {
                             "id": service_id_with_app,
@@ -1826,8 +1916,7 @@ class WorkspaceManager:
                     # Applications collection doesn't exist yet
                 logger.debug("Applications collection not found, skipping app services")
             except Exception as e:
-                logger.warning(f"Failed to query app services from artifacts: {e}")
-                # Continue without app services rather than failing the entire request
+                raise e
 
         return services
 

@@ -108,7 +108,7 @@ async def test_cleanup_on_abrupt_disconnect(fastapi_server):
     
     workspace = api.config["workspace"]
     
-    # Register a test service
+    # Register a test service (built-in is automatically registered)
     await api.register_service({
         "id": "test-service",
         "name": "Test Service",
@@ -116,10 +116,20 @@ async def test_cleanup_on_abrupt_disconnect(fastapi_server):
         "echo": lambda x: x
     })
     
-    # Verify service exists
+    # Register a non-built-in service like the user reported
+    await api.register_service({
+        "id": "mirror-robotic-arm-control",
+        "name": "Mirror Robotic Arm Control",
+        "type": "robotic",
+        "control": lambda cmd: f"Executing: {cmd}"
+    })
+    
+    # Verify services exist
     services = await api.list_services()
     test_services = [s for s in services if "test-service" in s.get("id", "")]
+    robotic_services = [s for s in services if "mirror-robotic-arm-control" in s.get("id", "")]
     assert len(test_services) > 0, "Test service should be registered"
+    assert len(robotic_services) > 0, "Robotic service should be registered"
     
     # Force disconnect without proper cleanup (simulate crash)
     # Access internal connection and force close
@@ -148,6 +158,36 @@ async def test_cleanup_on_abrupt_disconnect(fastapi_server):
             assert len(old_services) == 0, (
                 f"Found orphaned services after abrupt disconnect: {old_services}"
             )
+            
+            # Now test the cleanup function can detect stuck services
+            # Create another client that will be stuck
+            stuck_api = await connect_to_server(
+                {"server_url": WS_SERVER_URL, "client_id": "stuck-client"}
+            )
+            
+            await stuck_api.register_service({
+                "id": "stuck-service",
+                "name": "Stuck Service",
+                "process": lambda x: f"Processing: {x}"
+            })
+            
+            # Force disconnect to simulate stuck service
+            if hasattr(stuck_api, '_connection'):
+                conn = stuck_api._connection
+                if hasattr(conn, '_websocket') and conn._websocket:
+                    await conn._websocket.close(code=1006)
+            
+            await asyncio.sleep(1)
+            
+            # Run cleanup - should detect ALL stuck services (not just built-in)
+            cleanup_result = await checker.cleanup(workspace, timeout=3)
+            print(f"Cleanup result: {cleanup_result}")
+            
+            # Check if stuck client was removed
+            if "removed_clients" in cleanup_result:
+                assert f"{workspace}/stuck-client" in cleanup_result["removed_clients"], (
+                    f"Cleanup should have detected stuck-client but got: {cleanup_result}"
+                )
 
 
 async def test_normal_disconnect_cleanup(fastapi_server):

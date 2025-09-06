@@ -704,6 +704,22 @@ class ServerAppController:
         worker.id = worker_id
         return worker
 
+    async def _get_worker_service_info(self, service_id: str, workspace) -> Optional[Dict[str, Any]]:
+        if workspace == "public":
+            workspace_api = await self.store.get_public_api()
+            if "@" in service_id:
+                worker_service = await workspace_api.get_service_info(service_id, {"read_app_manifest": True})
+            else:
+                worker_service = await workspace_api.get_service(service_id)
+            return worker_service
+
+        async with self.store.get_workspace_interface(self.store.get_root_user(), workspace) as workspace_api:
+            if "@" in service_id:
+                worker_service = await workspace_api.get_service_info(service_id, {"read_app_manifest": True})
+            else:
+                worker_service = await workspace_api.get_service(service_id)
+            return worker_service
+
     @schema_method
     async def get_server_app_workers(
         self, 
@@ -747,6 +763,7 @@ class ServerAppController:
                 workspace_svcs = await self.store._workspace_manager.list_services(
                     {"type": "server-app-worker"}, 
                     include_app_services=True,  # Include workers from app manifests
+                    prioritize_running_services=True,  # Exclude abstract services when concrete ones exist
                     context=context
                 )
                 logger.info(
@@ -766,19 +783,16 @@ class ServerAppController:
                     continue
                 
                 try:
-                    # We need to get the actual service object to access supported_types
-                    user_info = UserInfo.from_context(context)
-                    async with self.store.get_workspace_interface(user_info, workspace) as ws:
-                        # Get the actual service object
-                        worker_service = await ws.get_service(svc["id"])
-                        # Now we can access the supported_types property
-                        supported_types = getattr(worker_service, "supported_types", [])
-                        logger.debug(f"Service {svc['id']} has supported_types: {supported_types}, checking for app_type: {app_type}")
-                        if app_type in supported_types:
-                            filtered_workspace_svcs.append(svc)
-                            logger.debug(
-                                f"Workspace service {svc['id']} supports app_type {app_type}"
-                            )
+                    # Get the actual service object
+                    worker_service_info = await self._get_worker_service_info(svc["id"], workspace)
+                    # Now we can access the supported_types property
+                    supported_types = getattr(worker_service_info, "supported_types", [])
+                    logger.debug(f"Service {svc['id']} has supported_types: {supported_types}, checking for app_type: {app_type}")
+                    if app_type in supported_types:
+                        filtered_workspace_svcs.append(svc)
+                        logger.debug(
+                            f"Workspace service {svc['id']} supports app_type {app_type}"
+                        )
                 except Exception as e:
                     logger.warning(
                         f"Failed to get full workspace service for {svc['id']}: {e}", exc_info=True
@@ -809,7 +823,8 @@ class ServerAppController:
             
             public_svcs = await server.list_services(
                 {"type": "server-app-worker"},
-                include_app_services=True  # Include workers from app manifests
+                include_app_services=True,  # Include workers from app manifests
+                prioritize_running_services=True  # Exclude abstract services when concrete ones exist
             )
             logger.info(
                 f"Found {len(public_svcs)} server-app-worker services in public workspace: {[svc['id'] for svc in public_svcs]}"
@@ -834,7 +849,7 @@ class ServerAppController:
                             # to check its supported_types property
                             try:
                                 # Get the actual service object which has supported_types
-                                worker_svc = await server.get_service(svc["id"])
+                                worker_svc = await self._get_worker_service_info(svc["id"], "public")
                                 # Check if it has supported_types attribute/property
                                 supported_types = worker_svc.supported_types
                             except Exception:
@@ -1049,6 +1064,7 @@ class ServerAppController:
                 workspace_svcs = await self.store._workspace_manager.list_services(
                     {"type": "server-app-worker"}, 
                     include_app_services=True,  # Include workers from app manifests
+                    prioritize_running_services=True,  # Exclude abstract services when concrete ones exist
                     context=context
                 )
                 logger.info(
@@ -1063,7 +1079,7 @@ class ServerAppController:
                 try:
                     # Get the full service info
                     # svc["id"] should already be a full ID from list_services
-                    worker = await self.get_worker_by_id(svc["id"])
+                    worker = await self._get_worker_service_info(svc["id"], workspace)
                     supported_types = worker.get("supported_types", [])
                     # Filter by type if specified
                     if app_type and app_type not in supported_types:
@@ -1094,7 +1110,8 @@ class ServerAppController:
             server = await self.store.get_public_api()
             public_svcs = await server.list_services(
                 {"type": "server-app-worker"},
-                include_app_services=True  # Include workers from app manifests
+                include_app_services=True,  # Include workers from app manifests
+                prioritize_running_services=True  # Exclude abstract services when concrete ones exist
             )
             logger.info(
                 f"Found {len(public_svcs)} server-app-worker services in public workspace"
@@ -1103,7 +1120,7 @@ class ServerAppController:
             for svc in public_svcs:
                 try:
                     # Get the full service info
-                    full_svc = await server.get_service(svc["id"])
+                    full_svc = await self._get_worker_service_info(svc["id"], "public")
                     supported_types = full_svc.get("supported_types", [])
                     
                     # Filter by type if specified

@@ -17,7 +17,6 @@ from hypha.core.auth import (
     generate_anonymous_user,
     create_scope,
     update_user_scope,
-    extract_token_from_scope
 )
 
 
