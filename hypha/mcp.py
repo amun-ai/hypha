@@ -1392,8 +1392,8 @@ class MCPRoutingMiddleware:
                     f"MCP Middleware: Info route match - workspace='{workspace}', service_id='{service_id}'"
                 )
                 
-                # Return helpful 404 message
-                await self._send_helpful_404(send, workspace, service_id)
+                # Return comprehensive service information
+                await self._send_service_info(send, workspace, service_id)
                 return
         
         # Continue to next middleware if not an MCP route
@@ -1417,8 +1417,8 @@ class MCPRoutingMiddleware:
             }
         )
 
-    async def _send_helpful_404(self, send, workspace, service_id, adapter_summary=None):
-        """Send a helpful 404 message with endpoint information."""
+    async def _send_service_info(self, send, workspace, service_id):
+        """Send comprehensive service information including available tools, resources, and prompts."""
         # Handle empty service_id case
         if not service_id:
             message = {
@@ -1427,26 +1427,184 @@ class MCPRoutingMiddleware:
                 "help": "Please specify a service ID. URL format: /{workspace}/mcp/{service_id}/mcp",
                 "example": f"/{workspace}/mcp/your-service-id/mcp"
             }
+            status_code = 404
         else:
-            message = {
-                "error": "MCP endpoint not found",
-                "message": f"The MCP service '{service_id}' endpoint was not found at this path.",
-                "available_endpoints": {
-                    "streamable_http": f"/{workspace}/mcp/{service_id}/mcp",
-                    "sse": f"/{workspace}/mcp/{service_id}/sse",
-                },
-                "help": "Use the streamable HTTP endpoint for MCP communication.",
-            }
-            
-            # Include adapter summary if available
-            if adapter_summary:
-                message["service_info"] = adapter_summary
+            try:
+                # Get authentication info
+                from starlette.requests import Request
                 
+                # Create a minimal scope for auth check
+                scope = {
+                    "type": "http",
+                    "method": "GET",
+                    "headers": [],
+                    "query_string": b"",
+                }
+                
+                # Login and get user info (we need to get auth from somewhere)
+                # For now, we'll try to get the service info without full auth
+                # This is safe because we're only showing metadata, not executing anything
+                
+                # Try to get the service and create an adapter to extract capabilities
+                try:
+                    # Import required modules
+                    from starlette.requests import Request
+                    
+                    # Create a mock request for auth
+                    request = Request(scope, receive=None, send=None)
+                    user_info = await self.store.login_optional(request)
+                    
+                    # Get service through workspace interface
+                    async with self.store.get_workspace_interface(
+                        user_info, user_info.scope.current_workspace
+                    ) as api:
+                        # Build full service ID
+                        if "/" in service_id:
+                            full_service_id = service_id
+                        elif ":" in service_id:
+                            full_service_id = f"{workspace}/{service_id}"
+                        else:
+                            full_service_id = f"{workspace}/{service_id}"
+                        
+                        # Try to get service info
+                        try:
+                            service_info = await api.get_service_info(full_service_id, {})
+                            service = await api.get_service(full_service_id)
+                            
+                            # Create a temporary adapter to extract capabilities
+                            adapter = HyphaMCPAdapter(service, service_info, self.store.get_redis())
+                            
+                            # Get the adapter summary
+                            adapter_summary = adapter.get_adapter_summary()
+                            
+                            # Extract detailed tool information
+                            tools = []
+                            for tool_name, tool_func in adapter.tool_handlers.items():
+                                tool_def = adapter._extract_tool_from_function(tool_name, tool_func)
+                                if tool_def:
+                                    tools.append({
+                                        "name": tool_def["name"],
+                                        "description": tool_def["description"],
+                                        "inputSchema": tool_def.get("inputSchema", {})
+                                    })
+                            
+                            # Extract resource information
+                            resources = []
+                            if hasattr(adapter, 'string_resources'):
+                                for resource_key in adapter.string_resources.keys():
+                                    uri = f"resource://{resource_key}"
+                                    if resource_key == 'docs':
+                                        name = f"Documentation for {service_info.name or service_info.id}"
+                                        description = f"Service documentation content"
+                                    else:
+                                        key_parts = resource_key.split('/')
+                                        name = ' '.join(part.replace('_', ' ').title() for part in key_parts)
+                                        description = f"String resource at path '{resource_key}'"
+                                    
+                                    resources.append({
+                                        "uri": uri,
+                                        "name": name,
+                                        "description": description,
+                                        "mimeType": "text/plain"
+                                    })
+                            
+                            # Extract prompt information
+                            prompts = []
+                            for prompt_name, prompt_config in adapter.prompt_handlers.items():
+                                prompt_info = {
+                                    "name": prompt_config.get("name", prompt_name),
+                                    "description": prompt_config.get("description", ""),
+                                }
+                                
+                                # Extract arguments if available
+                                read_func = prompt_config.get("read")
+                                if read_func and hasattr(read_func, "__schema__"):
+                                    schema = getattr(read_func, "__schema__", {})
+                                    parameters = schema.get("parameters", {})
+                                    properties = parameters.get("properties", {})
+                                    required = parameters.get("required", [])
+                                    
+                                    arguments = []
+                                    for prop_name, prop_info in properties.items():
+                                        arguments.append({
+                                            "name": prop_name,
+                                            "description": prop_info.get("description", ""),
+                                            "required": prop_name in required
+                                        })
+                                    if arguments:
+                                        prompt_info["arguments"] = arguments
+                                
+                                prompts.append(prompt_info)
+                            
+                            # Build comprehensive response
+                            message = {
+                                "service": {
+                                    "id": service_info.id,
+                                    "name": getattr(service_info, 'name', service_info.id),
+                                    "type": getattr(service_info, 'type', 'auto-wrapped'),
+                                    "description": getattr(service_info, 'description', 'Hypha service exposed via MCP'),
+                                },
+                                "endpoints": {
+                                    "streamable_http": f"/{workspace}/mcp/{service_id}/mcp",
+                                    "sse": f"/{workspace}/mcp/{service_id}/sse",
+                                },
+                                "capabilities": {
+                                    "tools": tools,
+                                    "resources": resources,
+                                    "prompts": prompts,
+                                },
+                                "summary": adapter_summary,
+                                "help": "Use the streamable HTTP endpoint for MCP communication or SSE for server-sent events.",
+                            }
+                            status_code = 200
+                            
+                        except Exception as e:
+                            if "not found" in str(e).lower() or "permission denied" in str(e).lower():
+                                # Service not found or not accessible
+                                message = {
+                                    "error": "Service not found or not accessible",
+                                    "message": f"The service '{service_id}' was not found in workspace '{workspace}' or you don't have permission to access it.",
+                                    "help": "Ensure the service exists and you have permission to access it.",
+                                }
+                                status_code = 404
+                            else:
+                                raise
+                            
+                except Exception as e:
+                    logger.warning(f"Failed to get service info for {service_id}: {e}")
+                    # Fallback to basic info without service details
+                    message = {
+                        "service": {
+                            "id": service_id,
+                            "workspace": workspace,
+                            "status": "unknown",
+                        },
+                        "endpoints": {
+                            "streamable_http": f"/{workspace}/mcp/{service_id}/mcp",
+                            "sse": f"/{workspace}/mcp/{service_id}/sse",
+                        },
+                        "help": "Use the streamable HTTP endpoint for MCP communication.",
+                        "note": "Could not retrieve detailed service information. The service may not be running or accessible.",
+                    }
+                    status_code = 200
+                    
+            except Exception as e:
+                logger.error(f"Error getting service info: {e}")
+                message = {
+                    "error": "Failed to retrieve service information",
+                    "message": str(e),
+                    "endpoints": {
+                        "streamable_http": f"/{workspace}/mcp/{service_id}/mcp",
+                        "sse": f"/{workspace}/mcp/{service_id}/sse",
+                    },
+                }
+                status_code = 500
+        
         response_body = json.dumps(message, indent=2).encode()
         await send(
             {
                 "type": "http.response.start",
-                "status": 404,
+                "status": status_code,
                 "headers": [
                     [b"content-type", b"application/json"],
                     [b"content-length", str(len(response_body)).encode()],
