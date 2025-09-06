@@ -39,13 +39,14 @@ class AdminTerminal:
         self.namespace = {}
         self._input_event = asyncio.Event()
         self._current_input = ""
+        # Add execution state tracking
+        self._execution_complete = asyncio.Event()
+        self._is_executing = False
+        self._execution_output = []
 
-    async def start_terminal(self, startup_command: str = None) -> Dict[str, Any]:
+    @schema_method
+    async def start_terminal(self) -> Dict[str, Any]:
         """Start the Python REPL terminal.
-        
-        Args:
-            startup_command: Optional startup command (ignored for Python REPL)
-            
         Returns:
             Dictionary with terminal info
         """
@@ -124,15 +125,37 @@ class AdminTerminal:
                 try:
                     # Wait for input
                     await self._input_event.wait()
+                    
+                    # Clear the event immediately to prevent infinite loops on error
+                    self._input_event.clear()
+                    
                     if not self._running:
                         break
+                    
+                    # Ensure _current_input is a string
+                    if not isinstance(self._current_input, str):
+                        logger.error(f"Invalid input type: {type(self._current_input)}, expected str")
+                        self._current_input = ""
+                        async with self.buffer_lock:
+                            self.output_buffer.append("Error: Invalid input type\r\n>>> ")
+                            if self._is_executing:
+                                self._execution_output.append("Error: Invalid input type")
+                        # Mark execution as complete if it was in progress
+                        if self._is_executing:
+                            self._is_executing = False
+                            self._execution_complete.set()
+                        continue
                         
                     input_code = self._current_input.strip()
                     self._current_input = ""
-                    self._input_event.clear()
                     
                     if not input_code:
                         continue
+                    
+                    # Mark execution as started
+                    self._is_executing = True
+                    self._execution_complete.clear()
+                    self._execution_output = []
                         
                     # Redirect stdout/stderr to capture output
                     sys.stdout = stdout_buffer
@@ -182,19 +205,38 @@ class AdminTerminal:
                     stderr_buffer.seek(0)
                     stderr_buffer.truncate(0)
                     
-                    # Add output to buffer
+                    # Add output to buffer and execution output
                     if stdout_output or stderr_output:
                         output = stdout_output + stderr_output + "\r\n>>> "
                         async with self.buffer_lock:
                             self.output_buffer.append(output)
+                            self._execution_output.append(stdout_output + stderr_output)
                     else:
                         async with self.buffer_lock:
                             self.output_buffer.append(">>> ")
+                    
+                    # Mark execution as complete
+                    self._is_executing = False
+                    self._execution_complete.set()
                             
                 except Exception as e:
                     logger.error(f"REPL error: {e}")
+                    # Ensure stdout/stderr are restored
+                    sys.stdout = old_stdout
+                    sys.stderr = old_stderr
+                    
                     async with self.buffer_lock:
                         self.output_buffer.append(f"REPL Error: {e}\r\n>>> ")
+                        if self._is_executing:
+                            self._execution_output.append(f"REPL Error: {e}")
+                    
+                    # Mark execution as complete even on error
+                    if self._is_executing:
+                        self._is_executing = False
+                        self._execution_complete.set()
+                    
+                    # Reset current input to prevent issues
+                    self._current_input = ""
                     
         except Exception as e:
             logger.error(f"REPL task failed: {e}")
@@ -202,6 +244,10 @@ class AdminTerminal:
             # Restore stdout/stderr
             sys.stdout = old_stdout
             sys.stderr = old_stderr
+            # Ensure execution is marked as complete if still running
+            if self._is_executing:
+                self._is_executing = False
+                self._execution_complete.set()
             logger.info("Python REPL background task ended")
 
     @schema_method
@@ -209,7 +255,6 @@ class AdminTerminal:
         self,
         rows: int = Field(..., description="Number of rows"),
         cols: int = Field(..., description="Number of columns"),
-        context: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """Resize the terminal window."""
         try:
@@ -222,7 +267,6 @@ class AdminTerminal:
     @schema_method
     async def read_terminal(
         self,
-        context: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """Read output from the terminal."""
         if not self._running:
@@ -233,7 +277,7 @@ class AdminTerminal:
             async with self.buffer_lock:
                 if self.output_buffer:
                     output = ''.join(self.output_buffer)
-                    self.output_buffer = []
+                    self.output_buffer.clear()  # Properly clear the list
                     return {"success": True, "output": output}
             
             return {"success": True, "output": ""}
@@ -243,12 +287,12 @@ class AdminTerminal:
     @schema_method
     async def get_screen_content(
         self,
-        context: Optional[dict] = None,
     ) -> Dict[str, Any]:
-        """Get the accumulated screen buffer content."""
+        """Get the accumulated screen buffer content without clearing it."""
         try:
             async with self.buffer_lock:
-                content = ''.join(self.output_buffer)
+                # Don't clear the buffer, just return the current content
+                content = ''.join(self.output_buffer) if self.output_buffer else ""
             return {"success": True, "content": content}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -257,13 +301,22 @@ class AdminTerminal:
     async def write_to_terminal(
         self,
         data: str = Field(..., description="Data to write to terminal"),
-        context: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """Write data to the terminal."""
         if not self._running:
             return {"success": False, "error": "Terminal not running"}
         
         try:
+            # Ensure data is a string
+            if not isinstance(data, str):
+                logger.warning(f"write_to_terminal received non-string data: {type(data)}")
+                data = str(data) if data is not None else ""
+            
+            # Ensure _current_input is always a string
+            if not isinstance(self._current_input, str):
+                logger.warning(f"_current_input was not a string: {type(self._current_input)}")
+                self._current_input = ""
+            
             # Handle input data
             if data == '\r' or data == '\n' or data == '\r\n':
                 # Execute the current input
@@ -285,12 +338,13 @@ class AdminTerminal:
                 self._current_input = ""
                 async with self.buffer_lock:
                     self.output_buffer.append("^C\r\n>>> ")
-            elif ord(data[0]) >= 32:  # Printable character
+            elif data and ord(data[0]) >= 32:  # Printable character
                 # Frontend handles the echo, just update our buffer
                 self._current_input += data
                 
             return {"success": True, "bytes_written": len(data)}
         except Exception as e:
+            logger.error(f"write_to_terminal error: {e}")
             return {"success": False, "error": str(e)}
 
     @schema_method
@@ -298,25 +352,76 @@ class AdminTerminal:
         self,
         command: str = Field(..., description="Command to execute"),
         timeout: float = Field(5.0, description="Timeout in seconds"),
-        context: Optional[dict] = None,
     ) -> Dict[str, Any]:
-        """Execute a command in the terminal and wait for output."""
+        """Execute a command in the terminal and wait for output.
+        
+        This method executes a Python command and waits for its completion,
+        collecting all output before returning. It properly tracks execution
+        state without injecting any markers into the output.
+        
+        Returns:
+            Dictionary with success status and complete command output
+            
+        Raises:
+            TimeoutError: If command doesn't complete within timeout
+        """
         if not self._running:
             return {"success": False, "error": "Terminal not running"}
         
         try:
-            # Set the command as current input and trigger execution
-            self._current_input = command
+            # Validate command is a string
+            if not isinstance(command, str):
+                logger.error(f"execute_command received non-string command: {type(command)}")
+                return {"success": False, "error": f"Invalid command type: expected str, got {type(command).__name__}"}
+            
+            # Wait if another command is executing
+            if self._is_executing:
+                try:
+                    await asyncio.wait_for(self._execution_complete.wait(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    return {"success": False, "error": "Another command is still executing"}
+            
+            # Clear execution output before starting
+            self._execution_output = []
+            
+            # Set the command and trigger execution (ensure it's a string)
+            self._current_input = str(command)  # Ensure it's a string
             self._input_event.set()
             
-            # Wait a bit for execution (simplified)
-            await asyncio.sleep(0.1)
-            
-            # Get the output
-            result = await self.read_terminal()
-            return {"success": True, "output": result.get("output", "")}
-            
+            # Wait for execution to complete
+            try:
+                await asyncio.wait_for(self._execution_complete.wait(), timeout=timeout)
+                
+                # Collect the execution output
+                output = ''.join(self._execution_output)
+                
+                # Clean up the output (remove extra newlines if present)
+                if output.endswith('\n'):
+                    output = output[:-1]
+                
+                return {"success": True, "output": output}
+                
+            except asyncio.TimeoutError:
+                # Command timed out
+                # Try to collect any partial output
+                partial_output = ''.join(self._execution_output) if self._execution_output else ""
+                
+                # Clear the executing state since we're timing out
+                self._is_executing = False
+                self._execution_complete.set()
+                
+                return {
+                    "success": False,
+                    "error": f"Command timed out after {timeout} seconds",
+                    "partial_output": partial_output
+                }
+                
         except Exception as e:
+            logger.error(f"Failed to execute command: {e}")
+            # Ensure we don't leave the terminal in an executing state
+            if self._is_executing:
+                self._is_executing = False
+                self._execution_complete.set()
             return {"success": False, "error": str(e)}
 
     async def stop_terminal(self):
@@ -368,7 +473,7 @@ class AdminUtilities:
         reason: str = Field("Admin requested disconnect", description="Disconnect reason"),
     ):
         """Force disconnect a client from the server."""
-        return self.store.kickout_client(workspace, client_id, code, reason)
+        return await self.store.kickout_client(workspace, client_id, code, reason)
     
     @schema_method
     async def list_workspaces(self):
