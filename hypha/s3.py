@@ -182,15 +182,20 @@ class S3Controller:
         self.region_name = region_name
         self.s3_admin_type = s3_admin_type
         self.enable_s3_proxy = enable_s3_proxy
+        
+        # Initialize minio_client in try-catch block
+        self.minio_client = None
         if self.s3_admin_type == "minio":
-            self.minio_client = MinioClient(
-                endpoint_url,
-                access_key_id,
-                secret_access_key,
-                executable_path=executable_path,
-            )
-        else:
-            self.minio_client = None
+            try:
+                self.minio_client = MinioClient(
+                    endpoint_url,
+                    access_key_id,
+                    secret_access_key,
+                    executable_path=executable_path,
+                )
+            except Exception as ex:
+                logger.warning(f"Failed to initialize MinIO client: {ex}")
+                # Continue without minio_client - will be handled in main try-catch
         self.endpoint_url_public = endpoint_url_public or endpoint_url
         self.store = store
         self.workspace_bucket = workspace_bucket
@@ -201,43 +206,58 @@ class S3Controller:
         self._redis = store.get_redis()
         # self.local_log_dir = Path(local_log_dir)
         self.workspace_etc_dir = workspace_etc_dir.rstrip("/")
-        s3client = self.create_client_sync()
         
-        # Try to create bucket with retries for MinIO startup
-        max_retries = 10
-        retry_delay = 1
-        for attempt in range(max_retries):
-            try:
-                s3client.create_bucket(Bucket=self.workspace_bucket)
-                logger.info("Bucket created: %s", self.workspace_bucket)
-                break
-            except botocore.exceptions.ClientError as e:
-                error_code = e.response['Error']['Code']
-                if error_code in ['BucketAlreadyExists', 'BucketAlreadyOwnedByYou']:
-                    # Bucket already exists, that's fine
-                    break
-                elif error_code == 'SlowDownWrite' and attempt < max_retries - 1:
-                    # MinIO is still initializing, wait and retry
-                    logger.debug(f"MinIO still initializing, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})")
-                    time.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 1.5, 5)  # Exponential backoff up to 5 seconds
-                else:
-                    # Other error or max retries reached
-                    raise
+        # Track S3 availability - will be set to False if S3 is unavailable
+        self.s3_available = False
         
-        # Apply CORS policy if not using MinIO
         try:
-            if self.s3_admin_type != "minio":
-                s3client.put_bucket_cors(
-                    Bucket=self.workspace_bucket,
-                    CORSConfiguration=DEFAULT_CORS_POLICY,
-                )
+            s3client = self.create_client_sync()
+            
+            # Try to create bucket with retries for MinIO startup
+            max_retries = 10
+            retry_delay = 1
+            for attempt in range(max_retries):
+                try:
+                    s3client.create_bucket(Bucket=self.workspace_bucket)
+                    logger.info("Bucket created: %s", self.workspace_bucket)
+                    break
+                except botocore.exceptions.ClientError as e:
+                    error_code = e.response['Error']['Code']
+                    if error_code in ['BucketAlreadyExists', 'BucketAlreadyOwnedByYou']:
+                        # Bucket already exists, that's fine
+                        break
+                    elif error_code == 'SlowDownWrite' and attempt < max_retries - 1:
+                        # MinIO is still initializing, wait and retry
+                        logger.debug(f"MinIO still initializing, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(retry_delay)
+                        retry_delay = min(retry_delay * 1.5, 5)  # Exponential backoff up to 5 seconds
+                    else:
+                        # Other error or max retries reached
+                        raise
+            
+            # Apply CORS policy if not using MinIO
+            try:
+                if self.s3_admin_type != "minio":
+                    s3client.put_bucket_cors(
+                        Bucket=self.workspace_bucket,
+                        CORSConfiguration=DEFAULT_CORS_POLICY,
+                    )
+            except Exception as ex:
+                logger.error("Failed to apply CORS policy: %s", ex)
+
+            if self.minio_client:
+                self.minio_client.admin_user_add_sync("root", generate_password())
+
+            # S3 is available if we get this far
+            self.s3_available = True
+            
         except Exception as ex:
-            logger.error("Failed to apply CORS policy: %s", ex)
+            # S3 is not available - log warning but continue initialization
+            logger.warning(f"S3 service is not available, some features will be disabled: {ex}")
+            self.s3_available = False
 
-        if self.minio_client:
-            self.minio_client.admin_user_add_sync("root", generate_password())
-
+        # Always register the S3 service, even if S3 is not available
+        # The service methods will check self.s3_available and return appropriate errors
         store.register_public_service(self.get_s3_service())
         store.set_s3_controller(self)
 

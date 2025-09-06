@@ -233,6 +233,11 @@ class ArtifactController:
         )
         router = APIRouter()
         self._artifacts_dir = artifacts_dir
+        
+        # Check if S3 is available
+        self.s3_available = s3_controller.s3_available if s3_controller else False
+        if not self.s3_available:
+            logger.warning("Artifact manager initialized without S3 - file operations will be disabled")
 
         # HTTP endpoint for getting an artifact
         @router.get("/{workspace}/artifacts/")
