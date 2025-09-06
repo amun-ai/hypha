@@ -320,6 +320,19 @@ def create_application(args):
     else:
         public_base_url = local_base_url
 
+    # Check admin terminal configuration
+    if args.enable_admin_terminal:
+        if not args.root_token:
+            logger.warning("Admin terminal requires --root-token to be set for security")
+            args.enable_admin_terminal = False
+        else:
+            logger.warning(
+                "⚠️  SECURITY WARNING: Admin terminal is enabled with root access! "
+                "The admin terminal provides full system access to anyone with the root token. "
+                "Make sure to use a strong root token and keep it secure. "
+                f"Admin terminal will be accessible at: {public_base_url}/ws-user-root/apps/hypha-admin-terminal/"
+            )
+    
     store = RedisStore(
         application,
         server_id=args.server_id or env.get("HYPHA_SERVER_ID"),
@@ -339,6 +352,8 @@ def create_application(args):
         ),
         activity_check_interval=float(env.get("ACTIVITY_CHECK_INTERVAL", str(10))),
         enable_s3_for_anonymous_users=args.enable_s3_for_anonymous_users,
+        root_token=args.root_token,
+        enable_admin_terminal=args.enable_admin_terminal,
     )
     application.state.store = store
 
@@ -692,6 +707,17 @@ def get_argparser(add_help=True):
         "--disable-ssl",
         action="store_true",
         help="disable SSL verification",
+    )
+    parser.add_argument(
+        "--root-token",
+        type=str,
+        default=None,
+        help="authentication token for root user access (enables root user authentication when provided)",
+    )
+    parser.add_argument(
+        "--enable-admin-terminal",
+        action="store_true",
+        help="enable admin terminal for interactive debugging (requires root token)",
     )
     return parser
 

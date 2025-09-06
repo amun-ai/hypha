@@ -928,14 +928,25 @@ class RedisEventBus:
             # Record desired subscription regardless of pubsub availability
             self._subscribed_patterns.add(pattern)
             RedisEventBus._active_patterns_gauge.set(len(self._subscribed_patterns))
-            if self._pubsub:
+            if self._pubsub and not self._circuit_breaker_open:
                 try:
-                    await self._pubsub.psubscribe(pattern)
+                    # Add timeout to prevent hanging on Redis connection issues
+                    await asyncio.wait_for(self._pubsub.psubscribe(pattern), timeout=5.0)
                     logger.debug("Subscribed to client events: %s", pattern)
                     RedisEventBus._patterns_subscribed_total.inc()
                     RedisEventBus._patterns_subscribed_total_int += 1
+                    # Mark successful operation
+                    self._consecutive_failures = 0
+                except asyncio.TimeoutError:
+                    logger.warning("Timeout subscribing to client events %s", pattern)
+                    self._consecutive_failures += 1
+                    if self._consecutive_failures >= self._max_failures:
+                        self._circuit_breaker_open = True
                 except Exception as e:
                     logger.warning("Failed to subscribe to client events %s: %s", pattern, e)
+                    self._consecutive_failures += 1
+                    if self._consecutive_failures >= self._max_failures:
+                        self._circuit_breaker_open = True
 
     async def unsubscribe_from_client_events(self, workspace: str, client_id: str):
         """Unsubscribe from events for a specific client."""

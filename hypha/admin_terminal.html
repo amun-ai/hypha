@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hypha Admin Terminal</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.64/dist/hypha-rpc-websocket.min.js"></script>
+    
+    <!-- xterm.js -->
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+    
+    <!-- Tailwind Config -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        terminal: {
+                            bg: '#0d1117',
+                            surface: '#161b22',
+                            border: '#30363d',
+                            text: '#c9d1d9',
+                            accent: '#58a6ff',
+                            success: '#238636',
+                            error: '#da3633',
+                            warning: '#f85149'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <style>
+        .terminal-container {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            overflow: hidden;
+            padding: 4px;
+        }
+        .xterm-screen {
+            background-color: #0d1117 !important;
+        }
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+    </style>
+</head>
+<body class="bg-terminal-bg text-terminal-text min-h-screen overflow-hidden">
+    <!-- Header -->
+    <header class="bg-terminal-surface border-b border-terminal-border px-6 py-3">
+        <div class="flex items-center justify-between">
+            <div class="flex items-center space-x-4">
+                <h1 class="text-xl font-bold text-terminal-accent">Hypha Admin Terminal</h1>
+                <div class="text-sm text-gray-400">Root Access</div>
+            </div>
+            <div class="flex items-center space-x-2">
+                <span id="connectionStatus" class="text-sm text-terminal-success">Connected</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Terminal Area -->
+    <div class="flex-1 flex h-screen">
+        <div class="flex-1 terminal-container m-4">
+            <div id="terminal" class="h-full"></div>
+        </div>
+    </div>
+
+    <!-- Command Palette (optional) -->
+    <div id="commandPalette" class="hidden fixed inset-x-0 bottom-0 bg-terminal-surface border-t border-terminal-border p-4">
+        <div class="max-w-4xl mx-auto">
+            <h3 class="text-sm font-semibold text-terminal-accent mb-2">Quick Commands</h3>
+            <div class="grid grid-cols-3 gap-2">
+                <button onclick="app.executeCommand('await store.list_servers()')" class="bg-terminal-border hover:bg-terminal-accent text-white px-3 py-2 rounded text-sm transition-colors">
+                    List Servers
+                </button>
+                <button onclick="app.executeCommand('await store.list_all_workspaces()')" class="bg-terminal-border hover:bg-terminal-accent text-white px-3 py-2 rounded text-sm transition-colors">
+                    List Workspaces
+                </button>
+                <button onclick="app.executeCommand('await store.get_metrics()')" class="bg-terminal-border hover:bg-terminal-accent text-white px-3 py-2 rounded text-sm transition-colors">
+                    Get Metrics
+                </button>
+                <button onclick="app.executeCommand('store._redis')" class="bg-terminal-border hover:bg-terminal-accent text-white px-3 py-2 rounded text-sm transition-colors">
+                    Redis Info
+                </button>
+                <button onclick="app.executeCommand('app.routes')" class="bg-terminal-border hover:bg-terminal-accent text-white px-3 py-2 rounded text-sm transition-colors">
+                    List Routes
+                </button>
+                <button onclick="app.executeCommand('help(store)')" class="bg-terminal-border hover:bg-terminal-accent text-white px-3 py-2 rounded text-sm transition-colors">
+                    Store Help
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class HyphaAdminTerminal {
+            constructor() {
+                this.server = null;
+                this.adminService = null;
+                this.adminServiceId = "{{ADMIN_SERVICE_ID}}";
+                this.serverUrl = "{{SERVER_URL}}";
+                this.workspace = "{{WORKSPACE}}";
+                this.term = null;
+                this.fitAddon = null;
+                this.isConnected = false;
+                this.inputBuffer = '';
+                this.rootToken = null;
+                
+                this.initTerminal();
+                this.promptForRootToken();
+            }
+            
+            async promptForRootToken() {
+                // Prompt for root token
+                const token = prompt('Enter root token to access admin terminal:');
+                if (!token) {
+                    this.term.writeln('\x1b[31mAccess denied: No token provided\x1b[0m');
+                    this.updateStatus('Access Denied', true);
+                    return;
+                }
+                
+                this.rootToken = token;
+                await this.connect();
+            }
+            
+            initTerminal() {
+                // Create xterm instance
+                this.term = new Terminal({
+                    cursorBlink: true,
+                    cursorStyle: 'block',
+                    fontSize: 14,
+                    fontFamily: 'JetBrains Mono, Consolas, Monaco, monospace',
+                    theme: {
+                        background: '#0d1117',
+                        foreground: '#c9d1d9',
+                        cursor: '#58a6ff',
+                        cursorAccent: '#0d1117',
+                        black: '#484f58',
+                        red: '#ff7b72',
+                        green: '#7ee787',
+                        yellow: '#f2cc60',
+                        blue: '#58a6ff',
+                        magenta: '#bc8cff',
+                        cyan: '#39c5cf',
+                        white: '#b1bac4',
+                        brightBlack: '#6e7681',
+                        brightRed: '#ffa198',
+                        brightGreen: '#56d364',
+                        brightYellow: '#e3b341',
+                        brightBlue: '#79c0ff',
+                        brightMagenta: '#d2a8ff',
+                        brightCyan: '#56d4dd',
+                        brightWhite: '#f0f6fc'
+                    },
+                    allowTransparency: false,
+                    scrollback: 1000,
+                    tabStopWidth: 4
+                });
+
+                // Add addons
+                this.fitAddon = new FitAddon.FitAddon();
+                this.term.loadAddon(this.fitAddon);
+                this.term.loadAddon(new WebLinksAddon.WebLinksAddon());
+
+                // Open terminal in container
+                this.term.open(document.getElementById('terminal'));
+                
+                // Fit terminal to container
+                setTimeout(() => {
+                    this.fitAddon.fit();
+                }, 100);
+
+                // Handle terminal input
+                this.term.onData((data) => {
+                    if (this.isConnected) {
+                        // Echo the input locally for immediate feedback
+                        // Handle special characters
+                        if (data === '\r' || data === '\n') {
+                            // Enter key - backend will handle newline and execution
+                            // No local echo needed here
+                        } else if (data === '\x7f' || data === '\b') {
+                            // Backspace - remove last character from display
+                            this.term.write('\b \b');
+                        } else if (data === '\x03') {
+                            // Ctrl+C - will be handled by backend
+                        } else if (data.charCodeAt(0) >= 32) {
+                            // Regular printable character - echo it
+                            this.term.write(data);
+                        }
+                        this.sendToTerminal(data);
+                    }
+                });
+
+                // Handle terminal resize
+                this.term.onResize((size) => {
+                    if (this.isConnected && this.adminService) {
+                        this.adminService.resize_terminal(size.rows, size.cols).catch(e => {
+                            console.warn('Failed to resize terminal:', e);
+                        });
+                    }
+                });
+
+                // Handle window resize
+                window.addEventListener('resize', () => {
+                    if (this.fitAddon) {
+                        setTimeout(() => this.fitAddon.fit(), 100);
+                    }
+                });
+            }
+            
+            async connect() {
+                try {
+                    this.updateStatus('Connecting...');
+                    
+                    // Connect to Hypha server with root token
+                    this.server = await hyphaWebsocketClient.connectToServer({
+                        server_url: this.serverUrl,
+                        workspace: "ws-user-root",
+                        token: this.rootToken
+                    });
+                    
+                    // Get admin service
+                    this.adminService = await this.server.getService(this.adminServiceId);
+                    
+                    // Start the terminal
+                    const result = await this.adminService.start_terminal();
+                    if (!result.success) {
+                        throw new Error(result.error || 'Failed to start terminal');
+                    }
+                    
+                    this.isConnected = true;
+                    this.updateStatus('Connected');
+                    
+                    // Get initial screen content
+                    const screenResult = await this.adminService.get_screen_content();
+                    if (screenResult.success && screenResult.content) {
+                        this.term.write(screenResult.content);
+                    }
+                    // Start polling for output
+                    this.startOutputPolling();
+                    
+                } catch (error) {
+                    console.error('Failed to connect:', error);
+                    this.updateStatus('Connection failed', true);
+                    this.term.writeln(`\r\n\x1b[31mConnection failed: ${error.message}\x1b[0m\r\n`);
+                    
+                    // If authentication failed, prompt again
+                    if (error.message && (error.message.includes('401') || error.message.includes('Unauthorized') || error.message.includes('token'))) {
+                        this.term.writeln('\x1b[33mAuthentication failed. Please refresh the page to try again.\x1b[0m\r\n');
+                    }
+                }
+            }
+            
+            async sendToTerminal(data) {
+                if (!this.adminService) return;
+                
+                try {
+                    const result = await this.adminService.write_terminal(data);
+                    if (!result.success) {
+                        console.error('Failed to write to terminal:', result.error);
+                    }
+                } catch (error) {
+                    console.error('Error sending to terminal:', error);
+                }
+            }
+            
+            async startOutputPolling() {
+                while (this.isConnected) {
+                    try {
+                        const result = await this.adminService.read_terminal();
+                        if (result.success && result.output) {
+                            this.term.write(result.output);
+                        }
+                    } catch (error) {
+                        console.error('Error reading terminal:', error);
+                        break;
+                    }
+                    
+                    // Poll every 100ms
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                }
+            }
+            
+            async executeCommand(command) {
+                if (!this.adminService) return;
+                
+                try {
+                    // Clear current line and execute command
+                    this.term.write('\x1b[2K\r');  // Clear line
+                    this.term.write(command);
+                    this.term.write('\r\n');
+                    
+                    // Send command to terminal
+                    await this.adminService.write_terminal(command + '\n');
+                } catch (error) {
+                    console.error('Error executing command:', error);
+                    this.term.writeln(`\r\n\x1b[31mError: ${error.message}\x1b[0m`);
+                }
+            }
+            
+            updateStatus(message, isError = false) {
+                const statusEl = document.getElementById('connectionStatus');
+                statusEl.textContent = message;
+                statusEl.className = `text-sm ${isError ? 'text-terminal-error' : 'text-terminal-success'}`;
+            }
+            
+            toggleCommandPalette() {
+                const palette = document.getElementById('commandPalette');
+                palette.classList.toggle('hidden');
+            }
+        }
+
+        // Initialize the app
+        let app;
+        document.addEventListener('DOMContentLoaded', () => {
+            app = new HyphaAdminTerminal();
+            
+            // Add keyboard shortcuts
+            document.addEventListener('keydown', (e) => {
+                // Ctrl+D to toggle command palette
+                if (e.ctrlKey && e.key === 'd') {
+                    e.preventDefault();
+                    app.toggleCommandPalette();
+                }
+            });
+        });
+    </script>
+</body>
+</html>

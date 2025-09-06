@@ -1292,27 +1292,39 @@ async def test_mcp_nonexistent_service(fastapi_server, test_user_token):
         assert response.status_code == 404
 
 
-async def test_mcp_helpful_404_message(fastapi_server, test_user_token):
-    """Test that accessing MCP service without /mcp suffix returns helpful 404."""
+async def test_mcp_info_message(fastapi_server, test_user_token):
+    """Test that accessing MCP service without /mcp suffix returns helpful info."""
     api = await connect_to_server(
         {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
     )
 
     workspace = api.config.workspace
 
-    # Register a simple MCP service
+    # Register a simple service without type="mcp" - it will be auto-wrapped
+    @schema_function
+    def test_tool(input: str) -> str:
+        """A test tool that processes input."""
+        return f"Processed: {input}"
+    
+    @schema_function
+    def another_tool(value: int) -> int:
+        """Another tool that doubles a value."""
+        return value * 2
+
     await api.register_service(
         {
             "id": "test-service",
-            "type": "mcp",
+            # No type specified - will be auto-wrapped for MCP
             "config": {
                 "visibility": "public",
             },
+            "test_tool": test_tool,
+            "another_tool": another_tool,
         }
     )
 
     async with httpx.AsyncClient() as client:
-        # Try to access service without /mcp suffix
+        # Try to access service without /mcp suffix - should return service info
         response = await client.get(
             f"{SERVER_URL}/{workspace}/mcp/test-service",
             headers={
@@ -1321,16 +1333,33 @@ async def test_mcp_helpful_404_message(fastapi_server, test_user_token):
             },
         )
 
-        assert response.status_code == 404
+        assert response.status_code == 200  # Now returns 200 with service info
         data = response.json()
-        assert "error" in data
-        assert data["error"] == "MCP endpoint not found"
-        assert "available_endpoints" in data
-        assert (
-            data["available_endpoints"]["streamable_http"]
-            == f"/{workspace}/mcp/test-service/mcp"
-        )
-        assert "sse" in data["available_endpoints"]["sse"]
+        
+        # Check that we get comprehensive service information
+        assert "service" in data
+        assert data["service"]["id"].endswith("test-service")
+        
+        # For auto-wrapped services, it should NOT be marked as native MCP
+        assert data["service"].get("is_native_mcp", False) == False
+        
+        # Check endpoints are provided
+        assert "endpoints" in data
+        assert "streamable_http" in data["endpoints"]
+        assert data["endpoints"]["streamable_http"] == f"/{workspace}/mcp/test-service/mcp"
+        assert "sse" in data["endpoints"]
+        assert data["endpoints"]["sse"] == f"/{workspace}/mcp/test-service/sse"
+        
+        # Check capabilities are provided - for auto-wrapped services, tools should be listed
+        assert "capabilities" in data
+        assert "tools" in data["capabilities"]
+        # Auto-wrapped services should have their tools listed
+        assert len(data["capabilities"]["tools"]) == 2
+        tool_names = [tool["name"] for tool in data["capabilities"]["tools"]]
+        assert "test_tool" in tool_names
+        assert "another_tool" in tool_names
+        
+        # Check help message is provided
         assert "help" in data
 
     await api.disconnect()

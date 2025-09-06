@@ -101,10 +101,17 @@ async def start_interactive_shell(app: FastAPI, args: Any) -> None:
         local_ns["server"] = server
     else:
         args.startup_functions = args.startup_functions or []
+        # Admin terminal is already enabled via constructor if the flag is set
         await store.init(
             reset_redis=args.reset_redis, startup_functions=args.startup_functions
         )
         local_ns["start_server"] = start_server
+        
+        # Add admin terminal to namespace if available
+        if store._admin_utils and store._admin_utils.terminal:
+            local_ns["admin_terminal"] = store._admin_utils.terminal
+            print("Admin terminal available as 'admin_terminal'")
+            print("Use admin_terminal.execute_command() to run commands")
 
     # Start the interactive shell with stdout patching for better async support
     with patch_stdout():
