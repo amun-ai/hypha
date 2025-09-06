@@ -5,9 +5,9 @@ import os
 import pytest
 import tempfile
 import time
-import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+import inspect
 
 from hypha.workers.conda import CondaWorker, EnvironmentCache
 from hypha.workers.base import (
@@ -1017,9 +1017,15 @@ def execute(input_data):
                 # Mock async _extract_env method
                 async def mock_extract_env(progress_callback=None):
                     if progress_callback:
-                        progress_callback(
-                            {"type": "info", "message": "Mock environment setup"}
-                        )
+                        # Check if progress_callback is a coroutine function
+                        if inspect.iscoroutinefunction(progress_callback):
+                            await progress_callback(
+                                {"type": "info", "message": "Mock environment setup"}
+                            )
+                        else:
+                            progress_callback(
+                                {"type": "info", "message": "Mock environment setup"}
+                            )
                     return 10.5  # Mock setup time
 
                 mock_executor._extract_env = mock_extract_env
