@@ -43,6 +43,13 @@ class AdminTerminal:
         self._execution_complete = asyncio.Event()
         self._is_executing = False
         self._execution_output = []
+        # Command history
+        self._command_history = []
+        self._history_index = -1
+        self._max_history = 1000
+        # Tab completion state
+        self._completion_context = None
+        self._cursor_position = 0
 
     @schema_method
     async def start_terminal(self) -> Dict[str, Any]:
@@ -70,6 +77,7 @@ class AdminTerminal:
                 "store": self.store,
                 "app": self.app,
                 "admin": self,
+                "__builtins__": __builtins__,
             }
             
             # Send welcome message
@@ -84,6 +92,7 @@ class AdminTerminal:
                 "\r\n"
                 "You can run async code directly using await.\r\n"
                 "Type help(object) for documentation.\r\n"
+                "Use UP/DOWN arrows for command history, TAB for completion.\r\n"
                 "\r\n"
                 ">>> "
             )
@@ -148,9 +157,17 @@ class AdminTerminal:
                         
                     input_code = self._current_input.strip()
                     self._current_input = ""
+                    self._cursor_position = 0
                     
                     if not input_code:
                         continue
+                    
+                    # Add to command history if not duplicate of last command
+                    if not self._command_history or self._command_history[-1] != input_code:
+                        self._command_history.append(input_code)
+                        if len(self._command_history) > self._max_history:
+                            self._command_history.pop(0)
+                    self._history_index = len(self._command_history)
                     
                     # Mark execution as started
                     self._is_executing = True
@@ -298,7 +315,7 @@ class AdminTerminal:
             return {"success": False, "error": str(e)}
 
     @schema_method
-    async def write_to_terminal(
+    async def write_terminal(
         self,
         data: str = Field(..., description="Data to write to terminal"),
     ) -> Dict[str, Any]:
@@ -309,7 +326,7 @@ class AdminTerminal:
         try:
             # Ensure data is a string
             if not isinstance(data, str):
-                logger.warning(f"write_to_terminal received non-string data: {type(data)}")
+                logger.warning(f"write_terminal received non-string data: {type(data)}")
                 data = str(data) if data is not None else ""
             
             # Ensure _current_input is always a string
@@ -317,8 +334,23 @@ class AdminTerminal:
                 logger.warning(f"_current_input was not a string: {type(self._current_input)}")
                 self._current_input = ""
             
+            # Handle special sequences for arrow keys and tab
+            if data == '\x1b[A':  # Up arrow
+                return await self._handle_history_navigation('up')
+            elif data == '\x1b[B':  # Down arrow
+                return await self._handle_history_navigation('down')
+            elif data == '\x1b[C':  # Right arrow
+                if self._cursor_position < len(self._current_input):
+                    self._cursor_position += 1
+                return {"success": True, "action": "cursor_right"}
+            elif data == '\x1b[D':  # Left arrow
+                if self._cursor_position > 0:
+                    self._cursor_position -= 1
+                return {"success": True, "action": "cursor_left"}
+            elif data == '\t':  # Tab key
+                return await self._handle_tab_completion()
             # Handle input data
-            if data == '\r' or data == '\n' or data == '\r\n':
+            elif data == '\r' or data == '\n' or data == '\r\n':
                 # Execute the current input
                 if self._current_input.strip():
                     # Frontend already displayed the input, just add newline
@@ -329,22 +361,35 @@ class AdminTerminal:
                     # Just show new prompt
                     async with self.buffer_lock:
                         self.output_buffer.append("\r\n>>> ")
+                self._history_index = len(self._command_history)
             elif data == '\x7f' or data == '\b':
-                # Backspace - frontend handles the echo
-                if self._current_input:
-                    self._current_input = self._current_input[:-1]
+                # Backspace - handle with cursor position
+                if self._cursor_position > 0 and self._current_input:
+                    # Remove character at cursor position
+                    self._current_input = (
+                        self._current_input[:self._cursor_position-1] + 
+                        self._current_input[self._cursor_position:]
+                    )
+                    self._cursor_position -= 1
             elif data == '\x03':
                 # Ctrl+C
                 self._current_input = ""
+                self._cursor_position = 0
+                self._history_index = len(self._command_history)
                 async with self.buffer_lock:
                     self.output_buffer.append("^C\r\n>>> ")
             elif data and ord(data[0]) >= 32:  # Printable character
-                # Frontend handles the echo, just update our buffer
-                self._current_input += data
+                # Insert character at cursor position
+                self._current_input = (
+                    self._current_input[:self._cursor_position] + 
+                    data + 
+                    self._current_input[self._cursor_position:]
+                )
+                self._cursor_position += 1
                 
             return {"success": True, "bytes_written": len(data)}
         except Exception as e:
-            logger.error(f"write_to_terminal error: {e}")
+            logger.error(f"write_terminal error: {e}")
             return {"success": False, "error": str(e)}
 
     @schema_method
@@ -423,6 +468,157 @@ class AdminTerminal:
                 self._is_executing = False
                 self._execution_complete.set()
             return {"success": False, "error": str(e)}
+
+    async def _handle_history_navigation(self, direction: str) -> Dict[str, Any]:
+        """Handle up/down arrow key navigation through command history."""
+        try:
+            if not self._command_history:
+                return {"success": True, "action": "no_history"}
+            
+            if direction == 'up':
+                # Move up in history (older commands)
+                if self._history_index > 0:
+                    self._history_index -= 1
+                    command = self._command_history[self._history_index]
+                    self._current_input = command
+                    self._cursor_position = len(command)
+                    
+                    # Clear current line and show historical command
+                    async with self.buffer_lock:
+                        # Clear line and return to start
+                        self.output_buffer.append("\r\x1b[K>>> " + command)
+                    
+                    return {"success": True, "action": "history_up", "command": command}
+                    
+            elif direction == 'down':
+                # Move down in history (newer commands)
+                if self._history_index < len(self._command_history) - 1:
+                    self._history_index += 1
+                    command = self._command_history[self._history_index]
+                    self._current_input = command
+                    self._cursor_position = len(command)
+                    
+                    # Clear current line and show historical command
+                    async with self.buffer_lock:
+                        self.output_buffer.append("\r\x1b[K>>> " + command)
+                    
+                    return {"success": True, "action": "history_down", "command": command}
+                elif self._history_index == len(self._command_history) - 1:
+                    # At the end of history, clear the input
+                    self._history_index = len(self._command_history)
+                    self._current_input = ""
+                    self._cursor_position = 0
+                    
+                    async with self.buffer_lock:
+                        self.output_buffer.append("\r\x1b[K>>> ")
+                    
+                    return {"success": True, "action": "history_clear"}
+            
+            return {"success": True, "action": "history_unchanged"}
+            
+        except Exception as e:
+            logger.error(f"History navigation error: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def _handle_tab_completion(self) -> Dict[str, Any]:
+        """Handle tab key for auto-completion."""
+        try:
+            if not self._current_input:
+                return {"success": True, "action": "no_completion"}
+            
+            # Get the part to complete (everything up to cursor position)
+            text_to_complete = self._current_input[:self._cursor_position]
+            
+            # Find the last word/identifier to complete
+            import re
+            match = re.search(r'([\w\.]+)$', text_to_complete)
+            if not match:
+                return {"success": True, "action": "no_completion"}
+            
+            partial = match.group(1)
+            prefix = text_to_complete[:match.start(1)]
+            
+            # Get completions
+            completions = self._get_completions(partial)
+            
+            if not completions:
+                return {"success": True, "action": "no_completions"}
+            elif len(completions) == 1:
+                # Single completion - use it
+                completion = completions[0]
+                new_text = prefix + completion
+                remaining = self._current_input[self._cursor_position:]
+                self._current_input = new_text + remaining
+                self._cursor_position = len(new_text)
+                
+                # Update display
+                async with self.buffer_lock:
+                    self.output_buffer.append("\r\x1b[K>>> " + self._current_input)
+                    if remaining:
+                        # Move cursor back if there's text after cursor
+                        self.output_buffer.append("\x1b[" + str(len(remaining)) + "D")
+                
+                return {"success": True, "action": "completed", "completion": completion}
+            else:
+                # Multiple completions - show them
+                async with self.buffer_lock:
+                    self.output_buffer.append("\r\n")
+                    # Show completions in columns
+                    max_len = max(len(c) for c in completions)
+                    cols = max(1, self.terminal_size["cols"] // (max_len + 2))
+                    for i in range(0, len(completions), cols):
+                        row = completions[i:i+cols]
+                        formatted_row = "  ".join(c.ljust(max_len) for c in row)
+                        self.output_buffer.append(formatted_row + "\r\n")
+                    # Redraw the prompt and current input
+                    self.output_buffer.append(">>> " + self._current_input)
+                    # Position cursor correctly
+                    if len(self._current_input) > self._cursor_position:
+                        back_amount = len(self._current_input) - self._cursor_position
+                        self.output_buffer.append("\x1b[" + str(back_amount) + "D")
+                
+                return {"success": True, "action": "show_completions", "completions": completions}
+            
+        except Exception as e:
+            logger.error(f"Tab completion error: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def _get_completions(self, partial: str) -> list:
+        """Get possible completions for a partial string."""
+        try:
+            parts = partial.split('.')
+            
+            if len(parts) == 1:
+                # Complete from namespace
+                prefix = parts[0]
+                return [name for name in self.namespace.keys() 
+                       if name.startswith(prefix) and not name.startswith('_')]
+            else:
+                # Complete attributes of an object
+                obj_path = '.'.join(parts[:-1])
+                attr_prefix = parts[-1]
+                
+                try:
+                    # Evaluate the object path
+                    obj = eval(obj_path, self.namespace)
+                    
+                    # Get all attributes
+                    attrs = dir(obj)
+                    
+                    # Filter by prefix and exclude private attributes by default
+                    completions = [obj_path + '.' + attr for attr in attrs 
+                                 if attr.startswith(attr_prefix) and not attr.startswith('_')]
+                    
+                    # If the prefix starts with _, include private attributes
+                    if attr_prefix.startswith('_'):
+                        completions = [obj_path + '.' + attr for attr in attrs 
+                                     if attr.startswith(attr_prefix)]
+                    
+                    return completions
+                except:
+                    return []
+        except:
+            return []
 
     async def stop_terminal(self):
         """Stop the admin terminal."""
@@ -518,7 +714,7 @@ class AdminUtilities:
                 "resize_terminal": self.terminal.resize_terminal,
                 "read_terminal": self.terminal.read_terminal,
                 "get_screen_content": self.terminal.get_screen_content,
-                "write_to_terminal": self.terminal.write_to_terminal,
+                "write_terminal": self.terminal.write_terminal,
                 "execute_command": self.terminal.execute_command,
             })
         

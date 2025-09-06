@@ -112,6 +112,9 @@
                 this.isConnected = false;
                 this.inputBuffer = '';
                 this.rootToken = null;
+                this.currentLine = '';
+                this.cursorPosition = 0;
+                this.isProcessingSpecialKey = false;
                 
                 this.initTerminal();
                 this.promptForRootToken();
@@ -178,23 +181,70 @@
                 }, 100);
 
                 // Handle terminal input
-                this.term.onData((data) => {
-                    if (this.isConnected) {
-                        // Echo the input locally for immediate feedback
-                        // Handle special characters
-                        if (data === '\r' || data === '\n') {
-                            // Enter key - backend will handle newline and execution
-                            // No local echo needed here
-                        } else if (data === '\x7f' || data === '\b') {
-                            // Backspace - remove last character from display
-                            this.term.write('\b \b');
-                        } else if (data === '\x03') {
-                            // Ctrl+C - will be handled by backend
-                        } else if (data.charCodeAt(0) >= 32) {
-                            // Regular printable character - echo it
-                            this.term.write(data);
+                this.term.onData(async (data) => {
+                    if (this.isConnected && !this.isProcessingSpecialKey) {
+                        // Check for escape sequences (arrow keys, etc.)
+                        if (data === '\x1b[A' || data === '\x1b[B' || 
+                            data === '\x1b[C' || data === '\x1b[D' || 
+                            data === '\t') {
+                            // Special keys - let backend handle them
+                            this.isProcessingSpecialKey = true;
+                            await this.sendToTerminal(data);
+                            this.isProcessingSpecialKey = false;
+                            return;
                         }
-                        this.sendToTerminal(data);
+                        
+                        // Handle regular input
+                        if (data === '\r' || data === '\n') {
+                            // Enter key - reset line tracking
+                            this.currentLine = '';
+                            this.cursorPosition = 0;
+                        } else if (data === '\x7f' || data === '\b') {
+                            // Backspace - update local tracking
+                            if (this.cursorPosition > 0) {
+                                this.currentLine = 
+                                    this.currentLine.slice(0, this.cursorPosition - 1) + 
+                                    this.currentLine.slice(this.cursorPosition);
+                                this.cursorPosition--;
+                                // Visual feedback
+                                if (this.cursorPosition < this.currentLine.length) {
+                                    // Backspace in middle of line
+                                    this.term.write('\b');
+                                    this.term.write(this.currentLine.slice(this.cursorPosition) + ' ');
+                                    const moveBack = this.currentLine.length - this.cursorPosition + 1;
+                                    this.term.write('\x1b[' + moveBack + 'D');
+                                } else {
+                                    // Backspace at end of line
+                                    this.term.write('\b \b');
+                                }
+                            }
+                        } else if (data === '\x03') {
+                            // Ctrl+C - reset state
+                            this.currentLine = '';
+                            this.cursorPosition = 0;
+                        } else if (data.charCodeAt(0) >= 32) {
+                            // Regular printable character
+                            this.currentLine = 
+                                this.currentLine.slice(0, this.cursorPosition) + 
+                                data + 
+                                this.currentLine.slice(this.cursorPosition);
+                            this.cursorPosition++;
+                            
+                            // Visual feedback
+                            if (this.cursorPosition <= this.currentLine.length) {
+                                // Inserting in middle or at end
+                                this.term.write(data);
+                                if (this.cursorPosition < this.currentLine.length) {
+                                    // Write rest of line and move cursor back
+                                    const remaining = this.currentLine.slice(this.cursorPosition);
+                                    this.term.write(remaining);
+                                    this.term.write('\x1b[' + remaining.length + 'D');
+                                }
+                            }
+                        }
+                        
+                        // Send to backend
+                        await this.sendToTerminal(data);
                     }
                 });
 
@@ -265,6 +315,31 @@
                     const result = await this.adminService.write_to_terminal(data);
                     if (!result.success) {
                         console.error('Failed to write to terminal:', result.error);
+                    } else if (result.action) {
+                        // Handle special actions from backend
+                        if (result.action === 'history_up' || result.action === 'history_down') {
+                            // History navigation - update local state
+                            if (result.command !== undefined) {
+                                this.currentLine = result.command;
+                                this.cursorPosition = this.currentLine.length;
+                            }
+                        } else if (result.action === 'history_clear') {
+                            this.currentLine = '';
+                            this.cursorPosition = 0;
+                        } else if (result.action === 'completed') {
+                            // Tab completion succeeded - update local state
+                            // The backend has already updated the display
+                        } else if (result.action === 'cursor_left') {
+                            if (this.cursorPosition > 0) {
+                                this.cursorPosition--;
+                                this.term.write('\x1b[D');
+                            }
+                        } else if (result.action === 'cursor_right') {
+                            if (this.cursorPosition < this.currentLine.length) {
+                                this.cursorPosition++;
+                                this.term.write('\x1b[C');
+                            }
+                        }
                     }
                 } catch (error) {
                     console.error('Error sending to terminal:', error);
