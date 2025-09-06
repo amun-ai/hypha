@@ -39,7 +39,8 @@ jobs:
         ports:
           - 9000:9000
           - 9001:9001
-        options: --health-cmd "curl -f http://localhost:9000/minio/health/live || exit 1" --health-interval 10s --health-timeout 5s --health-retries 5
+        options: --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:9000/minio/health/live || exit 1" --health-interval 10s --health-timeout 5s --health-retries 5
+        cmd: ["server", "/data", "--console-address", ":9001"]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}
