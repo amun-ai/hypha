@@ -1471,6 +1471,9 @@ class WorkspaceManager:
         if not include_unlisted:
             filtered_items = []
             for item in results["items"]:
+                # Handle None items gracefully
+                if item is None:
+                    continue
                 service_visibility = item.get("config", {}).get("visibility")
                 if service_visibility != "unlisted":
                     filtered_items.append(item)
