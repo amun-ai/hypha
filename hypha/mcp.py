@@ -10,7 +10,7 @@ import json
 import logging
 import asyncio
 from typing import Any, Dict, Optional, List, Callable, Union
-from collections import deque
+import anyio
 from dataclasses import dataclass
 from uuid import uuid4
 import time
@@ -1041,9 +1041,16 @@ class HyphaMCPAdapter:
     
     async def handle_request(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Handle incoming HTTP request using the session manager."""
-        # The session manager should be running continuously, not per request
-        # Just handle the request directly
-        await self.session_manager.handle_request(scope, receive, send)
+        # In stateless mode, each request is handled independently
+        # The session manager will create its own context internally for each request
+        try:
+            async with self.session_manager.run():
+                await self.session_manager.handle_request(scope, receive, send)
+        except anyio.ClosedResourceError:
+            # This can happen if the client disconnects early - ignore
+            pass
+        except Exception as e:
+            raise
     
     async def handle_sse_request(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Handle incoming SSE request."""
@@ -1055,6 +1062,11 @@ class HyphaMCPAdapter:
                 write_stream,
                 self.server.create_initialization_options()
             )
+        
+        # Note: We don't call server.run() here because SSE works differently:
+        # 1. The GET request establishes the SSE connection and returns headers
+        # 2. Subsequent POST requests to /messages/ handle the actual communication
+        # 3. The transport manages the event stream lifecycle
     
     async def handle_sse_message(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Handle incoming SSE message POST request."""
@@ -1072,42 +1084,12 @@ class MCPSessionWrapper:
     
     def __init__(self, adapter: HyphaMCPAdapter):
         self.adapter = adapter
-        self.session_context = None
-        self.session_task = None
     
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Handle request, ensuring session manager is running."""
-        # Start session manager if not already running
-        if self.session_context is None:
-            self.session_context = self.adapter.session_manager.run()
-            self.session_task = asyncio.create_task(self.session_context.__aenter__())
-            # Wait a bit for it to start
-            await asyncio.sleep(0.01)
-        
-        # Handle the request
-        try:
-            await self.adapter.handle_request(scope, receive, send)
-        except Exception as e:
-            # If session manager is not running, try to restart it
-            if "Task group is not initialized" in str(e):
-                # Clean up old context
-                if self.session_context:
-                    try:
-                        await self.session_context.__aexit__(None, None, None)
-                    except:
-                        pass
-                    self.session_context = None
-                    self.session_task = None
-                
-                # Start new context
-                self.session_context = self.adapter.session_manager.run()
-                self.session_task = asyncio.create_task(self.session_context.__aenter__())
-                await asyncio.sleep(0.01)
-                
-                # Retry the request
-                await self.adapter.handle_request(scope, receive, send)
-            else:
-                raise
+        """Handle request independently for stateless mode."""
+        # In stateless mode, we handle each request independently
+        # The session manager will handle its own context internally
+        await self.adapter.handle_request(scope, receive, send)
 
 
 async def create_mcp_app_from_service(service, service_info, redis_client):
@@ -1786,6 +1768,9 @@ class MCPRoutingMiddleware:
                 # Handle the SSE request with the cached MCP app
                 adapter = mcp_app.adapter if hasattr(mcp_app, 'adapter') else mcp_app
                 await adapter.handle_sse_request(scope, receive, send)
+            except Exception as e:
+                logger.error(f"Error during SSE handling for {cache_key}: {e}")
+                raise
             finally:
                 # Decrement connection count
                 if cache_key in self.active_sse_connections:

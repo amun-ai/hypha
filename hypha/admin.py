@@ -277,7 +277,7 @@ class AdminTerminal:
             async with self.buffer_lock:
                 if self.output_buffer:
                     output = ''.join(self.output_buffer)
-                    self.output_buffer = []
+                    self.output_buffer.clear()  # Properly clear the list
                     return {"success": True, "output": output}
             
             return {"success": True, "output": ""}
@@ -288,10 +288,11 @@ class AdminTerminal:
     async def get_screen_content(
         self,
     ) -> Dict[str, Any]:
-        """Get the accumulated screen buffer content."""
+        """Get the accumulated screen buffer content without clearing it."""
         try:
             async with self.buffer_lock:
-                content = ''.join(self.output_buffer)
+                # Don't clear the buffer, just return the current content
+                content = ''.join(self.output_buffer) if self.output_buffer else ""
             return {"success": True, "content": content}
         except Exception as e:
             return {"success": False, "error": str(e)}
