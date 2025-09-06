@@ -112,21 +112,21 @@ async def test_admin_terminal_basic():
     
     # Test writing input character by character (simulating user typing)
     # Type "print('hello')" followed by Enter
-    await terminal.write_to_terminal("p")
-    await terminal.write_to_terminal("r")
-    await terminal.write_to_terminal("i")
-    await terminal.write_to_terminal("n")
-    await terminal.write_to_terminal("t")
-    await terminal.write_to_terminal("(")
-    await terminal.write_to_terminal("'")
-    await terminal.write_to_terminal("h")
-    await terminal.write_to_terminal("e")
-    await terminal.write_to_terminal("l")
-    await terminal.write_to_terminal("l")
-    await terminal.write_to_terminal("o")
-    await terminal.write_to_terminal("'")
-    await terminal.write_to_terminal(")")
-    await terminal.write_to_terminal("\r")
+    await terminal.write_terminal("p")
+    await terminal.write_terminal("r")
+    await terminal.write_terminal("i")
+    await terminal.write_terminal("n")
+    await terminal.write_terminal("t")
+    await terminal.write_terminal("(")
+    await terminal.write_terminal("'")
+    await terminal.write_terminal("h")
+    await terminal.write_terminal("e")
+    await terminal.write_terminal("l")
+    await terminal.write_terminal("l")
+    await terminal.write_terminal("o")
+    await terminal.write_terminal("'")
+    await terminal.write_terminal(")")
+    await terminal.write_terminal("\r")
     
     # Wait for execution
     await asyncio.sleep(0.2)
@@ -212,7 +212,7 @@ async def test_admin_utilities_setup():
     assert "resize_terminal" in service_api
     assert "read_terminal" in service_api
     assert "get_screen_content" in service_api
-    assert "write_to_terminal" in service_api
+    assert "write_terminal" in service_api
     assert "execute_command" in service_api
     
     # Clean up terminal if started

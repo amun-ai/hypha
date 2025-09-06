@@ -1061,7 +1061,7 @@
                     
                     if (data.length <= CHUNK_SIZE) {
                         // Small data, send directly
-                        const result = await this.terminalService.write_to_terminal(terminalId, data);
+                        const result = await this.terminalService.write_terminal(terminalId, data);
                         if (!result.success) {
                             console.error('Terminal write failed:', result.error);
                             // Don't show error to user for individual keystrokes unless it's serious
@@ -1084,7 +1084,7 @@
                         for (let i = 0; i < chunks.length; i++) {
                             const chunk = chunks[i];
                             
-                            const result = await this.terminalService.write_to_terminal(terminalId, chunk);
+                            const result = await this.terminalService.write_terminal(terminalId, chunk);
                             if (!result.success) {
                                 console.error('Terminal write failed:', result.error);
                                 if (result.error.includes('not found')) {
