@@ -1437,6 +1437,11 @@ class MCPRoutingMiddleware:
                 },
                 "help": "Use the streamable HTTP endpoint for MCP communication.",
             }
+ 
+            # Include adapter summary if available
+            if adapter_summary:
+                message["service_info"] = adapter_summary
+
         response_body = json.dumps(message, indent=2).encode()
         await send(
             {
