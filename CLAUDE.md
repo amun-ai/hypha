@@ -661,7 +661,7 @@ DO NOT use defensive programming pattern, NEVER do try and finally to let the er
 
 Never ignore errors, or warnings, either it's relate to the current tests goal or not, you should always at least warn the user about the failing tests, never ignore them, always aim for full test passes. Otherwise fix them.
 
-If instructed, you can commit the changes (only the files related to your current task) and push to remote, and then use the github-ci mcp tools to check for the ci status, we need to wait for the CI tests to pass, if any error occurs, read the error, and try to fix the failed tests. You should always wait for the CI to pass so we can merge the PR, that the main goal of each branch.
+If instructed, you can commit the changes (only the files related to your current task) and push to remote, and then use the github-ci mcp tools to check for the ci status, we need to wait for the CI tests to pass, if any error occurs, read the error using get_pytest_failures, and try to fix the failed tests. You should always wait for the CI to pass so we can merge the PR, that the main goal of each branch. Never reset github branch during the process.
 
 In case of error, use git diff tool to compare passing branch to compare differences. ALWAYS aim to find root cause of bugs or issues, never do shallow fix to just let the test pass, or adding try except, or add pytest skip, never do this, these are cheating, will facing serious consequences.
 
@@ -670,3 +670,5 @@ If you failed to run the tests, warn the user the failure, never conclude to the
 When user provide description about error, provide CI error logs, or any other information, the first thing to do is to try to create a test to reproduce the issue, never try to fix it in the first place, always try to reproduce the issue and do a root cause analysis, once you clearly understand the issue, move on to the actual fix.
 
 Commit to git is ok if instructed, but NEVER reset a branch this will cause the lost of commit history.
+
+Never use try/finally pattern, always raise exception!

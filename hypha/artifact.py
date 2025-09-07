@@ -61,7 +61,7 @@ from hypha.core import (
     Artifact,
     CollectionArtifact,
 )
-from hypha.vectors import VectorSearchEngine
+from hypha.pgvector import PgVectorSearchEngine
 from hypha_rpc.utils import ObjectProxy
 from hypha_rpc.utils.schema import schema_method
 from jsonschema import validate
@@ -228,8 +228,8 @@ class ArtifactController:
         self.store = store
         self._cache = store.get_redis_cache()
         self._openai_client = self.store.get_openai_client()
-        self._vector_engine = VectorSearchEngine(
-            store.get_redis(), store.get_cache_dir()
+        self._vector_engine = PgVectorSearchEngine(
+            store.get_sql_engine(), prefix="vec", cache_dir=store.get_cache_dir()
         )
         router = APIRouter()
         self._artifacts_dir = artifacts_dir
@@ -2329,11 +2329,11 @@ class ArtifactController:
         ),
         type: str = PydanticField(
             "generic",
-            description="Artifact type. Options: 'generic' (default), 'collection' (folder-like container), 'application' (Hypha app), 'model' (ML model), 'dataset' (data collection)."
+            description="Artifact type. Options: 'generic' (default), 'collection' (folder-like container), 'vector-collection' (vector database), 'application' (Hypha app), 'model' (ML model), 'dataset' (data collection)."
         ),
         config: Optional[Dict[str, Any]] = PydanticField(
             None,
-            description="Configuration options including permissions, visibility, and storage settings. Example: {'permissions': {'*': 'r'}} for public read access."
+            description="Configuration options including permissions, visibility, and storage settings. For vector-collection type: use 'dimension' (int) and 'distance_metric' ('cosine', 'l2', 'inner_product'). Example: {'permissions': {'*': 'r'}, 'dimension': 768, 'distance_metric': 'cosine'}"
         ),
         secrets: Optional[Dict[str, str]] = PydanticField(
             None,
@@ -2395,6 +2395,14 @@ class ArtifactController:
                 alias="public-model",
                 config={"permissions": {"*": "r"}},
                 manifest={"name": "Public Model"}
+            )
+            
+            # Create a vector collection for embeddings
+            vector_collection = await create(
+                alias="embeddings",
+                type="vector-collection",
+                config={"dimension": 768, "distance_metric": "cosine"},
+                manifest={"name": "Document Embeddings"}
             )
             
         Raises:
@@ -2695,19 +2703,21 @@ class ArtifactController:
 
                 s3_config = self._get_s3_config(new_artifact, parent_artifact)
                 if new_artifact.type == "vector-collection":
-                    async with self._create_client_async(s3_config) as s3_client:
-                        prefix = safe_join(
-                            s3_config["prefix"],
-                            f"{new_artifact.id}/v0",
-                        )
-                        await self._vector_engine.create_collection(
-                            f"{new_artifact.workspace}/{new_artifact.alias}",
-                            config.get("vector_fields", []),
-                            overwrite=overwrite,
-                            s3_client=s3_client,
-                            bucket=s3_config["bucket"],
-                            prefix=prefix,
-                        )
+                    assert "vector_fields" not in config, ("legacy `vector_fields` is not supported, please update the new api which uses `dimension` and `distance_metric` instead.")
+                    # PgVector uses simplified configuration
+                    dimension = config.get("dimension", 384)
+                    distance_metric = config.get("distance_metric", "cosine").lower()
+                    
+                    # Store the config for future reference
+                    config["dimension"] = dimension
+                    config["distance_metric"] = distance_metric
+                    
+                    await self._vector_engine.create_collection(
+                        f"{new_artifact.workspace}/{new_artifact.alias}",
+                        dimension=dimension,
+                        distance_metric=distance_metric,
+                        overwrite=overwrite,
+                    )
 
                 await session.commit()
                 await self._save_version_to_s3(
@@ -3665,10 +3675,7 @@ class ArtifactController:
                         f"{artifact.id}/v0",
                     )
                     await self._vector_engine.delete_collection(
-                        f"{artifact.workspace}/{artifact.alias}",
-                        s3_client=s3_client,
-                        bucket=s3_config["bucket"],
-                        prefix=prefix,
+                        f"{artifact.workspace}/{artifact.alias}"
                     )
 
             s3_config = self._get_s3_config(artifact, parent_artifact)
@@ -3732,6 +3739,16 @@ class ArtifactController:
     ):
         """
         Add vectors to a vector collection.
+        
+        Each vector should have the structure:
+        {
+            "id": "unique_identifier",
+            "vector": [0.1, 0.2, ...],  # The embedding vector
+            "manifest": {...}  # Additional metadata/payload
+        }
+        
+        If collection_schema is defined in the artifact config, the manifest
+        will be validated against it.
         """
         user_info = UserInfo.from_context(context)
         session = await self._get_session()
@@ -3755,20 +3772,41 @@ class ArtifactController:
                             artifact.manifest
                         ), "Artifact must be committed before upserting."
                         s3_config = self._get_s3_config(artifact, parent_artifact)
+                        
+                        # Get collection_schema if defined
+                        collection_schema = artifact.config.get("collection_schema")
+                        
+                        # Validate vectors
+                        validated_vectors = []
+                        for vec in vectors:
+                            # Validate vector structure
+                            if "id" not in vec:
+                                raise ValueError("Each vector must have an 'id' field")
+                            if "vector" not in vec:
+                                raise ValueError("Each vector must have a 'vector' field")
+                            
+                            # Validate manifest against schema if provided
+                            manifest = vec.get("manifest", {})
+                            if collection_schema and manifest:
+                                try:
+                                    import jsonschema
+                                    jsonschema.validate(manifest, collection_schema)
+                                except jsonschema.ValidationError as e:
+                                    raise ValueError(f"Manifest validation failed for vector {vec['id']}: {str(e)}")
+                            
+                            # Use vector as-is (no transformation needed)
+                            validated_vectors.append(vec)
+                        
                         async with self._create_client_async(s3_config) as s3_client:
                             prefix = safe_join(
                                 s3_config["prefix"],
                                 f"{artifact.id}/v0",
                             )
+                            
                             await self._vector_engine.add_vectors(
                                 f"{artifact.workspace}/{artifact.alias}",
-                                vectors,
-                                update=update,
-                                embedding_models=embedding_models
-                                or artifact.config.get("embedding_models"),
-                                s3_client=s3_client,
-                                bucket=s3_config["bucket"],
-                                prefix=prefix,
+                                validated_vectors,
+                                embedding_model=embedding_models.get("vector") if embedding_models else artifact.config.get("embedding_models", {}).get("vector"),
                             )
                         logger.info(f"Added vectors to artifact with ID: {artifact_id}")
                         break
@@ -4057,18 +4095,39 @@ class ArtifactController:
                 embedding_models = embedding_models or artifact.config.get(
                     "embedding_models"
                 )
+                
+                # Transform query for PgVector format
+                query_vector = None
+                if query:
+                    if "vector" in query:
+                        query_vector = query["vector"]
+                    elif isinstance(query, dict):
+                        # Find the first vector-like field
+                        for key, value in query.items():
+                            if isinstance(value, (list, tuple)) and len(value) > 0 and isinstance(value[0], (int, float)):
+                                query_vector = value
+                                break
+                    elif isinstance(query, (list, tuple)):
+                        query_vector = query
+                
+                # Get embedding model for text queries
+                embedding_model = None
+                if embedding_models:
+                    embedding_model = embedding_models.get("vector")
+                
                 return await self._vector_engine.search_vectors(
                     f"{artifact.workspace}/{artifact.alias}",
-                    query=query,
-                    embedding_models=embedding_models,
+                    query_vector=query_vector,
+                    embedding_model=embedding_model,
                     filters=filters,
                     limit=limit,
                     offset=offset,
-                    return_fields=return_fields,
+                    include_vectors=False if not return_fields else "vector" in return_fields,
                     order_by=order_by,
                     pagination=pagination,
                 )
         except Exception as e:
+            await session.rollback()
             raise e
         finally:
             await session.close()
@@ -4100,9 +4159,6 @@ class ArtifactController:
                     await self._vector_engine.remove_vectors(
                         f"{artifact.workspace}/{artifact.alias}",
                         ids,
-                        s3_client=s3_client,
-                        bucket=s3_config["bucket"],
-                        prefix=prefix,
                     )
                 logger.info(f"Removed vectors from artifact with ID: {artifact_id}")
         except Exception as e:
@@ -4158,12 +4214,12 @@ class ArtifactController:
                     f"{artifact.workspace}/{artifact.alias}",
                     offset=offset,
                     limit=limit,
-                    return_fields=return_fields,
+                    include_vectors=False if not return_fields else "vector" in return_fields,
                     order_by=order_by,
                     pagination=pagination,
                 )
-
         except Exception as e:
+            await session.rollback()
             raise e
         finally:
             await session.close()

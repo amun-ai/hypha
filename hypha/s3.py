@@ -182,6 +182,7 @@ class S3Controller:
         self.region_name = region_name
         self.s3_admin_type = s3_admin_type
         self.enable_s3_proxy = enable_s3_proxy
+
         if self.s3_admin_type == "minio":
             self.minio_client = MinioClient(
                 endpoint_url,
@@ -191,6 +192,7 @@ class S3Controller:
             )
         else:
             self.minio_client = None
+    
         self.endpoint_url_public = endpoint_url_public or endpoint_url
         self.store = store
         self.workspace_bucket = workspace_bucket
@@ -201,6 +203,7 @@ class S3Controller:
         self._redis = store.get_redis()
         # self.local_log_dir = Path(local_log_dir)
         self.workspace_etc_dir = workspace_etc_dir.rstrip("/")
+        
         s3client = self.create_client_sync()
         
         # Try to create bucket with retries for MinIO startup

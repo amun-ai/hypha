@@ -222,11 +222,7 @@ def _parse_token(authorization: str, expected_workspace: str = None):
     
     # Check if this is the root token FIRST, before any JWT decoding
     global _current_root_token
-    logger.info(f"_parse_token called with token type: {type(token)}, length: {len(token) if token else 0}")
-    logger.info(f"Token first 50 chars: {repr(token[:50] if token else 'None')}")
-    logger.info(f"Current root token first 50 chars: {repr(_current_root_token[:50] if _current_root_token else 'None')}")
-    logger.info(f"Token match check: current={_current_root_token is not None}, match={token == _current_root_token if _current_root_token else False}")
-    
+
     # Try stripping whitespace in case the browser adds some
     if _current_root_token and (token == _current_root_token or (isinstance(token, str) and token.strip() == _current_root_token)):
         logger.info("Root token authenticated successfully")
