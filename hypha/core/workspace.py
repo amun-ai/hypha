@@ -359,10 +359,10 @@ class WorkspaceManager:
         
         try:
             # Check if collection exists by trying to get info about it
-            await self._vector_search.get_collection_info("services")
-        except Exception:
+            await self._vector_search.count("services")
+        except Exception as exp:
             # Collection doesn't exist, create it
-            logger.info("Services vector collection doesn't exist, creating it...")
+            logger.info(f"Services vector collection doesn't exist (error: {exp}), creating it...")
             await self._vector_search.create_collection(
                 collection_name="services",
                 vector_fields=[
