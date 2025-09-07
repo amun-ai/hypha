@@ -113,7 +113,6 @@ def start_builtin_services(
             s3_controller=s3_controller,
             workspace_bucket=args.workspace_bucket,
         )
-        store.set_artifact_manager(artifact_manager)
 
     if args.enable_server_apps:
         assert args.enable_s3, "Server apps require S3 to be enabled"
