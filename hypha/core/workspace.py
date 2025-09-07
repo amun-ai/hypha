@@ -3132,6 +3132,16 @@ class WorkspaceManager:
             _cws, client_id = client_id.split("/")
             assert _cws == cws, f"Client id workspace mismatch, {_cws} != {cws}"
 
+        # First, try to disconnect the RPC connection if it exists
+        try:
+            connection_key = f"{cws}/{client_id}"
+            if connection_key in RedisRPCConnection._connections:
+                connection = RedisRPCConnection._connections[connection_key]
+                await connection.disconnect("Client deleted by admin")
+                logger.debug(f"Disconnected RPC connection for {connection_key}")
+        except Exception as e:
+            logger.warning(f"Failed to disconnect RPC connection for {cws}/{client_id}: {e}")
+
         # Define a pattern to match all services for the given client_id in the current workspace
         pattern = f"services:*|*:{cws}/{client_id}:*@*"
 
@@ -3155,6 +3165,11 @@ class WorkspaceManager:
             cws, "client_disconnected", {"id": client_id, "workspace": cws}
         )
 
+        # Clean up orphaned patterns
+        try:
+            await self._event_bus.cleanup_orphaned_patterns()
+        except Exception as e:
+            logger.warning(f"Failed to clean up orphaned patterns: {e}")
 
         if unload:
             if await self._redis.hexists("workspaces", cws):

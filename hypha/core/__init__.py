@@ -757,19 +757,25 @@ class RedisRPCConnection:
         RedisRPCConnection._connections_closed_total.inc()
         RedisRPCConnection._closed_total_int += 1
         RedisRPCConnection._active_connections_gauge.set(len(RedisRPCConnection._connections))
+        
+        # Clean up event handlers
         if self._handle_message:
             self._event_bus.off(
                 f"{self._workspace}/{self._client_id}:msg", self._handle_message
             )
             self._event_bus.off(f"{self._workspace}/*:msg", self._handle_message)
+            self._handle_message = None
 
-        self._handle_message = None
+        # Clean up subscriptions
+        if hasattr(self, '_subscriptions'):
+            self._subscriptions.clear()
         
         # Unregister this client from local routing and unsubscribe from events
         try:
             # Cancel registration task if still running
             if self._registration_task and not self._registration_task.done():
                 self._registration_task.cancel()
+                self._registration_task = None
             
             # Unsubscribe from client events and unregister
             await self._event_bus.unsubscribe_from_client_events(self._workspace, self._client_id)
@@ -781,9 +787,17 @@ class RedisRPCConnection:
         logger.debug(
             f"Redis Connection Disconnected: {self._workspace}/{self._client_id}"
         )
+        
+        # Clean up disconnection handler
         if self._handle_disconnected:
-            await self._handle_disconnected(reason)
+            try:
+                await self._handle_disconnected(reason)
+            except Exception as e:
+                logger.warning(f"Error in disconnect handler: {e}")
+            finally:
+                self._handle_disconnected = None
 
+        # Clean up activity tracker
         if RedisRPCConnection._tracker:
             # Only remove from tracker if it was registered
             entity_id = self._workspace + "/" + self._client_id
@@ -800,6 +814,11 @@ class RedisRPCConnection:
                 del RedisRPCConnection._client_metrics[client_key]
 
             RedisRPCConnection._client_load_gauge.set(0)
+        
+        # Clear all references to prevent circular references
+        self._event_bus = None
+        self._handle_connected = None
+        self._handle_disconnected = None
 
 
 class RedisEventBus:
@@ -951,22 +970,67 @@ class RedisEventBus:
     async def unsubscribe_from_client_events(self, workspace: str, client_id: str):
         """Unsubscribe from events for a specific client."""
         client_key = f"{workspace}/{client_id}"
-        pattern = f"targeted:{client_key}:*"
-        if pattern in self._subscribed_patterns:
+        patterns_to_remove = []
+        
+        # Find all patterns related to this client
+        for pattern in list(self._subscribed_patterns):
+            if client_key in pattern:
+                patterns_to_remove.append(pattern)
+        
+        # Unsubscribe from all related patterns
+        for pattern in patterns_to_remove:
             if self._pubsub:
                 try:
                     await self._pubsub.punsubscribe(pattern)
                     RedisEventBus._patterns_unsubscribed_total.inc()
                     RedisEventBus._patterns_unsubscribed_total_int += 1
+                    logger.debug(f"Unsubscribed from pattern: {pattern}")
                 except Exception as e:
                     logger.warning("Failed to unsubscribe from client events %s: %s", pattern, e)
             self._subscribed_patterns.discard(pattern)
-            RedisEventBus._active_patterns_gauge.set(len(self._subscribed_patterns))
+        
+        RedisEventBus._active_patterns_gauge.set(len(self._subscribed_patterns))
 
     def is_local_client(self, workspace: str, client_id: str) -> bool:
         """Check if a client is local to this server instance."""
         client_key = f"{workspace}/{client_id}"
         return client_key in self._local_clients
+    
+    async def cleanup_orphaned_patterns(self):
+        """Clean up orphaned patterns that may have accumulated."""
+        if not self._pubsub:
+            return
+            
+        # Get current active patterns from Redis
+        try:
+            # This is a best-effort cleanup - we can't easily get Redis pubsub state
+            # So we'll clean up patterns that are clearly orphaned
+            patterns_to_clean = []
+            for pattern in list(self._subscribed_patterns):
+                # Check if pattern looks like it's for a disconnected client
+                if "targeted:" in pattern and ":" in pattern:
+                    parts = pattern.split(":")
+                    if len(parts) >= 3:
+                        workspace_client = parts[1]
+                        if "/" in workspace_client:
+                            workspace, client_id = workspace_client.split("/", 1)
+                            # Check if this client is still in our local clients
+                            if not self.is_local_client(workspace, client_id):
+                                patterns_to_clean.append(pattern)
+            
+            # Clean up orphaned patterns
+            for pattern in patterns_to_clean:
+                try:
+                    await self._pubsub.punsubscribe(pattern)
+                    self._subscribed_patterns.discard(pattern)
+                    logger.debug(f"Cleaned up orphaned pattern: {pattern}")
+                except Exception as e:
+                    logger.warning(f"Failed to clean up orphaned pattern {pattern}: {e}")
+            
+            RedisEventBus._active_patterns_gauge.set(len(self._subscribed_patterns))
+            
+        except Exception as e:
+            logger.warning(f"Error during pattern cleanup: {e}")
 
     async def _ensure_subscription(self, workspace: str, client_id: str):
         """Ensure we're subscribed to events for a specific client if it's not local."""
