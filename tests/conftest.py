@@ -523,6 +523,8 @@ def fastapi_server_redis_1(redis_server, minio_server):
             f"--access-key-id={MINIO_ROOT_USER}",
             f"--secret-access-key={MINIO_ROOT_PASSWORD}",
             f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
+            "--workspace-bucket=my-workspaces",
+            "--s3-admin-type=minio",
             "--enable-service-search",
         ],
         env=test_env,
