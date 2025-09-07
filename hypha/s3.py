@@ -182,20 +182,17 @@ class S3Controller:
         self.region_name = region_name
         self.s3_admin_type = s3_admin_type
         self.enable_s3_proxy = enable_s3_proxy
-        
-        # Initialize minio_client in try-catch block
-        self.minio_client = None
+
         if self.s3_admin_type == "minio":
-            try:
-                self.minio_client = MinioClient(
-                    endpoint_url,
-                    access_key_id,
-                    secret_access_key,
-                    executable_path=executable_path,
-                )
-            except Exception as ex:
-                logger.warning(f"Failed to initialize MinIO client: {ex}")
-                # Continue without minio_client - will be handled in main try-catch
+            self.minio_client = MinioClient(
+                endpoint_url,
+                access_key_id,
+                secret_access_key,
+                executable_path=executable_path,
+            )
+        else:
+            self.minio_client = None
+    
         self.endpoint_url_public = endpoint_url_public or endpoint_url
         self.store = store
         self.workspace_bucket = workspace_bucket
