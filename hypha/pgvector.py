@@ -86,9 +86,6 @@ class Vector(UserDefinedType):
 class PgVectorSearchEngine:
     """PostgreSQL-based vector search engine using pgvector extension with partition-by-dimension approach."""
     
-    # Supported dimensions - can be extended as needed
-    SUPPORTED_DIMS = [32, 64, 128, 256, 384, 512, 768, 1024, 1536]
-    
     def __init__(self, engine, prefix: str = "vec", cache_dir=None):
         """Initialize PgVector search engine.
         
@@ -106,6 +103,7 @@ class PgVectorSearchEngine:
             class_=AsyncSession
         )
         self._initialized = False
+        self._created_parent_tables = set()  # Track which parent tables we've created
     
     def _calculate_ivfflat_parameters(self, row_count: int) -> tuple[int, int]:
         """
@@ -150,30 +148,16 @@ class PgVectorSearchEngine:
             # Create the schema if it doesn't exist
             await conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {self._prefix}"))
             
-            # Create collection registry table
+            # Create collection registry table (without dimension constraints)
             await conn.execute(text(f"""
                 CREATE TABLE IF NOT EXISTS {self._prefix}.collection_registry (
                     collection_id BIGINT PRIMARY KEY,
                     collection_name TEXT UNIQUE NOT NULL,
-                    dim INT NOT NULL CHECK (dim IN ({','.join(map(str, self.SUPPORTED_DIMS))})),
+                    dim INT NOT NULL CHECK (dim > 0 AND dim <= 2048),
                     vector_fields JSONB NOT NULL,
                     created_at TIMESTAMPTZ DEFAULT now()
                 )
             """))
-            
-            # Create parent tables for each supported dimension
-            for dim in self.SUPPORTED_DIMS:
-                parent_table = f"{self._prefix}.emb_{dim}_parent"
-                await conn.execute(text(f"""
-                    CREATE TABLE IF NOT EXISTS {parent_table} (
-                        collection_id BIGINT NOT NULL,
-                        id TEXT NOT NULL,
-                        embedding vector({dim}) NOT NULL,
-                        payload JSONB,
-                        created_at TIMESTAMPTZ DEFAULT now(),
-                        PRIMARY KEY (collection_id, id)
-                    ) PARTITION BY LIST (collection_id)
-                """))
         
         self._initialized = True
     
@@ -190,37 +174,68 @@ class PgVectorSearchEngine:
         """Get the child table name for a collection."""
         return f"{self._prefix}.emb_{dim}_parent_c{collection_id}"
     
+    async def _ensure_parent_table_exists(self, dim: int):
+        """Ensure parent table exists for the given dimension."""
+        if dim in self._created_parent_tables:
+            return  # Already created
+        
+        parent_table = self._get_parent_table(dim)
+        
+        async with self._engine.begin() as conn:
+            # Check if parent table already exists
+            result = await conn.execute(text(f"""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_schema = '{self._prefix}' 
+                    AND table_name = 'emb_{dim}_parent'
+                )
+            """))
+            exists = result.scalar()
+            
+            if not exists:
+                # Create parent table for this dimension
+                await conn.execute(text(f"""
+                    CREATE TABLE {parent_table} (
+                        collection_id BIGINT NOT NULL,
+                        id TEXT NOT NULL,
+                        vector vector({dim}) NOT NULL,
+                        manifest JSONB,
+                        created_at TIMESTAMPTZ DEFAULT now(),
+                        PRIMARY KEY (collection_id, id)
+                    ) PARTITION BY LIST (collection_id)
+                """))
+                logger.info(f"Created parent table for dimension {dim}: {parent_table}")
+        
+        self._created_parent_tables.add(dim)
+    
     async def create_collection(
         self,
         collection_name: str,
-        vector_fields: List[Dict[str, Any]],
+        dimension: int = 384,
+        distance_metric: str = "cosine",
         overwrite: bool = False,
-        **kwargs  # Remove s3_client, bucket, prefix from signature
+        **kwargs
     ):
         """Create a vector collection using partition-by-dimension approach.
         
         Args:
             collection_name: Name of the collection
-            vector_fields: List of field definitions
+            dimension: Dimension of the vectors (default: 384)
+            distance_metric: Distance metric to use - 'cosine', 'l2', or 'ip' (default: 'cosine')
             overwrite: Whether to overwrite existing collection
         """
         await self._ensure_initialized()
         
-        # Extract vector field dimension
-        vector_field = None
-        for field in vector_fields:
-            if field.get("type") == "VECTOR":
-                if vector_field is not None:
-                    raise ValueError("Only one vector field per collection is supported")
-                vector_field = field
-                break
+        # Validate dimension is reasonable
+        if dimension <= 0 or dimension > 2048:
+            raise ValueError(f"Dimension {dimension} must be between 1 and 2048")
         
-        if not vector_field:
-            raise ValueError("At least one VECTOR field is required")
+        # Validate distance metric
+        if distance_metric.lower() not in ["cosine", "l2", "ip"]:
+            raise ValueError(f"Distance metric must be 'cosine', 'l2', or 'ip', got {distance_metric}")
         
-        dim = vector_field.get("attributes", {}).get("DIM", 384)
-        if dim not in self.SUPPORTED_DIMS:
-            raise ValueError(f"Dimension {dim} not supported. Supported dimensions: {self.SUPPORTED_DIMS}")
+        # Ensure parent table exists for this dimension
+        await self._ensure_parent_table_exists(dimension)
         
         collection_id = self._get_collection_id(collection_name)
         
@@ -238,11 +253,17 @@ class PgVectorSearchEngine:
                 else:
                     raise ValueError(f"Collection {collection_name} already exists.")
             
+            # Store collection metadata with simplified config
+            metadata = {
+                "dimension": dimension,
+                "distance_metric": distance_metric.lower()
+            }
+            
             # Insert into registry
             await conn.execute(text(f"""
                 INSERT INTO {self._prefix}.collection_registry 
                 (collection_id, collection_name, dim, vector_fields)
-                VALUES (:collection_id, :collection_name, :dim, :vector_fields)
+                VALUES (:collection_id, :collection_name, :dim, :metadata)
                 ON CONFLICT (collection_id) DO UPDATE SET 
                     collection_name = EXCLUDED.collection_name,
                     dim = EXCLUDED.dim,
@@ -250,13 +271,13 @@ class PgVectorSearchEngine:
             """), {
                 "collection_id": collection_id,
                 "collection_name": collection_name,
-                "dim": dim,
-                "vector_fields": json.dumps(vector_fields)
+                "dim": dimension,
+                "metadata": json.dumps(metadata)
             })
             
             # Create child partition
-            parent_table = self._get_parent_table(dim)
-            child_table = self._get_child_table(dim, collection_id)
+            parent_table = self._get_parent_table(dimension)
+            child_table = self._get_child_table(dimension, collection_id)
             child_table_simple = child_table.split('.')[-1]  # Get table name without schema
             
             await conn.execute(text(f"""
@@ -266,13 +287,12 @@ class PgVectorSearchEngine:
             """))
             
             # Create vector index with optimal parameters
-            distance_metric = vector_field.get("attributes", {}).get("DISTANCE_METRIC", "cosine").lower()
             ops_map = {
                 "cosine": "vector_cosine_ops",
                 "l2": "vector_l2_ops", 
                 "ip": "vector_ip_ops"
             }
-            ops = ops_map.get(distance_metric, "vector_cosine_ops")
+            ops = ops_map.get(distance_metric.lower(), "vector_cosine_ops")
             
             # Start with minimal lists for new collection
             lists = 1
@@ -281,7 +301,7 @@ class PgVectorSearchEngine:
             try:
                 await conn.execute(text(f"""
                     CREATE INDEX IF NOT EXISTS {index_name}
-                    ON {child_table} USING ivfflat (embedding {ops})
+                    ON {child_table} USING ivfflat (vector {ops})
                     WITH (lists = {lists})
                 """))
                 logger.info(f"Created vector index {index_name} for collection {collection_name} with lists={lists}")
@@ -290,7 +310,7 @@ class PgVectorSearchEngine:
                 try:
                     await conn.execute(text(f"""
                         CREATE INDEX IF NOT EXISTS {index_name}
-                        ON {child_table} USING hnsw (embedding {ops})
+                        ON {child_table} USING hnsw (vector {ops})
                     """))
                     logger.info(f"Created HNSW index {index_name} for collection {collection_name}")
                 except ProgrammingError:
@@ -383,8 +403,8 @@ class PgVectorSearchEngine:
             
             return count_result.scalar() or 0
     
-    async def _get_fields(self, collection_name: str) -> Dict[str, Any]:
-        """Get field information for a collection."""
+    async def _get_metadata(self, collection_name: str) -> Dict[str, Any]:
+        """Get metadata for a collection."""
         await self._ensure_initialized()
         
         async with self._engine.connect() as conn:
@@ -397,41 +417,45 @@ class PgVectorSearchEngine:
             if not row:
                 raise ValueError(f"Collection {collection_name} not found")
             
-            vector_fields, dim = row
-            fields = {}
+            metadata_json, dim = row
+            if isinstance(metadata_json, str):
+                metadata = json.loads(metadata_json)
+            else:
+                metadata = metadata_json
             
-            for field in vector_fields:
-                field_name = field["name"]
-                field_info = {
-                    "identifier": field_name,
-                    "type": field["type"],
-                    **field.get("attributes", {})
-                }
-                # Ensure dimension is set for vector fields
-                if field["type"] == "VECTOR":
-                    field_info["DIM"] = dim
-                fields[field_name] = field_info
+            # Ensure backward compatibility
+            if "dimension" not in metadata:
+                metadata["dimension"] = dim
+            if "distance_metric" not in metadata:
+                metadata["distance_metric"] = "cosine"
             
-            # Always include id field
-            fields["id"] = {"identifier": "id", "type": "TEXT"}
-            
-            return fields
+            return metadata
     
     async def add_vectors(
         self,
         collection_name: str,
         vectors: List[Dict[str, Any]],
         update: bool = False,
-        embedding_models: Optional[Dict[str, str]] = None,
-        **kwargs  # Remove s3_client parameters
+        embedding_model: Optional[str] = None,
+        **kwargs
     ) -> List[str]:
-        """Add vectors to a collection."""
+        """Add vectors to a collection.
+        
+        Args:
+            collection_name: Name of the collection
+            vectors: List of vector documents, each containing:
+                - id: Unique identifier (optional, auto-generated if not provided)
+                - vector: Vector data as list/array/bytes or text to embed
+                - manifest: Dictionary of additional metadata (optional)
+            update: If True, update existing vectors
+            embedding_model: Model to use for text embeddings (e.g., "fastembed:BAAI/bge-small-en-v1.5")
+        """
         await self._ensure_initialized()
         
         # Get collection info
         async with self._engine.connect() as conn:
             result = await conn.execute(text(f"""
-                SELECT collection_id, dim, vector_fields FROM {self._prefix}.collection_registry
+                SELECT collection_id, dim FROM {self._prefix}.collection_registry
                 WHERE collection_name = :collection_name
             """), {"collection_name": collection_name})
             collection_info = result.fetchone()
@@ -439,19 +463,9 @@ class PgVectorSearchEngine:
             if not collection_info:
                 raise ValueError(f"Collection {collection_name} not found")
             
-            collection_id, dim, vector_fields = collection_info
+            collection_id, dim = collection_info
         
         parent_table = self._get_parent_table(dim)
-        vector_field_name = None
-        
-        # Find the vector field name
-        for field in vector_fields:
-            if field["type"] == "VECTOR":
-                vector_field_name = field["name"]
-                break
-        
-        if not vector_field_name:
-            raise ValueError("No vector field found in collection")
         
         ids = []
         
@@ -467,9 +481,9 @@ class PgVectorSearchEngine:
                 ids.append(vector_id)
                 
                 # Process vector field
-                vector_value = vector_data.get(vector_field_name)
+                vector_value = vector_data.get("vector")
                 if vector_value is None:
-                    raise ValueError(f"Vector field '{vector_field_name}' is required")
+                    raise ValueError("'vector' field is required")
                 
                 # Convert vector to string format
                 if isinstance(vector_value, np.ndarray):
@@ -481,46 +495,43 @@ class PgVectorSearchEngine:
                     arr = np.frombuffer(vector_value, dtype=np.float32)
                     vec_list = arr.tolist()
                     vector_str = f"[{','.join(map(str, vec_list))}]"
-                elif isinstance(vector_value, str) and embedding_models and vector_field_name in embedding_models:
+                elif isinstance(vector_value, str) and embedding_model:
                     # Generate embedding from text
-                    embeddings = await self._embed_texts([vector_value], embedding_models[vector_field_name])
+                    embeddings = await self._embed_texts([vector_value], embedding_model)
                     vec_list = embeddings[0] if isinstance(embeddings[0], list) else embeddings[0].tolist()
                     vector_str = f"[{','.join(map(str, vec_list))}]"
                 else:
                     if isinstance(vector_value, list):
                         vector_str = f"[{','.join(map(str, vector_value))}]"
                     else:
-                        vector_str = str(vector_value)
+                        raise ValueError(f"Invalid vector type: {type(vector_value)}")
                 
-                # Prepare payload (all non-vector fields)
-                payload = {}
-                for key, value in vector_data.items():
-                    if key not in ["id", vector_field_name]:
-                        payload[key] = value
+                # Get manifest directly from the input (no longer extract from flat keys)
+                manifest = vector_data.get("manifest", {})
                 
                 if update:
                     # Update existing vector
                     await session.execute(text(f"""
                         UPDATE {parent_table} 
-                        SET embedding = CAST(:embedding AS vector), payload = :payload
+                        SET vector = CAST(:vector AS vector), manifest = :manifest
                         WHERE collection_id = :collection_id AND id = :id
                     """), {
                         "collection_id": collection_id,
                         "id": vector_id,
-                        "embedding": vector_str,
-                        "payload": json.dumps(payload) if payload else None
+                        "vector": vector_str,
+                        "manifest": json.dumps(manifest) if manifest else None
                     })
                 else:
                     # Insert new vector
                     try:
                         await session.execute(text(f"""
-                            INSERT INTO {parent_table} (collection_id, id, embedding, payload)
-                            VALUES (:collection_id, :id, CAST(:embedding AS vector), :payload)
+                            INSERT INTO {parent_table} (collection_id, id, vector, manifest)
+                            VALUES (:collection_id, :id, CAST(:vector AS vector), :manifest)
                         """), {
                             "collection_id": collection_id,
                             "id": vector_id,
-                            "embedding": vector_str,
-                            "payload": json.dumps(payload) if payload else None
+                            "vector": vector_str,
+                            "manifest": json.dumps(manifest) if manifest else None
                         })
                     except IntegrityError:
                         logger.warning(f"Vector with ID {vector_id} already exists, skipping")
@@ -566,7 +577,7 @@ class PgVectorSearchEngine:
         # Get collection info
         async with self._engine.connect() as conn:
             result = await conn.execute(text(f"""
-                SELECT collection_id, dim, vector_fields FROM {self._prefix}.collection_registry
+                SELECT collection_id, dim FROM {self._prefix}.collection_registry
                 WHERE collection_name = :collection_name
             """), {"collection_name": collection_name})
             collection_info = result.fetchone()
@@ -574,20 +585,13 @@ class PgVectorSearchEngine:
             if not collection_info:
                 raise ValueError(f"Collection {collection_name} not found")
             
-            collection_id, dim, vector_fields = collection_info
+            collection_id, dim = collection_info
         
         parent_table = self._get_parent_table(dim)
-        vector_field_name = None
-        
-        # Find the vector field name
-        for field in vector_fields:
-            if field["type"] == "VECTOR":
-                vector_field_name = field["name"]
-                break
         
         async with self._engine.connect() as conn:
             result = await conn.execute(text(f"""
-                SELECT id, embedding, payload FROM {parent_table}
+                SELECT id, vector, manifest FROM {parent_table}
                 WHERE collection_id = :collection_id AND id = :id
             """), {"collection_id": collection_id, "id": str(id)})
             row = result.fetchone()
@@ -595,29 +599,29 @@ class PgVectorSearchEngine:
             if not row:
                 raise ValueError(f"Vector {id} not found in collection {collection_name}")
             
-            vector_id, embedding, payload = row
+            vector_id, vector_col, manifest = row
             
             # Build result
             vector_data = {"id": vector_id}
             
             # Add vector field
-            if embedding is not None and vector_field_name:
-                if isinstance(embedding, np.ndarray):
-                    vector_data[vector_field_name] = embedding.tolist()
-                elif isinstance(embedding, str):
+            if vector_col is not None:
+                if isinstance(vector_col, np.ndarray):
+                    vector_data["vector"] = vector_col.tolist()
+                elif isinstance(vector_col, str):
                     # Parse pgvector string format
-                    embedding = embedding.strip('[]')
-                    if embedding:
-                        vector_data[vector_field_name] = [float(x.strip()) for x in embedding.split(',')]
+                    vector_col = vector_col.strip('[]')
+                    if vector_col:
+                        vector_data["vector"] = [float(x.strip()) for x in vector_col.split(',')]
                     else:
-                        vector_data[vector_field_name] = []
+                        vector_data["vector"] = []
             
-            # Add payload fields
-            if payload:
-                if isinstance(payload, dict):
-                    vector_data.update(payload)
+            # Add manifest fields
+            if manifest:
+                if isinstance(manifest, dict):
+                    vector_data.update(manifest)
                 else:
-                    vector_data.update(json.loads(payload))
+                    vector_data.update(json.loads(manifest))
             
             return vector_data
     
@@ -626,17 +630,26 @@ class PgVectorSearchEngine:
         collection_name: str,
         offset: int = 0,
         limit: int = 10,
-        return_fields: Optional[List[str]] = None,
+        include_vectors: bool = False,
         order_by: Optional[str] = None,
         pagination: Optional[bool] = False,
     ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
-        """List vectors in a collection."""
+        """List vectors in a collection.
+        
+        Args:
+            collection_name: Name of the collection
+            offset: Number of items to skip
+            limit: Maximum number of items to return
+            include_vectors: Whether to include vectors in results
+            order_by: Field to sort by (e.g., 'created_at', '-score')
+            pagination: If True, return dict with items and pagination info
+        """
         await self._ensure_initialized()
         
         # Get collection info
         async with self._engine.connect() as conn:
             result = await conn.execute(text(f"""
-                SELECT collection_id, dim, vector_fields FROM {self._prefix}.collection_registry
+                SELECT collection_id, dim FROM {self._prefix}.collection_registry
                 WHERE collection_name = :collection_name
             """), {"collection_name": collection_name})
             collection_info = result.fetchone()
@@ -644,26 +657,15 @@ class PgVectorSearchEngine:
             if not collection_info:
                 raise ValueError(f"Collection {collection_name} not found")
             
-            collection_id, dim, vector_fields = collection_info
+            collection_id, dim = collection_info
         
         parent_table = self._get_parent_table(dim)
-        vector_field_name = None
-        
-        # Find the vector field name
-        for field in vector_fields:
-            if field["type"] == "VECTOR":
-                vector_field_name = field["name"]
-                break
         
         # Determine which fields to select
-        if return_fields is None:
-            # Return id and payload fields by default (not the vector)
-            select_clause = "id, payload"
+        if include_vectors:
+            select_clause = "id, vector, manifest"
         else:
-            if vector_field_name in return_fields:
-                select_clause = "id, embedding, payload"
-            else:
-                select_clause = "id, payload"
+            select_clause = "id, manifest"
         
         # Build ORDER BY clause
         order_clause = ""
@@ -697,30 +699,30 @@ class PgVectorSearchEngine:
             
             vectors = []
             for row in rows:
-                if select_clause.startswith("id, payload"):
-                    vector_id, payload = row
-                    vector_data = {"id": vector_id}
-                else:  # id, embedding, payload
-                    vector_id, embedding, payload = row
+                if include_vectors:
+                    vector_id, vector_col, manifest = row
                     vector_data = {"id": vector_id}
                     
-                    # Add vector field if requested
-                    if return_fields and vector_field_name in return_fields and embedding is not None:
-                        if isinstance(embedding, np.ndarray):
-                            vector_data[vector_field_name] = embedding.tolist()
-                        elif isinstance(embedding, str):
-                            embedding = embedding.strip('[]')
-                            if embedding:
-                                vector_data[vector_field_name] = [float(x.strip()) for x in embedding.split(',')]
+                    # Add vector field
+                    if vector_col is not None:
+                        if isinstance(vector_col, np.ndarray):
+                            vector_data["vector"] = vector_col.tolist()
+                        elif isinstance(vector_col, str):
+                            vector_col = vector_col.strip('[]')
+                            if vector_col:
+                                vector_data["vector"] = [float(x.strip()) for x in vector_col.split(',')]
                             else:
-                                vector_data[vector_field_name] = []
+                                vector_data["vector"] = []
+                else:
+                    vector_id, manifest = row
+                    vector_data = {"id": vector_id}
                 
-                # Add payload fields
-                if payload:
-                    if isinstance(payload, dict):
-                        vector_data.update(payload)
+                # Add manifest fields
+                if manifest:
+                    if isinstance(manifest, dict):
+                        vector_data.update(manifest)
                     else:
-                        vector_data.update(json.loads(payload))
+                        vector_data.update(json.loads(manifest))
                 
                 vectors.append(vector_data)
         
@@ -737,20 +739,39 @@ class PgVectorSearchEngine:
     async def search_vectors(
         self,
         collection_name: str,
-        query: Optional[Dict[str, Any]] = None,
-        embedding_models: Optional[Dict[str, str]] = None,
+        query_vector: Optional[Union[List[float], np.ndarray, str]] = None,
+        embedding_model: Optional[str] = None,
         filters: Optional[Dict[str, Any]] = None,
-        extra_filter: Optional[str] = None,
         limit: Optional[int] = 5,
         offset: Optional[int] = 0,
-        return_fields: Optional[List[str]] = None,
+        include_vectors: bool = False,
         order_by: Optional[str] = None,
         pagination: Optional[bool] = False,
     ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
-        """Search vectors in a collection."""
+        """Search vectors in a collection.
+        
+        Args:
+            collection_name: Name of the collection
+            query_vector: Query vector for similarity search (optional)
+            embedding_model: Model to use for text embeddings if query_vector is text
+            filters: Filter criteria on manifest fields. Supports:
+                - Exact match: {'field': 'value'}
+                - Range filter: {'field': [min, max]}
+                - Operators: {'field': {'$gt': 5, '$lt': 10}}
+                - In list: {'field': {'$in': ['value1', 'value2']}}
+                - Like pattern: {'field': {'$like': '%pattern%'}}
+                - Not equal: {'field': {'$ne': 'value'}}
+                - Regex pattern: {'field': {'$regex': 'pattern'}}
+                - All values: {'field': {'$all': ['value1', 'value2']}}
+            limit: Maximum number of results
+            offset: Number of results to skip
+            include_vectors: Whether to include vectors in results
+            order_by: Field to sort by (if no query_vector)
+            pagination: If True, return dict with items and pagination info
+        """
         await self._ensure_initialized()
         
-        # Get collection info
+        # Get collection info and metadata
         async with self._engine.connect() as conn:
             result = await conn.execute(text(f"""
                 SELECT collection_id, dim, vector_fields FROM {self._prefix}.collection_registry
@@ -761,104 +782,151 @@ class PgVectorSearchEngine:
             if not collection_info:
                 raise ValueError(f"Collection {collection_name} not found")
             
-            collection_id, dim, vector_fields = collection_info
+            collection_id, dim, metadata_json = collection_info
+            
+            # Parse metadata
+            if isinstance(metadata_json, str):
+                metadata = json.loads(metadata_json)
+            else:
+                metadata = metadata_json
+            
+            distance_metric = metadata.get("distance_metric", "cosine").upper()
         
         parent_table = self._get_parent_table(dim)
-        vector_field_name = None
-        distance_metric = "COSINE"
         
-        # Find the vector field
-        for field in vector_fields:
-            if field["type"] == "VECTOR":
-                vector_field_name = field["name"]
-                distance_metric = field.get("attributes", {}).get("DISTANCE_METRIC", "COSINE").upper()
-                break
-        
-        # Process vector query
+        # Process query vector
         vector_query = None
-        if query and vector_field_name in query:
-            query_value = query[vector_field_name]
-            
+        if query_vector is not None:
             # Convert query vector to string format
-            if isinstance(query_value, np.ndarray):
-                vec_list = query_value.astype("float32").tolist()
+            if isinstance(query_vector, np.ndarray):
+                vec_list = query_vector.astype("float32").tolist()
                 vector_query = f"[{','.join(map(str, vec_list))}]"
-            elif isinstance(query_value, (list, tuple)):
-                vector_query = f"[{','.join(map(str, query_value))}]"
-            elif isinstance(query_value, bytes):
-                arr = np.frombuffer(query_value, dtype=np.float32)
-                vec_list = arr.tolist()
-                vector_query = f"[{','.join(map(str, vec_list))}]"
-            elif isinstance(query_value, str) and embedding_models and vector_field_name in embedding_models:
+            elif isinstance(query_vector, (list, tuple)):
+                vector_query = f"[{','.join(map(str, query_vector))}]"
+            elif isinstance(query_vector, str) and embedding_model:
                 # Generate embedding from text
-                embeddings = await self._embed_texts([query_value], embedding_models[vector_field_name])
+                embeddings = await self._embed_texts([query_vector], embedding_model)
                 vec_list = embeddings[0] if isinstance(embeddings[0], list) else embeddings[0].tolist()
                 vector_query = f"[{','.join(map(str, vec_list))}]"
             else:
-                if isinstance(query_value, list):
-                    vector_query = f"[{','.join(map(str, query_value))}]"
-                else:
-                    vector_query = str(query_value)
+                raise ValueError(f"Invalid query_vector type: {type(query_vector)}")
         
-        # Build WHERE clause for payload filters
+        # Build WHERE clause for manifest filters
         where_clauses = [f"collection_id = {collection_id}"]
         params = {"collection_id": collection_id}
         
         if filters:
-            # Filters are applied to payload JSONB field
+            # Process filters on manifest JSONB field similar to artifact.py
+            filter_idx = 0
             for field_name, value in filters.items():
-                if field_name == vector_field_name:
-                    continue  # Skip vector field in filters
-                
-                if isinstance(value, (list, tuple)) and len(value) == 2:
-                    # Range filter
-                    where_clauses.append(f"(payload->>:{field_name}_key)::float BETWEEN :min_{field_name} AND :max_{field_name}")
-                    params[f"{field_name}_key"] = field_name
+                if isinstance(value, dict):
+                    # Handle operator-based filters
+                    for operator, operand in value.items():
+                        filter_idx += 1
+                        param_name = f"filter_{field_name}_{filter_idx}"
+                        
+                        if operator == "$like":
+                            # Pattern matching with ILIKE
+                            where_clauses.append(f"manifest->>'{field_name}' ILIKE :{param_name}")
+                            params[param_name] = str(operand)
+                        elif operator == "$in":
+                            # Check if value is in list
+                            if isinstance(operand, (list, tuple)):
+                                in_params = []
+                                for i, item in enumerate(operand):
+                                    item_param = f"{param_name}_{i}"
+                                    in_params.append(f":{item_param}")
+                                    params[item_param] = str(item)
+                                where_clauses.append(f"manifest->>'{field_name}' IN ({','.join(in_params)})")
+                            else:
+                                raise ValueError(f"$in operator requires a list, got {type(operand)}")
+                        elif operator == "$all":
+                            # Check if JSONB array contains all values
+                            if isinstance(operand, (list, tuple)):
+                                # Use literal JSON for JSONB containment operator
+                                json_value = json.dumps(operand).replace("'", "''")
+                                where_clauses.append(f"manifest->'{field_name}' @> '{json_value}'::jsonb")
+                            else:
+                                raise ValueError(f"$all operator requires a list, got {type(operand)}")
+                        elif operator == "$gt":
+                            # Greater than
+                            where_clauses.append(f"(manifest->>'{field_name}')::float > :{param_name}")
+                            params[param_name] = float(operand)
+                        elif operator == "$gte":
+                            # Greater than or equal
+                            where_clauses.append(f"(manifest->>'{field_name}')::float >= :{param_name}")
+                            params[param_name] = float(operand)
+                        elif operator == "$lt":
+                            # Less than
+                            where_clauses.append(f"(manifest->>'{field_name}')::float < :{param_name}")
+                            params[param_name] = float(operand)
+                        elif operator == "$lte":
+                            # Less than or equal
+                            where_clauses.append(f"(manifest->>'{field_name}')::float <= :{param_name}")
+                            params[param_name] = float(operand)
+                        elif operator == "$ne":
+                            # Not equal
+                            where_clauses.append(f"manifest->>'{field_name}' != :{param_name}")
+                            params[param_name] = str(operand)
+                        elif operator == "$regex":
+                            # Regular expression matching
+                            where_clauses.append(f"manifest->>'{field_name}' ~ :{param_name}")
+                            params[param_name] = str(operand)
+                        else:
+                            # Nested filter (e.g., {'metadata': {'status': 'published'}})
+                            json_path = f"manifest->'{field_name}'->>'{operator}'"
+                            where_clauses.append(f"{json_path} = :{param_name}")
+                            params[param_name] = str(operand)
+                elif isinstance(value, (list, tuple)) and len(value) == 2:
+                    # Range filter for numeric fields
+                    where_clauses.append(
+                        f"(manifest->>'{field_name}')::float BETWEEN :min_{field_name} AND :max_{field_name}"
+                    )
                     params[f"min_{field_name}"] = value[0]
                     params[f"max_{field_name}"] = value[1]
                 else:
-                    # Exact match filter
-                    where_clauses.append(f"payload->>:{field_name}_key = :filter_{field_name}")
-                    params[f"{field_name}_key"] = field_name
+                    # Exact match filter or text search
+                    if isinstance(value, str) and '%' in value:
+                        # Support LIKE patterns for backward compatibility
+                        where_clauses.append(f"manifest->>'{field_name}' ILIKE :filter_{field_name}")
+                    else:
+                        where_clauses.append(f"manifest->>'{field_name}' = :filter_{field_name}")
                     params[f"filter_{field_name}"] = str(value)
-        
-        if extra_filter:
-            where_clauses.append(f"({extra_filter})")
         
         where_clause = " AND ".join(where_clauses)
         
         # Build SELECT clause
-        select_fields = ["id", "payload"]
-        if return_fields and vector_field_name in return_fields:
-            select_fields.insert(1, "embedding")
+        select_fields = ["id", "manifest"]
+        if include_vectors:
+            select_fields.insert(1, "vector")
         
         # Add distance/score calculation if doing vector search
         if vector_query:
             if distance_metric == "COSINE":
-                select_fields.append(f"(embedding <=> CAST(:query_vector AS vector)) AS distance")
-                select_fields.append(f"(1 - (embedding <=> CAST(:query_vector AS vector))) AS _score")
+                select_fields.append(f"(vector <=> CAST(:query_vector AS vector)) AS distance")
+                select_fields.append(f"(1 - (vector <=> CAST(:query_vector AS vector))) AS _score")
             elif distance_metric == "L2":
-                select_fields.append(f"(embedding <-> CAST(:query_vector AS vector)) AS distance")
-                select_fields.append(f"(1 / (1 + (embedding <-> CAST(:query_vector AS vector)))) AS _score")
+                select_fields.append(f"(vector <-> CAST(:query_vector AS vector)) AS distance")
+                select_fields.append(f"(1 / (1 + (vector <-> CAST(:query_vector AS vector)))) AS _score")
             elif distance_metric == "IP":
-                select_fields.append(f"(embedding <#> CAST(:query_vector AS vector)) AS distance")
-                select_fields.append(f"(embedding <#> CAST(:query_vector AS vector)) AS _score")
+                select_fields.append(f"(vector <#> CAST(:query_vector AS vector)) AS distance")
+                select_fields.append(f"(vector <#> CAST(:query_vector AS vector)) AS _score")
             else:
-                select_fields.append(f"(embedding <=> CAST(:query_vector AS vector)) AS distance")
-                select_fields.append(f"(1 - (embedding <=> CAST(:query_vector AS vector))) AS _score")
+                select_fields.append(f"(vector <=> CAST(:query_vector AS vector)) AS distance")
+                select_fields.append(f"(1 - (vector <=> CAST(:query_vector AS vector))) AS _score")
         
         select_clause = ", ".join(select_fields)
         
         # Build ORDER BY clause
         if vector_query and not order_by:
             if distance_metric == "COSINE":
-                order_clause = f" ORDER BY (embedding <=> CAST(:query_vector AS vector)) ASC"
+                order_clause = f" ORDER BY (vector <=> CAST(:query_vector AS vector)) ASC"
             elif distance_metric == "L2":
-                order_clause = f" ORDER BY (embedding <-> CAST(:query_vector AS vector)) ASC"
+                order_clause = f" ORDER BY (vector <-> CAST(:query_vector AS vector)) ASC"
             elif distance_metric == "IP":
-                order_clause = f" ORDER BY (embedding <#> CAST(:query_vector AS vector)) DESC"
+                order_clause = f" ORDER BY (vector <#> CAST(:query_vector AS vector)) DESC"
             else:
-                order_clause = f" ORDER BY (embedding <=> CAST(:query_vector AS vector)) ASC"
+                order_clause = f" ORDER BY (vector <=> CAST(:query_vector AS vector)) ASC"
         elif order_by:
             order_clause = f" ORDER BY {order_by}"
         else:
@@ -910,28 +978,28 @@ class PgVectorSearchEngine:
                 vector_data = {"id": row_dict["id"]}
                 
                 # Add vector field if included
-                if "embedding" in row_dict and vector_field_name:
-                    embedding = row_dict["embedding"]
-                    if isinstance(embedding, np.ndarray):
-                        vector_data[vector_field_name] = embedding.tolist()
-                    elif isinstance(embedding, str):
-                        embedding = embedding.strip('[]')
-                        if embedding:
-                            vector_data[vector_field_name] = [float(x.strip()) for x in embedding.split(',')]
+                if "vector" in row_dict:
+                    vector_col = row_dict["vector"]
+                    if isinstance(vector_col, np.ndarray):
+                        vector_data["vector"] = vector_col.tolist()
+                    elif isinstance(vector_col, str):
+                        vector_col = vector_col.strip('[]')
+                        if vector_col:
+                            vector_data["vector"] = [float(x.strip()) for x in vector_col.split(',')]
                         else:
-                            vector_data[vector_field_name] = []
+                            vector_data["vector"] = []
                 
-                # Add payload fields
-                payload = row_dict.get("payload")
-                if payload:
-                    if isinstance(payload, dict):
-                        vector_data.update(payload)
+                # Add manifest fields
+                manifest = row_dict.get("manifest")
+                if manifest:
+                    if isinstance(manifest, dict):
+                        vector_data.update(manifest)
                     else:
-                        vector_data.update(json.loads(payload))
+                        vector_data.update(json.loads(manifest))
                 
-                # Add score if present
+                # Add score if present (from similarity search)
                 if "_score" in row_dict:
-                    vector_data["score"] = row_dict["_score"]
+                    vector_data["_score"] = row_dict["_score"]
                 
                 vectors.append(vector_data)
         
