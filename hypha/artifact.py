@@ -218,7 +218,6 @@ class ArtifactController:
         s3_controller,
         workspace_bucket="hypha-workspaces",
         artifacts_dir="artifacts",
-        vector_engine_config=None,
     ):
         """Set up controller with SQLAlchemy database and S3 for file storage."""
         self.engine = store.get_sql_engine()
@@ -231,46 +230,22 @@ class ArtifactController:
         self._cache = store.get_redis_cache()
         self._openai_client = self.store.get_openai_client()
         
-        # Initialize vector engine based on configuration
-        # Use passed configuration or default to pgvector
-        vector_config = vector_engine_config or {}
-        vector_engine_type = vector_config.get("vector_engine", "pgvector")  # Default to pgvector
-        
-        if vector_engine_type == "s3vector":
-            s3_config = vector_config.get("s3vector_config", {})
-            # Get S3 configuration from s3_controller if available
-            if s3_controller:
-                default_endpoint = s3_controller.endpoint_url
-                default_access_key = s3_controller.access_key_id
-                default_secret_key = s3_controller.secret_access_key
-                default_region = getattr(s3_controller, 'region_name', 'us-east-1')
-                default_bucket = s3_controller.workspace_bucket or "hypha-vectors"
-            else:
-                default_endpoint = None
-                default_access_key = None
-                default_secret_key = None
-                default_region = "us-east-1"
-                default_bucket = "hypha-vectors"
-                
-            self._vector_engine = S3VectorSearchEngine(
-                endpoint_url=s3_config.get("endpoint_url", default_endpoint),
-                access_key_id=s3_config.get("access_key_id", default_access_key),
-                secret_access_key=s3_config.get("secret_access_key", default_secret_key),
-                region_name=s3_config.get("region_name", default_region),
-                bucket_name=s3_config.get("bucket_name", default_bucket),
-                embedding_model=s3_config.get("embedding_model"),
-                redis_client=store.get_redis(),
-                cache_dir=store.get_cache_dir(),
-                **{k: v for k, v in s3_config.items() if k not in ['endpoint_url', 'access_key_id', 'secret_access_key', 'region_name', 'bucket_name', 'embedding_model']}
-            )
-        elif vector_engine_type == "pgvector":
-            self._vector_engine = PgVectorSearchEngine(
-                store.get_sql_engine(), prefix="vec", cache_dir=store.get_cache_dir()
-            )
+        # Initialize default vector engine
+        # For SQLite, we'll create the engine on-demand when needed
+        # For PostgreSQL, we can initialize pgvector as default
+        sql_engine = store.get_sql_engine()
+        if sql_engine.dialect.name == 'sqlite':
+            # Don't initialize a default engine for SQLite
+            # Collections must specify their engine type explicitly
+            self._default_vector_engine = None
         else:
-            raise ValueError(f"Unsupported vector engine type: {vector_engine_type}")
+            # PostgreSQL - use pgvector as default
+            self._default_vector_engine = PgVectorSearchEngine(
+                sql_engine, prefix="vec", cache_dir=store.get_cache_dir()
+            )
         
-        self._vector_engine_type = vector_engine_type
+        # Store vector engines by collection name
+        self._vector_engines = {}
         router = APIRouter()
         self._artifacts_dir = artifacts_dir
 
@@ -1498,9 +1473,98 @@ class ArtifactController:
             await conn.run_sync(ArtifactModel.metadata.create_all)
             logger.info("Database tables created successfully.")
         
-        # Initialize vector engine if needed
-        if hasattr(self._vector_engine, 'initialize'):
-            await self._vector_engine.initialize()
+        # Initialize default vector engine if needed
+        if hasattr(self._default_vector_engine, 'initialize'):
+            await self._default_vector_engine.initialize()
+
+    def _get_or_create_vector_engine(self, collection_name: str, config: dict = None, artifact=None):
+        """Get or create a vector engine for a specific collection.
+        
+        Args:
+            collection_name: Name of the collection (workspace/alias format)
+            config: Configuration dict that may contain vector_engine and s3_config
+            artifact: The artifact object to get S3 config from
+        
+        Returns:
+            Vector engine instance for this collection
+        """
+        # Check if we already have an engine for this collection
+        if collection_name in self._vector_engines:
+            return self._vector_engines[collection_name]
+        
+        # If no config provided, use default engine
+        if not config:
+            if self._default_vector_engine is None:
+                raise ValueError(
+                    "No vector engine configuration provided and no default engine available. "
+                    "When using SQLite, you must specify 'vector_engine' in the collection config "
+                    "(e.g., 'vector_engine': 's3vector')."
+                )
+            return self._default_vector_engine
+        
+        # Get engine type from config
+        vector_engine_type = config.get("vector_engine")
+        
+        # If no engine type specified, use default behavior
+        if not vector_engine_type:
+            # For SQLite, we require explicit engine specification
+            if self._default_vector_engine is None:
+                raise ValueError(
+                    "When using SQLite, you must specify 'vector_engine' in the collection config "
+                    "(e.g., 'vector_engine': 's3vector')."
+                )
+            # For PostgreSQL, use pgvector as default
+            return self._default_vector_engine
+        
+        # If pgvector explicitly requested
+        if vector_engine_type == "pgvector":
+            if self._default_vector_engine is None:
+                # SQLite doesn't support pgvector
+                raise ValueError(
+                    "PgVector engine requires PostgreSQL and is not supported with SQLite. "
+                    "Please use 's3vector' or another SQLite-compatible vector engine."
+                )
+            engine = self._default_vector_engine
+        elif vector_engine_type == "s3vector":
+            # Create S3Vector engine with collection-specific config
+            # First, get base S3 config using the artifact
+            base_s3_config = self._get_s3_config(
+                artifact=artifact,
+                workspace=collection_name.split('/')[0] if '/' in collection_name else None
+            )
+            
+            # Merge with any custom s3_config provided in the collection config
+            custom_s3_config = config.get("s3_config", {})
+            s3_config = {**base_s3_config, **custom_s3_config}
+            
+            # Extract S3 configuration values
+            endpoint_url = s3_config.get("endpoint_url")
+            access_key_id = s3_config.get("access_key_id")
+            secret_access_key = s3_config.get("secret_access_key")
+            region_name = s3_config.get("region_name", "us-east-1")
+            bucket_name = s3_config.get("bucket")
+            
+            # Create S3Vector engine
+            engine = S3VectorSearchEngine(
+                endpoint_url=endpoint_url,
+                access_key_id=access_key_id,
+                secret_access_key=secret_access_key,
+                region_name=region_name,
+                bucket_name=bucket_name,
+                embedding_model=custom_s3_config.get("embedding_model"),
+                redis_client=self.store.get_redis(),
+                cache_dir=self.store.get_cache_dir(),
+                **{k: v for k, v in custom_s3_config.items() 
+                   if k not in ['endpoint_url', 'access_key_id', 'secret_access_key', 
+                               'region_name', 'bucket', 'prefix', 'embedding_model']}
+            )
+            
+            # Store the engine for this collection
+            self._vector_engines[collection_name] = engine
+        else:
+            raise ValueError(f"Unsupported vector engine type: {vector_engine_type}")
+        
+        return engine
 
     # Unified vector engine adapter methods
     async def _create_vector_collection(
@@ -1513,7 +1577,11 @@ class ArtifactController:
         **kwargs
     ):
         """Create a vector collection using the configured engine."""
-        return await self._vector_engine.create_collection(
+        # Get the appropriate engine for this collection
+        # Note: artifact is None here since this is a new collection
+        engine = self._get_or_create_vector_engine(collection_name, config, artifact=None)
+        
+        return await engine.create_collection(
             collection_name,
             dimension=dimension,
             distance_metric=distance_metric,
@@ -1521,13 +1589,39 @@ class ArtifactController:
             **kwargs
         )
 
+    async def _get_vector_engine_for_collection(self, collection_name: str):
+        """Get the vector engine for an existing collection.
+        
+        This method retrieves the engine from cache or looks up the collection's config
+        to determine which engine to use.
+        """
+        # Check cache first
+        if collection_name in self._vector_engines:
+            return self._vector_engines[collection_name]
+        
+        # Look up collection config from database
+        session = await self._get_session(read_only=True)
+        try:
+            async with session.begin():
+                artifact = await self._get_artifact(session, collection_name)
+                if artifact and artifact.config:
+                    engine = self._get_or_create_vector_engine(collection_name, artifact.config, artifact=artifact)
+                    return engine
+        finally:
+            await session.close()
+        
+        # Fall back to default engine
+        return self._default_vector_engine
+    
     async def _delete_vector_collection(self, collection_name: str):
         """Delete a vector collection using the configured engine."""
-        return await self._vector_engine.delete_collection(collection_name)
+        engine = await self._get_vector_engine_for_collection(collection_name)
+        return await engine.delete_collection(collection_name)
 
     async def _count_vectors(self, collection_name: str) -> int:
         """Count vectors in a collection using the configured engine."""
-        return await self._vector_engine.count(collection_name)
+        engine = await self._get_vector_engine_for_collection(collection_name)
+        return await engine.count(collection_name)
 
     async def _add_vectors_to_collection(
         self,
@@ -1537,11 +1631,16 @@ class ArtifactController:
         **kwargs
     ) -> list:
         """Add vectors to a collection using the configured engine."""
+        engine = await self._get_vector_engine_for_collection(collection_name)
+        
+        # Remove embedding_model from kwargs if it exists to avoid duplicate
+        kwargs.pop('embedding_model', None)
+        
         embedding_model = None
         if embedding_models:
             embedding_model = embedding_models.get("vector")
         
-        return await self._vector_engine.add_vectors(
+        return await engine.add_vectors(
             collection_name,
             vectors,
             embedding_model=embedding_model,
@@ -1562,11 +1661,16 @@ class ArtifactController:
         **kwargs
     ):
         """Search vectors in a collection using the configured engine."""
+        engine = await self._get_vector_engine_for_collection(collection_name)
+        
+        # Remove embedding_model from kwargs if it exists to avoid duplicate
+        kwargs.pop('embedding_model', None)
+        
         embedding_model = None
         if embedding_models:
             embedding_model = embedding_models.get("vector")
         
-        return await self._vector_engine.search_vectors(
+        return await engine.search_vectors(
             collection_name,
             query_vector=query_vector,
             embedding_model=embedding_model,
@@ -1586,7 +1690,8 @@ class ArtifactController:
         **kwargs
     ):
         """Remove vectors from a collection using the configured engine."""
-        return await self._vector_engine.remove_vectors(collection_name, ids, **kwargs)
+        engine = await self._get_vector_engine_for_collection(collection_name)
+        return await engine.remove_vectors(collection_name, ids, **kwargs)
 
     async def _get_vector_from_collection(
         self,
@@ -1594,7 +1699,8 @@ class ArtifactController:
         vector_id: str
     ):
         """Get a single vector from a collection using the configured engine."""
-        return await self._vector_engine.get_vector(collection_name, vector_id)
+        engine = await self._get_vector_engine_for_collection(collection_name)
+        return await engine.get_vector(collection_name, vector_id)
 
     async def _list_vectors_in_collection(
         self,
@@ -1607,7 +1713,8 @@ class ArtifactController:
         **kwargs
     ):
         """List vectors in a collection using the configured engine."""
-        return await self._vector_engine.list_vectors(
+        engine = await self._get_vector_engine_for_collection(collection_name)
+        return await engine.list_vectors(
             collection_name,
             offset=offset,
             limit=limit,
@@ -1619,9 +1726,10 @@ class ArtifactController:
 
     async def _load_vector_collection(self, collection_name: str, s3_client, bucket: str, prefix: str, **kwargs):
         """Load collection from S3 storage - unified interface for both engines."""
-        if hasattr(self._vector_engine, 'load_collection'):
+        engine = await self._get_vector_engine_for_collection(collection_name)
+        if hasattr(engine, 'load_collection'):
             # PgVector and VectorSearchEngine have load_collection method
-            return await self._vector_engine.load_collection(
+            return await engine.load_collection(
                 collection_name, s3_client, bucket, prefix, **kwargs
             )
         else:
@@ -2884,6 +2992,26 @@ class ArtifactController:
                     config["dimension"] = dimension
                     config["distance_metric"] = distance_metric
                     
+                    # Handle S3 config inheritance for s3vector engine
+                    if config.get("vector_engine") == "s3vector":
+                        # If no s3_config provided, inherit from parent or use artifact's S3 config
+                        if "s3_config" not in config:
+                            # Use the S3 config from parent artifact or current artifact
+                            # The prefix should be the same as artifact files
+                            config["s3_config"] = {
+                                "endpoint_url": s3_config.get("endpoint_url"),
+                                "access_key_id": s3_config.get("access_key"),
+                                "secret_access_key": s3_config.get("secret_key"),
+                                "region_name": s3_config.get("region_name", "us-east-1"),
+                                "bucket": s3_config.get("bucket"),
+                                "prefix": s3_config.get("prefix"),  # Use the same prefix as artifact files
+                            }
+                            # Remove None values
+                            config["s3_config"] = {k: v for k, v in config["s3_config"].items() if v is not None}
+                    
+                    # Store the updated config for future reference
+                    new_artifact.config = config
+                    
                     await self._create_vector_collection(
                         f"{new_artifact.workspace}/{new_artifact.alias}",
                         dimension=dimension,
@@ -3976,13 +4104,17 @@ class ArtifactController:
                                 f"{artifact.id}/v0",
                             )
                             
-                            await self._add_vectors_to_collection(
+                            # Get embedding model configuration
+                            if not embedding_models:
+                                embedding_models = artifact.config.get("embedding_models", {})
+                            
+                            result = await self._add_vectors_to_collection(
                                 f"{artifact.workspace}/{artifact.alias}",
                                 validated_vectors,
-                                embedding_model=embedding_models.get("vector") if embedding_models else artifact.config.get("embedding_models", {}).get("vector"),
+                                embedding_models=embedding_models,
                             )
                         logger.info(f"Added vectors to artifact with ID: {artifact_id}")
-                        break
+                        return result  # Return the list of IDs
                 except KeyError as e:
                     if attempt < max_retries - 1:
                         logger.warning(f"Retrying add_vectors due to error: {str(e)}")
@@ -4283,15 +4415,14 @@ class ArtifactController:
                     elif isinstance(query, (list, tuple)):
                         query_vector = query
                 
-                # Get embedding model for text queries
-                embedding_model = None
-                if embedding_models:
-                    embedding_model = embedding_models.get("vector")
+                # Get embedding models configuration
+                if not embedding_models:
+                    embedding_models = artifact.config.get("embedding_models", {})
                 
                 return await self._search_vectors_in_collection(
                     f"{artifact.workspace}/{artifact.alias}",
                     query_vector=query_vector,
-                    embedding_model=embedding_model,
+                    embedding_models=embedding_models,
                     filters=filters,
                     limit=limit,
                     offset=offset,

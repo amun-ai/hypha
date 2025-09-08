@@ -94,6 +94,14 @@ class PgVectorSearchEngine:
             prefix: Schema prefix (default: "vec")
             cache_dir: Directory for caching models
         """
+        # Check if the engine is SQLite and raise an error
+        if engine.dialect.name == 'sqlite':
+            raise ValueError(
+                "PgVectorSearchEngine requires PostgreSQL with pgvector extension. "
+                "SQLite is not supported. Please use S3VectorSearchEngine or another "
+                "vector search engine that supports SQLite."
+            )
+        
         self._engine = engine
         self._prefix = prefix
         self._cache_dir = cache_dir
@@ -139,6 +147,7 @@ class PgVectorSearchEngine:
             return
         
         async with self._engine.begin() as conn:
+            # PostgreSQL-specific initialization
             # Check if pgvector extension is installed
             try:
                 await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
@@ -182,7 +191,7 @@ class PgVectorSearchEngine:
         parent_table = self._get_parent_table(dim)
         
         async with self._engine.begin() as conn:
-            # Check if parent table already exists
+            # PostgreSQL: Check if parent table already exists
             result = await conn.execute(text(f"""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
@@ -193,7 +202,7 @@ class PgVectorSearchEngine:
             exists = result.scalar()
             
             if not exists:
-                # Create parent table for this dimension
+                # Create parent table for this dimension with pgvector
                 await conn.execute(text(f"""
                     CREATE TABLE {parent_table} (
                         collection_id BIGINT NOT NULL,
@@ -245,6 +254,7 @@ class PgVectorSearchEngine:
                 SELECT collection_id FROM {self._prefix}.collection_registry 
                 WHERE collection_name = :collection_name
             """), {"collection_name": collection_name})
+            
             existing_collection = result.fetchone()
             
             if existing_collection:
@@ -325,8 +335,8 @@ class PgVectorSearchEngine:
                 CREATE INDEX IF NOT EXISTS {child_table_simple}_created_at 
                 ON {child_table} (created_at DESC)
             """))
-        
-        logger.info(f"Collection {collection_name} created successfully")
+            
+            logger.info(f"Collection {collection_name} created successfully with pgvector")
     
     async def delete_collection(self, collection_name: str, **kwargs):
         """Delete a collection and its partition."""
@@ -458,6 +468,7 @@ class PgVectorSearchEngine:
                 SELECT collection_id, dim FROM {self._prefix}.collection_registry
                 WHERE collection_name = :collection_name
             """), {"collection_name": collection_name})
+            
             collection_info = result.fetchone()
             
             if not collection_info:
@@ -485,29 +496,30 @@ class PgVectorSearchEngine:
                 if vector_value is None:
                     raise ValueError("'vector' field is required")
                 
-                # Convert vector to string format
+                # Convert vector to appropriate format
                 if isinstance(vector_value, np.ndarray):
                     vec_list = vector_value.astype("float32").tolist()
-                    vector_str = f"[{','.join(map(str, vec_list))}]"
                 elif isinstance(vector_value, (list, tuple)):
-                    vector_str = f"[{','.join(map(str, vector_value))}]"
+                    vec_list = list(vector_value)
                 elif isinstance(vector_value, bytes):
                     arr = np.frombuffer(vector_value, dtype=np.float32)
                     vec_list = arr.tolist()
-                    vector_str = f"[{','.join(map(str, vec_list))}]"
                 elif isinstance(vector_value, str) and embedding_model:
                     # Generate embedding from text
                     embeddings = await self._embed_texts([vector_value], embedding_model)
                     vec_list = embeddings[0] if isinstance(embeddings[0], list) else embeddings[0].tolist()
-                    vector_str = f"[{','.join(map(str, vec_list))}]"
                 else:
                     if isinstance(vector_value, list):
-                        vector_str = f"[{','.join(map(str, vector_value))}]"
+                        vec_list = list(vector_value)
                     else:
                         raise ValueError(f"Invalid vector type: {type(vector_value)}")
                 
-                # Get manifest directly from the input (no longer extract from flat keys)
+                # Format vector for PostgreSQL storage
+                vector_str = f"[{','.join(map(str, vec_list))}]"
+                
+                # Get manifest directly from the input
                 manifest = vector_data.get("manifest", {})
+                manifest_str = json.dumps(manifest) if manifest else None
                 
                 if update:
                     # Update existing vector
@@ -519,7 +531,7 @@ class PgVectorSearchEngine:
                         "collection_id": collection_id,
                         "id": vector_id,
                         "vector": vector_str,
-                        "manifest": json.dumps(manifest) if manifest else None
+                        "manifest": manifest_str
                     })
                 else:
                     # Insert new vector
@@ -531,7 +543,7 @@ class PgVectorSearchEngine:
                             "collection_id": collection_id,
                             "id": vector_id,
                             "vector": vector_str,
-                            "manifest": json.dumps(manifest) if manifest else None
+                            "manifest": manifest_str
                         })
                     except IntegrityError:
                         logger.warning(f"Vector with ID {vector_id} already exists, skipping")

@@ -264,7 +264,7 @@ def postgres_server():
     """Start a fresh PostgreSQL server as a test fixture and tear down after the test."""
     # Check if the container is already running
     existing_container = subprocess.run(
-        ["docker", "ps", "-q", "-f", "name=hypha-postgres"],
+        ["docker", "ps", "-q", "-f", "name=^hypha-postgres$"],
         capture_output=True,
         text=True,
     ).stdout.strip()
@@ -276,9 +276,9 @@ def postgres_server():
                 "Stopping and removing existing PostgreSQL container:",
                 existing_container,
             )
-            subprocess.run(["docker", "stop", "hypha-postgres"], check=True)
+            subprocess.run(["docker", "stop", existing_container], check=True)
             # Attempt to remove the container, but ignore errors if it does not exist
-            subprocess.run(["docker", "rm", "hypha-postgres"], check=False)
+            subprocess.run(["docker", "rm", existing_container], check=False)
 
             # Start a new PostgreSQL container with pgvector
             print("Starting a new PostgreSQL container with pgvector")

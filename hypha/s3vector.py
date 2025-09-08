@@ -721,8 +721,12 @@ class S3VectorSearchEngine:
         if dimension <= 0 or dimension > 2048:
             raise ValueError(f"Dimension {dimension} must be between 1 and 2048")
         
+        # Normalize distance metric names for consistency with pgvector
+        if distance_metric.lower() == "inner_product":
+            distance_metric = "ip"
+        
         if distance_metric.lower() not in ["cosine", "l2", "ip"]:
-            raise ValueError(f"Distance metric must be 'cosine', 'l2', or 'ip', got {distance_metric}")
+            raise ValueError(f"Distance metric must be 'cosine', 'l2', 'ip', or 'inner_product', got {distance_metric}")
         
         # Use normalized metric name
         metric = distance_metric.lower()
@@ -732,7 +736,7 @@ class S3VectorSearchEngine:
         # Check if collection exists
         if not overwrite:
             try:
-                await self.get_collection_metadata(collection_id)
+                await self.get_collection_info(collection_id)
                 raise ValueError(f"Collection {collection_name} already exists.")
             except VectorLakeError:
                 # Collection doesn't exist, proceed

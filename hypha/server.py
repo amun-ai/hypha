@@ -109,24 +109,10 @@ def start_builtin_services(
             cleanup_period=args.s3_cleanup_period,
         )
         
-        # Prepare vector engine configuration
-        vector_engine_config = {
-            "vector_engine": getattr(args, 'vector_engine', os.environ.get('HYPHA_VECTOR_ENGINE', 'pgvector')),
-            "s3vector_config": {
-                "endpoint_url": getattr(args, 's3vector_endpoint_url', os.environ.get('HYPHA_S3VECTOR_ENDPOINT_URL', args.endpoint_url)),
-                "access_key_id": getattr(args, 's3vector_access_key_id', os.environ.get('HYPHA_S3VECTOR_ACCESS_KEY_ID', args.access_key_id)),
-                "secret_access_key": getattr(args, 's3vector_secret_access_key', os.environ.get('HYPHA_S3VECTOR_SECRET_ACCESS_KEY', args.secret_access_key)),
-                "region_name": getattr(args, 's3vector_region_name', os.environ.get('HYPHA_S3VECTOR_REGION_NAME', args.region_name)),
-                "bucket_name": getattr(args, 's3vector_bucket_name', os.environ.get('HYPHA_S3VECTOR_BUCKET_NAME', 'hypha-vectors')),
-                "embedding_model": getattr(args, 's3vector_embedding_model', os.environ.get('HYPHA_S3VECTOR_EMBEDDING_MODEL')),
-            }
-        }
-        
         artifact_manager = ArtifactController(
             store,
             s3_controller=s3_controller,
             workspace_bucket=args.workspace_bucket,
-            vector_engine_config=vector_engine_config,
         )
 
     if args.enable_server_apps:

@@ -804,6 +804,36 @@ class RedisRPCConnection:
             if RedisRPCConnection._tracker.is_registered(entity_id, "client"):
                 await RedisRPCConnection._tracker.remove_entity(entity_id, "client")
 
+        # 🔧 MEMORY LEAK FIX: Break circular references to enable garbage collection
+        try:
+            # Clear event bus reference to break circular dependency
+            self._event_bus = None
+            
+            # Clear registration task reference (already cancelled above)
+            self._registration_task = None
+            
+            # Clear subscriptions reference (already cleared above, now remove reference)
+            if hasattr(self, '_subscriptions'):
+                self._subscriptions = None
+                
+            # Ensure all handler references are cleared
+            self._handle_message = None
+            self._handle_disconnected = None
+            
+        except Exception as e:
+            logger.warning(f"Error breaking circular references during disconnect: {e}")
+        
+        # Trigger garbage collection if many connections have been cleaned up recently
+        # This helps ensure leaked objects are actually freed from memory
+        if RedisRPCConnection._closed_total_int % 100 == 0:  # Every 100 disconnections
+            try:
+                import gc
+                collected = gc.collect()
+                if collected > 0:
+                    logger.debug(f"Garbage collected {collected} objects after connection cleanup")
+            except Exception as e:
+                logger.debug(f"Error during garbage collection: {e}")
+
         # Clean up load gauge metrics for load balancing enabled clients
         if self._is_load_balancing_enabled():
             client_key = f"{self._workspace}/{self._client_id}"
