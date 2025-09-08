@@ -10,7 +10,6 @@ Implements a Turbopuffer-inspired architecture with:
 import asyncio
 import json
 import logging
-import os
 import pickle
 import time
 import hashlib
@@ -24,8 +23,6 @@ import aioboto3
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
-from pydantic import BaseModel, Field
-from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.preprocessing import normalize
 from sklearn.cluster import MiniBatchKMeans
 
