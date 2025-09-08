@@ -24,15 +24,23 @@ from hypha.s3vector import (
     ShardMetadata
 )
 
+# Import test configuration for MinIO/S3 settings
+from . import (
+    MINIO_PORT,
+    MINIO_ROOT_PASSWORD,
+    MINIO_ROOT_USER,
+    MINIO_SERVER_URL,
+)
+
 
 @pytest.fixture
-def s3_config():
-    """Real S3 configuration for testing."""
+def s3_config(minio_server):
+    """S3 configuration using the shared MinIO server from conftest."""
     return {
-        "endpoint_url": os.getenv("S3_ENDPOINT_URL", "http://localhost:9002"),
-        "access_key_id": os.getenv("S3_ACCESS_KEY_ID", "minioadmin"),
-        "secret_access_key": os.getenv("S3_SECRET_ACCESS_KEY", "minioadmin"),
-        "region": os.getenv("S3_REGION", "us-east-1")
+        "endpoint_url": MINIO_SERVER_URL,
+        "access_key_id": MINIO_ROOT_USER,
+        "secret_access_key": MINIO_ROOT_PASSWORD,
+        "region": "us-east-1"
     }
 
 
