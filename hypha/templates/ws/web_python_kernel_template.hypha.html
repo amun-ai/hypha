@@ -1,0 +1,14 @@
+<manifest lang="yaml">
+name: Web Python Kernel Worker
+description: Web Python Kernel Worker for running web python applications
+type: web-app
+entry_point: https://oeway.github.io/web-python-kernel/
+version: "1.0.0"
+inject_auth_params: true
+extra_http_headers:
+    Access-Control-Allow-Origin: "*"
+    Access-Control-Allow-Methods: "GET, POST, PUT, DELETE, OPTIONS"
+    Access-Control-Allow-Headers: "Content-Type, Authorization, X-Requested-With"
+startup_config:
+    wait_for_service: web-python-kernel-worker
+</manifest>

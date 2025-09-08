@@ -142,7 +142,8 @@ async def register_auth_service(
         try:
             # Check if there's already a hypha-login service and unregister it
             try:
-                existing_service = await server.get_service("public/hypha-login")
+                # Use native mode to prefer locally connected hypha-login service
+                existing_service = await server.get_service("public/hypha-login", {"mode": "native:random"})
                 if existing_service:
                     logger.info("Replacing existing hypha-login service")
             except:

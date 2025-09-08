@@ -113,7 +113,7 @@ def validate_key_part(key_part: str):
 class GetServiceConfig(BaseModel):
     mode: Optional[str] = Field(
         None,
-        description="Mode for selecting the service. Can be 'random', 'first', 'last', 'exact', 'min_load', or 'select:criteria:function' format (e.g., 'select:min:get_load', 'select:max:get_cpu_usage')",
+        description="Mode for selecting the service. Can be 'random', 'first', 'last', 'exact', 'min_load', 'native:random' (prefer native/local clients), or 'select:criteria:function' format (e.g., 'select:min:get_load', 'select:max:get_cpu_usage')",
     )
     timeout: Optional[float] = Field(
         10.0,
@@ -2142,9 +2142,6 @@ class WorkspaceManager:
                     ws, "service_added", service.model_dump(mode="json")
                 )
                 logger.info(f"Adding service {service.id}")
-                
-
-
 
     @schema_method
     async def get_service_info(
@@ -2155,7 +2152,7 @@ class WorkspaceManager:
         ),
         config: Optional[dict] = Field(
             None,
-            description="Options for getting service, available configs are `mode` (for selecting the service: 'random', 'first', 'last', 'exact', 'min_load', or 'select:criteria:function') and `select_timeout` (timeout for function calls when using select mode)",
+            description="Options for getting service, available configs are `mode` (for selecting the service: 'random', 'first', 'last', 'exact', 'min_load', 'native:random', or 'select:criteria:function') and `select_timeout` (timeout for function calls when using select mode)",
         ),
         context: Optional[dict] = None,
     ):
@@ -2264,7 +2261,7 @@ class WorkspaceManager:
         if mode == "exact":
             assert (
                 len(keys) == 1
-            ), f"Multiple services found for {service_id}, e.g. {keys[:5]}. You can either specify the mode as 'random', 'first', 'last', or use 'select:criteria:function' format."
+            ), f"Multiple services found for {service_id}, e.g. {keys[:5]}. You can either specify the mode as 'random', 'first', 'last', 'native:random', or use 'select:criteria:function' format."
             key = keys[0]
         elif mode == "random":
             key = random.choice(keys)
@@ -2274,6 +2271,8 @@ class WorkspaceManager:
             key = keys[-1]
         elif mode == "min_load":
             key = await self._select_service_by_load(keys, "min")
+        elif mode == "native:random":
+            key = await self._select_native_service(keys)
         elif mode and mode.startswith("select:"):
             # Parse the select syntax: select:criteria:function
             parts = mode.split(":")
@@ -2293,7 +2292,7 @@ class WorkspaceManager:
             )
         else:
             raise ValueError(
-                f"Invalid mode: {mode}. Mode must be 'random', 'first', 'last', 'exact', 'min_load', or 'select:criteria:function' format (e.g., 'select:min:get_load')"
+                f"Invalid mode: {mode}. Mode must be 'random', 'first', 'last', 'exact', 'min_load', 'native:random', or 'select:criteria:function' format (e.g., 'select:min:get_load')"
             )
         # Check access permissions
         if not key.startswith(b"services:public|"):
@@ -3283,6 +3282,57 @@ class WorkspaceManager:
             raise ValueError(f"Unknown selection criteria: {criteria}")
 
         return selected_key
+
+    async def _select_native_service(self, keys: List[bytes]) -> bytes:
+        """Select a native service (client connected to the same Hypha server).
+        
+        Args:
+            keys: List of Redis keys for services
+            
+        Returns:
+            bytes: The Redis key of the selected native service, or random fallback
+        """
+        if len(keys) == 1:
+            return keys[0]
+        
+        native_services = []
+        all_services = []
+        
+        for key in keys:
+            try:
+                # Get service info
+                service_data = await self._redis.hgetall(key)
+                service_info = ServiceInfo.from_redis_dict(service_data)
+                
+                # Extract workspace and client_id from service ID
+                workspace = service_info.id.split("/")[0]
+                client_id = service_info.id.split("/")[1].split(":")[0]
+                
+                all_services.append((key, service_info))
+                
+                # Check if this client is local/native to this server
+                if self._event_bus.is_local_client(workspace, client_id):
+                    native_services.append((key, service_info))
+                    logger.debug(f"Found native service: {service_info.id}")
+                    
+            except Exception as e:
+                logger.warning(f"Failed to check if service is native {key}: {e}")
+                continue
+        
+        if native_services:
+            # Prefer native services - pick randomly among them
+            selected_key, service_info = random.choice(native_services)
+            logger.info(f"Selected native service: {service_info.id}")
+            return selected_key
+        elif all_services:
+            # No native services found, fall back to random selection
+            selected_key, service_info = random.choice(all_services)
+            logger.info(f"No native services found, selected random service: {service_info.id}")
+            return selected_key
+        else:
+            # Fallback to random if we couldn't process any services
+            logger.warning("Could not process any services, falling back to random selection")
+            return random.choice(keys)
 
     async def _select_service_by_function(
         self, keys: List[bytes], criteria: str, function_name: str, timeout: float = 2.0
