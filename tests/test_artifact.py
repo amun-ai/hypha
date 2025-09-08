@@ -9455,29 +9455,15 @@ async def test_vector_engine_compatibility(
         
         # Add S3 config if using s3vector
         if engine_type == "s3vector":
-            # Create the bucket if it doesn't exist
-            import aiobotocore.session
-            session = aiobotocore.session.AioSession()
-            async with session.create_client(
-                's3',
-                endpoint_url=minio_server,
-                aws_access_key_id='minio',
-                aws_secret_access_key='test-minio-password-123',
-                region_name='us-east-1'
-            ) as s3_client:
-                try:
-                    await s3_client.head_bucket(Bucket='test-vectors')
-                except:
-                    # Bucket doesn't exist, create it
-                    await s3_client.create_bucket(Bucket='test-vectors')
-            
+            # Use the existing workspace bucket (my-workspaces) which is created by the fixture
+            # This avoids issues with bucket creation in CI environments
             collection_config["s3_config"] = {
                 "endpoint_url": minio_server,
                 "access_key_id": "minio",
                 "secret_access_key": "test-minio-password-123",
                 "region_name": "us-east-1",
-                "bucket": "test-vectors",
-                "prefix": f"test-{engine_type}/",
+                "bucket": "my-workspaces",  # Use existing workspace bucket
+                "prefix": f"{workspace_name}/vectors/test-{engine_type}/",  # Use workspace-specific prefix
             }
         
         # Test 1: Create vector collection with specific engine
