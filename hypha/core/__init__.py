@@ -814,7 +814,7 @@ class RedisRPCConnection:
             
             # Clear subscriptions reference (already cleared above, now remove reference)
             if hasattr(self, '_subscriptions'):
-                self._subscriptions = None
+                self._subscriptions = set()
                 
             # Ensure all handler references are cleared
             self._handle_message = None
