@@ -780,24 +780,28 @@ class S3VectorSearchEngine:
     async def add_vectors(
         self,
         collection_name: str,
-        vectors: List[Dict[str, Any]],
+        vectors: Union[List[Dict[str, Any]], List[np.ndarray], np.ndarray],
+        metadata: Optional[List[Dict[str, Any]]] = None,
+        ids: Optional[List[str]] = None,
         update: bool = False,
         embedding_model: Optional[str] = None,
         **kwargs
-    ) -> List[str]:
+    ) -> Dict[str, Any]:
         """Add vectors to a collection.
         
         Args:
             collection_name: Collection identifier (renamed from collection_id for consistency)
-            vectors: List of vector documents, each containing:
-                - id: Unique identifier (optional, auto-generated if not provided)
-                - vector: Vector data as list/array/bytes or text to embed
-                - metadata or manifest: Dictionary of additional metadata (optional)
+            vectors: Can be:
+                - List of vector documents (dicts with 'id', 'vector', 'metadata' keys)
+                - List of numpy arrays
+                - Single numpy array (2D)
+            metadata: Optional list of metadata dicts (used when vectors is array)
+            ids: Optional list of IDs (used when vectors is array)
             update: If True, update existing vectors (not implemented in S3Vector)
             embedding_model: Model to use for text embeddings
             
         Returns:
-            List of vector IDs that were added
+            Dictionary with 'added' count and 'ids' list
         """
         # Handle backward compatibility - use collection_name as collection_id
         collection_id = collection_name
@@ -807,41 +811,77 @@ class S3VectorSearchEngine:
         metadata_list = []
         ids_list = []
         
-        for i, vector_doc in enumerate(vectors):
-            # Extract vector
-            vector_value = vector_doc.get("vector")
-            if vector_value is None:
-                raise ValueError("'vector' field is required")
-            
-            # Handle different vector formats
-            if isinstance(vector_value, str) and (embedding_model or self.model):
-                # Text to embed
-                model_to_use = self.model if self.model else None
-                if model_to_use:
-                    embeddings = list(model_to_use.embed([vector_value]))
-                    vector_array = np.array(embeddings[0], dtype=np.float32)
-                else:
-                    raise ValueError("No embedding model available for text query")
-            elif isinstance(vector_value, (list, tuple)):
-                vector_array = np.array(vector_value, dtype=np.float32)
-            elif isinstance(vector_value, np.ndarray):
-                vector_array = vector_value.astype(np.float32)
+        # Handle different input formats
+        if isinstance(vectors, np.ndarray):
+            # Direct numpy array
+            if vectors.ndim == 1:
+                vectors = vectors.reshape(1, -1)
+            vector_data = [vectors[i] for i in range(len(vectors))]
+            metadata_list = metadata or [{} for _ in range(len(vectors))]
+            if ids:
+                ids_list = ids
             else:
-                raise ValueError(f"Invalid vector type: {type(vector_value)}")
-            
-            vector_data.append(vector_array)
-            
-            # Extract metadata (try both 'metadata' and 'manifest' keys)
-            meta = vector_doc.get("metadata", vector_doc.get("manifest", {}))
-            metadata_list.append(meta)
-            
-            # Extract or generate ID
-            vector_id = vector_doc.get("id")
-            if vector_id is None:
-                if update:
-                    raise ValueError("ID is required for update operation.")
-                vector_id = str(hashlib.md5(vector_array.tobytes()).hexdigest())
-            ids_list.append(str(vector_id))
+                ids_list = [str(hashlib.md5(v.tobytes()).hexdigest()) for v in vector_data]
+        elif isinstance(vectors, list) and len(vectors) > 0:
+            if isinstance(vectors[0], np.ndarray):
+                # List of numpy arrays
+                vector_data = vectors
+                metadata_list = metadata or [{} for _ in range(len(vectors))]
+                if ids:
+                    ids_list = ids
+                else:
+                    ids_list = [str(hashlib.md5(v.tobytes()).hexdigest()) for v in vector_data]
+            elif isinstance(vectors[0], (list, tuple)):
+                # List of lists/tuples
+                vector_data = [np.array(v, dtype=np.float32) for v in vectors]
+                metadata_list = metadata or [{} for _ in range(len(vectors))]
+                if ids:
+                    ids_list = ids
+                else:
+                    ids_list = [str(hashlib.md5(v.tobytes()).hexdigest()) for v in vector_data]
+            elif isinstance(vectors[0], dict):
+                # List of dictionaries (original format)
+                for i, vector_doc in enumerate(vectors):
+                    # Extract vector
+                    vector_value = vector_doc.get("vector")
+                    if vector_value is None:
+                        raise ValueError("'vector' field is required")
+                    
+                    # Handle different vector formats
+                    if isinstance(vector_value, str) and (embedding_model or self.model):
+                        # Text to embed
+                        model_to_use = self.model if self.model else None
+                        if model_to_use:
+                            embeddings = list(model_to_use.embed([vector_value]))
+                            vector_array = np.array(embeddings[0], dtype=np.float32)
+                        else:
+                            raise ValueError("No embedding model available for text query")
+                    elif isinstance(vector_value, (list, tuple)):
+                        vector_array = np.array(vector_value, dtype=np.float32)
+                    elif isinstance(vector_value, np.ndarray):
+                        vector_array = vector_value.astype(np.float32)
+                    else:
+                        raise ValueError(f"Invalid vector type: {type(vector_value)}")
+                    
+                    vector_data.append(vector_array)
+                    
+                    # Extract metadata (try both 'metadata' and 'manifest' keys)
+                    meta = vector_doc.get("metadata", vector_doc.get("manifest", {}))
+                    metadata_list.append(meta)
+                    
+                    # Extract or generate ID
+                    vector_id = vector_doc.get("id")
+                    if vector_id is None:
+                        if update:
+                            raise ValueError("ID is required for update operation.")
+                        vector_id = str(hashlib.md5(vector_array.tobytes()).hexdigest())
+                    ids_list.append(str(vector_id))
+            else:
+                raise ValueError(f"Invalid vectors format: {type(vectors[0])}")
+        else:
+            # Empty list or invalid format
+            if not vectors:
+                return {"added": 0, "ids": []}
         
         # Convert to numpy array
         vectors_array = np.array(vector_data, dtype=np.float32)
@@ -888,7 +928,7 @@ class S3VectorSearchEngine:
         if self.redis_cache:
             await self.redis_cache.invalidate_collection(collection_id)
         
-        return ids_list
+        return {"added": len(ids_list), "ids": ids_list}
 
     async def search_vectors(
         self,
