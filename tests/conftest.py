@@ -276,7 +276,8 @@ def postgres_server():
                 "Stopping and removing existing PostgreSQL container:",
                 existing_container,
             )
-            subprocess.run(["docker", "stop", "hypha-postgres"], check=True)
+            # Attempt to stop the container, but ignore errors if it does not exist
+            subprocess.run(["docker", "stop", "hypha-postgres"], check=False)
             # Attempt to remove the container, but ignore errors if it does not exist
             subprocess.run(["docker", "rm", "hypha-postgres"], check=False)
 
