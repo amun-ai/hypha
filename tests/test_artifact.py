@@ -18,6 +18,84 @@ from . import SERVER_URL, SERVER_URL_REDIS_1, SERVER_URL_SQLITE, find_item, wait
 from hypha_rpc.rpc import RemoteException
 from .test_pgvector import pgvector_search_engine, pg_engine
 
+# New tests: read_file/write_file API with partial reads and format handling
+async def test_read_write_file_partial_and_formats(minio_server, fastapi_server_sqlite, test_user_token):
+    api = await connect_to_server(
+        {
+            "name": "sqlite test client",
+            "server_url": SERVER_URL_SQLITE,
+            "token": test_user_token,
+        }
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a staged artifact
+    art = await artifact_manager.create(
+        type="dataset",
+        alias="rwf-test",
+        manifest={"name": "RWF Test"},
+        stage=True,
+    )
+
+    # Write a text file
+    text_content = "Hello partial read world!"
+    await artifact_manager.write_file(
+        art["id"],
+        "docs/readme.txt",
+        data=text_content,
+        format="text",
+        encoding="utf-8",
+    )
+
+    # Write a binary file
+    binary_content = b"\x00\x01\x02\x03\x04\x05partial-bytes\xff"
+    await artifact_manager.write_file(
+        art["id"],
+        "bin/blob.bin",
+        data=binary_content,
+        format="binary",
+    )
+
+    # Commit
+    await artifact_manager.commit(art["id"])
+
+    # Read text file fully (default limit 64KB is enough)
+    result = await artifact_manager.read_file(art["id"], "docs/readme.txt", format="text")
+    assert result["name"] == "docs/readme.txt"
+    assert result["content"] == text_content
+
+    # Read text file partially
+    result = await artifact_manager.read_file(
+        art["id"], "docs/readme.txt", format="text", offset=6, limit=7
+    )
+    # "partial" from "Hello partial read world!"
+    assert result["content"] == "partial"
+
+    # Read binary file as base64
+    result_b64 = await artifact_manager.read_file(
+        art["id"], "bin/blob.bin", format="base64", offset=0, limit=16
+    )
+    assert result_b64["name"] == "bin/blob.bin"
+    # Ensure content is a base64 string (decodable)
+    import base64 as _b64
+
+    _ = _b64.b64decode(result_b64["content"])  # no exception
+
+    # Read binary file partially as binary
+    result_bin = await artifact_manager.read_file(
+        art["id"], "bin/blob.bin", format="binary", offset=2, limit=5
+    )
+    assert isinstance(result_bin["content"], (bytes, bytearray))
+    assert result_bin["content"] == binary_content[2:2+5]
+
+    # Limit guard: attempt to exceed 10MB should fail
+    import pytest
+
+    with pytest.raises(Exception):
+        await artifact_manager.read_file(
+            art["id"], "bin/blob.bin", format="binary", offset=0, limit=11 * 1024 * 1024
+        )
+
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
 

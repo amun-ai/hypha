@@ -45,6 +45,7 @@ from aiobotocore.session import get_session
 from botocore.config import Config
 from zipfile import ZipFile
 import zlib
+import base64
 from hypha.utils import zip_utils
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -69,9 +70,7 @@ from sqlmodel import SQLModel, Field, Relationship, UniqueConstraint
 from pydantic import Field as PydanticField
 from typing import Optional, Union, List, Any, Dict
 import asyncio
-import struct
 import mimetypes
-import aiohttp
 from jinja2 import Template
 from pydantic import BaseModel
 
@@ -2736,6 +2735,212 @@ class ArtifactController:
                     )
 
                 return self._generate_artifact_data(new_artifact, parent_artifact)
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
+
+    @schema_method
+    async def read_file(
+        self,
+        artifact_id: str = PydanticField(
+            ...,
+            description="Artifact identifier to read file from. Format: 'workspace/alias' or just 'alias' (uses current workspace)."
+        ),
+        file_path: str = PydanticField(
+            ...,
+            description="Path to the file within the artifact. Use forward slashes for nested paths (e.g., 'data/train.csv')."
+        ),
+        format: str = PydanticField(
+            "text",
+            description="Output format: 'text', 'binary', or 'base64'."
+        ),
+        encoding: str = PydanticField(
+            "utf-8",
+            description="Text encoding to use when format='text'."
+        ),
+        offset: int = PydanticField(
+            0,
+            description="Byte offset to start reading from. Must be >= 0."
+        ),
+        limit: Optional[int] = PydanticField(
+            None,
+            description="Maximum number of bytes to read. Defaults to 64KB. Maximum allowed is 10MB."
+        ),
+        version: Optional[str] = PydanticField(
+            None,
+            description="Version to read from (e.g., 'v1.0', 'latest'). Use 'stage' to read staged changes."
+        ),
+        stage: bool = PydanticField(
+            False,
+            description="Read from staged (uncommitted) storage. Cannot be used with version parameter."
+        ),
+        context: Optional[dict] = PydanticField(
+            None,
+            description="Context containing user info and workspace. Usually provided automatically by the system."
+        ),
+    ) -> Dict[str, Any]:
+        """Read file content from an artifact with flexible encoding.
+
+        Returns a dictionary: {"name": file_path, "content": content} where content is
+        decoded/encoded according to `format`.
+
+        Safety: supports partial reads via `offset` and `limit`. Default limit is 64KB
+        and cannot exceed 10MB.
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.from_context(context)
+
+        if stage:
+            assert version is None or version == "stage", "You cannot specify a version when using stage mode."
+            version = "stage"
+
+        # Validate offset/limit
+        assert offset >= 0, "Offset must be non-negative."
+        default_limit = 64 * 1024  # 64KB
+        max_limit = 10 * 1024 * 1024  # 10MB
+        read_limit = default_limit if (limit is None) else int(limit)
+        assert read_limit > 0, "Limit must be a positive integer."
+        if read_limit > max_limit:
+            raise ValueError("Limit cannot exceed 10MB.")
+
+        session = await self._get_session(read_only=True)
+        try:
+            async with session.begin():
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "get_file", session
+                )
+                version_index = self._get_version_index(artifact, version)
+                s3_config = self._get_s3_config(artifact, parent_artifact)
+                async with self._create_client_async(s3_config) as s3_client:
+                    file_key = safe_join(
+                        s3_config["prefix"],
+                        f"{artifact.id}/v{version_index}/{file_path}",
+                    )
+                    # Use ranged read for safety
+                    end_byte = offset + read_limit - 1
+                    response = await s3_client.get_object(
+                        Bucket=s3_config["bucket"],
+                        Key=file_key,
+                        Range=f"bytes={offset}-{end_byte}",
+                    )
+                    data_bytes = await response["Body"].read()
+
+        finally:
+            await session.close()
+
+        fmt = (format or "text").lower()
+        if fmt == "text":
+            content: Any = data_bytes.decode(encoding or "utf-8")
+        elif fmt == "base64":
+            content = base64.b64encode(data_bytes).decode("ascii")
+        elif fmt == "binary":
+            content = data_bytes
+        else:
+            raise ValueError("Invalid format. Expected 'text', 'binary', or 'base64'.")
+
+        return {"name": file_path, "content": content}
+
+    @schema_method
+    async def write_file(
+        self,
+        artifact_id: str = PydanticField(
+            ...,
+            description="Artifact identifier to write file to. Format: 'workspace/alias' or just 'alias' (uses current workspace)."
+        ),
+        file_path: str = PydanticField(
+            ...,
+            description="Path where to store the file within the artifact. Use forward slashes for nested paths."
+        ),
+        data: Any = PydanticField(
+            ...,
+            description="File content. Interpreted based on 'format': string for text/base64, bytes for binary."
+        ),
+        format: str = PydanticField(
+            "text",
+            description="Input format: 'text', 'binary', or 'base64'."
+        ),
+        encoding: str = PydanticField(
+            "utf-8",
+            description="Text encoding to use when format='text'."
+        ),
+        context: Optional[dict] = PydanticField(
+            None,
+            description="Context containing user info and workspace. Usually provided automatically by the system."
+        ),
+    ) -> Dict[str, Any]:
+        """Write file content into an artifact with flexible encoding.
+
+        Requires the artifact to be in staging mode. Content is written to the staging
+        version index determined by the current staging intent (new_version vs edit_version).
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.from_context(context)
+
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "put_file", session
+                )
+
+                assert artifact.staging is not None, "Artifact must be in staging mode."
+                artifact.staging = convert_legacy_staging(artifact.staging)
+
+                staging_dict = artifact.staging or {}
+                has_new_version_intent = staging_dict.get("_intent") == "new_version"
+                if has_new_version_intent:
+                    target_version_index = len(artifact.versions or [])
+                else:
+                    target_version_index = max(0, len(artifact.versions or []) - 1)
+
+                fmt = (format or "text").lower()
+                if fmt == "text":
+                    assert isinstance(data, str), "When format='text', data must be a string."
+                    body = data.encode(encoding or "utf-8")
+                elif fmt == "base64":
+                    assert isinstance(data, str), "When format='base64', data must be a base64 string."
+                    body = base64.b64decode(data)
+                elif fmt == "binary":
+                    if isinstance(data, (bytes, bytearray)):
+                        body = bytes(data)
+                    else:
+                        raise ValueError("When format='binary', data must be bytes or bytearray.")
+                else:
+                    raise ValueError("Invalid format. Expected 'text', 'binary', or 'base64'.")
+
+                s3_config = self._get_s3_config(artifact, parent_artifact)
+                async with self._create_client_async(s3_config) as s3_client:
+                    file_key = safe_join(
+                        s3_config["prefix"],
+                        f"{artifact.id}/v{target_version_index}/{file_path}",
+                    )
+                    content_type, _ = mimetypes.guess_type(file_path)
+                    await s3_client.put_object(
+                        Bucket=s3_config["bucket"],
+                        Key=file_key,
+                        Body=body,
+                        **({"ContentType": content_type} if content_type else {}),
+                    )
+
+                # Track file in staging manifest if not present
+                staging_files = staging_dict.get("files", [])
+                if not any(f.get("path") == file_path for f in staging_files):
+                    staging_files.append({"path": file_path})
+                    staging_dict["files"] = staging_files
+                    artifact.staging = staging_dict
+                    flag_modified(artifact, "staging")
+
+                # Save artifact state (including staging) to S3 and persist DB
+                await self._save_version_to_s3(target_version_index, artifact, s3_config)
+                session.add(artifact)
+                await session.commit()
+
+                return {"success": True, "bytes_written": len(body)}
         except Exception as e:
             raise e
         finally:
@@ -6483,6 +6688,8 @@ class ArtifactController:
             "put_file_start_multipart": self.put_file_start_multipart,
             "put_file_complete_multipart": self.put_file_complete_multipart,
             "remove_file": self.remove_file,
+            "read_file": self.read_file,
+            "write_file": self.write_file,
             "get_file": self.get_file,
             "list": self.list_children,
             "list_children": self.list_children,
