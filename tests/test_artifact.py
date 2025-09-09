@@ -9588,8 +9588,11 @@ async def test_vector_engine_compatibility(
 
 async def test_vector_engine_interface_consistency():
     """Test that both vector engines have consistent interfaces after unification."""
-    from hypha.s3vector import S3VectorSearchEngine
-    from hypha.pgvector import PgVectorSearchEngine
+    try:
+        from hypha.s3vector import S3VectorSearchEngine
+        from hypha.pgvector import PgVectorSearchEngine
+    except ImportError:
+        pytest.skip("PgVector or S3Vector dependencies not available")
     import inspect
     
     # Get method signatures for key methods
@@ -9640,6 +9643,12 @@ async def test_document_chunking_and_vector_search(
     minio_server, fastapi_server, test_user_token
 ):
     """Test loading artifact-manager.md, chunking it, storing in S3 vector collection, and querying."""
+    # Check if S3Vector is available
+    try:
+        from hypha.s3vector import S3VectorSearchEngine
+    except ImportError:
+        pytest.skip("S3Vector dependencies not available (requires Python>=3.11 with zarr>=3.1.0)")
+    
     from pathlib import Path
     
     # Connect to server and get artifact manager

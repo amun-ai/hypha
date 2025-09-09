@@ -20,10 +20,25 @@ from collections import defaultdict
 
 import aioboto3
 import numpy as np
-import zarr.api.asynchronous as zarr_async
-from zarr.abc.store import Store, ByteRequest
-from zarr.core.buffer import default_buffer_prototype
-from zarr.core.common import AccessModeLiteral
+
+# Try to import zarr 3.x - required for S3Vector
+try:
+    import zarr
+    import zarr.api.asynchronous as zarr_async
+    from zarr.abc.store import Store, ByteRequest
+    from zarr.core.buffer import default_buffer_prototype
+    from zarr.core.common import AccessModeLiteral
+    ZARR_AVAILABLE = True
+    ZARR_VERSION = zarr.__version__
+except ImportError as e:
+    ZARR_AVAILABLE = False
+    ZARR_VERSION = None
+    # Create dummy classes to avoid NameError
+    Store = object
+    ByteRequest = object
+    default_buffer_prototype = None
+    AccessModeLiteral = str
+
 from sklearn.preprocessing import normalize
 from sklearn.cluster import MiniBatchKMeans
 
@@ -873,6 +888,15 @@ class S3VectorSearchEngine:
             shard_size: Maximum vectors per shard
             cache_ttl: Redis cache TTL in seconds
         """
+        # Check if zarr 3.x is available
+        if not ZARR_AVAILABLE:
+            import sys
+            raise ImportError(
+                f"S3VectorSearchEngine requires zarr>=3.1.0, which requires Python>=3.11. "
+                f"Current Python version: {sys.version_info.major}.{sys.version_info.minor}. "
+                f"Please upgrade to Python 3.11 or later to use S3Vector functionality."
+            )
+        
         self.endpoint_url = endpoint_url
         self.access_key_id = access_key_id
         self.secret_access_key = secret_access_key

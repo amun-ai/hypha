@@ -61,8 +61,6 @@ from hypha.core import (
     Artifact,
     CollectionArtifact,
 )
-from hypha.pgvector import PgVectorSearchEngine
-from hypha.s3vector import S3VectorSearchEngine
 from hypha_rpc.utils import ObjectProxy
 from hypha_rpc.utils.schema import schema_method
 from jsonschema import validate
@@ -239,6 +237,7 @@ class ArtifactController:
             # Collections must specify their engine type explicitly
             self._default_vector_engine = None
         else:
+            from hypha.pgvector import PgVectorSearchEngine
             # PostgreSQL - use pgvector as default
             self._default_vector_engine = PgVectorSearchEngine(
                 sql_engine, prefix="vec", cache_dir=store.get_cache_dir()
@@ -1526,6 +1525,7 @@ class ArtifactController:
                 )
             engine = self._default_vector_engine
         elif vector_engine_type == "s3vector":
+            from hypha.s3vector import S3VectorSearchEngine
             # Create S3Vector engine with collection-specific config
             # First, get base S3 config using the artifact
             base_s3_config = self._get_s3_config(

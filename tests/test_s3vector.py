@@ -11,18 +11,24 @@ import sys
 from fakeredis import aioredis
 from unittest.mock import MagicMock
 
-from hypha.s3vector import (
-    S3VectorSearchEngine,
-    VectorLakeError,
-    create_s3_vector_engine,
-    create_s3_vector_engine_from_config,
-    HNSW,
-    S3PersistentIndex,
-    ShardManager,
-    RedisCache,
-    CollectionMetadata,
-    ShardMetadata
-)
+# Check if zarr 3.x is available
+try:
+    import zarr
+    if not hasattr(zarr, '__version__') or zarr.__version__ < '3.0':
+        pytest.skip("S3Vector requires zarr>=3.1.0", allow_module_level=True)
+    
+    from hypha.s3vector import (
+        S3VectorSearchEngine,
+        create_s3_vector_engine_from_config,
+        HNSW,
+        S3PersistentIndex,
+        RedisCache,
+        CollectionMetadata,
+    )
+    S3VECTOR_AVAILABLE = True
+except ImportError:
+    pytest.skip("S3Vector dependencies (zarr>=3.1.0) not available, requires Python>=3.11", allow_module_level=True)
+    S3VECTOR_AVAILABLE = False
 
 # Import test configuration for MinIO/S3 settings
 from . import (
