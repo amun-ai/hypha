@@ -1544,6 +1544,9 @@ class ArtifactController:
             region_name = s3_config.get("region_name", "us-east-1")
             bucket_name = s3_config.get("bucket")
             
+            # Get embedding_model from main config, not s3_config
+            embedding_model = config.get("embedding_model")
+            
             # Create S3Vector engine
             engine = S3VectorSearchEngine(
                 endpoint_url=endpoint_url,
@@ -1551,7 +1554,7 @@ class ArtifactController:
                 secret_access_key=secret_access_key,
                 region_name=region_name,
                 bucket_name=bucket_name,
-                embedding_model=custom_s3_config.get("embedding_model"),
+                embedding_model=embedding_model,
                 redis_client=self.store.get_redis(),
                 cache_dir=self.store.get_cache_dir(),
                 **{k: v for k, v in custom_s3_config.items() 
@@ -1581,11 +1584,15 @@ class ArtifactController:
         # Note: artifact is None here since this is a new collection
         engine = self._get_or_create_vector_engine(collection_name, config, artifact=None)
         
+        # Extract embedding_model from config if present
+        embedding_model = config.get("embedding_model") if config else None
+        
         return await engine.create_collection(
             collection_name,
             dimension=dimension,
             distance_metric=distance_metric,
             overwrite=overwrite,
+            embedding_model=embedding_model,
             **kwargs
         )
 
@@ -1627,23 +1634,18 @@ class ArtifactController:
         self,
         collection_name: str,
         vectors: list,
-        embedding_models: dict = None,
+        embedding_model: str = None,
         **kwargs
     ) -> list:
         """Add vectors to a collection using the configured engine."""
         engine = await self._get_vector_engine_for_collection(collection_name)
         
-        # Remove embedding_model from kwargs if it exists to avoid duplicate
-        kwargs.pop('embedding_model', None)
-        
-        embedding_model = None
-        if embedding_models:
-            embedding_model = embedding_models.get("vector")
-        
+        # The embedding model should be taken from the collection config,
+        # not passed as a parameter (vectors should use the same model)
+        # So we don't pass embedding_model to the engine
         return await engine.add_vectors(
             collection_name,
             vectors,
-            embedding_model=embedding_model,
             **kwargs
         )
 
@@ -1651,7 +1653,7 @@ class ArtifactController:
         self,
         collection_name: str,
         query_vector=None,
-        embedding_models: dict = None,
+        embedding_model: str = None,
         filters: dict = None,
         limit: int = 5,
         offset: int = 0,
@@ -1663,17 +1665,12 @@ class ArtifactController:
         """Search vectors in a collection using the configured engine."""
         engine = await self._get_vector_engine_for_collection(collection_name)
         
-        # Remove embedding_model from kwargs if it exists to avoid duplicate
-        kwargs.pop('embedding_model', None)
-        
-        embedding_model = None
-        if embedding_models:
-            embedding_model = embedding_models.get("vector")
-        
+        # The embedding model should be taken from the collection config,
+        # not passed as a parameter (search should use the same model as indexing)
+        # So we don't pass embedding_model to the engine
         return await engine.search_vectors(
             collection_name,
             query_vector=query_vector,
-            embedding_model=embedding_model,
             filters=filters,
             limit=limit,
             offset=offset,
@@ -2984,6 +2981,19 @@ class ArtifactController:
                 s3_config = self._get_s3_config(new_artifact, parent_artifact)
                 if new_artifact.type == "vector-collection":
                     assert "vector_fields" not in config, ("legacy `vector_fields` is not supported, please update the new api which uses `dimension` and `distance_metric` instead.")
+                    
+                    # Check if vector_config is in manifest (new approach)
+                    if manifest and "vector_config" in manifest:
+                        vector_config = manifest["vector_config"]
+                        # Move vector_config from manifest to config
+                        config["dimension"] = vector_config.get("dimension", 384)
+                        config["distance_metric"] = vector_config.get("distance_metric", "cosine").lower()
+                        config["embedding_model"] = vector_config.get("embedding_model")
+                        config["vector_engine"] = vector_config.get("engine", config.get("vector_engine"))
+                        # Remove vector_config from manifest since we moved it to config
+                        del manifest["vector_config"]
+                        new_artifact.manifest = manifest
+                    
                     # Unified configuration for both engines
                     dimension = config.get("dimension", 384)
                     distance_metric = config.get("distance_metric", "cosine").lower()
@@ -4035,7 +4045,6 @@ class ArtifactController:
         artifact_id: str,
         vectors: list,
         update: bool = False,
-        embedding_models: Optional[Dict[str, str]] = None,
         context: dict = None,
     ):
         """
@@ -4104,14 +4113,13 @@ class ArtifactController:
                                 f"{artifact.id}/v0",
                             )
                             
-                            # Get embedding model configuration
-                            if not embedding_models:
-                                embedding_models = artifact.config.get("embedding_models", {})
+                            # Get embedding model configuration from the artifact config
+                            embedding_model = artifact.config.get("embedding_model")
                             
                             result = await self._add_vectors_to_collection(
                                 f"{artifact.workspace}/{artifact.alias}",
                                 validated_vectors,
-                                embedding_models=embedding_models,
+                                embedding_model=embedding_model,
                             )
                         logger.info(f"Added vectors to artifact with ID: {artifact_id}")
                         return result  # Return the list of IDs
@@ -4377,7 +4385,6 @@ class ArtifactController:
         self,
         artifact_id: str,
         query: Optional[Dict[str, Any]] = None,
-        embedding_models: Optional[str] = None,
         filters: Optional[dict[str, Any]] = None,
         limit: Optional[int] = 5,
         offset: Optional[int] = 0,
@@ -4397,10 +4404,6 @@ class ArtifactController:
                     artifact.type == "vector-collection"
                 ), "Artifact must be a vector collection."
 
-                embedding_models = embedding_models or artifact.config.get(
-                    "embedding_models"
-                )
-                
                 # Transform query for PgVector format
                 query_vector = None
                 if query:
@@ -4415,14 +4418,13 @@ class ArtifactController:
                     elif isinstance(query, (list, tuple)):
                         query_vector = query
                 
-                # Get embedding models configuration
-                if not embedding_models:
-                    embedding_models = artifact.config.get("embedding_models", {})
+                # Get embedding model configuration from the artifact config
+                embedding_model = artifact.config.get("embedding_model")
                 
                 return await self._search_vectors_in_collection(
                     f"{artifact.workspace}/{artifact.alias}",
                     query_vector=query_vector,
-                    embedding_models=embedding_models,
+                    embedding_model=embedding_model,
                     filters=filters,
                     limit=limit,
                     offset=offset,

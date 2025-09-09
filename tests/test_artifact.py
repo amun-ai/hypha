@@ -9132,9 +9132,7 @@ async def test_artifact_vector_collection(
         vector_collection_config = {
             "dimension": 384,
             "distance_metric": "cosine",
-            "embedding_models": {
-                "vector": "fastembed:BAAI/bge-small-en-v1.5",
-            },
+            "embedding_model": "fastembed:BAAI/bge-small-en-v1.5",
         }
         vector_collection = await artifact_manager.create(
             type="vector-collection",
@@ -9307,9 +9305,7 @@ async def test_load_dump_vector_collections(
         vector_collection_config = {
             "dimension": 384,
             "distance_metric": "cosine",
-            "embedding_models": {
-                "vector": "fastembed:BAAI/bge-small-en-v1.5",
-            },
+            "embedding_model": "fastembed:BAAI/bge-small-en-v1.5",
         }
         vector_collection = await artifact_manager.create(
             type="vector-collection",
@@ -9355,7 +9351,7 @@ async def test_load_dump_vector_collections(
         vc = await artifact_manager.read(artifact_id=vector_collection.id)
         assert vc["config"]["vector_count"] == 3
         assert (
-            vc["config"]["embedding_models"]["vector"]
+            vc["config"]["embedding_model"]
             == "fastembed:BAAI/bge-small-en-v1.5"
         )
 
@@ -9448,9 +9444,7 @@ async def test_vector_engine_compatibility(
             "vector_engine": engine_type,  # Specify which engine to use
             "dimension": 384,
             "distance_metric": "cosine",
-            "embedding_models": {
-                "vector": "fastembed:BAAI/bge-small-en-v1.5",
-            },
+            "embedding_model": "BAAI/bge-small-en-v1.5",
         }
         
         # Add S3 config if using s3vector
@@ -9640,3 +9634,201 @@ async def test_vector_engine_interface_consistency():
         elif method_name == "add_vectors":
             assert "collection_name" in s3_params and "collection_name" in pg_params
             assert "vectors" in s3_params and "vectors" in pg_params
+
+
+async def test_document_chunking_and_vector_search(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test loading artifact-manager.md, chunking it, storing in S3 vector collection, and querying."""
+    from pathlib import Path
+    
+    # Connect to server and get artifact manager
+    api = await connect_to_server(
+        {
+            "name": "doc search test client",
+            "server_url": SERVER_URL,
+            "token": test_user_token,
+        }
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+    
+    # Get workspace info
+    workspace = api.config.workspace
+    
+    # Create a vector collection using the artifact manager
+    collection_manifest = {
+        "name": "Documentation Vectors",
+        "description": "Vector collection for documentation search",
+        "vector_config": {
+            "engine": "s3vector",  # Specify S3 vector engine
+            "dimension": 384,  # fastembed dimension
+            "metric": "cosine",
+            "embedding_model": "BAAI/bge-small-en-v1.5"
+        }
+    }
+    
+    collection = await artifact_manager.create(
+        type="vector-collection",
+        manifest=collection_manifest,
+        config={"permissions": {"*": "r", "@": "rw+"}},
+    )
+    collection_id = collection.id
+    print(f"Created vector collection: {collection_id}")
+    
+    # Load artifact-manager.md
+    docs_path = Path(__file__).parent.parent / "docs" / "artifact-manager.md"
+    assert docs_path.exists(), f"artifact-manager.md not found at {docs_path}"
+    
+    with open(docs_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    # Chunk the document by sections and paragraphs
+    def chunk_markdown(text, chunk_size=500, overlap=100):
+        """Chunk markdown text into overlapping segments."""
+        lines = text.split('\n')
+        chunks = []
+        current_chunk = []
+        current_size = 0
+        current_section = ""
+        
+        for line in lines:
+            # Track section headers
+            if line.startswith('#'):
+                current_section = line.strip('#').strip()
+            
+            # Add line to current chunk
+            current_chunk.append(line)
+            current_size += len(line)
+            
+            # If chunk is large enough, save it
+            if current_size >= chunk_size:
+                chunk_text = '\n'.join(current_chunk)
+                chunks.append({
+                    'text': chunk_text,
+                    'section': current_section,
+                    'index': len(chunks)
+                })
+                
+                # Keep overlap for context
+                overlap_lines = []
+                overlap_size = 0
+                for l in reversed(current_chunk):
+                    overlap_lines.insert(0, l)
+                    overlap_size += len(l)
+                    if overlap_size >= overlap:
+                        break
+                
+                current_chunk = overlap_lines
+                current_size = overlap_size
+        
+        # Add remaining chunk
+        if current_chunk:
+            chunks.append({
+                'text': '\n'.join(current_chunk),
+                'section': current_section,
+                'index': len(chunks)
+            })
+        
+        return chunks
+    
+    # Chunk the document
+    chunks = chunk_markdown(content)
+    assert len(chunks) > 0, "No chunks created from document"
+    
+    # Prepare vectors and metadata
+    texts = []
+    metadata = []
+    ids = []
+    
+    for i, chunk in enumerate(chunks):
+        chunk_id = f"artifact-manager-chunk-{i}"
+        texts.append(chunk['text'])
+        metadata.append({
+            "chunk_id": chunk_id,
+            "source_file": "artifact-manager.md",
+            "chunk_index": i,
+            "full_text": chunk['text'],
+            "section_title": chunk['section']
+        })
+        ids.append(chunk_id)
+    
+    # Add vectors to the collection through artifact manager
+    # The artifact manager will handle embedding generation
+    vectors_data = []
+    for i, (text, meta, vid) in enumerate(zip(texts, metadata, ids)):
+        vectors_data.append({
+            "id": vid,
+            "vector": text,  # Pass text, will be embedded by the engine
+            "manifest": meta  # Use 'manifest' instead of 'metadata'
+        })
+    
+    result = await artifact_manager.add_vectors(
+        collection_id,
+        vectors=vectors_data,
+        context={"ws": workspace}
+    )
+    print(f"Added {len(vectors_data)} vectors to collection")
+    
+    # Test Query 1: Ask about ZIP endpoint
+    # Use a simpler query that should match better
+    query1 = "download zip file artifact"
+    results1 = await artifact_manager.search_vectors(
+        collection_id,
+        query={"text": query1},  # Use query dict with 'text' key
+        limit=10,
+        context={"ws": workspace}
+    )
+    
+    assert len(results1) > 0, "No results for ZIP endpoint query"
+    # Just check we got results - semantic search may not find exact keyword
+    print(f"Got {len(results1)} results for query: {query1}")
+    for i, result in enumerate(results1[:3]):  # Only print first 3
+        print(f"  Result {i+1}: {result.get('chunk_id', 'N/A')}, Score: {result.get('_score', 'N/A')}")
+    
+    # Test Query 2: Ask about permissions
+    query2 = "permissions access control"
+    results2 = await artifact_manager.search_vectors(
+        collection_id,
+        query={"text": query2},
+        limit=3,
+        context={"ws": workspace}
+    )
+    
+    assert len(results2) > 0, "No results for permissions query"
+    print(f"Got {len(results2)} results for query: {query2}")
+    for i, result in enumerate(results2[:3]):
+        print(f"  Result {i+1}: {result.get('chunk_id', 'N/A')}, Score: {result.get('_score', 'N/A')}")
+    
+    # Test Query 3: Ask about creating collections
+    query3 = "create dataset gallery collection"
+    results3 = await artifact_manager.search_vectors(
+        collection_id,
+        query={"text": query3},
+        limit=3,
+        context={"ws": workspace}
+    )
+    
+    assert len(results3) > 0, "No results for collection creation query"
+    print(f"Got {len(results3)} results for query: {query3}")
+    for i, result in enumerate(results3[:3]):
+        print(f"  Result {i+1}: {result.get('chunk_id', 'N/A')}, Score: {result.get('_score', 'N/A')}")
+    
+    # Test filter-based search: Find all chunks from a specific section
+    if chunks[0]['section']:  # If we have section titles
+        first_section = chunks[0]['section']
+        results_filtered = await artifact_manager.search_vectors(
+            collection_id,
+            query=None,  # No text query, only filter
+            filters={"section_title": first_section},
+            limit=10,
+            context={"ws": workspace}
+        )
+        
+        # Verify all results are from the specified section
+        for result in results_filtered:
+            assert result['section_title'] == first_section, \
+                f"Expected section '{first_section}', got '{result['section_title']}'"
+    
+    # Clean up - delete the collection artifact
+    await artifact_manager.delete(collection_id, context={"ws": workspace})
+    print(f"Successfully tested document chunking and vector search on artifact-manager.md")

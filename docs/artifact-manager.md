@@ -869,7 +869,7 @@ await artifact_manager.delete(artifact_id="other_workspace/example-dataset", del
 
 ---
 
-### `add_vectors(artifact_id: str, vectors: list, embedding_models: Optional[Dict[str, str]] = None, update: bool = False, context: dict = None) -> None`
+### `add_vectors(artifact_id: str, vectors: list, update: bool = False, context: dict = None) -> None`
 
 Adds vectors to a vector collection artifact. See [RAG](./rag.md) for more detailed use of vector collections.
 
@@ -877,7 +877,6 @@ Adds vectors to a vector collection artifact. See [RAG](./rag.md) for more detai
 
 - `artifact_id`: The ID of the artifact to which vectors will be added. This must be a vector-collection artifact.
 - `vectors`: A list of vectors to add to the collection.
-- `embedding_models`: (Optional) A dictionary specifying embedding models to be used. If not provided, the default models from the artifact's configuration will be used.
 - `update`: (Optional) A boolean flag to update existing vectors if they have the same ID. Defaults to `False`. If update is set to `True`, the existing vectors will be updated with the new vectors and every vector are expected to have an `id` field. If the vector does not exist, it will be added.
 - `context`: A dictionary containing user and session context information.
 
@@ -891,7 +890,7 @@ await artifact_manager.add_vectors(artifact_id="example-id", vectors=[{"id": 1, 
 
 ---
 
-### `search_vectors(artifact_id: str, query: Optional[Dict[str, Any]] = None, embedding_models: Optional[str] = None, filters: Optional[dict[str, Any]] = None, limit: Optional[int] = 5, offset: Optional[int] = 0, return_fields: Optional[List[str]] = None, order_by: Optional[str] = None, pagination: Optional[bool] = False, context: dict = None) -> list`
+### `search_vectors(artifact_id: str, query: Optional[Dict[str, Any]] = None, filters: Optional[dict[str, Any]] = None, limit: Optional[int] = 5, offset: Optional[int] = 0, return_fields: Optional[List[str]] = None, order_by: Optional[str] = None, pagination: Optional[bool] = False, context: dict = None) -> list`
 
 Searches vectors in a vector collection artifact based on a query.
 
@@ -899,7 +898,6 @@ Searches vectors in a vector collection artifact based on a query.
 
 - `artifact_id`: The ID of the artifact to search within. This must be a vector-collection artifact.
 - `query`: (Optional) A dictionary representing the query vector or conditions.
-- `embedding_models`: (Optional) Specifies which embedding model to use. Defaults to the artifact's configuration.
 - `filters`: (Optional) Filters for refining the search results.
 - `limit`: (Optional) Maximum number of results to return. Defaults to 5.
 - `offset`: (Optional) Number of results to skip. Defaults to 0.

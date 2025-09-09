@@ -269,6 +269,11 @@ class PgVectorSearchEngine:
                 "distance_metric": distance_metric.lower()
             }
             
+            # Store embedding model if provided
+            embedding_model = kwargs.get("embedding_model")
+            if embedding_model:
+                metadata["embedding_model"] = embedding_model
+            
             # Insert into registry
             await conn.execute(text(f"""
                 INSERT INTO {self._prefix}.collection_registry 
@@ -446,7 +451,6 @@ class PgVectorSearchEngine:
         collection_name: str,
         vectors: List[Dict[str, Any]],
         update: bool = False,
-        embedding_model: Optional[str] = None,
         **kwargs
     ) -> List[str]:
         """Add vectors to a collection.
@@ -458,14 +462,13 @@ class PgVectorSearchEngine:
                 - vector: Vector data as list/array/bytes or text to embed
                 - manifest: Dictionary of additional metadata (optional)
             update: If True, update existing vectors
-            embedding_model: Model to use for text embeddings (e.g., "fastembed:BAAI/bge-small-en-v1.5")
         """
         await self._ensure_initialized()
         
-        # Get collection info
+        # Get collection info and metadata
         async with self._engine.connect() as conn:
             result = await conn.execute(text(f"""
-                SELECT collection_id, dim FROM {self._prefix}.collection_registry
+                SELECT collection_id, dim, vector_fields FROM {self._prefix}.collection_registry
                 WHERE collection_name = :collection_name
             """), {"collection_name": collection_name})
             
@@ -474,7 +477,16 @@ class PgVectorSearchEngine:
             if not collection_info:
                 raise ValueError(f"Collection {collection_name} not found")
             
-            collection_id, dim = collection_info
+            collection_id, dim, metadata_json = collection_info
+            
+            # Parse metadata to get embedding model
+            embedding_model = None
+            if metadata_json:
+                if isinstance(metadata_json, str):
+                    metadata = json.loads(metadata_json)
+                else:
+                    metadata = metadata_json
+                embedding_model = metadata.get("embedding_model")
         
         parent_table = self._get_parent_table(dim)
         
@@ -504,10 +516,13 @@ class PgVectorSearchEngine:
                 elif isinstance(vector_value, bytes):
                     arr = np.frombuffer(vector_value, dtype=np.float32)
                     vec_list = arr.tolist()
-                elif isinstance(vector_value, str) and embedding_model:
-                    # Generate embedding from text
-                    embeddings = await self._embed_texts([vector_value], embedding_model)
-                    vec_list = embeddings[0] if isinstance(embeddings[0], list) else embeddings[0].tolist()
+                elif isinstance(vector_value, str):
+                    # Generate embedding from text using collection's configured model
+                    if embedding_model:
+                        embeddings = await self._embed_texts([vector_value], embedding_model)
+                        vec_list = embeddings[0] if isinstance(embeddings[0], list) else embeddings[0].tolist()
+                    else:
+                        raise ValueError(f"Text vector provided but no embedding model configured for collection")
                 else:
                     if isinstance(vector_value, list):
                         vec_list = list(vector_value)
@@ -752,7 +767,6 @@ class PgVectorSearchEngine:
         self,
         collection_name: str,
         query_vector: Optional[Union[List[float], np.ndarray, str]] = None,
-        embedding_model: Optional[str] = None,
         filters: Optional[Dict[str, Any]] = None,
         limit: Optional[int] = 5,
         offset: Optional[int] = 0,
@@ -765,7 +779,6 @@ class PgVectorSearchEngine:
         Args:
             collection_name: Name of the collection
             query_vector: Query vector for similarity search (optional)
-            embedding_model: Model to use for text embeddings if query_vector is text
             filters: Filter criteria on manifest fields. Supports:
                 - Exact match: {'field': 'value'}
                 - Range filter: {'field': [min, max]}
@@ -803,6 +816,7 @@ class PgVectorSearchEngine:
                 metadata = metadata_json
             
             distance_metric = metadata.get("distance_metric", "cosine").upper()
+            embedding_model = metadata.get("embedding_model")
         
         parent_table = self._get_parent_table(dim)
         
@@ -815,11 +829,14 @@ class PgVectorSearchEngine:
                 vector_query = f"[{','.join(map(str, vec_list))}]"
             elif isinstance(query_vector, (list, tuple)):
                 vector_query = f"[{','.join(map(str, query_vector))}]"
-            elif isinstance(query_vector, str) and embedding_model:
-                # Generate embedding from text
-                embeddings = await self._embed_texts([query_vector], embedding_model)
-                vec_list = embeddings[0] if isinstance(embeddings[0], list) else embeddings[0].tolist()
-                vector_query = f"[{','.join(map(str, vec_list))}]"
+            elif isinstance(query_vector, str):
+                # Generate embedding from text using collection's configured model
+                if embedding_model:
+                    embeddings = await self._embed_texts([query_vector], embedding_model)
+                    vec_list = embeddings[0] if isinstance(embeddings[0], list) else embeddings[0].tolist()
+                    vector_query = f"[{','.join(map(str, vec_list))}]"
+                else:
+                    raise ValueError(f"Text query provided but no embedding model configured for collection")
             else:
                 raise ValueError(f"Invalid query_vector type: {type(query_vector)}")
         
@@ -1034,17 +1051,22 @@ class PgVectorSearchEngine:
         if not embedding_model:
             raise ValueError("Embedding model is not configured.")
         
+        # Support both with and without "fastembed:" prefix for consistency with s3vector
         if embedding_model.startswith("fastembed:"):
-            from fastembed import TextEmbedding
-            
             model_name = embedding_model.split(":")[1]
-            model = TextEmbedding(
-                model_name=model_name, cache_dir=self._cache_dir
-            )
-            loop = asyncio.get_event_loop()
-            embeddings = list(
-                await loop.run_in_executor(None, model.embed, texts)
-            )
-            return embeddings
+        elif "/" in embedding_model:
+            # Assume it's a fastembed model if it contains a slash (e.g., "BAAI/bge-small-en-v1.5")
+            model_name = embedding_model
         else:
             raise ValueError(f"Unsupported embedding model: {embedding_model}")
+        
+        from fastembed import TextEmbedding
+        
+        model = TextEmbedding(
+            model_name=model_name, cache_dir=self._cache_dir
+        )
+        loop = asyncio.get_event_loop()
+        embeddings = list(
+            await loop.run_in_executor(None, model.embed, texts)
+        )
+        return embeddings

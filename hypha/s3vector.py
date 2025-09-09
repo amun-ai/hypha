@@ -20,8 +20,10 @@ from collections import defaultdict
 
 import aioboto3
 import numpy as np
-import zarr
-from numcodecs import Blosc
+import zarr.api.asynchronous as zarr_async
+from zarr.abc.store import Store, ByteRequest
+from zarr.core.buffer import default_buffer_prototype
+from zarr.core.common import AccessModeLiteral
 from sklearn.preprocessing import normalize
 from sklearn.cluster import MiniBatchKMeans
 
@@ -193,58 +195,128 @@ class HNSW:
         return hnsw
 
 
-class ZarrS3Store:
-    """Custom Zarr store implementation for S3."""
+class ZarrS3Store(Store):
+    """Custom Zarr v3 store implementation for S3."""
     
-    def __init__(self, s3_client_factory, bucket_name, prefix):
+    def __init__(self, s3_client_factory, bucket_name, prefix, mode: AccessModeLiteral = "r+"):
         self.s3_client_factory = s3_client_factory
         self.bucket_name = bucket_name
         self.prefix = prefix.rstrip('/')
         self._cache = {}  # Simple in-memory cache for metadata
+        self._mode = mode
+        self._is_open = False
     
-    def _get_key(self, key):
+    async def _open(self) -> None:
+        """Open the store."""
+        self._is_open = True
+    
+    async def close(self) -> None:
+        """Close the store."""
+        self._is_open = False
+        self._cache.clear()
+    
+    @property
+    def supports_writes(self) -> bool:
+        """Whether this store supports write operations."""
+        return self._mode in ("w", "w+", "r+", "w-", "x")
+    
+    @property
+    def supports_deletes(self) -> bool:
+        """Whether this store supports delete operations."""
+        return self._mode in ("w", "w+", "r+", "w-", "x")
+    
+    @property
+    def supports_partial_writes(self) -> bool:
+        """Whether this store supports partial writes."""
+        return False  # S3 doesn't support partial writes easily
+    
+    @property
+    def supports_listing(self) -> bool:
+        """Whether this store supports listing operations."""
+        return True
+    
+    @property
+    def read_only(self) -> bool:
+        """Whether this store is read-only."""
+        return self._mode == "r"
+    
+    def _get_key(self, key: str) -> str:
         """Convert Zarr key to S3 key."""
         if key.startswith('/'):
             key = key[1:]
         return f"{self.prefix}/{key}" if self.prefix else key
     
-    async def __getitem__(self, key):
+    async def get(self, key: str, prototype=None, byte_range: ByteRequest | None = None):
         """Get item from S3."""
-        if key in self._cache:
-            return self._cache[key]
+        if prototype is None:
+            prototype = default_buffer_prototype()
+            
+        # Check cache first for small files
+        if key in self._cache and byte_range is None:
+            return prototype.buffer.from_bytes(self._cache[key])
             
         s3_key = self._get_key(key)
         async with self.s3_client_factory() as s3_client:
             try:
-                response = await s3_client.get_object(
-                    Bucket=self.bucket_name,
-                    Key=s3_key
-                )
+                kwargs = {"Bucket": self.bucket_name, "Key": s3_key}
+                
+                # Handle byte range requests
+                if byte_range is not None:
+                    if isinstance(byte_range, tuple):
+                        start, end = byte_range
+                        if end is not None:
+                            kwargs["Range"] = f"bytes={start}-{end-1}"
+                        else:
+                            kwargs["Range"] = f"bytes={start}-"
+                    
+                response = await s3_client.get_object(**kwargs)
                 data = await response["Body"].read()
                 
                 # Cache small metadata files
-                if len(data) < 10240:  # 10KB threshold
+                if len(data) < 10240 and byte_range is None:  # 10KB threshold
                     self._cache[key] = data
                     
-                return data
+                return prototype.buffer.from_bytes(data)
             except Exception:
-                raise KeyError(key)
+                return None
     
-    async def __setitem__(self, key, value):
+    async def get_partial_values(self, prototype, key_ranges):
+        """Get multiple partial values."""
+        results = []
+        for key, byte_range in key_ranges:
+            result = await self.get(key, prototype, byte_range)
+            results.append(result)
+        return results
+    
+    async def set(self, key: str, value, byte_range=None) -> None:
         """Set item to S3."""
+        if byte_range is not None:
+            raise NotImplementedError("Partial writes not supported for S3")
+            
         s3_key = self._get_key(key)
+        
+        # Convert buffer to bytes
+        if hasattr(value, 'to_bytes'):
+            data = value.to_bytes()
+        else:
+            data = bytes(value)
+            
         async with self.s3_client_factory() as s3_client:
             await s3_client.put_object(
                 Bucket=self.bucket_name,
                 Key=s3_key,
-                Body=value
+                Body=data
             )
             
             # Update cache for small files
-            if len(value) < 10240:
-                self._cache[key] = value
+            if len(data) < 10240:
+                self._cache[key] = data
     
-    async def __delitem__(self, key):
+    async def set_partial_values(self, key_start_values):
+        """Set multiple partial values - not supported for S3."""
+        raise NotImplementedError("Partial writes not supported for S3")
+    
+    async def delete(self, key: str) -> None:
         """Delete item from S3."""
         s3_key = self._get_key(key)
         async with self.s3_client_factory() as s3_client:
@@ -254,7 +326,7 @@ class ZarrS3Store:
             )
             self._cache.pop(key, None)
     
-    async def __contains__(self, key):
+    async def exists(self, key: str) -> bool:
         """Check if key exists in S3."""
         if key in self._cache:
             return True
@@ -270,35 +342,75 @@ class ZarrS3Store:
             except:
                 return False
     
-    def keys(self):
-        """List keys - not implemented for S3."""
-        raise NotImplementedError("Listing keys not supported for S3 store")
-    
-    async def listdir(self, path=""):
-        """List directory contents."""
-        prefix = self._get_key(path)
-        if prefix and not prefix.endswith('/'):
-            prefix += '/'
-            
+    async def list(self):
+        """List all keys in the store."""
         async with self.s3_client_factory() as s3_client:
             paginator = s3_client.get_paginator('list_objects_v2')
-            keys = []
             async for page in paginator.paginate(
                 Bucket=self.bucket_name,
-                Prefix=prefix,
-                Delimiter='/'
+                Prefix=self.prefix if self.prefix else None
             ):
                 for obj in page.get('Contents', []):
                     key = obj['Key']
                     if self.prefix:
                         key = key[len(self.prefix)+1:]
-                    keys.append(key)
+                    yield key
+    
+    async def list_prefix(self, prefix: str):
+        """List keys with given prefix."""
+        full_prefix = self._get_key(prefix)
+        async with self.s3_client_factory() as s3_client:
+            paginator = s3_client.get_paginator('list_objects_v2')
+            async for page in paginator.paginate(
+                Bucket=self.bucket_name,
+                Prefix=full_prefix
+            ):
+                for obj in page.get('Contents', []):
+                    key = obj['Key']
+                    if self.prefix:
+                        key = key[len(self.prefix)+1:]
+                    yield key
+    
+    async def list_dir(self, prefix: str):
+        """List directory contents."""
+        full_prefix = self._get_key(prefix)
+        if full_prefix and not full_prefix.endswith('/'):
+            full_prefix += '/'
+            
+        async with self.s3_client_factory() as s3_client:
+            paginator = s3_client.get_paginator('list_objects_v2')
+            async for page in paginator.paginate(
+                Bucket=self.bucket_name,
+                Prefix=full_prefix,
+                Delimiter='/'
+            ):
+                # Yield files
+                for obj in page.get('Contents', []):
+                    key = obj['Key']
+                    if self.prefix:
+                        key = key[len(self.prefix)+1:]
+                    # Remove the prefix to get relative path
+                    if key.startswith(prefix):
+                        key = key[len(prefix):].lstrip('/')
+                    if key:  # Don't yield empty strings
+                        yield key
+                # Yield directories
                 for prefix_info in page.get('CommonPrefixes', []):
                     key = prefix_info['Prefix']
                     if self.prefix:
                         key = key[len(self.prefix)+1:]
-                    keys.append(key)
-            return keys
+                    # Remove the prefix to get relative path
+                    if key.startswith(prefix):
+                        key = key[len(prefix):].lstrip('/')
+                    if key:  # Don't yield empty strings
+                        yield key
+    
+    def __eq__(self, other: object) -> bool:
+        """Check equality with another store."""
+        if not isinstance(other, ZarrS3Store):
+            return False
+        return (self.bucket_name == other.bucket_name and 
+                self.prefix == other.prefix)
 
 
 class S3PersistentIndex:
@@ -334,45 +446,30 @@ class S3PersistentIndex:
             self.zarr_store = ZarrS3Store(
                 self.s3_client_factory,
                 self.bucket_name,
-                f"{self.collection_id}/centroids"
+                f"{self.collection_id}",
+                mode="r"
             )
+            await self.zarr_store._open()
             
-            # Load centroids from Zarr
-            try:
-                # Load metadata first
-                meta_data = await self.zarr_store.__getitem__(".zarray")
-                meta = json.loads(meta_data.decode('utf-8'))
-                shape = tuple(meta['shape'])
-                dtype = np.dtype(meta['dtype'])
-                chunks = tuple(meta['chunks'])
-                
-                # Load and decompress centroid chunks
-                compressor = Blosc(cname='lz4', clevel=5, shuffle=Blosc.SHUFFLE)
-                num_chunks = int(np.ceil(shape[0] / chunks[0]))
-                all_chunks = []
-                
-                for i in range(num_chunks):
-                    chunk_data = await self.zarr_store.__getitem__(f"{i}.0")
-                    # Decompress the chunk
-                    decompressed = compressor.decode(chunk_data)
-                    chunk_size = min(chunks[0], shape[0] - i * chunks[0])
-                    chunk_array = np.frombuffer(decompressed, dtype=dtype).reshape(chunk_size, shape[1])
-                    all_chunks.append(chunk_array)
-                
-                self.centroids = np.vstack(all_chunks)
-                
-            except KeyError:
-                # Fallback to raw format if Zarr metadata not found
-                centroid_data = await self.zarr_store.__getitem__("centroids.npy")
-                self.centroids = np.frombuffer(centroid_data, dtype=np.float32).reshape(-1, self.centroids.shape[1] if hasattr(self, 'centroids') else 128)
+            # Open existing Zarr v3 array
+            z_centroids = await zarr_async.open_array(
+                store=self.zarr_store,
+                path="centroids_array",
+                zarr_format=3
+            )
+            # Load centroids data asynchronously
+            self.centroids = await z_centroids.getitem(...)
             
             # Load HNSW index
-            graph_data = await self.zarr_store.__getitem__("hnsw_graph.json")
-            self.hnsw_index = HNSW.deserialize(json.loads(graph_data.decode('utf-8')))
+            graph_data = await self.zarr_store.get("hnsw_graph.json")
+            if graph_data:
+                self.hnsw_index = HNSW.deserialize(json.loads(graph_data.to_bytes().decode('utf-8')))
+            else:
+                raise ValueError("HNSW graph not found")
             
             return True
         except Exception as e:
-            logger.debug(f"Failed to load centroids from S3: {e}")
+            logger.error(f"Failed to load centroids from S3: {e}")
             return False
             
     async def save(self):
@@ -382,48 +479,28 @@ class S3PersistentIndex:
             self.zarr_store = ZarrS3Store(
                 self.s3_client_factory,
                 self.bucket_name,
-                f"{self.collection_id}/centroids"
+                f"{self.collection_id}",
+                mode="w+"
             )
+            await self.zarr_store._open()
         
-        # Create Zarr array for centroids with compression
-        compressor = Blosc(cname='lz4', clevel=5, shuffle=Blosc.SHUFFLE)
-        # For Zarr v2 compatibility
-        z_centroids = zarr.create(
+        # Create array using Zarr v3 async API with default compression
+        # Store array directly at the root of the store with no name
+        z_centroids = await zarr_async.create_array(
+            store=self.zarr_store,
+            name="centroids_array",
             shape=self.centroids.shape,
             chunks=(min(100, len(self.centroids)), self.centroids.shape[1]),
             dtype=self.centroids.dtype,
-            compressor=compressor,
-            store=None,
-            zarr_version=2
+            zarr_format=3,
+            overwrite=True
         )
-        z_centroids[:] = self.centroids
         
-        # Save Zarr metadata
-        await self.zarr_store.__setitem__(".zarray", json.dumps({
-            "chunks": list(z_centroids.chunks),
-            "compressor": {
-                "id": "blosc",
-                "cname": "lz4",
-                "clevel": 5,
-                "shuffle": 1
-            },
-            "dtype": str(z_centroids.dtype),
-            "fill_value": None,
-            "filters": None,
-            "order": "C",
-            "shape": list(z_centroids.shape),
-            "zarr_format": 2
-        }).encode('utf-8'))
+        # Write centroids data asynchronously
+        await z_centroids.setitem(..., self.centroids)
         
-        # Save centroid chunks
-        for i in range(0, len(self.centroids), z_centroids.chunks[0]):
-            chunk_idx = i // z_centroids.chunks[0]
-            chunk_data = self.centroids[i:i+z_centroids.chunks[0]]
-            compressed = compressor.encode(chunk_data.tobytes())
-            await self.zarr_store.__setitem__(f"{chunk_idx}.0", compressed)
-        
-        # Save HNSW graph
-        await self.zarr_store.__setitem__(
+        # Save HNSW graph as a separate file
+        await self.zarr_store.set(
             "hnsw_graph.json",
             json.dumps(self.hnsw_index.serialize()).encode('utf-8')
         )
@@ -479,24 +556,26 @@ class ShardManager:
             meta_store = ZarrS3Store(
                 self.s3_client_factory,
                 self.bucket_name,
-                f"{self.collection_id}/shard_metadata"
+                f"{self.collection_id}/shard_metadata",
+                mode="r"
             )
+            await meta_store._open()
             
             # Try to load shard index
-            try:
-                index_data = await meta_store.__getitem__("index.json")
-                shard_index = json.loads(index_data.decode('utf-8'))
+            index_data = await meta_store.get("index.json")
+            if index_data:
+                shard_index = json.loads(index_data.to_bytes().decode('utf-8'))
                 
                 # Load each shard's metadata
                 for shard_id in shard_index.get('shards', []):
                     try:
-                        shard_meta_data = await meta_store.__getitem__(f"{shard_id}.json")
-                        self.shard_metadata[shard_id] = ShardMetadata(**json.loads(shard_meta_data.decode('utf-8')))
+                        shard_meta_data = await meta_store.get(f"{shard_id}.json")
+                        if shard_meta_data:
+                            self.shard_metadata[shard_id] = ShardMetadata(**json.loads(shard_meta_data.to_bytes().decode('utf-8')))
                     except:
                         pass
-            except KeyError:
-                # No index exists yet
-                pass
+            
+            await meta_store.close()
         except Exception as e:
             logger.debug(f"Failed to load shard metadata: {e}")
             
@@ -505,19 +584,23 @@ class ShardManager:
         meta_store = ZarrS3Store(
             self.s3_client_factory,
             self.bucket_name,
-            f"{self.collection_id}/shard_metadata"
+            f"{self.collection_id}/shard_metadata",
+            mode="w+"
         )
+        await meta_store._open()
         
         # Save shard index
         shard_index = {'shards': list(self.shard_metadata.keys())}
-        await meta_store.__setitem__("index.json", json.dumps(shard_index).encode('utf-8'))
+        await meta_store.set("index.json", json.dumps(shard_index).encode('utf-8'))
         
         # Save each shard's metadata
         for shard_id, shard_meta in self.shard_metadata.items():
-            await meta_store.__setitem__(
+            await meta_store.set(
                 f"{shard_id}.json",
                 json.dumps(asdict(shard_meta)).encode('utf-8')
             )
+        
+        await meta_store.close()
             
     async def get_shard_for_centroid(self, centroid_id: int) -> Optional[str]:
         """Get or create shard for a centroid."""
@@ -551,8 +634,10 @@ class ShardManager:
             self.zarr_stores[shard_id] = ZarrS3Store(
                 self.s3_client_factory,
                 self.bucket_name,
-                f"{self.collection_id}/shards/{shard_id}"
+                f"{self.collection_id}/shards/{shard_id}",
+                mode="w+"
             )
+            await self.zarr_stores[shard_id]._open()
         
         zarr_store = self.zarr_stores[shard_id]
         shard_meta = self.shard_metadata[shard_id]
@@ -562,57 +647,27 @@ class ShardManager:
         target_chunk_bytes = 1024 * 1024  # 1MB chunks
         vectors_per_chunk = max(10, min(1000, target_chunk_bytes // (dim * 4)))
         
-        # Create compressor
-        compressor = Blosc(cname='lz4', clevel=5, shuffle=Blosc.SHUFFLE)
-        
         # Get current batch number
         batch_num = len(shard_meta.batch_files)
         batch_id = f"batch_{batch_num:06d}"
         
-        # Create Zarr arrays for this batch
-        z_vectors = zarr.create(
+        # Create Zarr v3 array for this batch with default compression
+        z_vectors = await zarr_async.create_array(
+            store=zarr_store,
+            name=f"{batch_id}/vectors",
             shape=vectors.shape,
             chunks=(vectors_per_chunk, dim),
             dtype=vectors.dtype,
-            compressor=compressor,
-            store=None,
-            zarr_version=2
-        )
-        z_vectors[:] = vectors
-        
-        # Save Zarr metadata for vectors
-        await zarr_store.__setitem__(
-            f"{batch_id}/vectors/.zarray",
-            json.dumps({
-                "chunks": list(z_vectors.chunks),
-                "compressor": {
-                    "id": "blosc",
-                    "cname": "lz4",
-                    "clevel": 5,
-                    "shuffle": 1
-                },
-                "dtype": str(z_vectors.dtype),
-                "fill_value": None,
-                "filters": None,
-                "order": "C",
-                "shape": list(z_vectors.shape),
-                "zarr_format": 2
-            }).encode('utf-8')
+            zarr_format=3,
+            overwrite=True
         )
         
-        # Save vector chunks
-        num_chunks = int(np.ceil(len(vectors) / vectors_per_chunk))
-        for i in range(num_chunks):
-            start_idx = i * vectors_per_chunk
-            end_idx = min((i + 1) * vectors_per_chunk, len(vectors))
-            chunk_data = vectors[start_idx:end_idx]
-            compressed = compressor.encode(chunk_data.tobytes())
-            await zarr_store.__setitem__(f"{batch_id}/vectors/{i}.0", compressed)
+        # Write vectors asynchronously
+        await z_vectors.setitem(..., vectors)
         
-        # Save metadata and IDs as JSON (compressed)
+        # Save metadata and IDs as JSON
         meta_json = json.dumps({'metadata': metadata, 'ids': ids})
-        compressed_meta = compressor.encode(meta_json.encode('utf-8'))
-        await zarr_store.__setitem__(f"{batch_id}/metadata.json.z", compressed_meta)
+        await zarr_store.set(f"{batch_id}/metadata.json", meta_json.encode('utf-8'))
         
         # Update shard metadata
         shard_meta.batch_files.append(batch_id)
@@ -638,11 +693,12 @@ class ShardManager:
             self.zarr_stores[shard_id] = ZarrS3Store(
                 self.s3_client_factory,
                 self.bucket_name,
-                f"{self.collection_id}/shards/{shard_id}"
+                f"{self.collection_id}/shards/{shard_id}",
+                mode="r"
             )
+            await self.zarr_stores[shard_id]._open()
         
         zarr_store = self.zarr_stores[shard_id]
-        compressor = Blosc(cname='lz4', clevel=5, shuffle=Blosc.SHUFFLE)
         
         all_vectors = []
         all_metadata = []
@@ -650,33 +706,24 @@ class ShardManager:
         
         for batch_id in shard_meta.batch_files:
             try:
-                # Load vector array metadata
-                meta_data = await zarr_store.__getitem__(f"{batch_id}/vectors/.zarray")
-                meta = json.loads(meta_data.decode('utf-8'))
-                shape = tuple(meta['shape'])
-                chunks = tuple(meta['chunks'])
-                dtype = np.dtype(meta['dtype'])
-                
-                # Load all vector chunks
-                num_chunks = int(np.ceil(shape[0] / chunks[0]))
-                batch_vectors = []
-                
-                for i in range(num_chunks):
-                    chunk_data = await zarr_store.__getitem__(f"{batch_id}/vectors/{i}.0")
-                    decompressed = compressor.decode(chunk_data)
-                    chunk_size = min(chunks[0], shape[0] - i * chunks[0])
-                    chunk_array = np.frombuffer(decompressed, dtype=dtype).reshape(chunk_size, shape[1])
-                    batch_vectors.append(chunk_array)
-                
-                if batch_vectors:
-                    all_vectors.append(np.vstack(batch_vectors))
+                # Open Zarr v3 array
+                z_vectors = await zarr_async.open_array(
+                    store=zarr_store,
+                    path=f"{batch_id}/vectors",
+                    zarr_format=3
+                )
+                # Load vectors asynchronously
+                batch_vectors = await z_vectors.getitem(...)
+                all_vectors.append(batch_vectors)
                 
                 # Load metadata
-                meta_data = await zarr_store.__getitem__(f"{batch_id}/metadata.json.z")
-                decompressed_meta = compressor.decode(meta_data)
-                meta_dict = json.loads(decompressed_meta.decode('utf-8'))
-                all_metadata.extend(meta_dict['metadata'])
-                all_ids.extend(meta_dict['ids'])
+                meta_data = await zarr_store.get(f"{batch_id}/metadata.json")
+                if meta_data:
+                    meta_dict = json.loads(meta_data.to_bytes().decode('utf-8'))
+                    all_metadata.extend(meta_dict['metadata'])
+                    all_ids.extend(meta_dict['ids'])
+                else:
+                    raise ValueError(f"Metadata not found for batch {batch_id}")
                 
             except Exception as e:
                 logger.warning(f"Failed to load batch {batch_id}: {e}")
@@ -954,6 +1001,9 @@ class S3VectorSearchEngine:
         # Set default if still None
         if dimension is None:
             dimension = 384
+        
+        # Extract embedding_model from kwargs (if provided from artifact controller)
+        embedding_model = kwargs.pop("embedding_model", self.embedding_model)
             
         # Handle backward compatibility - use collection_name as collection_id
         collection_id = collection_name
@@ -983,7 +1033,23 @@ class S3VectorSearchEngine:
                 # Collection doesn't exist, proceed
                 pass
         
-        # Create metadata
+        # Create metadata with embedding model
+        metadata_dict = {
+            "collection_id": collection_id,
+            "dimension": dimension,
+            "metric": metric,
+            "total_vectors": 0,
+            "num_centroids": num_centroids,
+            "num_shards": 0,
+            "shard_size": shard_size,
+            "created_at": time.time(),
+            "updated_at": time.time(),
+        }
+        
+        # Store embedding model in metadata if provided
+        if embedding_model:
+            metadata_dict["embedding_model"] = embedding_model
+        
         metadata = CollectionMetadata(
             collection_id=collection_id,
             dimension=dimension,
@@ -996,13 +1062,13 @@ class S3VectorSearchEngine:
             updated_at=time.time()
         )
         
-        # Save metadata to S3
+        # Save metadata to S3 (including embedding_model if present)
         async with self.s3_client_factory() as s3_client:
             meta_key = f"{collection_id}/metadata.json"
             await s3_client.put_object(
                 Bucket=self.bucket_name,
                 Key=meta_key,
-                Body=json.dumps(asdict(metadata))
+                Body=json.dumps(metadata_dict)
             )
         
         # Initialize index
@@ -1028,13 +1094,12 @@ class S3VectorSearchEngine:
         metadata: Optional[List[Dict[str, Any]]] = None,
         ids: Optional[List[str]] = None,
         update: bool = False,
-        embedding_model: Optional[str] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """Add vectors to a collection.
         
         Args:
-            collection_name: Collection identifier (renamed from collection_id for consistency)
+            collection_name: Collection identifier
             vectors: Can be:
                 - List of vector documents (dicts with 'id', 'vector', 'metadata' keys)
                 - List of numpy arrays
@@ -1042,7 +1107,6 @@ class S3VectorSearchEngine:
             metadata: Optional list of metadata dicts (used when vectors is array)
             ids: Optional list of IDs (used when vectors is array)
             update: If True, update existing vectors (not implemented in S3Vector)
-            embedding_model: Model to use for text embeddings
             
         Returns:
             Added ids list
@@ -1092,14 +1156,10 @@ class S3VectorSearchEngine:
                         raise ValueError("'vector' field is required")
                     
                     # Handle different vector formats
-                    if isinstance(vector_value, str) and (embedding_model or self.model):
-                        # Text to embed
-                        model_to_use = self.model if self.model else None
-                        if model_to_use:
-                            embeddings = list(model_to_use.embed([vector_value]))
-                            vector_array = np.array(embeddings[0], dtype=np.float32)
-                        else:
-                            raise ValueError("No embedding model available for text query")
+                    if isinstance(vector_value, str) and self.model:
+                        # Text to embed using collection's configured model
+                        embeddings = list(self.model.embed([vector_value]))
+                        vector_array = np.array(embeddings[0], dtype=np.float32)
                     elif isinstance(vector_value, (list, tuple)):
                         vector_array = np.array(vector_value, dtype=np.float32)
                     elif isinstance(vector_value, np.ndarray):
@@ -1178,7 +1238,6 @@ class S3VectorSearchEngine:
         self,
         collection_name: str,
         query_vector: Optional[Union[List[float], np.ndarray, str]] = None,
-        embedding_model: Optional[str] = None,
         filters: Optional[Dict[str, Any]] = None,
         limit: int = 10,
         offset: int = 0,
@@ -1189,10 +1248,9 @@ class S3VectorSearchEngine:
         """Search for similar vectors in a collection.
         
         Args:
-            collection_name: Collection identifier (renamed from collection_id for consistency)
+            collection_name: Collection identifier
             query_vector: Query vector, can be list, numpy array, or text string
-            embedding_model: Model to use for text embeddings if query_vector is text
-            filters: Optional metadata filter (renamed from filter_metadata for consistency)
+            filters: Optional metadata filter
             limit: Number of results to return
             offset: Number of results to skip (for pagination)
             include_vectors: Whether to include vectors in results
@@ -1205,23 +1263,19 @@ class S3VectorSearchEngine:
         # Handle backward compatibility - use collection_name as collection_id
         collection_id = collection_name
         
-        # Get query vector
-        if query_vector is None:
-            raise ValueError("query_vector must be provided")
-        
-        # Handle text query vector
-        if isinstance(query_vector, str):
-            if embedding_model and self.model:
-                embeddings = list(self.model.embed([query_vector]))
-                query_vector = embeddings[0]
-            elif self.model:
-                embeddings = list(self.model.embed([query_vector]))
-                query_vector = embeddings[0]
-            else:
-                raise ValueError("No embedding model available for text query")
-        
-        if not isinstance(query_vector, np.ndarray):
-            query_vector = np.array(query_vector, dtype=np.float32)
+        # Handle query vector
+        if query_vector is not None:
+            # Handle text query vector
+            if isinstance(query_vector, str):
+                if self.model:
+                    # Use the collection's configured embedding model
+                    embeddings = list(self.model.embed([query_vector]))
+                    query_vector = embeddings[0]
+                else:
+                    raise ValueError("No embedding model configured for text query")
+            
+            if not isinstance(query_vector, np.ndarray):
+                query_vector = np.array(query_vector, dtype=np.float32)
         
         # Load index with caching
         if collection_id not in self.indices:
@@ -1255,23 +1309,28 @@ class S3VectorSearchEngine:
         else:
             shard_manager = self.shard_managers[collection_id]
         
-        # Find nearest centroids - adaptive based on limit
-        # For small limits, search fewer shards; for larger limits, search more
-        if limit <= 10:
-            num_shards_to_search = min(2, len(index.centroids))
-        elif limit <= 50:
-            num_shards_to_search = min(5, len(index.centroids))
-        elif limit <= 200:
-            num_shards_to_search = min(10, len(index.centroids))
+        # Determine which shards to search
+        if query_vector is not None:
+            # Find nearest centroids - adaptive based on limit
+            # For small limits, search fewer shards; for larger limits, search more
+            if limit <= 10:
+                num_shards_to_search = min(2, len(index.centroids))
+            elif limit <= 50:
+                num_shards_to_search = min(5, len(index.centroids))
+            elif limit <= 200:
+                num_shards_to_search = min(10, len(index.centroids))
+            else:
+                num_shards_to_search = min(20, len(index.centroids))
+            
+            nearest_centroids = index.find_nearest_centroids(query_vector, k=num_shards_to_search)
         else:
-            num_shards_to_search = min(20, len(index.centroids))
-        
-        nearest_centroids = index.find_nearest_centroids(query_vector, k=num_shards_to_search)
+            # For filter-only search, we need to search all shards
+            nearest_centroids = list(range(len(index.centroids)))
         
         # Load and search relevant shards with early termination
         all_results = []
         
-        # Process centroids in order of proximity for early termination
+        # Process centroids in order of proximity for early termination (or all for filter-only)
         for centroid_id in nearest_centroids:
             # Find shards for this centroid
             relevant_shards = [
@@ -1313,14 +1372,18 @@ class S3VectorSearchEngine:
                 if shard_vectors is None or len(shard_vectors) == 0:
                     continue
                 
-                # Calculate similarities
-                if index.hnsw_index.metric == "cosine":
-                    query_norm = query_vector / np.linalg.norm(query_vector)
-                    shard_norms = shard_vectors / np.linalg.norm(shard_vectors, axis=1, keepdims=True)
-                    similarities = np.dot(shard_norms, query_norm)
+                # Calculate similarities if we have a query vector
+                if query_vector is not None:
+                    if index.hnsw_index.metric == "cosine":
+                        query_norm = query_vector / np.linalg.norm(query_vector)
+                        shard_norms = shard_vectors / np.linalg.norm(shard_vectors, axis=1, keepdims=True)
+                        similarities = np.dot(shard_norms, query_norm)
+                    else:
+                        distances = np.linalg.norm(shard_vectors - query_vector, axis=1)
+                        similarities = 1 / (1 + distances)
                 else:
-                    distances = np.linalg.norm(shard_vectors - query_vector, axis=1)
-                    similarities = 1 / (1 + distances)
+                    # For filter-only search, assign equal scores
+                    similarities = np.ones(len(shard_vectors))
                 
                 # Apply metadata filter if provided
                 if filters:
@@ -1334,6 +1397,9 @@ class S3VectorSearchEngine:
                         shard_metadata = [shard_metadata[i] for i in filtered_indices]
                         shard_ids = [shard_ids[i] for i in filtered_indices]
                         shard_vectors = shard_vectors[filtered_indices]
+                    else:
+                        # No matches in this shard, skip it
+                        continue
                 
                 # Add results from this shard
                 for i, score in enumerate(similarities):
@@ -1379,7 +1445,7 @@ class S3VectorSearchEngine:
         """Get information about a collection.
         
         Args:
-            collection_name: Collection identifier (renamed from collection_id for consistency)
+            collection_name: Collection identifier
             
         Returns:
             Collection metadata
@@ -1509,7 +1575,7 @@ class S3VectorSearchEngine:
         """Count vectors in a collection.
         
         Args:
-            collection_name: Collection identifier (renamed from collection_id for consistency)
+            collection_name: Collection identifier
             
         Returns:
             Number of vectors in the collection
@@ -1524,7 +1590,7 @@ class S3VectorSearchEngine:
         """Delete a collection and all its data.
         
         Args:
-            collection_name: Collection identifier (renamed from collection_id for consistency)
+            collection_name: Collection identifier
             **kwargs: Additional keyword arguments for compatibility
         """
         # Handle backward compatibility - use collection_name as collection_id
