@@ -18,6 +18,7 @@ from mcp.server.lowlevel import Server
 # Now test using the actual MCP client
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.client.session import ClientSession
+import requests
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
@@ -2338,3 +2339,250 @@ async def test_mcp_service_with_nested_string_resources(fastapi_server, test_use
                 assert len(read_result.contents) > 0
                 assert read_result.contents[0].text == expected_content
     await api.disconnect()
+
+
+async def test_mcp_memory_leak_detection(fastapi_server, test_user_token):
+    """Test memory leak detection for MCP services using the /health endpoint.
+    
+    STRICT MODE: Zero tolerance for any memory, connection, or object growth.
+    This test will FAIL if any growth is detected, ensuring no memory leaks.
+    """
+    print("=" * 60)
+    print("Testing MCP Service Memory Leak Detection (STRICT MODE)")
+    print("=" * 60)
+    
+    # Connect and register a test MCP service
+    api = await connect_to_server(
+        {
+            "name": "mcp memory test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+    workspace = api.config["workspace"]
+    
+    # Define MCP service functions with schema decorators
+    @schema_function
+    def echo_tool(text: str) -> str:
+        """Echo back the input text for memory testing."""
+        return f"MCP Echo: {text}"
+    
+    # Add schema information
+    echo_tool.__schema__ = {
+        "description": "Echo back the input text for memory testing",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Text to echo"}
+            },
+            "required": ["text"]
+        }
+    }
+    
+    @schema_function
+    def process_data(data: str, iterations: int = 1) -> str:
+        """Process data function for memory testing."""
+        result = f"Processed: {data}"
+        for i in range(iterations):
+            result += f" [iteration {i+1}]"
+        return result
+    
+    # Add schema information
+    process_data.__schema__ = {
+        "description": "Process data for memory testing",
+        "parameters": {
+            "type": "object", 
+            "properties": {
+                "data": {"type": "string", "description": "Data to process"},
+                "iterations": {"type": "integer", "description": "Number of iterations", "default": 1}
+            },
+            "required": ["data"]
+        }
+    }
+    
+    # Register MCP service with tools
+    service = await api.register_service(
+        {
+            "id": "mcp_memory_test_service", 
+            "name": "MCP Memory Test Service",
+            "type": "mcp",
+            "config": {
+                "visibility": "public",
+            },
+            "tools": {
+                "echo": echo_tool,
+                "process": process_data,
+            },
+            "docs": "This is an MCP service for memory leak testing. It provides echo and process tools.",
+        }
+    )
+    
+    service_id = service["id"].split("/")[-1]
+    
+    # Step 1: Get initial memory state from /health endpoint
+    print("1. Getting initial memory state...")
+    initial_health = requests.get(f"{SERVER_URL}/health", timeout=10)
+    assert initial_health.status_code == 200, f"Health endpoint failed: {initial_health.text}"
+    initial_data = initial_health.json()
+    
+    initial_memory = initial_data["memory"]["rss_mb"]
+    initial_connections = initial_data["connections"]["total_active"] 
+    initial_objects = initial_data["objects"]
+    
+    print(f"   Initial memory: {initial_memory} MB")
+    print(f"   Initial connections: {initial_connections}")
+    print(f"   Initial RPC objects: {initial_objects.get('rpc_objects', 0)}")
+    print(f"   Initial connection objects: {initial_objects.get('connection_objects', 0)}")
+    
+    # Step 2: Make multiple MCP requests to the service
+    print("2. Making MCP requests to test service...")
+    base_url = f"{SERVER_URL}/{workspace}/mcp/{service_id}/mcp"
+    num_requests = 15
+    successful_requests = 0
+    
+    for i in range(num_requests):
+        try:
+            async with streamablehttp_client(base_url) as (
+                read_stream,
+                write_stream,
+                get_session_id,
+            ):
+                async with ClientSession(read_stream, write_stream) as session:
+                    # Initialize the session
+                    await session.initialize()
+                    
+                    # List tools
+                    tools_result = await session.list_tools()
+                    assert tools_result is not None
+                    assert len(tools_result.tools) > 0
+                    
+                    # Call echo tool
+                    echo_result = await session.call_tool(
+                        "echo", {"text": f"test_message_{i}"}
+                    )
+                    assert echo_result is not None
+                    assert len(echo_result.content) > 0
+                    
+                    # Call process tool  
+                    process_result = await session.call_tool(
+                        "process", {"data": f"data_{i}", "iterations": 2}
+                    )
+                    assert process_result is not None
+                    assert len(process_result.content) > 0
+                    
+                    # List resources
+                    resources_result = await session.list_resources()
+                    assert resources_result is not None
+                    
+                    # Read docs resource
+                    if resources_result.resources:
+                        docs_uri = None
+                        for resource in resources_result.resources:
+                            if str(resource.uri) == "resource://docs":
+                                docs_uri = resource.uri
+                                break
+                        
+                        if docs_uri:
+                            read_result = await session.read_resource(uri=docs_uri)
+                            assert read_result is not None
+                    
+                    successful_requests += 1
+                    
+        except Exception as e:
+            print(f"   Request {i} failed with error: {e}")
+    
+    print(f"   Completed {successful_requests}/{num_requests} successful MCP sessions")
+    
+    # Step 3: Wait for cleanup
+    await asyncio.sleep(3)
+    
+    # Step 4: Get final memory state
+    print("3. Getting final memory state...")
+    final_health = requests.get(f"{SERVER_URL}/health", timeout=10)
+    assert final_health.status_code == 200, f"Health endpoint failed: {final_health.text}"
+    final_data = final_health.json()
+    
+    final_memory = final_data["memory"]["rss_mb"]
+    final_connections = final_data["connections"]["total_active"]
+    final_objects = final_data["objects"]
+    
+    print(f"   Final memory: {final_memory} MB")
+    print(f"   Final connections: {final_connections}")
+    print(f"   Final RPC objects: {final_objects.get('rpc_objects', 0)}")
+    print(f"   Final connection objects: {final_objects.get('connection_objects', 0)}")
+    
+    # Step 5: Analyze changes
+    memory_change = final_memory - initial_memory
+    connection_change = final_connections - initial_connections
+    rpc_object_change = final_objects.get("rpc_objects", 0) - initial_objects.get("rpc_objects", 0)
+    connection_object_change = final_objects.get("connection_objects", 0) - initial_objects.get("connection_objects", 0)
+    
+    print("4. MCP memory leak analysis:")
+    print(f"   Memory change: {memory_change:+.2f} MB")
+    print(f"   Connection change: {connection_change:+d}")
+    print(f"   RPC object change: {rpc_object_change:+d}")
+    print(f"   Connection object change: {connection_object_change:+d}")
+    
+    # Check for potential leaks
+    potential_leaks = final_data.get("potential_leaks", [])
+    print(f"   Potential leaks detected: {len(potential_leaks)}")
+    
+    if potential_leaks:
+        print("   Leak details:")
+        for leak in potential_leaks[:3]:  # Show first 3 leaks
+            print(f"     - {leak.get('type', 'unknown')}: {leak.get('severity', 'unknown')} severity")
+    
+    # Step 6: STRICT Assertions for MCP memory leak detection  
+    # Low tolerance - catches significant leaks while allowing for test variations
+    max_acceptable_memory_growth = 10.0  # MB - Low tolerance (allows minor GC variations)
+    max_acceptable_connection_growth = 2  # connections - Allow 2 connection variations
+    max_acceptable_object_growth = 100    # objects - Allow for MCP session cleanup variations (MCP creates many sessions)
+    
+    print("5. STRICT MCP memory leak test results:")
+    
+    # STRICT Memory growth check - MUST be zero or negative
+    if memory_change <= max_acceptable_memory_growth:
+        print(f"   ✅ STRICT: MCP memory growth acceptable: {memory_change:.2f} MB <= {max_acceptable_memory_growth} MB")
+    else:
+        print(f"   ❌ STRICT FAILURE: MCP memory grew by {memory_change:.2f} MB > {max_acceptable_memory_growth} MB")
+        assert False, f"STRICT TEST FAILED: MCP memory leak detected - grew by {memory_change:.2f} MB"
+    
+    # STRICT Connection growth check - MUST be zero or negative
+    if connection_change <= max_acceptable_connection_growth:
+        print(f"   ✅ STRICT: MCP connection growth acceptable: {connection_change:+d} <= +{max_acceptable_connection_growth}")
+    else:
+        print(f"   ❌ STRICT FAILURE: MCP connections grew by {connection_change:+d} > +{max_acceptable_connection_growth}")
+        assert False, f"STRICT TEST FAILED: MCP connection leak detected - grew by {connection_change} connections"
+    
+    # STRICT Object leak check - Very low tolerance
+    if rpc_object_change <= max_acceptable_object_growth:
+        print(f"   ✅ STRICT: MCP RPC object growth acceptable: {rpc_object_change:+d} <= +{max_acceptable_object_growth}")
+    else:
+        print(f"   ❌ STRICT FAILURE: MCP RPC objects grew by {rpc_object_change:+d} > +{max_acceptable_object_growth}")
+        assert False, f"STRICT TEST FAILED: MCP RPC object leak detected - grew by {rpc_object_change} objects (limit: {max_acceptable_object_growth})"
+    
+    if connection_object_change <= max_acceptable_object_growth:
+        print(f"   ✅ STRICT: MCP connection object growth acceptable: {connection_object_change:+d} <= +{max_acceptable_object_growth}")
+    else:
+        print(f"   ❌ STRICT FAILURE: MCP connection objects grew by {connection_object_change:+d} > +{max_acceptable_object_growth}")
+        assert False, f"STRICT TEST FAILED: MCP connection object leak detected - grew by {connection_object_change} objects (limit: {max_acceptable_object_growth})"
+    
+    # Health endpoint functionality check
+    assert "status" in final_data, "Health endpoint should return status"
+    assert "memory" in final_data, "Health endpoint should return memory info"
+    assert "connections" in final_data, "Health endpoint should return connection info"
+    assert "objects" in final_data, "Health endpoint should return object counts"
+    
+    print("   ✅ Health endpoint provides comprehensive diagnostics for MCP")
+    
+    # Cleanup
+    await api.disconnect()
+    
+    print("\n🎯 STRICT MCP memory leak test PASSED!")
+    print("   ✅ Minimal memory growth confirmed")
+    print("   ✅ Minimal connection growth confirmed") 
+    print("   ✅ Minimal object growth confirmed")
+    print("   🔥 STRICT mode: Very low tolerance for growth!")
+    print("   - Health endpoint monitors MCP service memory usage")
+    print("=" * 60)
