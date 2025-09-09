@@ -17,8 +17,9 @@ from hypha.s3vector import (
     create_s3_vector_engine,
     create_s3_vector_engine_from_config,
     HNSW,
-    S3PersistentIndex,
-    ShardManager,
+    ZarrVectorShard,
+    ZarrS3Store,
+    S3ConnectionPool,
     RedisCache,
     CollectionMetadata,
     ShardMetadata
@@ -234,16 +235,16 @@ class TestHNSW:
 
 
 # ============================================================================
-# S3 Persistent Index Tests
+# Zarr Storage Tests
 # ============================================================================
 
-class TestS3PersistentIndex:
-    """Test S3 persistent index for centroids."""
+class TestZarrStorage:
+    """Test Zarr-based storage components."""
     
     @pytest.mark.asyncio
-    async def test_index_initialize(self, s3_config):
-        """Test index initialization with random centroids."""
-        bucket_name = f"test-index-{uuid.uuid4().hex[:8]}"
+    async def test_zarr_s3_store(self, s3_config):
+        """Test ZarrS3Store functionality."""
+        bucket_name = f"test-zarr-{uuid.uuid4().hex[:8]}"
         
         # Create S3 client factory
         import aioboto3
@@ -263,44 +264,81 @@ class TestS3PersistentIndex:
             await s3_client.create_bucket(Bucket=bucket_name)
         
         try:
-            # Create index
-            index = S3PersistentIndex(s3_client_factory, bucket_name, "test_collection")
-            await index.initialize(dimension=128, num_centroids=10, metric="cosine")
+            # Create S3 connection pool and Zarr store
+            s3_pool = S3ConnectionPool(s3_client_factory, max_connections=5)
+            zarr_store = ZarrS3Store(s3_pool, bucket_name, "test_collection")
             
-            # Check centroids
-            assert index.centroids is not None
-            assert index.centroids.shape == (10, 128)
-            assert index.hnsw_index is not None
+            # Test put and get
+            test_data = b"test data for zarr store"
+            await zarr_store.put("test_path", test_data)
             
-            # Test finding nearest centroids
-            query = np.random.rand(128).astype(np.float32)
-            nearest = index.find_nearest_centroids(query, k=3)
-            assert len(nearest) == 3
+            retrieved_data = await zarr_store.get("test_path")
+            assert retrieved_data == test_data
             
-            # Test load
-            index2 = S3PersistentIndex(s3_client_factory, bucket_name, "test_collection")
-            success = await index2.load()
-            assert success
-            assert index2.centroids.shape == (10, 128)
+            # Test list_prefix
+            await zarr_store.put("prefix/file1", b"data1")
+            await zarr_store.put("prefix/file2", b"data2")
+            
+            files = await zarr_store.list_prefix("prefix/")
+            assert len(files) >= 2
+            
         except Exception as e:
             raise e
         finally:
             # Cleanup
             async with s3_client_factory() as s3_client:
-                # Delete all objects
-                paginator = s3_client.get_paginator('list_objects_v2')
-                pages = paginator.paginate(Bucket=bucket_name)
-                
-                async for page in pages:
-                    if 'Contents' in page:
-                        objects = [{'Key': obj['Key']} for obj in page['Contents']]
-                        if objects:
-                            await s3_client.delete_objects(
-                                Bucket=bucket_name,
-                                Delete={'Objects': objects}
-                            )
-                
-                # Delete bucket
+                await empty_and_delete_bucket(s3_client, bucket_name)
+    
+    @pytest.mark.asyncio
+    async def test_zarr_vector_shard(self, s3_config):
+        """Test ZarrVectorShard functionality."""
+        bucket_name = f"test-shard-{uuid.uuid4().hex[:8]}"
+        
+        # Create S3 client factory
+        import aioboto3
+        session = aioboto3.Session()
+        
+        def s3_client_factory():
+            return session.client(
+                "s3",
+                endpoint_url=s3_config["endpoint_url"],
+                aws_access_key_id=s3_config["access_key_id"],
+                aws_secret_access_key=s3_config["secret_access_key"],
+                region_name=s3_config["region"],
+            )
+        
+        # Create bucket
+        async with s3_client_factory() as s3_client:
+            await s3_client.create_bucket(Bucket=bucket_name)
+        
+        try:
+            # Create components
+            s3_pool = S3ConnectionPool(s3_client_factory, max_connections=5)
+            zarr_store = ZarrS3Store(s3_pool, bucket_name, "test_collection")
+            shard = ZarrVectorShard(zarr_store, "test_shard", dimension=128, chunk_size=50)
+            
+            # Create shard
+            await shard.create()
+            
+            # Add vectors
+            vectors = np.random.rand(100, 128).astype(np.float32)
+            metadata = [{"id": i, "value": f"item_{i}"} for i in range(100)]
+            ids = [f"vec_{i}" for i in range(100)]
+            
+            await shard.append_vectors(vectors, metadata, ids)
+            
+            # Load vectors back
+            loaded_vectors, loaded_metadata, loaded_ids = await shard.load_chunks()
+            
+            assert loaded_vectors.shape == vectors.shape
+            assert len(loaded_metadata) == len(metadata)
+            assert len(loaded_ids) == len(ids)
+            
+        except Exception as e:
+            raise e
+        finally:
+            # Cleanup
+            async with s3_client_factory() as s3_client:
                 await empty_and_delete_bucket(s3_client, bucket_name)
 
 
