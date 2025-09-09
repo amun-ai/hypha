@@ -24,7 +24,7 @@ from dataclasses import dataclass
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from hypha.s3vector import create_s3_vector_engine_from_config as create_original_s3
+from hypha.s3vector import create_s3_vector_engine_from_config as create_zarr_s3
 from hypha.s3vector_optimized import create_optimized_s3_vector_engine_from_config as create_optimized_s3
 from hypha.pgvector import PgVectorSearchEngine
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -140,15 +140,16 @@ class OptimizedVectorBenchmark:
         
         engines = {}
         
-        # Original S3Vector Engine
-        original_config = {
+        # Zarr S3Vector Engine (now the main implementation)
+        zarr_config = {
             **self.s3_config,
             "redis_client": self.infra.redis_client,
             "num_centroids": 50,  # Reasonable default
-            "shard_size": 10000,
+            "shard_size": 5000,   # Smaller shards work better with Zarr
+            "zarr_chunk_size": 200,
         }
-        engines["S3Vector_Original"] = create_original_s3(original_config)
-        await engines["S3Vector_Original"].initialize()
+        engines["S3Vector_Zarr"] = create_zarr_s3(zarr_config)
+        await engines["S3Vector_Zarr"].initialize()
         
         # Optimized S3Vector Engine
         optimized_config = {
@@ -404,7 +405,7 @@ class OptimizedVectorBenchmark:
         
         # Insert Performance Table
         report += "## Insert Performance Comparison\n\n"
-        insert_headers = ["Dataset Size", "S3Vector Original (vec/s)", "S3Vector Optimized (vec/s)", "PgVector (vec/s)", "Best"]
+        insert_headers = ["Dataset Size", "S3Vector Zarr (vec/s)", "S3Vector Optimized (vec/s)", "PgVector (vec/s)", "Best"]
         insert_rows = []
         
         dataset_sizes = sorted(set(r.dataset_size for r in self.results))
@@ -414,19 +415,19 @@ class OptimizedVectorBenchmark:
             if key in by_dataset:
                 results = by_dataset[key]
                 
-                original_throughput = results.get("S3Vector_Original", {}).throughput or 0
+                zarr_throughput = results.get("S3Vector_Zarr", {}).throughput or 0
                 optimized_throughput = results.get("S3Vector_Optimized", {}).throughput or 0  
                 pg_throughput = results.get("PgVector", {}).throughput or 0
                 
                 best = max([
-                    ("S3Vector Original", original_throughput),
+                    ("S3Vector Zarr", zarr_throughput),
                     ("S3Vector Optimized", optimized_throughput),
                     ("PgVector", pg_throughput)
                 ], key=lambda x: x[1])[0]
                 
                 insert_rows.append([
                     f"{size:,}",
-                    f"{original_throughput:.0f}",
+                    f"{zarr_throughput:.0f}",
                     f"{optimized_throughput:.0f}",
                     f"{pg_throughput:.0f}",
                     f"**{best}**"
@@ -436,7 +437,7 @@ class OptimizedVectorBenchmark:
         
         # Search Performance Table
         report += "## Search Performance Comparison\n\n"
-        search_headers = ["Dataset Size", "S3Vector Original (QPS)", "S3Vector Optimized (QPS)", "PgVector (QPS)", "Best"]
+        search_headers = ["Dataset Size", "S3Vector Zarr (QPS)", "S3Vector Optimized (QPS)", "PgVector (QPS)", "Best"]
         search_rows = []
         
         for size in dataset_sizes:
@@ -444,19 +445,19 @@ class OptimizedVectorBenchmark:
             if key in by_dataset:
                 results = by_dataset[key]
                 
-                original_qps = results.get("S3Vector_Original", {}).throughput or 0
+                zarr_qps = results.get("S3Vector_Zarr", {}).throughput or 0
                 optimized_qps = results.get("S3Vector_Optimized", {}).throughput or 0
                 pg_qps = results.get("PgVector", {}).throughput or 0
                 
                 best = max([
-                    ("S3Vector Original", original_qps),
+                    ("S3Vector Zarr", zarr_qps),
                     ("S3Vector Optimized", optimized_qps),
                     ("PgVector", pg_qps)
                 ], key=lambda x: x[1])[0]
                 
                 search_rows.append([
                     f"{size:,}",
-                    f"{original_qps:.1f}",
+                    f"{zarr_qps:.1f}",
                     f"{optimized_qps:.1f}",
                     f"{pg_qps:.1f}",
                     f"**{best}**"
