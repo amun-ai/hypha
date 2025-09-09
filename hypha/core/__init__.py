@@ -768,10 +768,11 @@ class RedisRPCConnection:
                 self._filtered_handler = None  # ALWAYS clear the reference
         
         # PRIORITY 2: Clear other circular references (but more gently)
+        # NOTE: We don't clear self._event_bus here anymore as it's needed later
         try:
             # Only clear references that are safe to clear
             if getattr(self, '_stop', False):  # Only if actually stopping
-                self._event_bus = None
+                # Don't clear _event_bus yet - it's needed for cleanup operations below
                 self._registration_task = None
                 self._subscriptions = None
                 self._handle_connected = None
@@ -819,13 +820,16 @@ class RedisRPCConnection:
             RedisRPCConnection._active_connections_gauge.set(len(RedisRPCConnection._connections))
             
             # Clean up direct message handler
-            if self._handle_message:
+            if self._handle_message and self._event_bus:
                 try:
                     self._event_bus.off(f"{self._workspace}/{self._client_id}:msg", self._handle_message)
                     self._handle_message = None
                 except Exception:
                     # Clear reference even if unregistering fails
                     self._handle_message = None
+            else:
+                # Just clear the reference if event_bus is not available
+                self._handle_message = None
             
             # Unregister this client from local routing and unsubscribe from events
             try:
@@ -834,9 +838,13 @@ class RedisRPCConnection:
                     self._registration_task.cancel()
                 
                 # Unsubscribe from client events and unregister
-                await self._event_bus.unsubscribe_from_client_events(self._workspace, self._client_id)
-                await self._event_bus.unregister_local_client(self._workspace, self._client_id)
-                logger.debug(f"Unsubscribed and unregistered {self._workspace}/{self._client_id}")
+                # Check if event_bus is still available (not cleared by previous cleanup)
+                if self._event_bus:
+                    await self._event_bus.unsubscribe_from_client_events(self._workspace, self._client_id)
+                    await self._event_bus.unregister_local_client(self._workspace, self._client_id)
+                    logger.debug(f"Unsubscribed and unregistered {self._workspace}/{self._client_id}")
+                else:
+                    logger.debug(f"Event bus already cleared for {self._workspace}/{self._client_id}")
             except Exception as e:
                 logger.warning(f"Error during client cleanup: {e}")
         
@@ -882,6 +890,10 @@ class RedisRPCConnection:
                     logger.debug(f"Garbage collected {collected} objects")
         except Exception as e:
             logger.debug(f"GC error: {e}")
+        
+        # FINALLY: Clear event_bus reference after all operations are done
+        # This must be last to avoid NoneType errors during cleanup
+        self._event_bus = None
         
         logger.debug(f"Balanced bulletproof disconnect completed for {self._workspace}/{self._client_id}")
 
