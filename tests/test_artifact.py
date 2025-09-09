@@ -9591,6 +9591,15 @@ async def test_vector_engine_compatibility(
 
 async def test_vector_engine_interface_consistency():
     """Test that both vector engines have consistent interfaces after unification."""
+    # First check if S3Vector is available (requires Python >= 3.11)
+    try:
+        import zarr
+        if not hasattr(zarr, '__version__') or zarr.__version__ < '3.0':
+            pytest.skip("S3Vector requires zarr>=3.1.0, skipping interface consistency test")
+    except ImportError:
+        pytest.skip("S3Vector dependencies not available (requires Python>=3.11 with zarr>=3.1.0)")
+    
+    # Now try to import both engines
     try:
         from hypha.s3vector import S3VectorSearchEngine
         from hypha.pgvector import PgVectorSearchEngine
