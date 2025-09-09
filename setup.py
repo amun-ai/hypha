@@ -91,7 +91,7 @@ setup(
             "asyncpg>=0.30.0",
             "fastembed>=0.4.2",
             "zarr>=3.1.2",
-            "numcodecs>=0.12.0",
+            "numcodecs>=0.16.2",
         ],
         "k8s": [
             "kubernetes>=24.2.0",
