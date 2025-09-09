@@ -70,6 +70,12 @@ async def test_dynamic_vector_engine_s3vector(
 ):
     """Test creating vector collections with s3vector engine specified in config."""
     
+    # Check if S3Vector is available
+    try:
+        from hypha.s3vector import S3VectorSearchEngine
+    except ImportError:
+        pytest.skip("S3Vector dependencies not available (requires Python>=3.11 with zarr>=3.1.0)")
+    
     # Set up connection and artifact manager
     api = await connect_to_server(
         {
@@ -149,6 +155,12 @@ async def test_vector_engine_with_custom_s3_config(
     minio_server, fastapi_server, test_user_token
 ):
     """Test creating vector collection with s3vector engine and custom S3 config."""
+    
+    # Check if S3Vector is available
+    try:
+        from hypha.s3vector import S3VectorSearchEngine
+    except ImportError:
+        pytest.skip("S3Vector dependencies not available (requires Python>=3.11 with zarr>=3.1.0)")
     
     # Set up connection and artifact manager
     api = await connect_to_server(
