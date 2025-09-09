@@ -90,6 +90,8 @@ setup(
             "psycopg2-binary>=2.9.10",
             "asyncpg>=0.30.0",
             "fastembed>=0.4.2",
+            "zarr>=3.1.2; python_version >= '3.11'",
+            "numcodecs>=0.16.2; python_version >= '3.11'",
         ],
         "k8s": [
             "kubernetes>=24.2.0",

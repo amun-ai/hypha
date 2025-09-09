@@ -47,3 +47,6 @@ jupyter_client>=8.0.0
 kubernetes>=24.2.0
 psutil>=5.9.0
 ptyprocess==0.7.0
+scikit-learn==1.7.1
+zarr==3.1.2 ; python_version >= '3.11'
+numcodecs==0.16.2 ; python_version >= '3.11'

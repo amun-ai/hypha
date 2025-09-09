@@ -290,13 +290,16 @@ async def test_embedding_models(pgvector_search_engine):
     """Test text embedding generation for vector search."""
     collection_name = "embedding_test_pg"
     
+    # Create collection with embedding model specified
     await pgvector_search_engine.create_collection(
-        collection_name, dimension=384, distance_metric="cosine", overwrite=True
+        collection_name, 
+        dimension=384, 
+        distance_metric="cosine", 
+        overwrite=True,
+        embedding_model="fastembed:BAAI/bge-small-en-v1.5"
     )
     
-    # Add vectors with text that will be embedded
-    embedding_model = "fastembed:BAAI/bge-small-en-v1.5"
-    
+    # Add vectors with text that will be embedded using the collection's model
     vectors = [
         {"id": "doc1", "vector": "This is a test document", "manifest": {"text": "Test document"}},
         {"id": "doc2", "vector": "Another sample text", "manifest": {"text": "Sample text"}},
@@ -304,14 +307,13 @@ async def test_embedding_models(pgvector_search_engine):
     ]
     
     await pgvector_search_engine.add_vectors(
-        collection_name, vectors, embedding_model=embedding_model
+        collection_name, vectors
     )
     
-    # Search with text query
+    # Search with text query (using collection's embedding model)
     results = await pgvector_search_engine.search_vectors(
         collection_name,
         query_vector="test document search",
-        embedding_model=embedding_model,
         limit=2,
     )
     

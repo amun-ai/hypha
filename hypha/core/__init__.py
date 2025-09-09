@@ -755,7 +755,7 @@ class RedisRPCConnection:
         """Balanced bulletproof disconnect - zero leaks without server instability."""
         # Mark as stopped
         self._stop = True
-        
+
         # PRIORITY 1: Clean filtered_handler (the main leak source)
         if hasattr(self, '_filtered_handler') and self._filtered_handler:
             try:
@@ -779,6 +779,7 @@ class RedisRPCConnection:
                 self._handle_disconnected = None
         except Exception as e:
             logger.debug(f"Error clearing circular references: {e}")
+
         
         # PRIORITY 3: Clear RPC references (but less aggressively)
         try:
@@ -1047,22 +1048,67 @@ class RedisEventBus:
     async def unsubscribe_from_client_events(self, workspace: str, client_id: str):
         """Unsubscribe from events for a specific client."""
         client_key = f"{workspace}/{client_id}"
-        pattern = f"targeted:{client_key}:*"
-        if pattern in self._subscribed_patterns:
+        patterns_to_remove = []
+        
+        # Find all patterns related to this client
+        for pattern in list(self._subscribed_patterns):
+            if client_key in pattern:
+                patterns_to_remove.append(pattern)
+        
+        # Unsubscribe from all related patterns
+        for pattern in patterns_to_remove:
             if self._pubsub:
                 try:
                     await self._pubsub.punsubscribe(pattern)
                     RedisEventBus._patterns_unsubscribed_total.inc()
                     RedisEventBus._patterns_unsubscribed_total_int += 1
+                    logger.debug(f"Unsubscribed from pattern: {pattern}")
                 except Exception as e:
                     logger.warning("Failed to unsubscribe from client events %s: %s", pattern, e)
             self._subscribed_patterns.discard(pattern)
-            RedisEventBus._active_patterns_gauge.set(len(self._subscribed_patterns))
+        
+        RedisEventBus._active_patterns_gauge.set(len(self._subscribed_patterns))
 
     def is_local_client(self, workspace: str, client_id: str) -> bool:
         """Check if a client is local to this server instance."""
         client_key = f"{workspace}/{client_id}"
         return client_key in self._local_clients
+    
+    async def cleanup_orphaned_patterns(self):
+        """Clean up orphaned patterns that may have accumulated."""
+        if not self._pubsub:
+            return
+            
+        # Get current active patterns from Redis
+        try:
+            # This is a best-effort cleanup - we can't easily get Redis pubsub state
+            # So we'll clean up patterns that are clearly orphaned
+            patterns_to_clean = []
+            for pattern in list(self._subscribed_patterns):
+                # Check if pattern looks like it's for a disconnected client
+                if "targeted:" in pattern and ":" in pattern:
+                    parts = pattern.split(":")
+                    if len(parts) >= 3:
+                        workspace_client = parts[1]
+                        if "/" in workspace_client:
+                            workspace, client_id = workspace_client.split("/", 1)
+                            # Check if this client is still in our local clients
+                            if not self.is_local_client(workspace, client_id):
+                                patterns_to_clean.append(pattern)
+            
+            # Clean up orphaned patterns
+            for pattern in patterns_to_clean:
+                try:
+                    await self._pubsub.punsubscribe(pattern)
+                    self._subscribed_patterns.discard(pattern)
+                    logger.debug(f"Cleaned up orphaned pattern: {pattern}")
+                except Exception as e:
+                    logger.warning(f"Failed to clean up orphaned pattern {pattern}: {e}")
+            
+            RedisEventBus._active_patterns_gauge.set(len(self._subscribed_patterns))
+            
+        except Exception as e:
+            logger.warning(f"Error during pattern cleanup: {e}")
 
     async def _ensure_subscription(self, workspace: str, client_id: str):
         """Ensure we're subscribed to events for a specific client if it's not local."""

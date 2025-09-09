@@ -108,6 +108,7 @@ def start_builtin_services(
             executable_path=args.executable_path or args.cache_dir,
             cleanup_period=args.s3_cleanup_period,
         )
+        
         artifact_manager = ArtifactController(
             store,
             s3_controller=s3_controller,

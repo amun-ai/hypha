@@ -94,6 +94,14 @@ class PgVectorSearchEngine:
             prefix: Schema prefix (default: "vec")
             cache_dir: Directory for caching models
         """
+        # Check if the engine is SQLite and raise an error
+        if engine.dialect.name == 'sqlite':
+            raise ValueError(
+                "PgVectorSearchEngine requires PostgreSQL with pgvector extension. "
+                "SQLite is not supported. Please use S3VectorSearchEngine or another "
+                "vector search engine that supports SQLite."
+            )
+        
         self._engine = engine
         self._prefix = prefix
         self._cache_dir = cache_dir
@@ -139,6 +147,7 @@ class PgVectorSearchEngine:
             return
         
         async with self._engine.begin() as conn:
+            # PostgreSQL-specific initialization
             # Check if pgvector extension is installed
             try:
                 await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
@@ -182,7 +191,7 @@ class PgVectorSearchEngine:
         parent_table = self._get_parent_table(dim)
         
         async with self._engine.begin() as conn:
-            # Check if parent table already exists
+            # PostgreSQL: Check if parent table already exists
             result = await conn.execute(text(f"""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
@@ -193,7 +202,7 @@ class PgVectorSearchEngine:
             exists = result.scalar()
             
             if not exists:
-                # Create parent table for this dimension
+                # Create parent table for this dimension with pgvector
                 await conn.execute(text(f"""
                     CREATE TABLE {parent_table} (
                         collection_id BIGINT NOT NULL,
@@ -245,6 +254,7 @@ class PgVectorSearchEngine:
                 SELECT collection_id FROM {self._prefix}.collection_registry 
                 WHERE collection_name = :collection_name
             """), {"collection_name": collection_name})
+            
             existing_collection = result.fetchone()
             
             if existing_collection:
@@ -258,6 +268,11 @@ class PgVectorSearchEngine:
                 "dimension": dimension,
                 "distance_metric": distance_metric.lower()
             }
+            
+            # Store embedding model if provided
+            embedding_model = kwargs.get("embedding_model")
+            if embedding_model:
+                metadata["embedding_model"] = embedding_model
             
             # Insert into registry
             await conn.execute(text(f"""
@@ -325,8 +340,8 @@ class PgVectorSearchEngine:
                 CREATE INDEX IF NOT EXISTS {child_table_simple}_created_at 
                 ON {child_table} (created_at DESC)
             """))
-        
-        logger.info(f"Collection {collection_name} created successfully")
+            
+            logger.info(f"Collection {collection_name} created successfully with pgvector")
     
     async def delete_collection(self, collection_name: str, **kwargs):
         """Delete a collection and its partition."""
@@ -436,7 +451,6 @@ class PgVectorSearchEngine:
         collection_name: str,
         vectors: List[Dict[str, Any]],
         update: bool = False,
-        embedding_model: Optional[str] = None,
         **kwargs
     ) -> List[str]:
         """Add vectors to a collection.
@@ -448,22 +462,31 @@ class PgVectorSearchEngine:
                 - vector: Vector data as list/array/bytes or text to embed
                 - manifest: Dictionary of additional metadata (optional)
             update: If True, update existing vectors
-            embedding_model: Model to use for text embeddings (e.g., "fastembed:BAAI/bge-small-en-v1.5")
         """
         await self._ensure_initialized()
         
-        # Get collection info
+        # Get collection info and metadata
         async with self._engine.connect() as conn:
             result = await conn.execute(text(f"""
-                SELECT collection_id, dim FROM {self._prefix}.collection_registry
+                SELECT collection_id, dim, vector_fields FROM {self._prefix}.collection_registry
                 WHERE collection_name = :collection_name
             """), {"collection_name": collection_name})
+            
             collection_info = result.fetchone()
             
             if not collection_info:
                 raise ValueError(f"Collection {collection_name} not found")
             
-            collection_id, dim = collection_info
+            collection_id, dim, metadata_json = collection_info
+            
+            # Parse metadata to get embedding model
+            embedding_model = None
+            if metadata_json:
+                if isinstance(metadata_json, str):
+                    metadata = json.loads(metadata_json)
+                else:
+                    metadata = metadata_json
+                embedding_model = metadata.get("embedding_model")
         
         parent_table = self._get_parent_table(dim)
         
@@ -485,29 +508,33 @@ class PgVectorSearchEngine:
                 if vector_value is None:
                     raise ValueError("'vector' field is required")
                 
-                # Convert vector to string format
+                # Convert vector to appropriate format
                 if isinstance(vector_value, np.ndarray):
                     vec_list = vector_value.astype("float32").tolist()
-                    vector_str = f"[{','.join(map(str, vec_list))}]"
                 elif isinstance(vector_value, (list, tuple)):
-                    vector_str = f"[{','.join(map(str, vector_value))}]"
+                    vec_list = list(vector_value)
                 elif isinstance(vector_value, bytes):
                     arr = np.frombuffer(vector_value, dtype=np.float32)
                     vec_list = arr.tolist()
-                    vector_str = f"[{','.join(map(str, vec_list))}]"
-                elif isinstance(vector_value, str) and embedding_model:
-                    # Generate embedding from text
-                    embeddings = await self._embed_texts([vector_value], embedding_model)
-                    vec_list = embeddings[0] if isinstance(embeddings[0], list) else embeddings[0].tolist()
-                    vector_str = f"[{','.join(map(str, vec_list))}]"
+                elif isinstance(vector_value, str):
+                    # Generate embedding from text using collection's configured model
+                    if embedding_model:
+                        embeddings = await self._embed_texts([vector_value], embedding_model)
+                        vec_list = embeddings[0] if isinstance(embeddings[0], list) else embeddings[0].tolist()
+                    else:
+                        raise ValueError(f"Text vector provided but no embedding model configured for collection")
                 else:
                     if isinstance(vector_value, list):
-                        vector_str = f"[{','.join(map(str, vector_value))}]"
+                        vec_list = list(vector_value)
                     else:
                         raise ValueError(f"Invalid vector type: {type(vector_value)}")
                 
-                # Get manifest directly from the input (no longer extract from flat keys)
+                # Format vector for PostgreSQL storage
+                vector_str = f"[{','.join(map(str, vec_list))}]"
+                
+                # Get manifest directly from the input
                 manifest = vector_data.get("manifest", {})
+                manifest_str = json.dumps(manifest) if manifest else None
                 
                 if update:
                     # Update existing vector
@@ -519,7 +546,7 @@ class PgVectorSearchEngine:
                         "collection_id": collection_id,
                         "id": vector_id,
                         "vector": vector_str,
-                        "manifest": json.dumps(manifest) if manifest else None
+                        "manifest": manifest_str
                     })
                 else:
                     # Insert new vector
@@ -531,7 +558,7 @@ class PgVectorSearchEngine:
                             "collection_id": collection_id,
                             "id": vector_id,
                             "vector": vector_str,
-                            "manifest": json.dumps(manifest) if manifest else None
+                            "manifest": manifest_str
                         })
                     except IntegrityError:
                         logger.warning(f"Vector with ID {vector_id} already exists, skipping")
@@ -740,7 +767,6 @@ class PgVectorSearchEngine:
         self,
         collection_name: str,
         query_vector: Optional[Union[List[float], np.ndarray, str]] = None,
-        embedding_model: Optional[str] = None,
         filters: Optional[Dict[str, Any]] = None,
         limit: Optional[int] = 5,
         offset: Optional[int] = 0,
@@ -753,7 +779,6 @@ class PgVectorSearchEngine:
         Args:
             collection_name: Name of the collection
             query_vector: Query vector for similarity search (optional)
-            embedding_model: Model to use for text embeddings if query_vector is text
             filters: Filter criteria on manifest fields. Supports:
                 - Exact match: {'field': 'value'}
                 - Range filter: {'field': [min, max]}
@@ -791,6 +816,7 @@ class PgVectorSearchEngine:
                 metadata = metadata_json
             
             distance_metric = metadata.get("distance_metric", "cosine").upper()
+            embedding_model = metadata.get("embedding_model")
         
         parent_table = self._get_parent_table(dim)
         
@@ -803,11 +829,14 @@ class PgVectorSearchEngine:
                 vector_query = f"[{','.join(map(str, vec_list))}]"
             elif isinstance(query_vector, (list, tuple)):
                 vector_query = f"[{','.join(map(str, query_vector))}]"
-            elif isinstance(query_vector, str) and embedding_model:
-                # Generate embedding from text
-                embeddings = await self._embed_texts([query_vector], embedding_model)
-                vec_list = embeddings[0] if isinstance(embeddings[0], list) else embeddings[0].tolist()
-                vector_query = f"[{','.join(map(str, vec_list))}]"
+            elif isinstance(query_vector, str):
+                # Generate embedding from text using collection's configured model
+                if embedding_model:
+                    embeddings = await self._embed_texts([query_vector], embedding_model)
+                    vec_list = embeddings[0] if isinstance(embeddings[0], list) else embeddings[0].tolist()
+                    vector_query = f"[{','.join(map(str, vec_list))}]"
+                else:
+                    raise ValueError(f"Text query provided but no embedding model configured for collection")
             else:
                 raise ValueError(f"Invalid query_vector type: {type(query_vector)}")
         
@@ -1022,17 +1051,22 @@ class PgVectorSearchEngine:
         if not embedding_model:
             raise ValueError("Embedding model is not configured.")
         
+        # Support both with and without "fastembed:" prefix for consistency with s3vector
         if embedding_model.startswith("fastembed:"):
-            from fastembed import TextEmbedding
-            
             model_name = embedding_model.split(":")[1]
-            model = TextEmbedding(
-                model_name=model_name, cache_dir=self._cache_dir
-            )
-            loop = asyncio.get_event_loop()
-            embeddings = list(
-                await loop.run_in_executor(None, model.embed, texts)
-            )
-            return embeddings
+        elif "/" in embedding_model:
+            # Assume it's a fastembed model if it contains a slash (e.g., "BAAI/bge-small-en-v1.5")
+            model_name = embedding_model
         else:
             raise ValueError(f"Unsupported embedding model: {embedding_model}")
+        
+        from fastembed import TextEmbedding
+        
+        model = TextEmbedding(
+            model_name=model_name, cache_dir=self._cache_dir
+        )
+        loop = asyncio.get_event_loop()
+        embeddings = list(
+            await loop.run_in_executor(None, model.embed, texts)
+        )
+        return embeddings

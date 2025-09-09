@@ -11,6 +11,10 @@ import time
 import secrets
 from pathlib import Path
 from hypha_rpc import connect_to_server
+import pytest
+
+# Mark all test coroutines as async
+pytestmark = pytest.mark.asyncio
 
 async def test_root_token_with_server():
     """Test root token with running server."""

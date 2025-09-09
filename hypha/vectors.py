@@ -101,6 +101,7 @@ class VectorSearchEngine:
         collection_name: str,
         vector_fields: List[Dict[str, Any]],
         overwrite: bool = False,
+        embedding_model: Optional[str] = None,
         s3_client=None,
         bucket=None,
         prefix=None,
@@ -162,6 +163,12 @@ class VectorSearchEngine:
                 prefix=[f"{index_name}:"], index_type=IndexType.HASH
             ),
         )
+        
+        # Store embedding model in collection config if provided
+        if embedding_model:
+            config_key = f"{self._index_name_prefix}:config:{collection_name}"
+            await self._redis.hset(config_key, "embedding_model", embedding_model)
+        
         if s3_client:
             await self._dump_index(collection_name, s3_client, bucket, prefix)
         fields_info = [
@@ -382,13 +389,33 @@ class VectorSearchEngine:
         collection_name: str,
         vectors: List[Dict[str, Any]],
         update: bool = False,
-        embedding_models: Optional[Dict[str, str]] = None,
         s3_client=None,
         bucket=None,
         prefix=None,
     ):
         index_name = self._get_index_name(collection_name)
         fields = await self._get_fields(collection_name)
+        
+        # Get embedding model from collection config if we need to embed text
+        embedding_model = None
+        for vector in vectors:
+            for key, value in vector.items():
+                if key in fields and fields[key]["type"] == "VECTOR":
+                    if not isinstance(value, (np.ndarray, list, bytes)):
+                        # We have text that needs embedding
+                        if not embedding_model:
+                            collection_config = await self._redis.hgetall(
+                                f"{self._index_name_prefix}:config:{collection_name}"
+                            )
+                            embedding_model = collection_config.get(b"embedding_model")
+                            if embedding_model:
+                                embedding_model = embedding_model.decode("utf-8")
+                            else:
+                                raise ValueError(
+                                    f"Text vector provided but no embedding model configured for collection {collection_name}"
+                                )
+                        break
+        
         ids = []
         for vector in vectors:
             if "id" in vector:
@@ -405,12 +432,17 @@ class VectorSearchEngine:
                     if fields[key]["type"] == "VECTOR":
                         if isinstance(value, np.ndarray) or isinstance(value, list):
                             vector[key] = np.array(value).astype("float32").tobytes()
+                        elif isinstance(value, bytes):
+                            # Already in bytes format
+                            vector[key] = value
                         else:
-                            assert (
-                                key in embedding_models
-                            ), f"Embedding model not provided for field {key}."
+                            # Text that needs to be embedded
+                            if not embedding_model:
+                                raise ValueError(
+                                    f"Text vector provided but no embedding model configured for collection {collection_name}"
+                                )
                             embeddings = await self._embed_texts(
-                                [vector[key]], embedding_models[key]
+                                [vector[key]], embedding_model
                             )
                             vector[key] = (
                                 np.array(embeddings[0]).astype("float32").tobytes()
@@ -508,7 +540,6 @@ class VectorSearchEngine:
         self,
         collection_name: str,
         query: Optional[Dict[str, Any]] = None,
-        embedding_models: Optional[Dict[str, str]] = None,
         filters: Optional[Dict[str, Any]] = None,
         extra_filter: Optional[str] = None,
         limit: Optional[int] = 5,
@@ -540,12 +571,17 @@ class VectorSearchEngine:
             elif isinstance(vector_query, list):
                 vector_query = np.array(vector_query).astype("float32").tobytes()
             elif vector_query is not None:
-                assert (
-                    embedding_models and use_vector in embedding_models
-                ), f"Embedding model not provided for field {use_vector}."
+                # Get embedding model from collection config
+                collection_config = await self._redis.hgetall(f"{self._index_name_prefix}:config:{collection_name}")
+                embedding_model = collection_config.get(b"embedding_model")
+                if embedding_model:
+                    embedding_model = embedding_model.decode("utf-8")
+                else:
+                    raise ValueError(f"No embedding model configured for collection {collection_name}")
+                
                 embeddings = await self._embed_texts(
                     [vector_query],
-                    embedding_models[use_vector],
+                    embedding_model,
                 )
                 vector_query = np.array(embeddings[0]).astype("float32").tobytes()
 
