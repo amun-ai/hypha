@@ -47,5 +47,6 @@ jupyter_client>=8.0.0
 kubernetes>=24.2.0
 psutil>=5.9.0
 ptyprocess==0.7.0
-pyarrow==21.0.0
 scikit-learn==1.7.1
+zarr==2.18.3
+numcodecs==0.13.1
