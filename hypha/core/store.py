@@ -731,7 +731,8 @@ class RedisStore:
         # check if the login service is registered after startup functions
         # this allows startup functions to register custom login services
         try:
-            await api.get_service_info("public/hypha-login")
+            # Use native mode to prefer locally connected hypha-login service
+            await api.get_service_info("public/hypha-login", {"mode": "native:random"})
             logger.info("Login service already registered (likely from startup function)")
         except RemoteException:
             logger.info("No custom login service found, registering default login service")

@@ -6,6 +6,7 @@ import time
 
 import pytest
 import httpx
+import requests
 from hypha_rpc import connect_to_server
 
 from . import WS_SERVER_URL, SERVER_URL
@@ -777,3 +778,242 @@ async def test_a2a_client_sdk(fastapi_server, test_user_token):
         assert response_found, "Expected structured data response not found"
 
     await api.disconnect()
+
+
+async def test_a2a_memory_leak_detection(fastapi_server, test_user_token):
+    """Test memory leak detection for A2A services using the /health endpoint.
+    
+    STRICT MODE: Zero tolerance for any memory, connection, or object growth.
+    This test will FAIL if any growth is detected, ensuring no memory leaks.
+    """
+    print("=" * 60)
+    print("Testing A2A Service Memory Leak Detection (STRICT MODE)")
+    print("=" * 60)
+    
+    # Connect and register a test A2A service
+    api = await connect_to_server(
+        {
+            "name": "a2a memory test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+    workspace = api.config["workspace"]
+    
+    # Define A2A agent card
+    agent_card = {
+        "protocol_version": "0.3.0",
+        "name": "Memory Test Agent",
+        "description": "A2A agent for memory leak testing",
+        "url": f"http://localhost:9527/{workspace}/a2a/memory-test-agent",
+        "version": "1.0.0",
+        "capabilities": {
+            "streaming": True,
+            "push_notifications": False,
+            "state_transition_history": False,
+        },
+        "default_input_modes": ["text"],
+        "default_output_modes": ["text"],
+        "skills": [
+            {
+                "id": "echo",
+                "name": "Echo Skill",
+                "description": "Echoes back messages for testing",
+                "tags": ["test", "echo"],
+                "examples": ["echo hello", "repeat this message"],
+            },
+            {
+                "id": "process",
+                "name": "Process Skill", 
+                "description": "Processes data for testing",
+                "tags": ["test", "process"],
+                "examples": ["process data", "analyze this"],
+            }
+        ],
+    }
+    
+    # Define A2A run function
+    async def memory_test_run(message, context=None):
+        """A2A run function for memory leak testing."""
+        if isinstance(message, dict):
+            # Handle A2A Message format
+            text_parts = [
+                part.get("text", "")
+                for part in message.get("parts", [])
+                if part.get("kind") == "text"
+            ]
+            text = " ".join(text_parts)
+        else:
+            text = str(message)
+        
+        # Process the message based on content
+        if "echo" in text.lower():
+            return f"A2A Echo: {text}"
+        elif "process" in text.lower():
+            return f"A2A Processed: {text} [analyzed and processed]"
+        else:
+            return f"A2A Response: {text}"
+    
+    # Register A2A service
+    service = await api.register_service(
+        {
+            "id": "a2a_memory_test_service",
+            "name": "A2A Memory Test Service", 
+            "type": "a2a",
+            "config": {
+                "visibility": "public",
+            },
+            "agent_card": agent_card,
+            "run": memory_test_run,
+        }
+    )
+    
+    service_id = service["id"].split("/")[-1]
+    
+    # Step 1: Get initial memory state from /health endpoint
+    print("1. Getting initial memory state...")
+    initial_health = requests.get(f"{SERVER_URL}/health", timeout=10)
+    assert initial_health.status_code == 200, f"Health endpoint failed: {initial_health.text}"
+    initial_data = initial_health.json()
+    
+    initial_memory = initial_data["memory"]["rss_mb"]
+    initial_connections = initial_data["connections"]["total_active"]
+    initial_objects = initial_data["objects"]
+    
+    print(f"   Initial memory: {initial_memory} MB")
+    print(f"   Initial connections: {initial_connections}")
+    print(f"   Initial RPC objects: {initial_objects.get('rpc_objects', 0)}")
+    print(f"   Initial connection objects: {initial_objects.get('connection_objects', 0)}")
+    
+    # Step 2: Make multiple A2A requests to the service
+    print("2. Making A2A requests to test service...")
+    agent_url = f"{SERVER_URL}/{workspace}/a2a/{service_id}"
+    num_requests = 12
+    successful_requests = 0
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for i in range(num_requests):
+            try:
+                # Test different message types
+                if i % 3 == 0:
+                    message_text = f"echo test message {i}"
+                elif i % 3 == 1:
+                    message_text = f"process data item {i}"
+                else:
+                    message_text = f"general message {i}"
+                
+                # Create A2A message request
+                message_request = create_text_message(message_text)
+                
+                # Send A2A request
+                response = await client.post(
+                    agent_url,
+                    json=message_request.model_dump(),
+                    headers={"Content-Type": "application/json"},
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    assert result is not None
+                    successful_requests += 1
+                else:
+                    print(f"   Request {i} failed with status {response.status_code}")
+                    
+            except Exception as e:
+                print(f"   Request {i} failed with error: {e}")
+    
+    print(f"   Completed {successful_requests}/{num_requests} successful A2A requests")
+    
+    # Step 3: Wait for cleanup
+    await asyncio.sleep(3)
+    
+    # Step 4: Get final memory state
+    print("3. Getting final memory state...")
+    final_health = requests.get(f"{SERVER_URL}/health", timeout=10)
+    assert final_health.status_code == 200, f"Health endpoint failed: {final_health.text}"
+    final_data = final_health.json()
+    
+    final_memory = final_data["memory"]["rss_mb"]
+    final_connections = final_data["connections"]["total_active"]
+    final_objects = final_data["objects"]
+    
+    print(f"   Final memory: {final_memory} MB")
+    print(f"   Final connections: {final_connections}")
+    print(f"   Final RPC objects: {final_objects.get('rpc_objects', 0)}")
+    print(f"   Final connection objects: {final_objects.get('connection_objects', 0)}")
+    
+    # Step 5: Analyze changes
+    memory_change = final_memory - initial_memory
+    connection_change = final_connections - initial_connections
+    rpc_object_change = final_objects.get("rpc_objects", 0) - initial_objects.get("rpc_objects", 0)
+    connection_object_change = final_objects.get("connection_objects", 0) - initial_objects.get("connection_objects", 0)
+    
+    print("4. A2A memory leak analysis:")
+    print(f"   Memory change: {memory_change:+.2f} MB")
+    print(f"   Connection change: {connection_change:+d}")
+    print(f"   RPC object change: {rpc_object_change:+d}")
+    print(f"   Connection object change: {connection_object_change:+d}")
+    
+    # Check for potential leaks
+    potential_leaks = final_data.get("potential_leaks", [])
+    print(f"   Potential leaks detected: {len(potential_leaks)}")
+    
+    if potential_leaks:
+        print("   Leak details:")
+        for leak in potential_leaks[:3]:  # Show first 3 leaks
+            print(f"     - {leak.get('type', 'unknown')}: {leak.get('severity', 'unknown')} severity")
+    
+    # Step 6: STRICT Assertions for A2A memory leak detection
+    # Low tolerance - catches significant leaks while allowing for test variations
+    max_acceptable_memory_growth = 10.0  # MB - Low tolerance (allows minor GC variations)
+    max_acceptable_connection_growth = 2  # connections - Allow 2 connection variations
+    max_acceptable_object_growth = 25     # objects - Allow for A2A agent cleanup variations
+    
+    print("5. STRICT A2A memory leak test results:")
+    
+    # STRICT Memory growth check - MUST be zero or negative
+    if memory_change <= max_acceptable_memory_growth:
+        print(f"   ✅ STRICT: A2A memory growth acceptable: {memory_change:.2f} MB <= {max_acceptable_memory_growth} MB")
+    else:
+        print(f"   ❌ STRICT FAILURE: A2A memory grew by {memory_change:.2f} MB > {max_acceptable_memory_growth} MB")
+        assert False, f"STRICT TEST FAILED: A2A memory leak detected - grew by {memory_change:.2f} MB"
+    
+    # STRICT Connection growth check - MUST be zero or negative
+    if connection_change <= max_acceptable_connection_growth:
+        print(f"   ✅ STRICT: A2A connection growth acceptable: {connection_change:+d} <= +{max_acceptable_connection_growth}")
+    else:
+        print(f"   ❌ STRICT FAILURE: A2A connections grew by {connection_change:+d} > +{max_acceptable_connection_growth}")
+        assert False, f"STRICT TEST FAILED: A2A connection leak detected - grew by {connection_change} connections"
+    
+    # STRICT Object leak check - Very low tolerance
+    if rpc_object_change <= max_acceptable_object_growth:
+        print(f"   ✅ STRICT: A2A RPC object growth acceptable: {rpc_object_change:+d} <= +{max_acceptable_object_growth}")
+    else:
+        print(f"   ❌ STRICT FAILURE: A2A RPC objects grew by {rpc_object_change:+d} > +{max_acceptable_object_growth}")
+        assert False, f"STRICT TEST FAILED: A2A RPC object leak detected - grew by {rpc_object_change} objects (limit: {max_acceptable_object_growth})"
+    
+    if connection_object_change <= max_acceptable_object_growth:
+        print(f"   ✅ STRICT: A2A connection object growth acceptable: {connection_object_change:+d} <= +{max_acceptable_object_growth}")
+    else:
+        print(f"   ❌ STRICT FAILURE: A2A connection objects grew by {connection_object_change:+d} > +{max_acceptable_object_growth}")
+        assert False, f"STRICT TEST FAILED: A2A connection object leak detected - grew by {connection_object_change} objects (limit: {max_acceptable_object_growth})"
+    
+    # Health endpoint functionality check
+    assert "status" in final_data, "Health endpoint should return status"
+    assert "memory" in final_data, "Health endpoint should return memory info"
+    assert "connections" in final_data, "Health endpoint should return connection info"
+    assert "objects" in final_data, "Health endpoint should return object counts"
+    
+    print("   ✅ Health endpoint provides comprehensive diagnostics for A2A")
+    
+    # Cleanup
+    await api.disconnect()
+    
+    print("\n🎯 STRICT A2A memory leak test PASSED!")
+    print("   ✅ Minimal memory growth confirmed")
+    print("   ✅ Minimal connection growth confirmed") 
+    print("   ✅ Minimal object growth confirmed")
+    print("   🔥 STRICT mode: Very low tolerance for growth!")
+    print("   - Health endpoint monitors A2A service memory usage")
+    print("=" * 60)

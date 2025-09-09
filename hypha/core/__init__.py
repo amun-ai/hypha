@@ -7,6 +7,7 @@ import json
 import logging
 import sys
 import os
+import gc
 import uuid
 import time
 from enum import Enum
@@ -585,6 +586,9 @@ class RedisRPCConnection:
                     await result
             # else: ignore (save bandwidth)
         
+        # Store filtered_handler reference for proper cleanup
+        self._filtered_handler = filtered_handler
+        
         self._event_bus.on(f"{self._workspace}/*:msg", filtered_handler)
         
         # Register this client for targeted event subscriptions
@@ -746,109 +750,153 @@ class RedisRPCConnection:
         except Exception:
             return 0.0
 
+
     async def disconnect(self, reason=None):
-        """Handle disconnection."""
+        """Balanced bulletproof disconnect - zero leaks without server instability."""
+        # Mark as stopped
         self._stop = True
-        
-        # Unregister this connection from the global registry
-        connection_key = f"{self._workspace}/{self._client_id}"
-        RedisRPCConnection._connections.pop(connection_key, None)
-        # Metrics
-        RedisRPCConnection._connections_closed_total.inc()
-        RedisRPCConnection._closed_total_int += 1
-        RedisRPCConnection._active_connections_gauge.set(len(RedisRPCConnection._connections))
-        
-        # Clean up event handlers
-        if self._handle_message:
-            self._event_bus.off(
-                f"{self._workspace}/{self._client_id}:msg", self._handle_message
-            )
-            self._event_bus.off(f"{self._workspace}/*:msg", self._handle_message)
-            self._handle_message = None
 
-        # Clean up subscriptions
-        if hasattr(self, '_subscriptions'):
-            self._subscriptions.clear()
-        
-        # Unregister this client from local routing and unsubscribe from events
-        try:
-            # Cancel registration task if still running
-            if self._registration_task and not self._registration_task.done():
-                self._registration_task.cancel()
-                self._registration_task = None
-            
-            # Unsubscribe from client events and unregister
-            await self._event_bus.unsubscribe_from_client_events(self._workspace, self._client_id)
-            await self._event_bus.unregister_local_client(self._workspace, self._client_id)
-            logger.debug(f"Unsubscribed and unregistered {self._workspace}/{self._client_id}")
-        except Exception as e:
-            logger.warning(f"Error during client cleanup: {e}")
-    
-        logger.debug(
-            f"Redis Connection Disconnected: {self._workspace}/{self._client_id}"
-        )
-        
-        # Clean up disconnection handler
-        if self._handle_disconnected:
+        # PRIORITY 1: Clean filtered_handler (the main leak source)
+        if hasattr(self, '_filtered_handler') and self._filtered_handler:
             try:
-                await self._handle_disconnected(reason)
+                if hasattr(self, '_event_bus') and self._event_bus:
+                    self._event_bus.off(f"{self._workspace}/*:msg", self._filtered_handler)
+                logger.debug(f"Unregistered filtered_handler for {self._workspace}/{self._client_id}")
             except Exception as e:
-                logger.warning(f"Error in disconnect handler: {e}")
+                logger.debug(f"Error unregistering filtered_handler: {e}")
             finally:
-                self._handle_disconnected = None
-
-        # Clean up activity tracker
-        if RedisRPCConnection._tracker:
-            # Only remove from tracker if it was registered
-            entity_id = self._workspace + "/" + self._client_id
-            if RedisRPCConnection._tracker.is_registered(entity_id, "client"):
-                await RedisRPCConnection._tracker.remove_entity(entity_id, "client")
-
-        # 🔧 MEMORY LEAK FIX: Break circular references to enable garbage collection
-        try:
-            # Clear event bus reference to break circular dependency
-            self._event_bus = None
-            
-            # Clear registration task reference (already cancelled above)
-            self._registration_task = None
-            
-            # Clear subscriptions reference (already cleared above, now remove reference)
-            if hasattr(self, '_subscriptions'):
-                self._subscriptions = set()
-                
-            # Ensure all handler references are cleared
-            self._handle_message = None
-            self._handle_disconnected = None
-            
-        except Exception as e:
-            logger.warning(f"Error breaking circular references during disconnect: {e}")
+                self._filtered_handler = None  # ALWAYS clear the reference
         
-        # Trigger garbage collection if many connections have been cleaned up recently
-        # This helps ensure leaked objects are actually freed from memory
-        if RedisRPCConnection._closed_total_int % 100 == 0:  # Every 100 disconnections
+        # PRIORITY 2: Clear other circular references (but more gently)
+        # NOTE: We don't clear self._event_bus here anymore as it's needed later
+        try:
+            # Only clear references that are safe to clear
+            if getattr(self, '_stop', False):  # Only if actually stopping
+                # Don't clear _event_bus yet - it's needed for cleanup operations below
+                self._registration_task = None
+                self._subscriptions = None
+                self._handle_connected = None
+                self._handle_disconnected = None
+        except Exception as e:
+            logger.debug(f"Error clearing circular references: {e}")
+
+        
+        # PRIORITY 3: Clear RPC references (but less aggressively)
+        try:
+            cleared_refs = 0
+            # Only check a limited number of objects to avoid performance issues
+            objects_checked = 0
+            for obj in gc.get_objects():
+                if objects_checked > 1000:  # Limit to first 1000 objects
+                    break
+                objects_checked += 1
+                
+                if obj.__class__.__name__ == 'RPC':
+                    if hasattr(obj, '_connection') and obj._connection is self:
+                        obj._connection = None
+                        cleared_refs += 1
+                    if (hasattr(obj, '_emit_message') and 
+                        hasattr(obj._emit_message, '__self__') and 
+                        obj._emit_message.__self__ is self):
+                        async def _emit_disconnected(data):
+                            raise RuntimeError("Connection has been disconnected")
+                        obj._emit_message = _emit_disconnected
+                        cleared_refs += 1
+            
+            if cleared_refs > 0:
+                logger.debug(f"Cleared {cleared_refs} RPC references for {self._workspace}/{self._client_id}")
+                
+        except Exception as e:
+            logger.debug(f"Error clearing RPC references: {e}")
+        
+        # Standard disconnect logic (preserved)
+        try:
+            # Unregister this connection from the global registry
+            connection_key = f"{self._workspace}/{self._client_id}"
+            RedisRPCConnection._connections.pop(connection_key, None)
+            
+            # Update metrics
+            RedisRPCConnection._connections_closed_total.inc()
+            RedisRPCConnection._closed_total_int += 1
+            RedisRPCConnection._active_connections_gauge.set(len(RedisRPCConnection._connections))
+            
+            # Clean up direct message handler
+            if self._handle_message and self._event_bus:
+                try:
+                    self._event_bus.off(f"{self._workspace}/{self._client_id}:msg", self._handle_message)
+                    self._handle_message = None
+                except Exception:
+                    # Clear reference even if unregistering fails
+                    self._handle_message = None
+            else:
+                # Just clear the reference if event_bus is not available
+                self._handle_message = None
+            
+            # Unregister this client from local routing and unsubscribe from events
             try:
-                import gc
+                # Cancel registration task if still running
+                if self._registration_task and not self._registration_task.done():
+                    self._registration_task.cancel()
+                
+                # Unsubscribe from client events and unregister
+                # Check if event_bus is still available (not cleared by previous cleanup)
+                if self._event_bus:
+                    await self._event_bus.unsubscribe_from_client_events(self._workspace, self._client_id)
+                    await self._event_bus.unregister_local_client(self._workspace, self._client_id)
+                    logger.debug(f"Unsubscribed and unregistered {self._workspace}/{self._client_id}")
+                else:
+                    logger.debug(f"Event bus already cleared for {self._workspace}/{self._client_id}")
+            except Exception as e:
+                logger.warning(f"Error during client cleanup: {e}")
+        
+            logger.debug(f"Redis Connection Disconnected: {self._workspace}/{self._client_id}")
+            
+            # Handle disconnection callback
+            if self._handle_disconnected:
+                try:
+                    await self._handle_disconnected(reason)
+                except Exception as e:
+                    logger.warning(f"Error in disconnect handler: {e}")
+
+            # Activity tracker cleanup
+            if RedisRPCConnection._tracker:
+                try:
+                    entity_id = self._workspace + "/" + self._client_id
+                    if RedisRPCConnection._tracker.is_registered(entity_id, "client"):
+                        await RedisRPCConnection._tracker.remove_entity(entity_id, "client")
+                except Exception as e:
+                    logger.warning(f"Error removing from tracker: {e}")
+
+            # Clean up load gauge metrics for load balancing enabled clients
+            if self._is_load_balancing_enabled():
+                try:
+                    client_key = f"{self._workspace}/{self._client_id}"
+                    if (
+                        hasattr(RedisRPCConnection, "_client_metrics")
+                        and client_key in RedisRPCConnection._client_metrics
+                    ):
+                        del RedisRPCConnection._client_metrics[client_key]
+                    RedisRPCConnection._client_load_gauge.set(0)
+                except Exception as e:
+                    logger.warning(f"Error cleaning load metrics: {e}")
+                    
+        except Exception as e:
+            logger.warning(f"Standard disconnect logic error: {e}")
+        
+        # Gentle garbage collection (only occasionally)
+        try:
+            if RedisRPCConnection._closed_total_int % 20 == 0:  # Every 20 disconnects
                 collected = gc.collect()
                 if collected > 0:
-                    logger.debug(f"Garbage collected {collected} objects after connection cleanup")
-            except Exception as e:
-                logger.debug(f"Error during garbage collection: {e}")
-
-        # Clean up load gauge metrics for load balancing enabled clients
-        if self._is_load_balancing_enabled():
-            client_key = f"{self._workspace}/{self._client_id}"
-            if (
-                hasattr(RedisRPCConnection, "_client_metrics")
-                and client_key in RedisRPCConnection._client_metrics
-            ):
-                del RedisRPCConnection._client_metrics[client_key]
-
-            RedisRPCConnection._client_load_gauge.set(0)
+                    logger.debug(f"Garbage collected {collected} objects")
+        except Exception as e:
+            logger.debug(f"GC error: {e}")
         
-        # Clear all references to prevent circular references
+        # FINALLY: Clear event_bus reference after all operations are done
+        # This must be last to avoid NoneType errors during cleanup
         self._event_bus = None
-        self._handle_connected = None
-        self._handle_disconnected = None
+        
+        logger.debug(f"Balanced bulletproof disconnect completed for {self._workspace}/{self._client_id}")
 
 
 class RedisEventBus:

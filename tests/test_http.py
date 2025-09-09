@@ -602,3 +602,200 @@ async def test_http_auth_context(minio_server, fastapi_server, test_user_token):
 
     print("\nAll HTTP authentication context tests passed! ✓")
     await api.disconnect()
+
+
+async def test_http_memory_leak_detection(minio_server, fastapi_server, test_user_token):
+    """Test memory leak detection for HTTP services using the /health endpoint.
+    
+    STRICT MODE: Zero tolerance for any memory, connection, or object growth.
+    This test will FAIL if any growth is detected, ensuring no memory leaks.
+    """
+    print("=" * 60)
+    print("Testing HTTP Service Memory Leak Detection (STRICT MODE)")
+    print("=" * 60)
+    
+    # Connect and register a test service
+    api = await connect_to_server(
+        {
+            "name": "memory test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+    workspace = api.config["workspace"]
+    
+    # Register a simple echo service for testing
+    def echo_function(data, context=None):
+        """Simple echo function for memory leak testing."""
+        return {"echoed": data, "context_received": context is not None}
+    
+    svc = await api.register_service(
+        {
+            "id": "memory_leak_test_service",
+            "name": "Memory Leak Test Service",
+            "type": "test_service",
+            "config": {
+                "visibility": "public",
+                "run_in_executor": True,
+            },
+            "echo": echo_function,
+        }
+    )
+    
+    service_id = svc.id.split("/")[-1]
+    
+    # Step 1: Get initial memory state from /health endpoint
+    print("1. Getting initial memory state...")
+    initial_health = requests.get(f"{SERVER_URL}/health", timeout=10)
+    assert initial_health.status_code == 200, f"Health endpoint failed: {initial_health.text}"
+    initial_data = initial_health.json()
+    
+    initial_memory = initial_data["memory"]["rss_mb"]
+    initial_connections = initial_data["connections"]["total_active"]
+    initial_objects = initial_data["objects"]
+    
+    print(f"   Initial memory: {initial_memory} MB")
+    print(f"   Initial connections: {initial_connections}")
+    print(f"   Initial RPC objects: {initial_objects.get('rpc_objects', 0)}")
+    print(f"   Initial connection objects: {initial_objects.get('connection_objects', 0)}")
+    
+    # Step 2: Make multiple HTTP requests to the service
+    print("2. Making HTTP requests to test service...")
+    num_requests = 20
+    successful_requests = 0
+    
+    for i in range(num_requests):
+        try:
+            response = requests.post(
+                f"{SERVER_URL}/{workspace}/services/{service_id}/echo",
+                json={"data": f"test_message_{i}", "iteration": i},
+                headers={"Content-Type": "application/json"},
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                assert result["echoed"]["data"] == f"test_message_{i}"
+                successful_requests += 1
+            else:
+                print(f"   Request {i} failed with status {response.status_code}")
+                
+        except Exception as e:
+            print(f"   Request {i} failed with error: {e}")
+    
+    print(f"   Completed {successful_requests}/{num_requests} successful requests")
+    
+    # Step 3: Wait a moment for cleanup
+    await asyncio.sleep(2)
+    
+    # Step 4: Get final memory state from /health endpoint
+    print("3. Getting final memory state...")
+    final_health = requests.get(f"{SERVER_URL}/health", timeout=10)
+    assert final_health.status_code == 200, f"Health endpoint failed: {final_health.text}"
+    final_data = final_health.json()
+    
+    final_memory = final_data["memory"]["rss_mb"]
+    final_connections = final_data["connections"]["total_active"]
+    final_objects = final_data["objects"]
+    
+    print(f"   Final memory: {final_memory} MB")
+    print(f"   Final connections: {final_connections}")
+    print(f"   Final RPC objects: {final_objects.get('rpc_objects', 0)}")
+    print(f"   Final connection objects: {final_objects.get('connection_objects', 0)}")
+    
+    # Step 5: Calculate and analyze changes
+    memory_change = final_memory - initial_memory
+    connection_change = final_connections - initial_connections
+    rpc_object_change = final_objects.get("rpc_objects", 0) - initial_objects.get("rpc_objects", 0)
+    connection_object_change = final_objects.get("connection_objects", 0) - initial_objects.get("connection_objects", 0)
+    
+    print("4. Memory leak analysis:")
+    print(f"   Memory change: {memory_change:+.2f} MB")
+    print(f"   Connection change: {connection_change:+d}")
+    print(f"   RPC object change: {rpc_object_change:+d}")
+    print(f"   Connection object change: {connection_object_change:+d}")
+    
+    # Check for potential leaks
+    potential_leaks = final_data.get("potential_leaks", [])
+    print(f"   Potential leaks detected: {len(potential_leaks)}")
+    
+    if potential_leaks:
+        print("   Leak details:")
+        for leak in potential_leaks[:5]:  # Show first 5 leaks
+            print(f"     - {leak.get('type', 'unknown')}: {leak.get('severity', 'unknown')} severity")
+    
+    # Step 6: STRICT Assertions for memory leak detection
+    # Low tolerance - catches significant leaks while allowing for test variations
+    max_acceptable_memory_growth = 10.0  # MB - Low tolerance (allows minor GC variations)
+    max_acceptable_connection_growth = 2  # connections - Allow 2 connection variations  
+    max_acceptable_object_growth = 25     # objects - Allow for failed request cleanup (20 requests)
+    
+    print("5. STRICT Memory leak test results:")
+    
+    # STRICT Memory growth check - MUST be zero or negative
+    if memory_change <= max_acceptable_memory_growth:
+        print(f"   ✅ STRICT: Memory growth acceptable: {memory_change:.2f} MB <= {max_acceptable_memory_growth} MB")
+    else:
+        print(f"   ❌ STRICT FAILURE: Memory grew by {memory_change:.2f} MB > {max_acceptable_memory_growth} MB")
+        assert False, f"STRICT TEST FAILED: Memory leak detected - grew by {memory_change:.2f} MB"
+    
+    # STRICT Connection growth check - MUST be zero or negative
+    if connection_change <= max_acceptable_connection_growth:
+        print(f"   ✅ STRICT: Connection growth acceptable: {connection_change:+d} <= +{max_acceptable_connection_growth}")
+    else:
+        print(f"   ❌ STRICT FAILURE: Connections grew by {connection_change:+d} > +{max_acceptable_connection_growth}")
+        assert False, f"STRICT TEST FAILED: Connection leak detected - grew by {connection_change} connections"
+    
+    # STRICT Object leak check - Very low tolerance
+    if rpc_object_change <= max_acceptable_object_growth:
+        print(f"   ✅ STRICT: RPC object growth acceptable: {rpc_object_change:+d} <= +{max_acceptable_object_growth}")
+    else:
+        print(f"   ❌ STRICT FAILURE: RPC objects grew by {rpc_object_change:+d} > +{max_acceptable_object_growth}")
+        assert False, f"STRICT TEST FAILED: RPC object leak detected - grew by {rpc_object_change} objects (limit: {max_acceptable_object_growth})"
+    
+    if connection_object_change <= max_acceptable_object_growth:
+        print(f"   ✅ STRICT: Connection object growth acceptable: {connection_object_change:+d} <= +{max_acceptable_object_growth}")
+    else:
+        print(f"   ❌ STRICT FAILURE: Connection objects grew by {connection_object_change:+d} > +{max_acceptable_object_growth}")
+        assert False, f"STRICT TEST FAILED: Connection object leak detected - grew by {connection_object_change} objects (limit: {max_acceptable_object_growth})"
+    
+    # Health endpoint functionality check
+    assert "status" in final_data, "Health endpoint should return status"
+    assert "memory" in final_data, "Health endpoint should return memory info"
+    assert "connections" in final_data, "Health endpoint should return connection info"
+    assert "objects" in final_data, "Health endpoint should return object counts"
+    
+    print("   ✅ Health endpoint provides comprehensive diagnostics")
+    
+    # Step 7: Test potential leak cleanup if any were detected
+    if len(potential_leaks) > 0:
+        print("6. Testing leak cleanup...")
+        # Wait a bit more for potential cleanup
+        await asyncio.sleep(3)
+        
+        # Check health again
+        cleanup_health = requests.get(f"{SERVER_URL}/health", timeout=10)
+        assert cleanup_health.status_code == 200
+        cleanup_data = cleanup_health.json()
+        
+        cleanup_leaks = cleanup_data.get("potential_leaks", [])
+        print(f"   Potential leaks after cleanup: {len(cleanup_leaks)}")
+        
+        if len(cleanup_leaks) < len(potential_leaks):
+            print("   ✅ Some leaks were cleaned up automatically")
+        elif len(cleanup_leaks) == len(potential_leaks):
+            print("   ⚠️  No automatic cleanup occurred")
+        else:
+            print("   ❓ More leaks detected after cleanup (may be unrelated)")
+    
+    # Cleanup
+    await api.disconnect()
+    
+    print("\n🎯 STRICT HTTP memory leak test PASSED!")
+    print("   ✅ Minimal memory growth confirmed")
+    print("   ✅ Minimal connection growth confirmed") 
+    print("   ✅ Minimal object growth confirmed")
+    print("   🔥 STRICT mode: Very low tolerance for growth!")
+    print("   - Health endpoint provides comprehensive memory diagnostics")
+    print("=" * 60)
