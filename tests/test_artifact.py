@@ -9398,9 +9398,12 @@ async def test_vector_engine_compatibility(
     # Skip S3Vector test if not configured or dependencies missing
     if engine_type == "s3vector":
         try:
+            import zarr
+            if not hasattr(zarr, '__version__') or zarr.__version__ < '3.0':
+                pytest.skip("S3Vector requires zarr>=3.1.0")
             from hypha.s3vector import S3VectorSearchEngine
         except ImportError:
-            pytest.skip("S3Vector dependencies not available")
+            pytest.skip("S3Vector dependencies not available (requires Python>=3.11 with zarr>=3.1.0)")
     
     # Connect and create workspace
     async with connect_to_server(
@@ -9643,8 +9646,11 @@ async def test_document_chunking_and_vector_search(
     minio_server, fastapi_server, test_user_token
 ):
     """Test loading artifact-manager.md, chunking it, storing in S3 vector collection, and querying."""
-    # Check if S3Vector is available
+    # Check if S3Vector is available (check zarr availability)
     try:
+        import zarr
+        if not hasattr(zarr, '__version__') or zarr.__version__ < '3.0':
+            pytest.skip("S3Vector requires zarr>=3.1.0")
         from hypha.s3vector import S3VectorSearchEngine
     except ImportError:
         pytest.skip("S3Vector dependencies not available (requires Python>=3.11 with zarr>=3.1.0)")

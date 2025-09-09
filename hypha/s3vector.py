@@ -1706,3 +1706,36 @@ async def create_s3_vector_engine(store: RedisStore, config: Dict[str, Any]) -> 
     engine = create_s3_vector_engine_from_config(config)
     await engine.initialize()
     return engine
+
+
+# Check if S3Vector can be used at import time
+if not ZARR_AVAILABLE:
+    import sys
+    
+    class S3VectorSearchEngine:
+        """Placeholder class that raises ImportError when zarr is not available."""
+        def __new__(cls, *args, **kwargs):
+            raise ImportError(
+                f"S3VectorSearchEngine requires zarr>=3.1.0, which requires Python>=3.11. "
+                f"Current Python version: {sys.version_info.major}.{sys.version_info.minor}. "
+                f"Please upgrade to Python 3.11 or later to use S3Vector functionality."
+            )
+        
+        def __init__(self, *args, **kwargs):
+            # This should never be reached
+            pass
+    
+    # Also override the factory functions
+    def create_s3_vector_engine(*args, **kwargs):
+        raise ImportError(
+            f"S3VectorSearchEngine requires zarr>=3.1.0, which requires Python>=3.11. "
+            f"Current Python version: {sys.version_info.major}.{sys.version_info.minor}. "
+            f"Please upgrade to Python 3.11 or later to use S3Vector functionality."
+        )
+    
+    def create_s3_vector_engine_from_config(*args, **kwargs):
+        raise ImportError(
+            f"S3VectorSearchEngine requires zarr>=3.1.0, which requires Python>=3.11. "
+            f"Current Python version: {sys.version_info.major}.{sys.version_info.minor}. "
+            f"Please upgrade to Python 3.11 or later to use S3Vector functionality."
+        )
