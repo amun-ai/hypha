@@ -995,7 +995,22 @@ class S3VectorSearchEngine:
         embedding_model: Optional[str] = None,
         **kwargs
     ) -> Dict[str, Any]:
-        """Add vectors to a collection using Zarr storage."""
+        """Add vectors to a collection.
+        
+        Args:
+            collection_name: Collection identifier (renamed from collection_id for consistency)
+            vectors: Can be:
+                - List of vector documents (dicts with 'id', 'vector', 'metadata' keys)
+                - List of numpy arrays
+                - Single numpy array (2D)
+            metadata: Optional list of metadata dicts (used when vectors is array)
+            ids: Optional list of IDs (used when vectors is array)
+            update: If True, update existing vectors (not implemented in S3Vector)
+            embedding_model: Model to use for text embeddings
+            
+        Returns:
+            Added ids list
+        """
         collection_id = collection_name
         
         # Process vector documents and extract components (same as original)
@@ -1073,7 +1088,7 @@ class S3VectorSearchEngine:
         else:
             # Empty list or invalid format
             if not vectors:
-                return {"added": 0, "ids": []}
+                return []
         
         # Convert to numpy array
         vectors_array = np.array(vector_data, dtype=np.float32)
@@ -1135,7 +1150,7 @@ class S3VectorSearchEngine:
         if self.redis_cache:
             await self.redis_cache.invalidate_collection(collection_id)
         
-        return {"added": len(ids_list), "ids": ids_list}
+        return ids_list
 
     async def search_vectors(
         self,

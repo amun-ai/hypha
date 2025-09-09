@@ -563,7 +563,7 @@ class TestS3VectorSearchEngine:
             result = await engine.add_vectors(
                 collection_id, sample_vectors, sample_metadata, ids=vector_ids
             )
-            assert result["added"] == len(sample_vectors)
+            assert len(result) == len(sample_vectors)
             
             # Search vectors
             query_vector = sample_vectors[0]
@@ -853,7 +853,7 @@ class TestIntegration:
         result = await s3vector_engine.add_vectors(
             collection_name, vectors, metadata, ids
         )
-        assert result["added"] == len(documents)
+        assert len(result) == len(documents)
         
         # Search with text query
         query_text = "artificial intelligence and deep learning"
