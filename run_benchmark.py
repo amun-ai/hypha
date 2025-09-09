@@ -176,6 +176,39 @@ async def run_pytest_tests():
         return False
 
 
+async def run_zarr_benchmark():
+    """Run the Zarr comparison benchmark."""
+    logger.info("Running Zarr benchmark comparison...")
+    
+    try:
+        from scripts.zarr_benchmark_comparison import ZarrVectorBenchmark
+        
+        benchmark = ZarrVectorBenchmark()
+        report = await benchmark.run_zarr_benchmark()
+        
+        if report:
+            logger.info("✓ Zarr benchmark completed successfully!")
+            print("\nZarr Benchmark Results:")
+            # Print key insights about Zarr performance
+            lines = report.split('\n')
+            for line in lines:
+                if 'Zarr' in line and ('faster' in line.lower() or 'compression' in line.lower()):
+                    print(f"  • {line}")
+            return True
+        else:
+            logger.error("✗ Zarr benchmark failed!")
+            return False
+            
+    except ImportError as e:
+        logger.error(f"Failed to import Zarr benchmark: {e}")
+        logger.error("Make sure zarr and numcodecs are installed:")
+        logger.error("pip install zarr>=2.16.0 numcodecs>=0.11.0")
+        return False
+    except Exception as e:
+        logger.error(f"Zarr benchmark failed: {e}")
+        return False
+
+
 async def main():
     """Main function to run the benchmark."""
     print("="*60)
@@ -193,17 +226,18 @@ async def main():
     print("\nChoose benchmark type:")
     print("1. Quick benchmark (recommended for first run)")
     print("2. Pytest-based tests")
-    print("3. Both")
+    print("3. Zarr benchmark (compare Zarr storage)")
+    print("4. All benchmarks")
     
     try:
-        choice = input("\nEnter choice (1-3, default=1): ").strip() or "1"
+        choice = input("\nEnter choice (1-4, default=1): ").strip() or "1"
     except KeyboardInterrupt:
         print("\nBenchmark cancelled by user.")
         return 0
     
     success = True
     
-    if choice in ["1", "3"]:
+    if choice in ["1", "4"]:
         print("\n" + "="*50)
         print("RUNNING QUICK BENCHMARK")
         print("="*50)
@@ -224,12 +258,20 @@ async def main():
         else:
             success = False
     
-    if choice in ["2", "3"]:
+    if choice in ["2", "4"]:
         print("\n" + "="*50)
         print("RUNNING PYTEST TESTS")
         print("="*50)
         
         if not await run_pytest_tests():
+            success = False
+    
+    if choice in ["3", "4"]:
+        print("\n" + "="*50)
+        print("RUNNING ZARR BENCHMARK")
+        print("="*50)
+        
+        if not await run_zarr_benchmark():
             success = False
     
     if success:
