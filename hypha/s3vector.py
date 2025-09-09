@@ -801,7 +801,7 @@ class S3VectorSearchEngine:
             embedding_model: Model to use for text embeddings
             
         Returns:
-            Dictionary with 'added' count and 'ids' list
+            Added ids list
         """
         # Handle backward compatibility - use collection_name as collection_id
         collection_id = collection_name
@@ -881,7 +881,7 @@ class S3VectorSearchEngine:
         else:
             # Empty list or invalid format
             if not vectors:
-                return {"added": 0, "ids": []}
+                return []
         
         # Convert to numpy array
         vectors_array = np.array(vector_data, dtype=np.float32)
@@ -928,7 +928,7 @@ class S3VectorSearchEngine:
         if self.redis_cache:
             await self.redis_cache.invalidate_collection(collection_id)
         
-        return {"added": len(ids_list), "ids": ids_list}
+        return ids_list
 
     async def search_vectors(
         self,
