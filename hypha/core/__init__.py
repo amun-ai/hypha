@@ -753,19 +753,25 @@ class RedisRPCConnection:
 
     async def disconnect(self, reason=None):
         """Balanced bulletproof disconnect - zero leaks without server instability."""
-        # Mark as stopped
+        # Mark as stopped FIRST
         self._stop = True
 
         # PRIORITY 1: Clean filtered_handler (the main leak source)
-        if hasattr(self, '_filtered_handler') and self._filtered_handler:
-            try:
-                if hasattr(self, '_event_bus') and self._event_bus:
-                    self._event_bus.off(f"{self._workspace}/*:msg", self._filtered_handler)
-                logger.debug(f"Unregistered filtered_handler for {self._workspace}/{self._client_id}")
-            except Exception as e:
-                logger.debug(f"Error unregistering filtered_handler: {e}")
-            finally:
-                self._filtered_handler = None  # ALWAYS clear the reference
+        # Clear reference IMMEDIATELY to prevent leaks even if unregistration fails
+        try:
+            if hasattr(self, '_filtered_handler') and self._filtered_handler:
+                handler = self._filtered_handler
+                self._filtered_handler = None  # Clear reference IMMEDIATELY
+                try:
+                    if hasattr(self, '_event_bus') and self._event_bus:
+                        self._event_bus.off(f"{self._workspace}/*:msg", handler)
+                    logger.debug(f"Unregistered filtered_handler for {self._workspace}/{self._client_id}")
+                except Exception as e:
+                    logger.debug(f"Error unregistering filtered_handler: {e}")
+        except Exception as e:
+            logger.debug(f"Critical error clearing filtered_handler: {e}")
+            # Ensure it's cleared even if everything else fails
+            self._filtered_handler = None
         
         # PRIORITY 2: Clear other circular references (but more gently)
         # NOTE: We don't clear self._event_bus here anymore as it's needed later
