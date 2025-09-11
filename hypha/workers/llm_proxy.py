@@ -11,9 +11,8 @@ from fastapi import FastAPI
 from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
 
-from litellm.proxy import proxy_server
-import litellm
-from litellm.router import Router
+from hypha.litellm.proxy import proxy_server
+from hypha.litellm.router import Router
 
 from hypha.core import UserInfo
 from hypha.workers.base import BaseWorker
