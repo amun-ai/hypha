@@ -113,7 +113,7 @@ def validate_key_part(key_part: str):
 class GetServiceConfig(BaseModel):
     mode: Optional[str] = Field(
         None,
-        description="Mode for selecting the service. Can be 'random', 'first', 'last', 'exact', 'min_load', or 'select:criteria:function' format (e.g., 'select:min:get_load', 'select:max:get_cpu_usage')",
+        description="Mode for selecting the service. Can be 'random', 'first', 'last', 'exact', 'min_load', 'native:random' (prefer native/local clients), or 'select:criteria:function' format (e.g., 'select:min:get_load', 'select:max:get_cpu_usage')",
     )
     timeout: Optional[float] = Field(
         10.0,
@@ -352,6 +352,48 @@ class WorkspaceManager:
         assert self._client_id, "client id must not be empty."
         return self._client_id
 
+    async def _ensure_services_collection(self):
+        """Ensure the services vector collection exists."""
+        if not self._enable_service_search or not self._vector_search:
+            return
+        
+        try:
+            # Check if collection exists by trying to get info about it
+            await self._vector_search.count("services")
+        except Exception as exp:
+            # Collection doesn't exist, create it
+            logger.info(f"Services vector collection doesn't exist (error: {exp}), creating it...")
+            await self._vector_search.create_collection(
+                collection_name="services",
+                vector_fields=[
+                    {"type": "TAG", "name": "id"},
+                    {"type": "TEXT", "name": "name"},
+                    {"type": "TAG", "name": "type"},
+                    {"type": "TEXT", "name": "description"},
+                    {"type": "TEXT", "name": "docs"},
+                    {"type": "TAG", "name": "app_id"},
+                    {"type": "TEXT", "name": "service_schema"},
+                    {
+                        "type": "VECTOR",
+                        "name": "service_embedding",
+                        "algorithm": "FLAT",
+                        "attributes": {
+                            "TYPE": "FLOAT32",
+                            "DIM": 384,
+                            "DISTANCE_METRIC": "COSINE",
+                        },
+                    },
+                    {"type": "TAG", "name": "visibility"},
+                    {"type": "TAG", "name": "require_context"},
+                    {"type": "TAG", "name": "workspace"},
+                    {"type": "TAG", "name": "flags", "separator": ","},
+                    {"type": "TAG", "name": "singleton"},
+                    {"type": "TEXT", "name": "created_by"},
+                ],
+                overwrite=True,
+            )
+            logger.info("Services vector collection created successfully")
+
     async def setup(
         self,
         service_id="default",
@@ -388,35 +430,7 @@ class WorkspaceManager:
                 prefix=None,
                 cache_dir=self._cache_dir,
             )
-            await self._vector_search.create_collection(
-                collection_name="services",
-                vector_fields=[
-                    {"type": "TAG", "name": "id"},
-                    {"type": "TEXT", "name": "name"},
-                    {"type": "TAG", "name": "type"},
-                    {"type": "TEXT", "name": "description"},
-                    {"type": "TEXT", "name": "docs"},
-                    {"type": "TAG", "name": "app_id"},
-                    {"type": "TEXT", "name": "service_schema"},
-                    {
-                        "type": "VECTOR",
-                        "name": "service_embedding",
-                        "algorithm": "FLAT",
-                        "attributes": {
-                            "TYPE": "FLOAT32",
-                            "DIM": 384,
-                            "DISTANCE_METRIC": "COSINE",
-                        },
-                    },
-                    {"type": "TAG", "name": "visibility"},
-                    {"type": "TAG", "name": "require_context"},
-                    {"type": "TAG", "name": "workspace"},
-                    {"type": "TAG", "name": "flags", "separator": ","},
-                    {"type": "TAG", "name": "singleton"},
-                    {"type": "TEXT", "name": "created_by"},
-                ],
-                overwrite=True,
-            )
+            await self._ensure_services_collection()
         self._initialized = True
         
 
@@ -1423,6 +1437,9 @@ class WorkspaceManager:
         if not self._enable_service_search:
             raise RuntimeError("Service search is not enabled.")
 
+        # Ensure the services collection exists before searching
+        await self._ensure_services_collection()
+
         current_workspace = context["ws"]
         # Generate embedding if text_query is provided
         if isinstance(query, str):
@@ -2073,6 +2090,8 @@ class WorkspaceManager:
                     vector_data["service_embedding"] = np.frombuffer(vector_data["service_embedding"], dtype=np.float32)
                 logger.info(f"Adding new service to vector search: id={vector_data['id']}, workspace={vector_data['workspace']}, visibility={vector_data['visibility']}, has_embedding={'service_embedding' in vector_data}")
                 try:
+                    # Ensure the services collection exists before adding vectors
+                    await self._ensure_services_collection()
                     await self._vector_search.add_vectors(
                         "services",
                         [vector_data],
@@ -2112,9 +2131,6 @@ class WorkspaceManager:
                     ws, "service_added", service.model_dump(mode="json")
                 )
                 logger.info(f"Adding service {service.id}")
-                
-
-
 
     @schema_method
     async def get_service_info(
@@ -2125,7 +2141,7 @@ class WorkspaceManager:
         ),
         config: Optional[dict] = Field(
             None,
-            description="Options for getting service, available configs are `mode` (for selecting the service: 'random', 'first', 'last', 'exact', 'min_load', or 'select:criteria:function') and `select_timeout` (timeout for function calls when using select mode)",
+            description="Options for getting service, available configs are `mode` (for selecting the service: 'random', 'first', 'last', 'exact', 'min_load', 'native:random', or 'select:criteria:function') and `select_timeout` (timeout for function calls when using select mode)",
         ),
         context: Optional[dict] = None,
     ):
@@ -2234,7 +2250,7 @@ class WorkspaceManager:
         if mode == "exact":
             assert (
                 len(keys) == 1
-            ), f"Multiple services found for {service_id}, e.g. {keys[:5]}. You can either specify the mode as 'random', 'first', 'last', or use 'select:criteria:function' format."
+            ), f"Multiple services found for {service_id}, e.g. {keys[:5]}. You can either specify the mode as 'random', 'first', 'last', 'native:random', or use 'select:criteria:function' format."
             key = keys[0]
         elif mode == "random":
             key = random.choice(keys)
@@ -2244,6 +2260,8 @@ class WorkspaceManager:
             key = keys[-1]
         elif mode == "min_load":
             key = await self._select_service_by_load(keys, "min")
+        elif mode == "native:random":
+            key = await self._select_native_service(keys)
         elif mode and mode.startswith("select:"):
             # Parse the select syntax: select:criteria:function
             parts = mode.split(":")
@@ -2263,7 +2281,7 @@ class WorkspaceManager:
             )
         else:
             raise ValueError(
-                f"Invalid mode: {mode}. Mode must be 'random', 'first', 'last', 'exact', 'min_load', or 'select:criteria:function' format (e.g., 'select:min:get_load')"
+                f"Invalid mode: {mode}. Mode must be 'random', 'first', 'last', 'exact', 'min_load', 'native:random', or 'select:criteria:function' format (e.g., 'select:min:get_load')"
             )
         # Check access permissions
         if not key.startswith(b"services:public|"):
@@ -3102,6 +3120,16 @@ class WorkspaceManager:
             _cws, client_id = client_id.split("/")
             assert _cws == cws, f"Client id workspace mismatch, {_cws} != {cws}"
 
+        # First, try to disconnect the RPC connection if it exists
+        try:
+            connection_key = f"{cws}/{client_id}"
+            if connection_key in RedisRPCConnection._connections:
+                connection = RedisRPCConnection._connections[connection_key]
+                await connection.disconnect("Client deleted by admin")
+                logger.debug(f"Disconnected RPC connection for {connection_key}")
+        except Exception as e:
+            logger.warning(f"Failed to disconnect RPC connection for {cws}/{client_id}: {e}")
+
         # Define a pattern to match all services for the given client_id in the current workspace
         pattern = f"services:*|*:{cws}/{client_id}:*@*"
 
@@ -3125,6 +3153,11 @@ class WorkspaceManager:
             cws, "client_disconnected", {"id": client_id, "workspace": cws}
         )
 
+        # Clean up orphaned patterns
+        try:
+            await self._event_bus.cleanup_orphaned_patterns()
+        except Exception as e:
+            logger.warning(f"Failed to clean up orphaned patterns: {e}")
 
         if unload:
             if await self._redis.hexists("workspaces", cws):
@@ -3253,6 +3286,57 @@ class WorkspaceManager:
             raise ValueError(f"Unknown selection criteria: {criteria}")
 
         return selected_key
+
+    async def _select_native_service(self, keys: List[bytes]) -> bytes:
+        """Select a native service (client connected to the same Hypha server).
+        
+        Args:
+            keys: List of Redis keys for services
+            
+        Returns:
+            bytes: The Redis key of the selected native service, or random fallback
+        """
+        if len(keys) == 1:
+            return keys[0]
+        
+        native_services = []
+        all_services = []
+        
+        for key in keys:
+            try:
+                # Get service info
+                service_data = await self._redis.hgetall(key)
+                service_info = ServiceInfo.from_redis_dict(service_data)
+                
+                # Extract workspace and client_id from service ID
+                workspace = service_info.id.split("/")[0]
+                client_id = service_info.id.split("/")[1].split(":")[0]
+                
+                all_services.append((key, service_info))
+                
+                # Check if this client is local/native to this server
+                if self._event_bus.is_local_client(workspace, client_id):
+                    native_services.append((key, service_info))
+                    logger.debug(f"Found native service: {service_info.id}")
+                    
+            except Exception as e:
+                logger.warning(f"Failed to check if service is native {key}: {e}")
+                continue
+        
+        if native_services:
+            # Prefer native services - pick randomly among them
+            selected_key, service_info = random.choice(native_services)
+            logger.info(f"Selected native service: {service_info.id}")
+            return selected_key
+        elif all_services:
+            # No native services found, fall back to random selection
+            selected_key, service_info = random.choice(all_services)
+            logger.info(f"No native services found, selected random service: {service_info.id}")
+            return selected_key
+        else:
+            # Fallback to random if we couldn't process any services
+            logger.warning("Could not process any services, falling back to random selection")
+            return random.choice(keys)
 
     async def _select_service_by_function(
         self, keys: List[bytes], criteria: str, function_name: str, timeout: float = 2.0

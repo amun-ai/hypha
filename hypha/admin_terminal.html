@@ -51,7 +51,7 @@
         }
     </style>
 </head>
-<body class="bg-terminal-bg text-terminal-text min-h-screen overflow-hidden">
+<body class="bg-terminal-bg text-terminal-text min-h-screen flex flex-col">
     <!-- Header -->
     <header class="bg-terminal-surface border-b border-terminal-border px-6 py-3">
         <div class="flex items-center justify-between">
@@ -66,8 +66,8 @@
     </header>
 
     <!-- Terminal Area -->
-    <div class="flex-1 flex h-screen">
-        <div class="flex-1 terminal-container m-4">
+    <div class="flex-1 flex overflow-hidden">
+        <div class="flex-1 terminal-container mx-4 mb-4">
             <div id="terminal" class="h-full"></div>
         </div>
     </div>
@@ -352,6 +352,8 @@
                         const result = await this.adminService.read_terminal();
                         if (result.success && result.output) {
                             this.term.write(result.output);
+                            // Ensure terminal scrolls to bottom after new output
+                            setTimeout(() => this.term.scrollToBottom(), 0);
                         }
                     } catch (error) {
                         console.error('Error reading terminal:', error);

@@ -509,13 +509,29 @@ class RedisStore:
                         assert await svc.ping("ping") == "pong"
                     except Exception as e:
                         logger.warning(
-                            f"Server {server_id} is not responding (error: {e}), cleaning up..."
+                            f"Server {server_id} is not responding (error: {e}), cleaning up ALL its services..."
                         )
-                        # remove root and public services
-                        await self._clear_client_services("public", server_id)
-                        await self._clear_client_services(
-                            self._root_user.get_workspace(), server_id
-                        )
+                        # Clean up ALL services from the dead server across all workspaces
+                        # When a server is dead, we need to clean up everything it might have left behind
+                        patterns = [
+                            f"services:*|*:*/{server_id}:*@*",  # Direct server services
+                            f"services:*|*:*/{server_id}-*:*@*",  # Services from server-generated clients
+                            f"services:*|*:*/manager-{server_id}:*@*",  # Manager services
+                        ]
+                        
+                        all_keys = []
+                        for pattern in patterns:
+                            keys = await self._redis.keys(pattern)
+                            all_keys.extend(keys)
+                        
+                        if all_keys:
+                            logger.info(f"Removing {len(all_keys)} services from dead server {server_id}")
+                            # Use pipeline for efficient bulk deletion
+                            pipeline = self._redis.pipeline()
+                            for key in all_keys:
+                                pipeline.delete(key)
+                            await pipeline.execute()
+                            logger.info(f"Successfully cleaned up dead server {server_id}")
                     else:
                         if server_id == self._server_id:
                             raise RuntimeError(
@@ -539,6 +555,52 @@ class RedisStore:
                 f"Removing service key: {key}:\n{await self._redis.hgetall(key)}"
             )
             await self._redis.delete(key)
+    
+    async def _clear_all_server_services(self):
+        """Clear services registered directly by this server during graceful shutdown.
+        
+        Note: This only cleans up services registered by the server itself,
+        NOT services registered by other clients or servers.
+        """
+        # Only clean up services directly registered by this server
+        # We keep track of specific client IDs that belong to this server
+        server_client_ids = [
+            self._server_id,  # The server's main client ID
+            f"manager-{self._server_id}",  # The manager service client ID
+        ]
+        
+        # Also include the root and public workspace interface client IDs if they exist
+        if self._root_workspace_interface:
+            try:
+                root_client_id = self._root_workspace_interface.rpc.get_client_info()["id"]
+                server_client_ids.append(root_client_id)
+            except:
+                pass
+                
+        if self._public_workspace_interface:
+            try:
+                public_client_id = self._public_workspace_interface.rpc.get_client_info()["id"]
+                server_client_ids.append(public_client_id)
+            except:
+                pass
+        
+        all_keys = []
+        for client_id in server_client_ids:
+            # Pattern to match services from this specific client
+            pattern = f"services:*|*:*/{client_id}:*@*"
+            keys = await self._redis.keys(pattern)
+            all_keys.extend(keys)
+        
+        if all_keys:
+            logger.info(f"Removing {len(all_keys)} services for server {self._server_id}")
+            # Use pipeline for efficient bulk deletion
+            pipeline = self._redis.pipeline()
+            for key in all_keys:
+                pipeline.delete(key)
+            await pipeline.execute()
+            logger.info(f"Successfully removed all services for server {self._server_id}")
+        else:
+            logger.info(f"No services found for server {self._server_id}")
 
     async def init(self, reset_redis, startup_functions=None):
         """Setup the store."""
@@ -669,7 +731,8 @@ class RedisStore:
         # check if the login service is registered after startup functions
         # this allows startup functions to register custom login services
         try:
-            await api.get_service_info("public/hypha-login")
+            # Use native mode to prefer locally connected hypha-login service
+            await api.get_service_info("public/hypha-login", {"mode": "native:random"})
             logger.info("Login service already registered (likely from startup function)")
         except RemoteException:
             logger.info("No custom login service found, registering default login service")
@@ -1111,7 +1174,16 @@ class RedisStore:
     async def teardown(self):
         """Teardown the server."""
         self._ready = False
-        logger.info("Tearing down the redis store...")
+        logger.info(f"Tearing down the redis store for server {self._server_id}...")
+        
+        # Clean up all services registered by THIS server during graceful shutdown
+        # This ensures we don't leave orphaned services in Redis
+        try:
+            logger.info(f"Clearing all services for server {self._server_id}")
+            await self._clear_all_server_services()
+        except Exception as e:
+            logger.error(f"Error clearing server services: {e}")
+        
         # if self._house_keeping_task:
         #     self._house_keeping_task.cancel()
         #     try:
@@ -1125,12 +1197,24 @@ class RedisStore:
                 await self._tracker_task
             except asyncio.CancelledError:
                 print("Activity tracker successfully exited.")
-        client_id = self._public_workspace_interface.rpc.get_client_info()["id"]
-        await self.remove_client(client_id, "public", self._root_user, unload=True)
-        client_id = self._root_workspace_interface.rpc.get_client_info()["id"]
-        await self.remove_client(
-            client_id, self._root_user.get_workspace(), self._root_user, unload=True
-        )
+        
+        # Remove specific client interfaces
+        try:
+            if self._public_workspace_interface:
+                client_id = self._public_workspace_interface.rpc.get_client_info()["id"]
+                await self.remove_client(client_id, "public", self._root_user, unload=True)
+        except Exception as e:
+            logger.warning(f"Error removing public workspace client: {e}")
+            
+        try:
+            if self._root_workspace_interface:
+                client_id = self._root_workspace_interface.rpc.get_client_info()["id"]
+                await self.remove_client(
+                    client_id, self._root_user.get_workspace(), self._root_user, unload=True
+                )
+        except Exception as e:
+            logger.warning(f"Error removing root workspace client: {e}")
+        
         if self._websocket_server:
             websockets = self._websocket_server.get_websockets()
             for ws in websockets.values():
@@ -1148,7 +1232,7 @@ class RedisStore:
                 await self._redis.connection_pool.disconnect()
         except Exception:
             pass
-        logger.info("Teardown complete")
+        logger.info(f"Teardown complete for server {self._server_id}")
 
     @property
     def wm(self):

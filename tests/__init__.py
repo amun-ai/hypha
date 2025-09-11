@@ -27,12 +27,12 @@ MINIO_ROOT_PASSWORD = os.environ.get(
 )
 REDIS_PORT = 6338
 
-POSTGRES_PORT = 5432
+POSTGRES_PORT = 15432
 POSTGRES_USER = "postgres"
 POSTGRES_PASSWORD = "mysecretpassword"
 POSTGRES_DB = "postgres"
 
-POSTGRES_URI = f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@localhost:{POSTGRES_PORT}/{POSTGRES_DB}"
+POSTGRES_URI = f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@127.0.0.1:{POSTGRES_PORT}/{POSTGRES_DB}"
 
 
 def find_item(items, key_or_predicate, value=None):

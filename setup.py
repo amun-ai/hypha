@@ -14,7 +14,7 @@ REQUIREMENTS = [
     "websockets>=14.0",
     "aiofiles",
     "fastapi>=0.70.0,<=0.115.2",
-    "hypha-rpc>=0.20.78",
+    "hypha-rpc>=0.20.81",
     "msgpack>=1.0.2",
     "numpy",
     "pydantic[email]>=2.6.1",
@@ -96,6 +96,8 @@ setup(
             "psycopg2-binary>=2.9.10",
             "asyncpg>=0.30.0",
             "fastembed>=0.4.2",
+            "zarr>=3.1.2; python_version >= '3.11'",
+            "numcodecs>=0.16.2; python_version >= '3.11'",
         ],
         "k8s": [
             "kubernetes>=24.2.0",

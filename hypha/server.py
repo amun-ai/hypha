@@ -108,6 +108,7 @@ def start_builtin_services(
             executable_path=args.executable_path or args.cache_dir,
             cleanup_period=args.s3_cleanup_period,
         )
+        
         artifact_manager = ArtifactController(
             store,
             s3_controller=s3_controller,
@@ -278,6 +279,7 @@ def create_application(args):
         yield
         # Emit the shutdown event
         await store.get_event_bus().emit_local("shutdown")
+        logger.info(f"Shutting down Hypha server {store._server_id}...")
         await store.teardown()
         await asyncio.sleep(0.1)
         await websocket_server.stop()

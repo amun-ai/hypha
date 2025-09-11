@@ -1235,7 +1235,7 @@ class MCPRoutingMiddleware:
                 else:
                     full_service_id = f"{workspace}/{service_id}"
                 
-                service_info = await api.get_service_info(full_service_id, {"mode": mode})
+                service_info = await api.get_service_info(full_service_id, {"mode": mode, "read_app_manifest": True})
                 service = await api.get_service(full_service_id)
                 
                 if not is_mcp_compatible_service(service):
@@ -1450,7 +1450,7 @@ class MCPRoutingMiddleware:
                         
                         # Try to get service info
                         try:
-                            service_info = await api.get_service_info(full_service_id, {})
+                            service_info = await api.get_service_info(full_service_id, {"read_app_manifest": True})
                             service = await api.get_service(full_service_id)
                             
                             # Create a temporary adapter to extract capabilities
@@ -1544,7 +1544,7 @@ class MCPRoutingMiddleware:
                             if "not found" in str(e).lower() or "permission denied" in str(e).lower():
                                 # Service not found or not accessible
                                 message = {
-                                    "error": "Service not found or not accessible",
+                                    "error": f"Service not found or not accessible: {e}",
                                     "message": f"The service '{service_id}' was not found in workspace '{workspace}' or you don't have permission to access it.",
                                     "help": "Ensure the service exists and you have permission to access it.",
                                 }
@@ -1654,7 +1654,7 @@ class MCPRoutingMiddleware:
                         full_service_id = f"{workspace}/{service_id}"
                     
                     service_info = await api.get_service_info(
-                        full_service_id, {"mode": _mode}
+                        full_service_id, {"mode": _mode, "read_app_manifest": True}
                     )
                     logger.debug(
                         f"MCP Middleware: Found service '{service_id}' of type '{service_info.type}'"

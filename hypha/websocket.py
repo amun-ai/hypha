@@ -2,6 +2,8 @@ import logging
 import os
 import sys
 import json
+import asyncio
+import time
 import msgpack
 
 from fastapi import Query, WebSocket, status
@@ -38,6 +40,16 @@ class WebsocketServer:
         self.store.set_websocket_server(self)
         self._stop = False
         self._websockets = {}
+        # Track last activity per connection (workspace/client_id)
+        self._last_seen = {}
+        # Idle timeout in seconds (applied to all connections, especially effective for anonymous churn)
+        self._idle_timeout = int(os.environ.get("HYPHA_WS_IDLE_TIMEOUT", "600"))
+        # Background task to clean up idle connections
+        try:
+            self._idle_cleanup_task = asyncio.create_task(self._idle_cleanup_loop())
+        except RuntimeError:
+            # No running loop yet (e.g., during startup tests); created later on first use
+            self._idle_cleanup_task = None
 
         @app.websocket(path)
         async def websocket_endpoint(
@@ -52,7 +64,17 @@ class WebsocketServer:
             # If none of the authentication parameters are provided, wait for the first message
             if not workspace and not client_id and not token and not reconnection_token:
                 # Wait for the first message which should contain the authentication information
-                auth_info = await websocket.receive_text()
+                try:
+                    # Avoid dangling sockets that never send auth payloads
+                    auth_info = await asyncio.wait_for(websocket.receive_text(), timeout=5)
+                except asyncio.TimeoutError:
+                    reason = "Authentication payload timeout"
+                    await self.disconnect(
+                        websocket,
+                        reason=reason,
+                        code=status.WS_1008_POLICY_VIOLATION,
+                    )
+                    return
                 # Parse the authentication information, e.g., JSON with token and/or reconnection_token
                 try:
                     auth_data = json.loads(auth_info)
@@ -321,6 +343,8 @@ class WebsocketServer:
         
         conn = RedisRPCConnection(event_bus, workspace, client_id, user_info, self.store.get_manager_id(), readonly=is_readonly)
         self._websockets[f"{workspace}/{client_id}"] = websocket
+        conn_key = f"{workspace}/{client_id}"
+        self._last_seen[conn_key] = time.time()
         try:
             _gauge.inc()  # Increment total connections without workspace label
             event_bus.on_local(f"unload:{workspace}", force_disconnect)
@@ -354,7 +378,19 @@ class WebsocketServer:
             }
             await websocket.send_text(json.dumps(conn_info))
             while not self._stop:
-                data = await websocket.receive()
+                # Apply receive timeout to prevent stuck connections from lingering forever
+                try:
+                    data = await asyncio.wait_for(websocket.receive(), timeout=self._idle_timeout)
+                except asyncio.TimeoutError:
+                    # Idle timeout reached
+                    await self.disconnect(
+                        websocket,
+                        reason=f"Idle timeout ({self._idle_timeout}s)",
+                        code=status.WS_1001_GOING_AWAY,
+                    )
+                    break
+                # Mark activity
+                self._last_seen[conn_key] = time.time()
                 if "bytes" in data:
                     data = data["bytes"]
                     await conn.emit_message(data)
@@ -406,6 +442,8 @@ class WebsocketServer:
                 and f"{workspace}/{client_id}" in self._websockets
             ):
                 del self._websockets[f"{workspace}/{client_id}"]
+            # Clear last seen
+            self._last_seen.pop(conn_key, None)
 
     async def handle_disconnection(
         self, websocket, workspace: str, client_id: str, user_info: UserInfo, code, exp
@@ -460,3 +498,35 @@ class WebsocketServer:
     async def stop(self):
         """Stop the server."""
         self._stop = True
+        # Stop idle cleanup task
+        if getattr(self, "_idle_cleanup_task", None):
+            try:
+                self._idle_cleanup_task.cancel()
+            except Exception:
+                pass
+            self._idle_cleanup_task = None
+
+    async def _idle_cleanup_loop(self):
+        """Periodically disconnect idle connections (prevents explosion without strict rate limiting)."""
+        while not self._stop:
+            try:
+                await asyncio.sleep(60)
+                now = time.time()
+                to_disconnect = []
+                for key, last in list(self._last_seen.items()):
+                    if now - last > self._idle_timeout:
+                        to_disconnect.append(key)
+                for key in to_disconnect:
+                    ws = self._websockets.get(key)
+                    if ws:
+                        try:
+                            await self.disconnect(ws, f"Idle timeout ({self._idle_timeout}s)", status.WS_1001_GOING_AWAY)
+                        except Exception:
+                            pass
+                        finally:
+                            self._last_seen.pop(key, None)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                # Do not crash the loop
+                pass
