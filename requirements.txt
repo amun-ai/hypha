@@ -1,4 +1,4 @@
-aioboto3==13.2.0
+aioboto3==15.1.0
 aiofiles==23.2.1
 websockets==15.0.1
 base58==2.1.1

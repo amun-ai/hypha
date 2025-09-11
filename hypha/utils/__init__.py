@@ -2,7 +2,9 @@
 
 import copy
 import asyncio
+import base64
 import gzip
+import hashlib
 import json
 import os
 import posixpath
@@ -256,7 +258,9 @@ def remove_objects_sync(s3_client, bucket, prefix, delimeter=""):
             ],
             "Quiet": True,
         }
-        # ContentMD5 is no longer needed in newer boto3 versions
+        # For boto3 >= 1.36.0, botocore no longer auto-calculates Content-MD5
+        # We configure the client with request_checksum_calculation='when_required'
+        # which will handle Content-MD5 for S3-compatible services like MinIO
         delete_response = s3_client.delete_objects(
             Bucket=bucket,
             Delete=delete_dict,
@@ -284,11 +288,12 @@ def remove_objects_sync(s3_client, bucket, prefix, delimeter=""):
                 ],
                 "Quiet": True,
             }
-            content_md5 = calculate_delete_content_md5(delete_dict)
+            # For boto3 >= 1.36.0, botocore no longer auto-calculates Content-MD5
+            # We configure the client with request_checksum_calculation='when_required'
+            # which will handle Content-MD5 for S3-compatible services like MinIO
             delete_response = s3_client.delete_objects(
                 Bucket=bucket,
                 Delete=delete_dict,
-                ContentMD5=content_md5,
             )
             assert (
                 "ResponseMetadata" in delete_response
@@ -341,7 +346,9 @@ async def remove_objects_async(s3_client, bucket, prefix, delimeter=""):
             ],
             "Quiet": True,
         }
-        # ContentMD5 is no longer needed in newer boto3 versions
+        # For boto3 >= 1.36.0, botocore no longer auto-calculates Content-MD5
+        # We configure the client with request_checksum_calculation='when_required'
+        # which will handle Content-MD5 for S3-compatible services like MinIO
         delete_response = await s3_client.delete_objects(
             Bucket=bucket,
             Delete=delete_dict,
@@ -369,7 +376,9 @@ async def remove_objects_async(s3_client, bucket, prefix, delimeter=""):
                 ],
                 "Quiet": True,
             }
-            # ContentMD5 is no longer needed in newer boto3 versions
+            # For boto3 >= 1.36.0, botocore no longer auto-calculates Content-MD5
+            # We configure the client with request_checksum_calculation='when_required'
+            # which will handle Content-MD5 for S3-compatible services like MinIO
             delete_response = await s3_client.delete_objects(
                 Bucket=bucket,
                 Delete=delete_dict,

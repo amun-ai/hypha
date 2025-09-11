@@ -13,6 +13,7 @@ from typing import Any, Dict
 
 import botocore
 from aiobotocore.session import get_session
+from botocore.config import Config
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, Request, Query, Body
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -676,22 +677,36 @@ class S3Controller:
         """Create client sync."""
         # Documentation for botocore client:
         # https://botocore.amazonaws.com/v1/documentation/api/latest/reference/services/s3.html
+        # Configure botocore to calculate checksums for operations that support it
+        # This is needed for boto3 >= 1.36.0 with S3-compatible services like MinIO
+        # Using 'when_supported' to ensure checksums are calculated for all operations
+        config = Config(
+            request_checksum_calculation='when_supported'
+        )
         return botocore.session.get_session().create_client(
             "s3",
             endpoint_url=self.endpoint_url,
             aws_access_key_id=self.access_key_id,
             aws_secret_access_key=self.secret_access_key,
             region_name=self.region_name,
+            config=config,
         )
 
     def create_client_async(self, public=False):
         """Create client async."""
+        # Configure botocore to calculate checksums for operations that support it
+        # This is needed for boto3 >= 1.36.0 with S3-compatible services like MinIO
+        # Using 'when_supported' to ensure checksums are calculated for all operations
+        config = Config(
+            request_checksum_calculation='when_supported'
+        )
         return get_session().create_client(
             "s3",
             endpoint_url=self.endpoint_url_public if public else self.endpoint_url,
             aws_access_key_id=self.access_key_id,
             aws_secret_access_key=self.secret_access_key,
             region_name=self.region_name,
+            config=config,
         )
 
     async def cleanup_workspace(self, workspace: WorkspaceInfo, force=False):
