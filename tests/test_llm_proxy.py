@@ -5,7 +5,6 @@ import json
 import pytest
 import httpx
 from hypha_rpc import connect_to_server
-import litellm
 
 from . import (
     WS_SERVER_URL,

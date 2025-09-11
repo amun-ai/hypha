@@ -55,3 +55,4 @@ fastapi-sso==0.15.0
 scikit-learn==1.7.1
 zarr==3.1.2 ; python_version >= '3.11'
 numcodecs==0.16.2 ; python_version >= '3.11'
+fastuuid==0.6.0
