@@ -1334,7 +1334,7 @@ class MCPRoutingMiddleware:
             if sse_match == Match.FULL:
                 path_params = sse_params.get("path_params", {})
                 workspace = path_params["workspace"]
-                service_id = path_params["service_id"]
+                service_id = path_params["service_id"].rstrip("/")
                 
                 logger.debug(
                     f"MCP Middleware: SSE route match - workspace='{workspace}', service_id='{service_id}'"
