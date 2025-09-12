@@ -253,89 +253,6 @@ useService();
 3. We call the `hello()` function remotely
 4. The function executes on the service provider and returns the result
 
-### Advanced: Live Service Updates
-
-Service can be updated by calling `server.register_service` again with `{"overwrite": True}`:
-
-For example:
-```python
-service = await server.register_service({
-    "name": "Hello World Service",
-    "id": "hello-world",
-    "config": {
-        "visibility": "public"  # Anyone can use this service
-    },
-    "hello2": hello2  # Make our function available
-}, {"overwrite": True})
-```
-
-On the client side, you can create a service proxy that automatically refreshes:
-
-```python
-import asyncio
-import random
-
-async def create_live_service_proxy(server, sid, config=None, interval=5.0, jitter=0.0):
-    """
-    Return a dict-like service proxy with dot-attribute access.
-    It refreshes itself at the given interval and supports await proxy._dispose().
-    
-    Args:
-        server: The Hypha server connection
-        sid: Service ID to connect to
-        config: Service configuration (optional)
-        interval: Refresh interval in seconds
-        jitter: Random jitter to add to interval (prevents thundering herd)
-    """
-    proxy = await server.get_service(sid, config)
-
-    async def refresher():
-        try:
-            while True:
-                await asyncio.sleep(interval + random.random() * jitter)
-                latest = await server.get_service(sid, config)
-                proxy.clear()
-                proxy.update(latest)
-        except asyncio.CancelledError:
-            pass
-
-    task = asyncio.create_task(refresher())
-
-    async def _dispose():
-        if not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-    proxy._dispose = _dispose
-    return proxy
-
-# Usage example
-async def use_live_service():
-    async with connect_to_server({"server_url": "http://localhost:9527"}) as server:
-        # Create a live service proxy that updates every 5 seconds with 1 second jitter
-        svc = await create_live_service_proxy(
-            server, "hello-world", interval=5.0, jitter=1.0
-        )
-        
-        # Use the service normally - it will auto-refresh in the background
-        result = await svc.hello("World")
-        print(f"Result: {result}")
-
-        # You can access svc.hello2() as well after the service is updated
-        
-        # Clean up when done
-        await svc._dispose()
-```
-
-**When to use live updates:**
-- Services that might restart or update their functions
-- Dynamic service discovery scenarios  
-- Long-running clients that need to stay current with service changes
-- Load balancing across multiple service instances
-
 ## HTTP Endpoints: Every Service is a Web API
 
 **Automatic HTTP Exposure**: Every Hypha service is automatically exposed as HTTP endpoints! You can call your service functions directly via HTTP requests without any additional configuration.
@@ -588,6 +505,91 @@ AI Assistant: I'll use the hello function to greet Alice.
 [Calls hello(name="Alice", greeting="Hi there")]
 Result: "Hi there Alice!"
 ```
+
+
+### Advanced: Live Service Updates
+
+Service can be updated by calling `server.register_service` again with `{"overwrite": True}`:
+
+For example:
+```python
+service = await server.register_service({
+    "name": "Hello World Service",
+    "id": "hello-world",
+    "config": {
+        "visibility": "public"  # Anyone can use this service
+    },
+    "hello2": hello2  # Make our function available
+}, {"overwrite": True})
+```
+
+On the client side, you can create a service proxy that automatically refreshes:
+
+```python
+import asyncio
+import random
+
+async def create_live_service_proxy(server, sid, config=None, interval=5.0, jitter=0.0):
+    """
+    Return a dict-like service proxy with dot-attribute access.
+    It refreshes itself at the given interval and supports await proxy._dispose().
+    
+    Args:
+        server: The Hypha server connection
+        sid: Service ID to connect to
+        config: Service configuration (optional)
+        interval: Refresh interval in seconds
+        jitter: Random jitter to add to interval (prevents thundering herd)
+    """
+    proxy = await server.get_service(sid, config)
+
+    async def refresher():
+        try:
+            while True:
+                await asyncio.sleep(interval + random.random() * jitter)
+                latest = await server.get_service(sid, config)
+                proxy.clear()
+                proxy.update(latest)
+        except asyncio.CancelledError:
+            pass
+
+    task = asyncio.create_task(refresher())
+
+    async def _dispose():
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    proxy._dispose = _dispose
+    return proxy
+
+# Usage example
+async def use_live_service():
+    async with connect_to_server({"server_url": "http://localhost:9527"}) as server:
+        # Create a live service proxy that updates every 5 seconds with 1 second jitter
+        svc = await create_live_service_proxy(
+            server, "hello-world", interval=5.0, jitter=1.0
+        )
+        
+        # Use the service normally - it will auto-refresh in the background
+        result = await svc.hello("World")
+        print(f"Result: {result}")
+
+        # You can access svc.hello2() as well after the service is updated
+        
+        # Clean up when done
+        await svc._dispose()
+```
+
+**When to use live updates:**
+- Services that might restart or update their functions
+- Dynamic service discovery scenarios  
+- Long-running clients that need to stay current with service changes
+- Load balancing across multiple service instances
+
 
 ## Next Steps
 
