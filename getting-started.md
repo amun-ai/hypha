@@ -253,6 +253,133 @@ useService();
 3. We call the `hello()` function remotely
 4. The function executes on the service provider and returns the result
 
+### Advanced: Live Service Updates
+
+Service can be updated by calling `server.register_service` again with `{"overwrite": True}`:
+
+For example:
+```python
+service = await server.register_service({
+    "name": "Hello World Service",
+    "id": "hello-world",
+    "config": {
+        "visibility": "public"  # Anyone can use this service
+    },
+    "hello2": hello2  # Make our function available
+}, {"overwrite": True})
+```
+
+On the client side, you can create a service proxy that automatically refreshes:
+
+```python
+import asyncio
+import random
+
+async def create_live_service_proxy(server, sid, config=None, interval=5.0, jitter=0.0):
+    """
+    Return a dict-like service proxy with dot-attribute access.
+    It refreshes itself at the given interval and supports await proxy._dispose().
+    
+    Args:
+        server: The Hypha server connection
+        sid: Service ID to connect to
+        config: Service configuration (optional)
+        interval: Refresh interval in seconds
+        jitter: Random jitter to add to interval (prevents thundering herd)
+    """
+    proxy = await server.get_service(sid, config)
+
+    async def refresher():
+        try:
+            while True:
+                await asyncio.sleep(interval + random.random() * jitter)
+                latest = await server.get_service(sid, config)
+                proxy.clear()
+                proxy.update(latest)
+        except asyncio.CancelledError:
+            pass
+
+    task = asyncio.create_task(refresher())
+
+    async def _dispose():
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    proxy._dispose = _dispose
+    return proxy
+
+# Usage example
+async def use_live_service():
+    async with connect_to_server({"server_url": "http://localhost:9527"}) as server:
+        # Create a live service proxy that updates every 5 seconds with 1 second jitter
+        svc = await create_live_service_proxy(
+            server, "hello-world", interval=5.0, jitter=1.0
+        )
+        
+        # Use the service normally - it will auto-refresh in the background
+        result = await svc.hello("World")
+        print(f"Result: {result}")
+
+        # You can access svc.hello2() as well after the service is updated
+        
+        # Clean up when done
+        await svc._dispose()
+```
+
+**When to use live updates:**
+- Services that might restart or update their functions
+- Dynamic service discovery scenarios  
+- Long-running clients that need to stay current with service changes
+- Load balancing across multiple service instances
+
+## HTTP Endpoints: Every Service is a Web API
+
+**Automatic HTTP Exposure**: Every Hypha service is automatically exposed as HTTP endpoints! You can call your service functions directly via HTTP requests without any additional configuration.
+
+### HTTP URL Pattern
+
+When you register a service, it becomes available at:
+
+```text
+http://your-server:port/{workspace}/services/{service-id}/{function-name}
+```
+
+For our "Hello World" service example above, if your service ID is `ws-user-amazing-butterfly-12345/ABC123:hello-world`, you can call it via HTTP:
+
+```bash
+# GET request with query parameters
+curl "http://localhost:9527/ws-user-amazing-butterfly-12345/services/ABC123:hello-world/hello?name=World"
+
+# POST request with JSON body
+curl -X POST http://localhost:9527/ws-user-amazing-butterfly-12345/services/ABC123:hello-world/hello \
+  -H "Content-Type: application/json" \
+  -d '{"name": "World"}'
+```
+
+Or simply open this URL in your browser:
+
+```text
+http://localhost:9527/ws-user-amazing-butterfly-12345/services/ABC123:hello-world/hello?name=World
+```
+
+### List All Services
+
+You can also list all available services in a workspace:
+```bash
+curl http://localhost:9527/ws-user-amazing-butterfly-12345/services
+```
+
+**Key Benefits:**
+
+- **Zero Configuration**: No need to set up REST APIs or web frameworks
+- **Multiple Formats**: Supports JSON, MessagePack, and query parameters
+- **CORS Enabled**: Works directly from web browsers
+- **Streaming Support**: Generator functions return Server-Sent Events
+
 ## Understanding Workspaces
 
 When you connect to Hypha, you're automatically assigned to a **workspace** - think of it as your personal area where your services live. Each workspace has a unique name like `ws-user-amazing-butterfly-12345`.
@@ -337,14 +464,143 @@ authenticatedConnection();
 ```
 <!-- tabs:end -->
 
+## MCP Tools: AI Assistant Integration
+
+**Model Context Protocol (MCP)**: Every Hypha service with properly annotated functions automatically becomes available as MCP tools for AI agents like Claude Code, Cursor, and others!
+
+### Enhancing Functions for MCP
+
+To make your functions available as MCP tools, use the `@schema_function` decorator. Let's enhance our Hello World service:
+
+<!-- tabs:start -->
+#### ** Python (Enhanced with MCP) **
+
+```python
+import asyncio
+from hypha_rpc import connect_to_server
+from hypha_rpc.utils.schema import schema_function
+from pydantic import Field
+
+async def start_enhanced_server(server_url):
+    async with connect_to_server({"server_url": server_url}) as server:
+        # Enhanced hello function with schema annotation
+        @schema_function
+        def hello(
+            name: str = Field(..., description="The name of the person to greet"),
+            greeting: str = Field("Hello", description="The greeting word to use")
+        ) -> str:
+            """Generate a personalized greeting message.
+            
+            This function creates a customized greeting by combining
+            a greeting word with a person's name.
+            """
+            message = f"{greeting} {name}!"
+            print(message)
+            return message
+
+        # Register the enhanced service
+        service = await server.register_service({
+            "name": "Enhanced Hello World Service",
+            "id": "enhanced-hello-world",
+            "config": {
+                "visibility": "public"
+            },
+            "hello": hello
+        })
+        
+        print(f"✅ Enhanced service registered!")
+        print(f"Service ID: {service.id}")
+        print(f"MCP endpoint: /{server.config.workspace}/mcp/enhanced-hello-world/mcp")
+        
+        await server.serve()
+
+if __name__ == "__main__":
+    server_url = "http://localhost:9527"
+    asyncio.run(start_enhanced_server(server_url))
+```
+<!-- tabs:end -->
+
+### MCP URL Pattern
+
+When you register a service with `@schema_function` decorated functions, it becomes available as MCP tools at:
+
+```text
+http://your-server:port/{workspace}/mcp/{service-id}/mcp
+```
+
+For our enhanced service:
+
+```text
+http://localhost:9527/ws-user-amazing-butterfly-12345/mcp/enhanced-hello-world/mcp
+```
+
+### Using with AI Coding Assistants
+
+1. **Claude Desktop**: Add the MCP server configuration:
+   ```json
+   {
+     "mcpServers": {
+       "hypha-hello": {
+         "command": "npx",
+         "args": ["-y", "@modelcontextprotocol/server-fetch", "http://localhost:9527/ws-user-amazing-butterfly-12345/mcp/enhanced-hello-world/mcp"]
+       }
+     }
+   }
+   ```
+
+2. **Direct MCP Connection**: Use any MCP client to connect to your service endpoint
+
+3. **Tool Discovery**: AI assistants will automatically discover your `hello` function and can call it with proper parameters
+
+### What @schema_function Provides
+
+- **Type Annotations**: Converts Python type hints to JSON Schema
+- **Parameter Descriptions**: Use `Field()` to add detailed parameter descriptions
+- **Validation**: Automatic input validation with Pydantic models
+- **Documentation**: Function docstrings become tool descriptions
+- **Default Values**: Support for default parameters and optional fields
+- **MCP Compatibility**: Makes functions discoverable by AI assistants
+
+**Key Components:**
+- `Field(...)`: Required parameter (no default value)
+- `Field("default", description="...")`: Optional parameter with default
+- `Field(None, description="...")`: Optional parameter that can be None
+
+**Advanced Example:**
+```python
+@schema_function
+def process_data(
+    data: str = Field(..., description="Input data to process"),
+    format: str = Field("json", description="Output format: json, csv, or xml"),
+    include_metadata: bool = Field(False, description="Whether to include metadata"),
+    max_items: Optional[int] = Field(None, description="Maximum number of items to process")
+) -> Dict[str, Any]:
+    """Process data with various formatting options."""
+    # Your processing logic here
+    return {"processed": data, "format": format}
+```
+
+**Example AI Assistant Usage:**
+
+```
+User: "Use the hello tool to greet Alice with a custom greeting"
+AI Assistant: I'll use the hello function to greet Alice.
+[Calls hello(name="Alice", greeting="Hi there")]
+Result: "Hi there Alice!"
+```
+
 ## Next Steps
 
 > Compatibility note: If you are using Hypha older than 0.15.x, use `imjoy-rpc` instead of `hypha-rpc`.
 
 Congratulations! You've learned the basics of Hypha:
+
 - ✅ Started a Hypha server
 - ✅ Registered your first service
 - ✅ Connected clients to use services
+- ✅ Set up live service updates for dynamic scenarios
+- ✅ Used services via HTTP endpoints
+- ✅ Enhanced functions for MCP tool integration
 - ✅ Understood workspaces and authentication
 
 ### Ready for More?
@@ -361,10 +617,12 @@ Now that you understand the basics, you can explore more advanced features:
 Here are some common ways people use Hypha:
 
 1. **Microservices**: Break your application into small, reusable services
-2. **API Gateway**: Expose your services through HTTP endpoints
-3. **Distributed Computing**: Run compute-intensive tasks across multiple machines
-4. **Real-time Communication**: Build chat applications, collaborative tools, etc.
-5. **AI/ML Workflows**: Chain together different AI models and data processing steps
+2. **HTTP APIs**: Every service automatically becomes a REST API
+3. **AI Tool Integration**: Use `@schema_function` to make functions available to AI assistants
+4. **Dynamic Service Discovery**: Use live service updates for services that change frequently
+5. **Distributed Computing**: Run compute-intensive tasks across multiple machines
+6. **Real-time Communication**: Build chat applications, collaborative tools, etc.
+7. **AI/ML Workflows**: Chain together different AI models and data processing steps
 
 ### Getting Help
 
