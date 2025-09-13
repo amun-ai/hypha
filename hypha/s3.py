@@ -13,6 +13,7 @@ from typing import Any, Dict
 
 import botocore
 from aiobotocore.session import get_session
+from botocore.config import Config
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, Request, Query, Body
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -228,15 +229,29 @@ class S3Controller:
                     # Other error or max retries reached
                     raise
         
-        # Apply CORS policy if not using MinIO
-        try:
-            if self.s3_admin_type != "minio":
+        # Apply CORS policy for S3-compatible services
+        # MinIO Community Edition doesn't support bucket-level CORS configuration
+        # It must be configured at the server level or via reverse proxy
+        if self.s3_admin_type == "minio":
+            logger.info(
+                "MinIO detected: Bucket-level CORS is not supported in MinIO Community Edition. "
+                "Please configure CORS at the MinIO server level or use a reverse proxy."
+            )
+        else:
+            # Apply CORS for AWS S3 and other S3-compatible services
+            try:
                 s3client.put_bucket_cors(
                     Bucket=self.workspace_bucket,
                     CORSConfiguration=DEFAULT_CORS_POLICY,
                 )
-        except Exception as ex:
-            logger.error("Failed to apply CORS policy: %s", ex)
+                logger.info("Successfully applied CORS policy to bucket '%s'", self.workspace_bucket)
+            except Exception as ex:
+                # Log the actual error for non-MinIO services
+                logger.error(
+                    "Failed to apply CORS policy to bucket '%s': %s", 
+                    self.workspace_bucket, 
+                    ex
+                )
 
         if self.minio_client:
             self.minio_client.admin_user_add_sync("root", generate_password())
@@ -662,22 +677,36 @@ class S3Controller:
         """Create client sync."""
         # Documentation for botocore client:
         # https://botocore.amazonaws.com/v1/documentation/api/latest/reference/services/s3.html
+        # Configure botocore to calculate checksums for operations that support it
+        # This is needed for boto3 >= 1.36.0 with S3-compatible services like MinIO
+        # Using 'when_supported' to ensure checksums are calculated for all operations
+        config = Config(
+            request_checksum_calculation='when_supported'
+        )
         return botocore.session.get_session().create_client(
             "s3",
             endpoint_url=self.endpoint_url,
             aws_access_key_id=self.access_key_id,
             aws_secret_access_key=self.secret_access_key,
             region_name=self.region_name,
+            config=config,
         )
 
     def create_client_async(self, public=False):
         """Create client async."""
+        # Configure botocore to calculate checksums for operations that support it
+        # This is needed for boto3 >= 1.36.0 with S3-compatible services like MinIO
+        # Using 'when_supported' to ensure checksums are calculated for all operations
+        config = Config(
+            request_checksum_calculation='when_supported'
+        )
         return get_session().create_client(
             "s3",
             endpoint_url=self.endpoint_url_public if public else self.endpoint_url,
             aws_access_key_id=self.access_key_id,
             aws_secret_access_key=self.secret_access_key,
             region_name=self.region_name,
+            config=config,
         )
 
     async def cleanup_workspace(self, workspace: WorkspaceInfo, force=False):
@@ -784,8 +813,10 @@ class S3Controller:
         if workspace.read_only:
             return
         async with self.create_client_async() as s3_client:
+            body_data = workspace.model_dump_json().encode("utf-8")
             response = await s3_client.put_object(
-                Body=workspace.model_dump_json().encode("utf-8"),
+                Body=body_data,
+                ContentLength=len(body_data),
                 Bucket=self.workspace_bucket,
                 Key=f"{self.workspace_etc_dir}/{workspace.id}/manifest.json",
             )

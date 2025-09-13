@@ -623,11 +623,10 @@ class BrowserWorker(BaseWorker):
             # Validate required fields for web-app
             if not manifest.get("entry_point"):
                 raise Exception("web-app type requires 'entry_point' field in manifest")
-
+            
             new_manifest = manifest.copy()
             new_manifest["type"] = "web-app"
-            # No entry_point needed since we navigate directly to the URL
-
+            
             # No files needed for web-app type
             new_files = []
 
