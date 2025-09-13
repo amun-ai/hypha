@@ -262,16 +262,19 @@ def triton_server():
 @pytest_asyncio.fixture(name="postgres_server", scope="session")
 def postgres_server():
     """Start a fresh PostgreSQL server as a test fixture and tear down after the test."""
-    # Check if the container is already running
-    existing_container = subprocess.run(
-        ["docker", "ps", "-q", "-f", "name=^hypha-postgres$"],
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    # In GitHub Actions, PostgreSQL runs as a service, not Docker
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print("Using GitHub Actions PostgreSQL service")
+    else:
+        # Check if the container is already running
+        existing_container = subprocess.run(
+            ["docker", "ps", "-q", "-f", "name=^hypha-postgres$"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
 
-    # Stop and remove the existing container if it is running
-    if existing_container:
-        if os.environ.get("GITHUB_ACTIONS") != "true":
+        # Stop and remove the existing container if it is running
+        if existing_container:
             print(
                 "Stopping and removing existing PostgreSQL container:",
                 existing_container,
@@ -303,65 +306,65 @@ def postgres_server():
             print(f"Started container: {result.stdout.strip()}")
             time.sleep(8)  # Give more time for pgvector container to initialize
         else:
-            print("Using existing PostgreSQL container:", existing_container)
-    else:
-        # Check if the PostgreSQL pgvector image exists locally
-        image_exists = subprocess.run(
-            ["docker", "images", "-q", "oeway/postgresql-pgvector:17.6.0-pgvector-0.8.1"],
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
+            # Check if the PostgreSQL pgvector image exists locally
+            image_exists = subprocess.run(
+                ["docker", "images", "-q", "oeway/postgresql-pgvector:17.6.0-pgvector-0.8.1"],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
 
-        if not image_exists:
-            # Pull the PostgreSQL pgvector image if it does not exist locally
-            print("Pulling PostgreSQL pgvector Docker image...")
-            subprocess.run(["docker", "pull", "oeway/postgresql-pgvector:17.6.0-pgvector-0.8.1"], check=True)
-        else:
-            print("PostgreSQL pgvector Docker image already exists locally.")
+            if not image_exists:
+                # Pull the PostgreSQL pgvector image if it does not exist locally
+                print("Pulling PostgreSQL pgvector Docker image...")
+                subprocess.run(["docker", "pull", "oeway/postgresql-pgvector:17.6.0-pgvector-0.8.1"], check=True)
+            else:
+                print("PostgreSQL pgvector Docker image already exists locally.")
 
-        # Start a new PostgreSQL container with pgvector
-        print("Starting a new PostgreSQL container with pgvector")
-        result = subprocess.run(
-            [
-                "docker",
-                "run",
-                "--name",
-                "hypha-postgres",
-                "--rm",
-                "-e",
-                f"POSTGRES_PASSWORD={POSTGRES_PASSWORD}",
-                "-p",
-                f"{POSTGRES_PORT}:5432",
-                "-d",
-                "oeway/postgresql-pgvector:17.6.0-pgvector-0.8.1",
-            ],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        print(f"Started container: {result.stdout.strip()}")
-        time.sleep(8)  # Give more time for pgvector container to initialize
+            # Start a new PostgreSQL container with pgvector
+            print("Starting a new PostgreSQL container with pgvector")
+            result = subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "--name",
+                    "hypha-postgres",
+                    "--rm",
+                    "-e",
+                    f"POSTGRES_PASSWORD={POSTGRES_PASSWORD}",
+                    "-p",
+                    f"{POSTGRES_PORT}:5432",
+                    "-d",
+                    "oeway/postgresql-pgvector:17.6.0-pgvector-0.8.1",
+                ],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            print(f"Started container: {result.stdout.strip()}")
+            time.sleep(8)  # Give more time for pgvector container to initialize
 
     # Wait for the PostgreSQL server to become available
     timeout = 30  # Increase timeout for pgvector container
     while timeout > 0:
         try:
-            # First check if container is still running
-            container_check = subprocess.run(
-                ["docker", "ps", "-q", "-f", "name=hypha-postgres"],
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-            
-            if not container_check:
-                print("Container stopped unexpectedly. Checking logs...")
-                logs = subprocess.run(
-                    ["docker", "logs", "hypha-postgres"],
+            # Skip Docker container check in GitHub Actions (PostgreSQL runs as a service)
+            if os.environ.get("GITHUB_ACTIONS") != "true":
+                # First check if container is still running
+                container_check = subprocess.run(
+                    ["docker", "ps", "-q", "-f", "name=hypha-postgres"],
                     capture_output=True,
                     text=True,
-                )
-                print(f"Container logs: {logs.stderr}")
-                raise Exception("PostgreSQL container failed to start")
+                ).stdout.strip()
+                
+                if not container_check:
+                    print("Container stopped unexpectedly. Checking logs...")
+                    logs = subprocess.run(
+                        ["docker", "logs", "hypha-postgres"],
+                        capture_output=True,
+                        text=True,
+                    )
+                    print(f"Container logs: {logs.stderr}")
+                    raise Exception("PostgreSQL container failed to start")
             
             engine = create_engine(
                 f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@127.0.0.1:{POSTGRES_PORT}/{POSTGRES_DB}"
@@ -378,13 +381,14 @@ def postgres_server():
                 time.sleep(1)
             else:
                 print(f"Failed to connect to PostgreSQL: {e}")
-                # Try to get container logs for debugging
-                logs = subprocess.run(
-                    ["docker", "logs", "hypha-postgres"],
-                    capture_output=True,
-                    text=True,
-                )
-                print(f"Container logs: {logs.stderr}")
+                # Try to get container logs for debugging (only if not in GitHub Actions)
+                if os.environ.get("GITHUB_ACTIONS") != "true":
+                    logs = subprocess.run(
+                        ["docker", "logs", "hypha-postgres"],
+                        capture_output=True,
+                        text=True,
+                    )
+                    print(f"Container logs: {logs.stderr}")
                 raise Exception(f"PostgreSQL server did not become available: {e}")
 
     yield  # Test code executes here
