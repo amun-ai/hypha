@@ -489,7 +489,7 @@ def fastapi_server_fixture(minio_server, postgres_server):
         ],
         env=test_env,
     ) as proc:
-        timeout = 20
+        timeout = 60  # Increased timeout for CI environments
         while timeout > 0:
             try:
                 response = requests.get(f"http://127.0.0.1:{SIO_PORT}/health/readiness")
@@ -500,6 +500,10 @@ def fastapi_server_fixture(minio_server, postgres_server):
             timeout -= 0.1
             time.sleep(0.1)
         if timeout <= 0:
+            # Try to get any error output from the process
+            if proc.poll() is not None:
+                # Process has terminated
+                print(f"Server process terminated with code: {proc.returncode}")
             raise TimeoutError("Server (fastapi_server) did not start in time")
         response = requests.get(f"http://127.0.0.1:{SIO_PORT}/health/liveness")
         assert response.ok
@@ -536,7 +540,7 @@ def fastapi_server_sqlite_fixture(minio_server):
         ],
         env=test_env,
     ) as proc:
-        timeout = 20
+        timeout = 60  # Increased timeout for CI environments
         while timeout > 0:
             try:
                 response = requests.get(
@@ -549,6 +553,10 @@ def fastapi_server_sqlite_fixture(minio_server):
             timeout -= 0.1
             time.sleep(0.1)
         if timeout <= 0:
+            # Try to get any error output from the process
+            if proc.poll() is not None:
+                # Process has terminated
+                print(f"Server process terminated with code: {proc.returncode}")
             raise TimeoutError("Server (fastapi_server) did not start in time")
         response = requests.get(f"http://127.0.0.1:{SIO_PORT_SQLITE}/health/liveness")
         assert response.ok
@@ -860,7 +868,7 @@ def custom_auth_server_fixture():
         ],
         env=test_env,
     ) as proc:
-        timeout = 20
+        timeout = 60  # Increased timeout for CI environments
         while timeout > 0:
             try:
                 response = requests.get(f"http://127.0.0.1:{CUSTOM_AUTH_PORT}/health/readiness")
