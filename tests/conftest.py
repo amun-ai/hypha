@@ -375,9 +375,14 @@ def postgres_server():
             )
             with engine.connect() as connection:
                 connection.execute(text("SELECT 1"))
-                # Also create pgvector extension
-                connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-                print("PostgreSQL with pgvector is ready")
+                # Try to create pgvector extension
+                try:
+                    connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                    connection.commit()
+                    print("PostgreSQL with pgvector is ready")
+                except Exception as e:
+                    print(f"Note: pgvector extension not available: {e}")
+                    print("PostgreSQL is ready (without pgvector)")
             break
         except Exception as e:
             if timeout > 1:
