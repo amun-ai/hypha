@@ -452,6 +452,10 @@ def fastapi_server_fixture(minio_server, postgres_server):
     ROOT_TOKEN = secrets.token_urlsafe(32)
     os.environ["HYPHA_ROOT_TOKEN"] = ROOT_TOKEN  # Store for tests to use
     
+    # Capture output for debugging in CI
+    server_log = tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.log', prefix='hypha_server_')
+    print(f"Server log file: {server_log.name}")
+    
     with subprocess.Popen(
         [
             sys.executable,
@@ -488,6 +492,8 @@ def fastapi_server_fixture(minio_server, postgres_server):
             # "hypha.workers.llm_proxy:hypha_startup",
         ],
         env=test_env,
+        stdout=server_log,
+        stderr=subprocess.STDOUT,  # Redirect stderr to stdout
     ) as proc:
         timeout = 60  # Increased timeout for CI environments
         while timeout > 0:
@@ -504,12 +510,23 @@ def fastapi_server_fixture(minio_server, postgres_server):
             if proc.poll() is not None:
                 # Process has terminated
                 print(f"Server process terminated with code: {proc.returncode}")
+            # Read and print the server log if available
+            if 'server_log' in locals():
+                server_log.flush()
+                server_log.seek(0)
+                log_content = server_log.read()
+                if log_content:
+                    print("=== Server output ===")
+                    print(log_content[:5000])  # Print first 5000 chars
+                    print("=== End server output ===")
             raise TimeoutError("Server (fastapi_server) did not start in time")
         response = requests.get(f"http://127.0.0.1:{SIO_PORT}/health/liveness")
         assert response.ok
         yield
         proc.kill()
         proc.terminate()
+        server_log.close()
+        os.unlink(server_log.name)  # Clean up the log file
 
 
 @pytest_asyncio.fixture(name="fastapi_server_sqlite", scope="session")
@@ -557,6 +574,15 @@ def fastapi_server_sqlite_fixture(minio_server):
             if proc.poll() is not None:
                 # Process has terminated
                 print(f"Server process terminated with code: {proc.returncode}")
+            # Read and print the server log if available
+            if 'server_log' in locals():
+                server_log.flush()
+                server_log.seek(0)
+                log_content = server_log.read()
+                if log_content:
+                    print("=== Server output ===")
+                    print(log_content[:5000])  # Print first 5000 chars
+                    print("=== End server output ===")
             raise TimeoutError("Server (fastapi_server) did not start in time")
         response = requests.get(f"http://127.0.0.1:{SIO_PORT_SQLITE}/health/liveness")
         assert response.ok
