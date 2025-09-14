@@ -400,7 +400,7 @@ def postgres_server():
                     print(f"Container logs: {logs.stderr}")
                 raise Exception(f"PostgreSQL server did not become available: {e}")
 
-    yield  # Test code executes here
+    yield f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@127.0.0.1:{postgres_port}/{POSTGRES_DB}"  # Test code executes here
 
     if os.environ.get("GITHUB_ACTIONS") != "true":
         # Stop the PostgreSQL container

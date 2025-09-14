@@ -57,8 +57,8 @@ async def test_litellm_imports_and_boto3():
         
         # Test artifact module which uses S3
         logger.info("\nTesting artifact module...")
-        from hypha.artifact import ArtifactManager
-        logger.info("✓ ArtifactManager imported successfully")
+        from hypha import artifact
+        logger.info("✓ artifact module imported successfully")
         
         # Test S3 controller
         from hypha.s3 import S3Controller
