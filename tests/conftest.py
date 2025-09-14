@@ -484,7 +484,8 @@ def fastapi_server_fixture(minio_server, postgres_server):
             "hypha.workers.python_eval:hypha_startup",
             "hypha.workers.conda:hypha_startup",
             "hypha.workers.terminal:hypha_startup",
-            "hypha.workers.llm_proxy:hypha_startup",
+            # Temporarily disabled: llm_proxy causes import conflicts with litellm/boto3/aioboto3
+            # "hypha.workers.llm_proxy:hypha_startup",
         ],
         env=test_env,
     ) as proc:
