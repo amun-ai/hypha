@@ -262,10 +262,14 @@ def triton_server():
 @pytest_asyncio.fixture(name="postgres_server", scope="session")
 def postgres_server():
     """Start a fresh PostgreSQL server as a test fixture and tear down after the test."""
-    # In GitHub Actions, PostgreSQL runs as a service, not Docker
+    # In GitHub Actions, PostgreSQL runs as a service on port 5432, not Docker
     if os.environ.get("GITHUB_ACTIONS") == "true":
         print("Using GitHub Actions PostgreSQL service")
+        # Override port for GitHub Actions (service runs on 5432, not 15432)
+        postgres_port = 5432
     else:
+        # Use the default test port for local development
+        postgres_port = POSTGRES_PORT
         # Check if the container is already running
         existing_container = subprocess.run(
             ["docker", "ps", "-q", "-f", "name=^hypha-postgres$"],
@@ -295,7 +299,7 @@ def postgres_server():
                     "-e",
                     f"POSTGRES_PASSWORD={POSTGRES_PASSWORD}",
                     "-p",
-                    f"{POSTGRES_PORT}:5432",
+                    f"{postgres_port}:5432",
                     "-d",
                     "oeway/postgresql-pgvector:17.6.0-pgvector-0.8.1",
                 ],
@@ -332,7 +336,7 @@ def postgres_server():
                     "-e",
                     f"POSTGRES_PASSWORD={POSTGRES_PASSWORD}",
                     "-p",
-                    f"{POSTGRES_PORT}:5432",
+                    f"{postgres_port}:5432",
                     "-d",
                     "oeway/postgresql-pgvector:17.6.0-pgvector-0.8.1",
                 ],
@@ -367,7 +371,7 @@ def postgres_server():
                     raise Exception("PostgreSQL container failed to start")
             
             engine = create_engine(
-                f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@127.0.0.1:{POSTGRES_PORT}/{POSTGRES_DB}"
+                f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@127.0.0.1:{postgres_port}/{POSTGRES_DB}"
             )
             with engine.connect() as connection:
                 connection.execute(text("SELECT 1"))
