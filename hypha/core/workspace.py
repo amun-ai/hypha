@@ -2146,7 +2146,8 @@ class WorkspaceManager:
         context: Optional[dict] = None,
     ):
         """Get the service info."""
-        self.validate_context(context, permission=UserPermission.read)
+        # Don't validate context here - we'll check permissions after determining if service is public
+        # self.validate_context(context, permission=UserPermission.read)
         assert isinstance(service_id, str), "Service ID must be a string."     
         assert service_id.count("/") <= 1, "Service id must contain at most one '/'"
         assert service_id.count(":") <= 1, "Service id must contain at most one ':'"
