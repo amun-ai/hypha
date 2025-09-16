@@ -71,7 +71,70 @@ class WorkspaceInterfaceContextManager:
         return await self._get_workspace_manager()
 
     async def __aexit__(self, exc_type, exc, tb):
-        await self._wm.disconnect()
+        """Zero-leak __aexit__ that guarantees connection cleanup.
+        
+        This implementation ensures that RPC connections are ALWAYS removed from
+        the global connection registry, even if the disconnect() call fails.
+        This prevents memory leaks from HTTP requests that create temporary
+        connections via context managers.
+        
+        The approach:
+        1. Try graceful disconnect first
+        2. Force removal from registry if connection still exists
+        3. Clear all references to break potential circular dependencies
+        """
+        if not hasattr(self, '_rpc') or not self._rpc:
+            return None
+        
+        rpc = self._rpc
+        
+        # Get connection key for forced cleanup if needed
+        try:
+            from hypha.core import RedisRPCConnection
+            conn_key = f"{rpc._workspace}/{rpc._client_id}"
+        except Exception:
+            conn_key = None
+        
+        # Try graceful disconnect first
+        try:
+            await rpc.disconnect()
+        except Exception as e:
+            logger.debug(f"Error during graceful disconnect (will force cleanup): {e}")
+        
+        # CRITICAL: Force removal from registry to guarantee zero leaks
+        # This handles cases where disconnect() doesn't fully clean up
+        if conn_key:
+            try:
+                from hypha.core import RedisRPCConnection
+                if conn_key in RedisRPCConnection._connections:
+                    # Get the connection and force cleanup
+                    conn = RedisRPCConnection._connections.get(conn_key)
+                    if conn:
+                        # Set stop flag
+                        conn._stop = True
+                        # Clear all handlers to break reference cycles
+                        if hasattr(conn, '_filtered_handler'):
+                            conn._filtered_handler = None
+                        if hasattr(conn, '_handle_message'):
+                            conn._handle_message = None
+                        if hasattr(conn, '_handle_connected'):
+                            conn._handle_connected = None
+                        if hasattr(conn, '_handle_disconnected'):
+                            conn._handle_disconnected = None
+                        if hasattr(conn, '_event_bus'):
+                            conn._event_bus = None
+                    
+                    # Force remove from registry
+                    RedisRPCConnection._connections.pop(conn_key, None)
+                    logger.debug(f"Force removed {conn_key} from connection registry")
+            except Exception as e:
+                logger.warning(f"Error during forced cleanup of {conn_key}: {e}")
+        
+        # Clear reference from context manager
+        self._rpc = None
+        
+        return None
+        # No need for else clause - if _rpc doesn't exist, there's nothing to clean up
 
     def __await__(self):
         return self._get_workspace_manager().__await__()
@@ -1011,7 +1074,11 @@ class RedisStore:
         # the client will be hidden if client_id is None
         if silent is None:
             silent = client_id is None
+        
+        # Generate client_id if not provided
+        # Each HTTP request should get its own client_id to ensure proper cleanup
         client_id = client_id or "client-" + random_id(readable=False)
+        
         rpc = self.create_rpc(workspace, user_info, client_id=client_id, silent=silent)
         return WorkspaceInterfaceContextManager(
             rpc, self, workspace, user_info, timeout=timeout

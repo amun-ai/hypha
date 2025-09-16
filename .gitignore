@@ -123,3 +123,4 @@ venv.bak/
 # Visual Studio Code
 .vscode/*
 memory_diagnostics/
+.mcp.json
