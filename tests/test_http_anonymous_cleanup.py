@@ -98,8 +98,12 @@ async def test_workspace_context_manager_cleanup(fastapi_server, test_user_token
     # Get the store from the server by making a request to get the app instance
     # Note: This test focuses on the context manager behavior, not the server itself
     # We'll create our own store instance for testing
-    from hypha.core import connect_to_event_bus
-    event_bus = await connect_to_event_bus(None)
+    from fakeredis.aioredis import FakeRedis
+    from hypha.core.store import RedisEventBus
+
+    fake_redis = FakeRedis()
+    event_bus = RedisEventBus(redis=fake_redis)
+    await event_bus.init()
     store = RedisStore(event_bus, "test-manager-id")
 
     # Get initial connection count

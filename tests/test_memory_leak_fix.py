@@ -19,6 +19,8 @@ async def test_context_manager_zero_leaks(fastapi_server, test_user_token):
     1. __aexit__ forces removal from connection registry
     2. HTTP anonymous users get stable client IDs for connection reuse
     """
+    if not fastapi_server:
+        pytest.skip("fastapi_server not available")
     server_url = fastapi_server
 
     # Get baseline connection count
@@ -59,6 +61,8 @@ async def test_context_manager_zero_leaks(fastapi_server, test_user_token):
 @pytest.mark.asyncio
 async def test_http_stable_client_id_reuse(fastapi_server, test_user_token):
     """Test that HTTP anonymous users reuse stable connections."""
+    if not fastapi_server:
+        pytest.skip("fastapi_server not available")
     server_url = fastapi_server
 
     initial_count = len(RedisRPCConnection._connections)
@@ -110,6 +114,8 @@ async def test_http_stable_client_id_reuse(fastapi_server, test_user_token):
 @pytest.mark.asyncio
 async def test_concurrent_http_requests_no_leaks(fastapi_server, test_user_token):
     """Test that concurrent HTTP requests don't leak connections."""
+    if not fastapi_server:
+        pytest.skip("fastapi_server not available")
     server_url = fastapi_server
 
     initial_count = len(RedisRPCConnection._connections)
@@ -149,6 +155,8 @@ async def test_concurrent_http_requests_no_leaks(fastapi_server, test_user_token
 @pytest.mark.asyncio
 async def test_error_during_request_no_leaks(fastapi_server, test_user_token):
     """Test that connections are cleaned up even when errors occur."""
+    if not fastapi_server:
+        pytest.skip("fastapi_server not available")
     server_url = fastapi_server
 
     initial_count = len(RedisRPCConnection._connections)
@@ -187,6 +195,8 @@ async def test_error_during_request_no_leaks(fastapi_server, test_user_token):
 @pytest.mark.asyncio
 async def test_authenticated_requests_cleanup(fastapi_server, test_user_token):
     """Test that authenticated requests also don't leak connections."""
+    if not fastapi_server:
+        pytest.skip("fastapi_server not available")
     server_url = fastapi_server
     token = test_user_token
 
