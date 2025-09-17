@@ -75,16 +75,21 @@ setup(
     install_requires=REQUIREMENTS,
     extras_require={
         "s3": [
-            "aiobotocore>=2.1.0",
+            "aiobotocore>=2.24.0",
         ],
         "server-apps": [
             "redis==5.2.0",
-            "aiobotocore>=2.1.0",
+            "aiobotocore>=2.24.0",
             "aiortc>=1.9.0",
             "requests>=2.26.0",
             "playwright>=1.51.0",
             "base58>=2.1.0",
             "pymultihash>=0.8.2",
+            "backoff>=2.2.1",
+            "orjson>=3.10.0",
+            "apscheduler>=3.10.0",
+            "cryptography>=42.0.0",
+            "fastapi-sso>=0.15.0",
         ],
         "db": [
             "psycopg2-binary>=2.9.10",

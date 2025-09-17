@@ -2,7 +2,10 @@
 
 import copy
 import asyncio
+import base64
 import gzip
+import hashlib
+import json
 import os
 import posixpath
 import secrets
@@ -236,6 +239,7 @@ def list_objects_sync(s3_client, bucket, prefix=None, delimeter="/"):
     return items
 
 
+
 def remove_objects_sync(s3_client, bucket, prefix, delimeter=""):
     """Remove all objects in a folder."""
     assert prefix != "" and prefix.endswith("/")
@@ -244,18 +248,22 @@ def remove_objects_sync(s3_client, bucket, prefix, delimeter=""):
     )
     items = response.get("Contents", [])
     if len(items) > 0:
+        delete_dict = {
+            "Objects": [
+                {
+                    "Key": item["Key"],
+                    # 'VersionId': 'string'
+                }
+                for item in items
+            ],
+            "Quiet": True,
+        }
+        # For boto3 >= 1.36.0, botocore no longer auto-calculates Content-MD5
+        # We configure the client with request_checksum_calculation='when_required'
+        # which will handle Content-MD5 for S3-compatible services like MinIO
         delete_response = s3_client.delete_objects(
             Bucket=bucket,
-            Delete={
-                "Objects": [
-                    {
-                        "Key": item["Key"],
-                        # 'VersionId': 'string'
-                    }
-                    for item in items
-                ],
-                "Quiet": True,
-            },
+            Delete=delete_dict,
         )
         assert (
             "ResponseMetadata" in delete_response
@@ -270,18 +278,22 @@ def remove_objects_sync(s3_client, bucket, prefix, delimeter=""):
         )
         items = response.get("Contents", [])
         if len(items) > 0:
+            delete_dict = {
+                "Objects": [
+                    {
+                        "Key": item["Key"],
+                        # 'VersionId': 'string'
+                    }
+                    for item in items
+                ],
+                "Quiet": True,
+            }
+            # For boto3 >= 1.36.0, botocore no longer auto-calculates Content-MD5
+            # We configure the client with request_checksum_calculation='when_required'
+            # which will handle Content-MD5 for S3-compatible services like MinIO
             delete_response = s3_client.delete_objects(
                 Bucket=bucket,
-                Delete={
-                    "Objects": [
-                        {
-                            "Key": item["Key"],
-                            # 'VersionId': 'string'
-                        }
-                        for item in items
-                    ],
-                    "Quiet": True,
-                },
+                Delete=delete_dict,
             )
             assert (
                 "ResponseMetadata" in delete_response
@@ -324,18 +336,22 @@ async def remove_objects_async(s3_client, bucket, prefix, delimeter=""):
     )
     items = response.get("Contents", [])
     if len(items) > 0:
+        delete_dict = {
+            "Objects": [
+                {
+                    "Key": item["Key"],
+                    # 'VersionId': 'string'
+                }
+                for item in items
+            ],
+            "Quiet": True,
+        }
+        # For boto3 >= 1.36.0, botocore no longer auto-calculates Content-MD5
+        # We configure the client with request_checksum_calculation='when_required'
+        # which will handle Content-MD5 for S3-compatible services like MinIO
         delete_response = await s3_client.delete_objects(
             Bucket=bucket,
-            Delete={
-                "Objects": [
-                    {
-                        "Key": item["Key"],
-                        # 'VersionId': 'string'
-                    }
-                    for item in items
-                ],
-                "Quiet": True,
-            },
+            Delete=delete_dict,
         )
         assert (
             "ResponseMetadata" in delete_response
@@ -350,18 +366,22 @@ async def remove_objects_async(s3_client, bucket, prefix, delimeter=""):
         )
         items = response.get("Contents", [])
         if len(items) > 0:
+            delete_dict = {
+                "Objects": [
+                    {
+                        "Key": item["Key"],
+                        # 'VersionId': 'string'
+                    }
+                    for item in items
+                ],
+                "Quiet": True,
+            }
+            # For boto3 >= 1.36.0, botocore no longer auto-calculates Content-MD5
+            # We configure the client with request_checksum_calculation='when_required'
+            # which will handle Content-MD5 for S3-compatible services like MinIO
             delete_response = await s3_client.delete_objects(
                 Bucket=bucket,
-                Delete={
-                    "Objects": [
-                        {
-                            "Key": item["Key"],
-                            # 'VersionId': 'string'
-                        }
-                        for item in items
-                    ],
-                    "Quiet": True,
-                },
+                Delete=delete_dict,
             )
             assert (
                 "ResponseMetadata" in delete_response

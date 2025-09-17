@@ -927,8 +927,10 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
 {script}
 """
         # Use provided startup timeout for initialization execution when available
+        # In CI environments, use longer timeout due to slower disk I/O
+        default_timeout = 120.0 if os.environ.get("CI") == "true" else 60.0
         result = await kernel.execute(
-            init_code, timeout=float(config.timeout) if config.timeout else 60.0,
+            init_code, timeout=float(config.timeout) if config.timeout else default_timeout,
         )
         
         # Process kernel outputs into logs
