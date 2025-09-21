@@ -97,6 +97,21 @@ setup(
         "k8s": [
             "kubernetes>=24.2.0",
         ],
+        "llm-proxy": [
+            "openai>=1.0.0",
+            "tiktoken>=0.5.0",
+            "click>=8.0.0",
+            "tokenizers>=0.15.0",
+            "cryptography>=40.0.0",
+            # Optional provider-specific packages (can be installed as needed)
+            # "anthropic>=0.30.0",  # For Anthropic Claude
+            # "cohere>=4.0.0",  # For Cohere models
+            # "google-generativeai>=0.3.0",  # For Google Gemini
+            # "boto3>=1.20.0",  # For AWS Bedrock
+            # "replicate>=0.10.0",  # For Replicate
+            # "together>=0.2.0",  # For Together AI
+            # "huggingface-hub>=0.15.0",  # For HuggingFace
+        ],
     },
     zip_safe=False,
     entry_points={

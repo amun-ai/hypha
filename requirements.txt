@@ -51,3 +51,9 @@ scikit-learn==1.7.1
 zarr==3.1.2 ; python_version >= '3.11'
 numcodecs==0.16.2 ; python_version >= '3.11'
 fastuuid==0.12.0
+# LiteLLM core dependencies
+openai==1.99.5
+tiktoken==0.7.0
+click==8.1.7
+tokenizers==0.20.3
+cryptography==44.0.0
