@@ -188,27 +188,30 @@ class LLMProxyWorker(BaseWorker):
         """Clean up a specific session."""
         # Try to get the session by the provided ID (could be either session_id or full_client_id)
         session = self._sessions.get(session_id)
-        
+
+        # Handle redirect references
+        if session and "redirect_to" in session:
+            # This is a redirect, get the actual session
+            actual_session_id = session["redirect_to"]
+            session = self._sessions.get(actual_session_id)
+            session_id = actual_session_id
+
         if not session:
             logger.warning(f"_cleanup_session: Session {session_id} not found for cleanup")
             return
-            
-        # Get both possible keys for this session
-        internal_session_id = session.get("info", {}).get("session_id")
-        full_client_id = session.get("full_client_id")
-        
+
+        # Find all keys that reference this same session object or redirect to it
+        keys_to_remove = []
+        for key, sess in list(self._sessions.items()):
+            if sess is session:  # Same object
+                keys_to_remove.append(key)
+            elif isinstance(sess, dict) and sess.get("redirect_to") == session_id:
+                keys_to_remove.append(key)
+
         # Remove all references to this session
-        if session_id in self._sessions:
-            del self._sessions[session_id]
-            logger.info(f"Removed session with key: {session_id}")
-            
-        if internal_session_id and internal_session_id != session_id and internal_session_id in self._sessions:
-            del self._sessions[internal_session_id]
-            logger.info(f"Also removed internal session_id index: {internal_session_id}")
-            
-        if full_client_id and full_client_id != session_id and full_client_id in self._sessions:
-            del self._sessions[full_client_id]
-            logger.info(f"Also removed full_client_id index: {full_client_id}")
+        for key in keys_to_remove:
+            del self._sessions[key]
+            logger.info(f"Removed session reference with key: {key}")
         
         # Disconnect the client if it exists
         client = session.get("client")
@@ -243,14 +246,53 @@ class LLMProxyWorker(BaseWorker):
         
         # Clean up router if exists
         router = session.get("router")
-        if router and hasattr(router, 'close'):
+        if router:
             try:
-                await router.close()
-                logger.debug(f"_cleanup_session: Closed router for session {session_id}")
+                # Call reset to clean up callbacks and other resources
+                if hasattr(router, 'reset'):
+                    router.reset()
+                    logger.debug(f"_cleanup_session: Reset router for session {session_id}")
+                # If router has a close method, call it
+                if hasattr(router, 'close'):
+                    await router.close()
+                    logger.debug(f"_cleanup_session: Closed router for session {session_id}")
+                # Clear the router's internal caches if they exist
+                if hasattr(router, 'cache'):
+                    if hasattr(router.cache, 'clear'):
+                        router.cache.clear()
+                if hasattr(router, 'deployment_latency_map'):
+                    router.deployment_latency_map.clear()
+                if hasattr(router, 'model_list'):
+                    router.model_list = []
             except Exception as e:
-                logger.warning(f"_cleanup_session: Failed to close router: {e}")
-        
+                logger.warning(f"_cleanup_session: Failed to cleanup router: {e}")
+
+        # Clean up the app object if it exists
+        app = session.get("app")
+        if app:
+            # Clear any app-specific state
+            session["app"] = None
+
+        # Clear session data to help with garbage collection
+        # First set large objects to None to break references
+        session["router"] = None
+        session["client"] = None
+        session["app"] = None
+        session["model_list"] = None
+        session["litellm_settings"] = None
+
+        # Then clear the entire session
+        session.clear()
+
         logger.info(f"_cleanup_session: Cleaned up session {session_id}")
+
+    def _get_actual_session(self, session_id: str):
+        """Get the actual session, following redirects if necessary."""
+        session = self._sessions.get(session_id)
+        if session and "redirect_to" in session:
+            # This is a redirect, get the actual session
+            return self._sessions.get(session["redirect_to"])
+        return session
 
     @schema_method
     async def get_logs(
@@ -269,7 +311,7 @@ class LLMProxyWorker(BaseWorker):
         - offset: The offset used
         - limit: The limit used
         """
-        session = self._sessions.get(session_id)
+        session = self._get_actual_session(session_id)
         if not session:
             return {"items": [], "total": 0, "offset": offset, "limit": limit}
         
@@ -363,7 +405,7 @@ class LLMProxyWorker(BaseWorker):
         This configures litellm's global proxy_server app with our model list
         and settings, then returns the app for ASGI serving.
         """
-        session = self._sessions.get(session_id)
+        session = self._get_actual_session(session_id)
         if not session:
             raise ValueError(f"Session {session_id} not found")
         
@@ -429,7 +471,9 @@ class LLMProxyWorker(BaseWorker):
             # If we found a session, also index it by full_client_id for cleanup
             if session:
                 session["full_client_id"] = full_client_id
-                self._sessions[full_client_id] = session
+                # Store a mapping instead of duplicating the session
+                if full_client_id != manifest_session_id:
+                    self._sessions[full_client_id] = {"redirect_to": manifest_session_id}
                 logger.info(f"Added full_client_id index for existing session: {full_client_id}")
             
         if not session:
@@ -475,8 +519,11 @@ class LLMProxyWorker(BaseWorker):
             }
             session = self._sessions[session_id]
             
-            # Also index by full_client_id for cleanup
-            self._sessions[full_client_id] = session
+            # Store a mapping from full_client_id to session_id instead of duplicating the session
+            # This avoids creating multiple references to the same object
+            if full_client_id != session_id:
+                # Create a lightweight reference that points to the actual session_id
+                self._sessions[full_client_id] = {"redirect_to": session_id}
             
             logger.info(f"Created session {session_id} from manifest with {len(model_list)} models, indexed as {full_client_id}")
         
@@ -552,7 +599,7 @@ class LLMProxyWorker(BaseWorker):
                         logger.debug(f'LLM proxy: {context["user"]["id"]} - {args["scope"]["method"]} - {args["scope"]["path"]}')
                     
                     # Get session-specific configuration
-                    current_session = self._sessions.get(session_id)
+                    current_session = self._get_actual_session(session_id)
                     if not current_session:
                         # Session not found - return 404
                         scope = args["scope"]
@@ -663,9 +710,8 @@ class LLMProxyWorker(BaseWorker):
         logger.info(f"Stopping LLM proxy session {session_id}")
         
         # Check if session exists in memory
-        if session_id in self._sessions:
-            # Get the session before cleanup
-            session = self._sessions.get(session_id, {})
+        session = self._get_actual_session(session_id)
+        if session:
             
             # Try to unregister the service first if we have a client
             client = session.get("client")
@@ -715,6 +761,9 @@ class LLMProxyWorker(BaseWorker):
         """Get the FastAPI app for a given service ID."""
         # Look for the session that has this service_id
         for session_id, session in self._sessions.items():
+            # Skip redirect entries
+            if "redirect_to" in session:
+                continue
             if session.get("service_id") == service_id:
                 return session.get("app")
         return None
