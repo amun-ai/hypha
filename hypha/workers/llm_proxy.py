@@ -11,9 +11,6 @@ from fastapi import FastAPI
 from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
 
-from hypha.litellm.proxy import proxy_server
-from hypha.litellm.router import Router
-
 from hypha.core import UserInfo
 from hypha.workers.base import BaseWorker
 from hypha_rpc import connect_to_server
@@ -35,11 +32,12 @@ class LLMProxyWorker(BaseWorker):
 
     def _get_litellm_endpoints(self, service_id: str) -> Dict[str, str]:
         """Programmatically get all available litellm endpoints.
-        
+
         Returns a dictionary mapping endpoint names to their URLs.
         """
         import re
-        
+        from hypha.litellm.proxy import proxy_server
+
         # Get all routes from the litellm proxy server app
         app = proxy_server.app
         endpoints = {}
@@ -383,6 +381,7 @@ class LLMProxyWorker(BaseWorker):
         
         # Create a Router with our model configuration
         # The Router handles load balancing and model selection
+        from hypha.litellm.router import Router
         router = Router(
             model_list=model_list,
             routing_strategy=litellm_settings.get("routing_strategy", "simple-shuffle"),
@@ -396,6 +395,7 @@ class LLMProxyWorker(BaseWorker):
         
         # Get the app - this is the FastAPI app with all routes already configured
         # We'll handle session-specific routing in the serve function
+        from hypha.litellm.proxy import proxy_server
         app = proxy_server.app
         
         logger.info(f"Configured litellm proxy app for session {session_id} with {len(model_list)} models")
@@ -572,6 +572,7 @@ class LLMProxyWorker(BaseWorker):
                     
                     # Temporarily set global variables for this request
                     # This is a workaround since litellm uses global state
+                    from hypha.litellm.proxy import proxy_server
                     original_router = getattr(proxy_server, 'llm_router', None)
                     original_model_list = getattr(proxy_server, 'llm_model_list', None)
                     original_settings = getattr(proxy_server, 'general_settings', None)
@@ -742,9 +743,19 @@ async def hypha_startup(server):
     import sys
     print("LLM PROXY STARTUP CALLED", file=sys.stderr)
     logger.info("LLM proxy startup function called")
-    
+
     import traceback
     try:
+        # Check if litellm dependencies are installed
+        try:
+            import openai
+            import tiktoken
+        except ImportError as e:
+            logger.warning(f"LiteLLM dependencies not installed: {e}. Skipping LLM proxy worker registration.")
+            logger.warning("To use LLM proxy, install with: pip install hypha[llm-proxy]")
+            print(f"LLM PROXY SKIPPED: Missing dependencies - {e}", file=sys.stderr)
+            return None
+
         logger.info("Starting LLM proxy worker registration...")
         from hypha.workers.llm_proxy import LLMProxyWorker
         
