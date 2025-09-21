@@ -676,8 +676,66 @@ def minio_server_fixture():
         timeout=10,  # Keep timeout
     )
 
+    # If binary approach fails, try Docker as fallback
     if not proc:
-        raise RuntimeError(f"Failed to start Minio server at {MINIO_SERVER_URL}")
+        print("Binary MinIO failed, trying Docker fallback...")
+        container_name = "test-minio-hypha"
+
+        # Stop and remove any existing container
+        subprocess.run(f"docker stop {container_name}", shell=True, capture_output=True)
+        subprocess.run(f"docker rm {container_name}", shell=True, capture_output=True)
+
+        # Start new MinIO container
+        cmd = [
+            "docker", "run", "-d",
+            "--name", container_name,
+            "-p", f"{MINIO_PORT}:9000",
+            "-p", f"{MINIO_PORT + 1}:9001",
+            "-e", f"MINIO_ROOT_USER={MINIO_ROOT_USER}",
+            "-e", f"MINIO_ROOT_PASSWORD={MINIO_ROOT_PASSWORD}",
+            "minio/minio:latest",
+            "server", "/data", "--console-address", ":9001"
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to start Minio server with Docker: {result.stderr}")
+
+        # Wait for MinIO to be ready
+        server_url = MINIO_SERVER_URL
+        import time
+        import requests
+        for i in range(30):  # 30 second timeout
+            try:
+                response = requests.get(f"{server_url}/minio/health/live", timeout=1)
+                if response.ok:
+                    print(f"MinIO Docker container started at {server_url}")
+                    # Create a mock proc object for Docker
+                    class DockerProc:
+                        def __init__(self, container_name):
+                            self.container_name = container_name
+                            self.is_docker = True
+
+                        def terminate(self):
+                            subprocess.run(f"docker stop {self.container_name}", shell=True, capture_output=True)
+
+                        def kill(self):
+                            subprocess.run(f"docker kill {self.container_name}", shell=True, capture_output=True)
+
+                        def wait(self, timeout=5):
+                            # Docker stop already waits
+                            pass
+
+                    proc = DockerProc(container_name)
+                    workdir = "/data"  # Docker data directory
+                    break
+            except:
+                pass
+            time.sleep(1)
+        else:
+            subprocess.run(f"docker stop {container_name}", shell=True, capture_output=True)
+            subprocess.run(f"docker rm {container_name}", shell=True, capture_output=True)
+            raise RuntimeError(f"Failed to start Minio server at {MINIO_SERVER_URL}")
 
     print(f"Minio server started successfully at {server_url}")
     print(f"Minio data directory: {workdir}")
@@ -685,65 +743,74 @@ def minio_server_fixture():
     yield server_url  # Yield the URL provided by the function
 
     print("Stopping Minio server...")
-    proc.terminate()
-    try:
-        proc.wait(timeout=5)  # Wait for graceful termination
-        print("Minio server stopped.")
-    except subprocess.TimeoutExpired:
-        print("Minio server did not terminate gracefully, killing...")
-        proc.kill()  # Force kill if necessary
-    finally:
-        # Clean up any lingering MinIO Docker containers
+
+    # Check if it's a Docker process
+    if hasattr(proc, 'is_docker') and proc.is_docker:
+        proc.terminate()  # This will run docker stop
+        # Also remove the container
+        subprocess.run(f"docker rm {proc.container_name}", shell=True, capture_output=True)
+        print("Minio Docker container stopped and removed.")
+    else:
+        # Original binary cleanup
+        proc.terminate()
         try:
-            print("Cleaning up MinIO Docker containers...")
-            
-            # Stop any running MinIO containers
-            result = subprocess.run([
-                "docker", "ps", "-q", "--filter", "ancestor=minio/minio"
-            ], capture_output=True, text=True, timeout=10)
-            
-            if result.stdout.strip():
-                container_ids = result.stdout.strip().split('\n')
-                print(f"Found {len(container_ids)} running MinIO containers, stopping them...")
-                subprocess.run([
-                    "docker", "stop"
-                ] + container_ids, capture_output=True, text=True, timeout=30)
-                
-                # Remove the stopped containers
-                subprocess.run([
-                    "docker", "rm"
-                ] + container_ids, capture_output=True, text=True, timeout=10)
-            
-            # Also clean up any containers with "minio" in the name
-            result = subprocess.run([
-                "docker", "ps", "-aq", "--filter", "name=minio"
-            ], capture_output=True, text=True, timeout=10)
-            
-            if result.stdout.strip():
-                container_ids = result.stdout.strip().split('\n')
-                print(f"Found {len(container_ids)} MinIO containers by name, cleaning them...")
-                subprocess.run([
-                    "docker", "stop"
-                ] + container_ids, capture_output=True, text=True, timeout=30)
-                subprocess.run([
-                    "docker", "rm"
-                ] + container_ids, capture_output=True, text=True, timeout=10)
-            
-            print("MinIO Docker container cleanup completed.")
+            proc.wait(timeout=5)  # Wait for graceful termination
+            print("Minio server stopped.")
         except subprocess.TimeoutExpired:
-            print("Warning: MinIO container cleanup timed out")
-        except FileNotFoundError:
-            print("Docker not found - skipping MinIO container cleanup")
+            print("Minio server did not terminate gracefully, killing...")
+            proc.kill()  # Force kill if necessary
+
+    # Clean up any lingering MinIO Docker containers
+    try:
+        print("Cleaning up MinIO Docker containers...")
+
+        # Stop any running MinIO containers
+        result = subprocess.run([
+            "docker", "ps", "-q", "--filter", "ancestor=minio/minio"
+        ], capture_output=True, text=True, timeout=10)
+
+        if result.stdout.strip():
+            container_ids = result.stdout.strip().split('\n')
+            print(f"Found {len(container_ids)} running MinIO containers, stopping them...")
+            subprocess.run([
+                "docker", "stop"
+            ] + container_ids, capture_output=True, text=True, timeout=30)
+
+            # Remove the stopped containers
+            subprocess.run([
+                "docker", "rm"
+            ] + container_ids, capture_output=True, text=True, timeout=10)
+
+        # Also clean up any containers with "minio" in the name
+        result = subprocess.run([
+            "docker", "ps", "-aq", "--filter", "name=minio"
+        ], capture_output=True, text=True, timeout=10)
+
+        if result.stdout.strip():
+            container_ids = result.stdout.strip().split('\n')
+            print(f"Found {len(container_ids)} MinIO containers by name, cleaning them...")
+            subprocess.run([
+                "docker", "stop"
+            ] + container_ids, capture_output=True, text=True, timeout=30)
+            subprocess.run([
+                "docker", "rm"
+            ] + container_ids, capture_output=True, text=True, timeout=10)
+
+        print("MinIO Docker container cleanup completed.")
+    except subprocess.TimeoutExpired:
+        print("Warning: MinIO container cleanup timed out")
+    except FileNotFoundError:
+        print("Docker not found - skipping MinIO container cleanup")
+    except Exception as e:
+        print(f"Warning: Error during MinIO container cleanup: {e}")
+
+    # Clean up the temporary directory
+    if workdir and os.path.exists(workdir):
+        print(f"Cleaning up Minio data directory: {workdir}")
+        try:
+            shutil.rmtree(workdir, ignore_errors=True)
         except Exception as e:
-            print(f"Warning: Error during MinIO container cleanup: {e}")
-        
-        # Clean up the temporary directory
-        if workdir and os.path.exists(workdir):
-            print(f"Cleaning up Minio data directory: {workdir}")
-            try:
-                shutil.rmtree(workdir, ignore_errors=True)
-            except Exception as e:
-                print(f"Error removing Minio workdir {workdir}: {e}")
+            print(f"Error removing Minio workdir {workdir}: {e}")
 
 
 @pytest_asyncio.fixture(name="conda_available", scope="session")
