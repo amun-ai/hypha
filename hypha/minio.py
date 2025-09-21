@@ -70,9 +70,16 @@ def setup_minio_executables(
     minio_path = os.path.join(executable_path, minio_executable)
 
     if sys.platform == "darwin":
-        minio_url = f"https://dl.min.io/server/minio/release/darwin-amd64/archive/minio.{minio_version}"
+        # Detect architecture for macOS (Apple Silicon vs Intel)
+        import platform
+        machine = platform.machine()
+        if machine == "arm64":
+            arch = "arm64"
+        else:
+            arch = "amd64"
+        minio_url = f"https://dl.min.io/server/minio/release/darwin-{arch}/archive/minio.{minio_version}"
         mc_url = (
-            f"https://dl.min.io/client/mc/release/darwin-amd64/archive/mc.{mc_version}"
+            f"https://dl.min.io/client/mc/release/darwin-{arch}/archive/mc.{mc_version}"
         )
     elif sys.platform == "linux":
         minio_url = f"https://dl.min.io/server/minio/release/linux-amd64/archive/minio.{minio_version}"

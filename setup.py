@@ -85,6 +85,7 @@ setup(
             "playwright>=1.51.0",
             "base58>=2.1.0",
             "pymultihash>=0.8.2",
+            "fastuuid>=0.12.0",
         ],
         "db": [
             "psycopg2-binary>=2.9.10",

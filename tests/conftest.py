@@ -456,6 +456,7 @@ def fastapi_server_fixture(minio_server, postgres_server):
             f"--access-key-id={MINIO_ROOT_USER}",
             f"--secret-access-key={MINIO_ROOT_PASSWORD}",
             f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
+            "--enable-llm-proxy",
             "--enable-s3-proxy",
             f"--workspace-bucket=my-workspaces",
             "--s3-admin-type=minio",
