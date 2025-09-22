@@ -58,3 +58,20 @@ click==8.1.7
 tokenizers==0.20.3
 cryptography==44.0.0
 backoff==2.2.1
+orjson==3.10.14
+PyJWT==2.10.1
+fastapi-sso==0.16.0
+python-multipart==0.0.18
+google-genai==0.1.0
+azure-identity==1.19.0
+azure-keyvault-secrets==4.9.0
+azure-storage-blob==12.26.0
+google-cloud-kms==2.28.0
+google-cloud-iam==2.21.0
+resend==2.7.0
+pynacl==1.5.0
+prisma==0.11.0
+rq==2.1.0
+apscheduler==3.10.4
+uvloop==0.21.0 ; sys_platform != 'win32'
+redisvl==0.4.1

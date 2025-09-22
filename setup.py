@@ -103,11 +103,28 @@ setup(
             "click>=8.0.0",
             "tokenizers>=0.15.0",
             "cryptography>=40.0.0",
+            "backoff>=2.2.1",
+            "orjson>=3.10.0",
+            "PyJWT>=2.8.0",
+            "fastapi-sso>=0.16.0",
+            "python-multipart>=0.0.18",
             # Optional provider-specific packages (can be installed as needed)
+            "google-genai>=0.1.0",  # For Google Gemini
+            "azure-identity>=1.15.0",  # For Azure authentication
+            "azure-keyvault-secrets>=4.8.0",  # For Azure Key Vault
+            "azure-storage-blob>=12.25.1",  # For Azure blob storage
+            "google-cloud-kms>=2.21.3",  # For Google KMS
+            "google-cloud-iam>=2.19.1",  # For Google IAM
+            "resend>=0.8.0",  # For email notifications
+            "pynacl>=1.5.0",  # For encryption
+            "prisma>=0.11.0",  # For Prisma database
+            "rq",  # For Redis queue
+            "apscheduler>=3.10.4",  # For scheduled tasks
+            "gunicorn>=23.0.0",  # For production server
+            "uvloop>=0.21.0; sys_platform != 'win32'",  # For async optimization
+            "redisvl>=0.4.1",  # For Redis vector store
             # "anthropic>=0.30.0",  # For Anthropic Claude
             # "cohere>=4.0.0",  # For Cohere models
-            # "google-generativeai>=0.3.0",  # For Google Gemini
-            # "boto3>=1.20.0",  # For AWS Bedrock
             # "replicate>=0.10.0",  # For Replicate
             # "together>=0.2.0",  # For Together AI
             # "huggingface-hub>=0.15.0",  # For HuggingFace
