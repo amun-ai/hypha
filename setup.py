@@ -23,7 +23,7 @@ REQUIREMENTS = [
     "lxml",
     "python-dotenv>=0.19.0",
     "python-jose>=3.3.0",
-    "python-multipart>=0.0.6",
+    "python-multipart>=0.0.18",
     "pyyaml",
     "fakeredis>=2.14.1",
     "shortuuid>=1.0.1",
@@ -107,7 +107,6 @@ setup(
             "orjson>=3.10.0",
             "PyJWT>=2.8.0",
             "fastapi-sso>=0.16.0",
-            "python-multipart>=0.0.18",
             # Optional provider-specific packages (can be installed as needed)
             "google-genai>=0.1.0",  # For Google Gemini
             "azure-identity>=1.15.0",  # For Azure authentication

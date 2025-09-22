@@ -14,7 +14,6 @@ pydantic[email]==2.11.3
 pymultihash==0.8.2
 python-dotenv>=1.0.0
 python-jose==3.3.0
-python-multipart==0.0.9
 pyyaml>=6.0.2
 requests==2.31.0
 shortuuid==1.0.11
