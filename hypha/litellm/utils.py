@@ -191,7 +191,7 @@ from hypha.litellm.types.utils import (
 
 try:
     # Python 3.9+
-    with resources.files("litellm.litellm_core_utils.tokenizers").joinpath(
+    with resources.files("hypha.litellm.litellm_core_utils.tokenizers").joinpath(
         "anthropic_tokenizer.json"
     ).open("r", encoding="utf-8") as f:
         json_data = json.load(f)
