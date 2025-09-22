@@ -57,3 +57,4 @@ tiktoken==0.7.0
 click==8.1.7
 tokenizers==0.20.3
 cryptography==44.0.0
+backoff==2.2.1
