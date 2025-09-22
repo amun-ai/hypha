@@ -430,7 +430,7 @@ from fastapi.staticfiles import StaticFiles
 enterprise_router = APIRouter()
 try:
     # when using litellm cli
-    from hypha import litellm.proxy.enterprise as enterprise
+    import hypha.litellm.proxy.enterprise as enterprise
 except Exception:
     # when using litellm docker image
     try:
