@@ -19,7 +19,7 @@ router = APIRouter()
     response_model=List[ModelGroupInfoProxy],
 )
 async def public_model_hub():
-    import litellm
+    from hypha import litellm
     from hypha.litellm.proxy.proxy_server import _get_model_group_info, llm_router
 
     if llm_router is None:
@@ -44,7 +44,7 @@ async def public_model_hub():
     response_model=PublicModelHubInfo,
 )
 async def public_model_hub_info():
-    import litellm
+    from hypha import litellm
     from hypha.litellm.proxy.proxy_server import _title, version
 
     try:

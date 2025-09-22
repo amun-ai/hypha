@@ -31,7 +31,7 @@ class AgentOps(OpenTelemetry):
 
     Example usage:
         ```python
-        import litellm
+        from hypha import litellm
         
         litellm.success_callback = ["agentops"]
 

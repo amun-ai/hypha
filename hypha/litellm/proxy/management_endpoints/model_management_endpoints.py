@@ -986,7 +986,7 @@ async def update_public_model_groups(
     """
     try:
         # Update the public model groups
-        import litellm
+        from hypha import litellm
         from hypha.litellm.proxy.proxy_server import proxy_config, store_model_in_db
 
         # Check if user has admin permissions
@@ -1062,7 +1062,7 @@ async def update_useful_links(
     """
     try:
         # Update the public model groups
-        import litellm
+        from hypha import litellm
         from hypha.litellm.proxy.proxy_server import proxy_config
 
         # Check if user has admin permissions

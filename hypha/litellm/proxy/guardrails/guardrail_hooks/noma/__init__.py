@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 
 def initialize_guardrail(litellm_params: "LitellmParams", guardrail: "Guardrail"):
-    import litellm
+    from hypha import litellm
 
     _noma_callback = NomaGuardrail(
         guardrail_name=guardrail.get("guardrail_name", ""),

@@ -10,7 +10,7 @@ Note: This is called `anthropic_interface` because `anthropic` is a known python
 
 #### Non-streaming example
 ```python showLineNumbers title="Example using LiteLLM Python SDK"
-import litellm
+from hypha import litellm
 response = await litellm.anthropic.messages.acreate(
     messages=[{"role": "user", "content": "Hello, can you tell me a short joke?"}],
     api_key=api_key,
@@ -45,7 +45,7 @@ Example response:
 
 #### Streaming example
 ```python showLineNumbers title="Example using LiteLLM Python SDK"
-import litellm
+from hypha import litellm
 response = await litellm.anthropic.messages.acreate(
     messages=[{"role": "user", "content": "Hello, can you tell me a short joke?"}],
     api_key=api_key,

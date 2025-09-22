@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 
 def initialize_guardrail(litellm_params: "LitellmParams", guardrail: "Guardrail"):
-    import litellm
+    from hypha import litellm
 
     _aporia_callback = AporiaGuardrail(
         api_base=litellm_params.api_base,

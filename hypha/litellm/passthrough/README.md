@@ -6,7 +6,7 @@ E.g. Route to VLLM's `/classify` endpoint:
 ## SDK (Basic)
 
 ```python
-import litellm
+from hypha import litellm
 
 
 response = litellm.llm_passthrough_route(

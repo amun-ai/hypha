@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 
 def initialize_guardrail(litellm_params: "LitellmParams", guardrail: "Guardrail"):
-    import litellm
+    from hypha import litellm
 
     if not litellm_params.api_key:
         raise ValueError("Azure Content Safety: api_key is required")

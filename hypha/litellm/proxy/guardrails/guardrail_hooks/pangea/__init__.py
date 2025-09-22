@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 
 def initialize_guardrail(litellm_params: "LitellmParams", guardrail: "Guardrail"):
-    import litellm
+    from hypha import litellm
 
     guardrail_name = guardrail.get("guardrail_name")
     if not guardrail_name:

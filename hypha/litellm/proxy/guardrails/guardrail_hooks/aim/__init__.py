@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 
 def initialize_guardrail(litellm_params: "LitellmParams", guardrail: "Guardrail"):
-    import litellm
+    from hypha import litellm
     from hypha.litellm.proxy.guardrails.guardrail_hooks.aim import AimGuardrail
 
     _aim_callback = AimGuardrail(

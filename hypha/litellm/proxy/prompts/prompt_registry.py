@@ -114,7 +114,7 @@ class InMemoryPromptRegistry:
 
         Returns a Guardrail object if the guardrail is initialized successfully
         """
-        import litellm
+        from hypha import litellm
 
         prompt_id = prompt.prompt_id
         if prompt_id in self.IN_MEMORY_PROMPTS:

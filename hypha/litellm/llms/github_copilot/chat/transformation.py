@@ -45,7 +45,7 @@ class GithubCopilotConfig(OpenAIConfig):
         messages,
         model: str,
     ):
-        import litellm
+        from hypha import litellm
 
         disable_copilot_system_to_assistant = (
             litellm.disable_copilot_system_to_assistant

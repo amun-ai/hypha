@@ -290,7 +290,7 @@ def is_cloudzero_setup_in_config() -> bool:
     Returns:
         bool: True if CloudZero is configured, False otherwise
     """
-    import litellm
+    from hypha import litellm
     return "cloudzero" in litellm.callbacks
 
 

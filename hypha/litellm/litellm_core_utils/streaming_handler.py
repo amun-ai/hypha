@@ -1504,7 +1504,7 @@ class CustomStreamWrapper:
 
     def set_logging_event_loop(self, loop):
         """
-        import litellm, asyncio
+        from hypha import litellm, asyncio
 
         loop = asyncio.get_event_loop() # 👈 gets the current event loop
 

@@ -21,7 +21,7 @@ def set_global_prompt_directory(directory: str) -> None:
     Args:
         directory: Path to directory containing .prompt files
     """
-    import litellm
+    from hypha import litellm
 
     litellm.global_prompt_directory = directory  # type: ignore
 

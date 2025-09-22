@@ -234,7 +234,7 @@ def safe_deep_copy(data):
     """
     import copy
 
-    import litellm
+    from hypha import litellm
 
     if litellm.safe_memory_mode is True:
         return data

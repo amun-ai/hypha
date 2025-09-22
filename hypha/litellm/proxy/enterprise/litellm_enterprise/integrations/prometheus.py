@@ -320,7 +320,7 @@ class PrometheusLogger(CustomLogger):
 
     def _parse_prometheus_config(self) -> Dict[str, List[str]]:
         """Parse prometheus metrics configuration for label filtering and enabled metrics"""
-        import litellm
+        from hypha import litellm
         from hypha.litellm.types.integrations.prometheus import PrometheusMetricsConfig
 
         config = litellm.prometheus_metrics_config

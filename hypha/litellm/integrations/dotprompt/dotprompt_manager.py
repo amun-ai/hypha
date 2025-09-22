@@ -41,7 +41,7 @@ class DotpromptManager(CustomPromptManagement):
         prompt_data: Optional[Union[dict, str]] = None,
         prompt_id: Optional[str] = None,
     ):
-        import litellm
+        from hypha import litellm
 
         self.prompt_directory = prompt_directory or litellm.global_prompt_directory
         # Support for JSON-based prompts stored in memory/database

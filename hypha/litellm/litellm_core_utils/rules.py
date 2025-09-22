@@ -8,7 +8,7 @@ class Rules:
     Fail calls based on the input or llm api output
 
     Example usage:
-    import litellm
+    from hypha import litellm
     def my_custom_rule(input): # receives the model response
             if "i don't think i can answer" in input: # trigger fallback if the model refuses to answer
                     return False

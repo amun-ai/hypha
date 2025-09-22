@@ -125,7 +125,7 @@ class ProxyInitializationHelpers:
         """
         Get the arguments for `uvicorn` worker
         """
-        import litellm
+        from hypha import litellm
 
         uvicorn_args = {
             "app": "litellm.proxy.proxy_server:app",
@@ -661,7 +661,7 @@ def run_server(  # noqa: PLR0915
                 and "json_logs" in litellm_settings
                 and litellm_settings["json_logs"] is True
             ):
-                import litellm
+                from hypha import litellm
 
                 litellm.json_logs = True
 
@@ -680,7 +680,7 @@ def run_server(  # noqa: PLR0915
                 "key_management_settings", None
             )
             if key_management_settings is not None:
-                import litellm
+                from hypha import litellm
 
                 litellm._key_management_settings = KeyManagementSettings(
                     **key_management_settings
@@ -707,7 +707,7 @@ def run_server(  # noqa: PLR0915
                 sys.path.insert(
                     0, os.path.abspath("../..")
                 )  # Adds the parent directory to the system path - for litellm local dev
-                import litellm
+                from hypha import litellm
                 from hypha.litellm import get_secret_str
 
                 database_url = get_secret_str(database_url, default_value=None)
@@ -787,7 +787,7 @@ def run_server(  # noqa: PLR0915
         if port == 4000 and ProxyInitializationHelpers._is_port_in_use(port):
             port = random.randint(1024, 49152)
 
-        import litellm
+        from hypha import litellm
 
         if detailed_debug is True:
             litellm._turn_on_debug()

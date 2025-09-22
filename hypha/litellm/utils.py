@@ -5807,7 +5807,7 @@ def register_prompt_template(
         dict: The updated custom prompt dictionary.
     Example usage:
     ```
-    import litellm
+    from hypha import litellm
     litellm.register_prompt_template(
             model="llama-2",
         initial_prompt_value="You are a good assistant" # [OPTIONAL]

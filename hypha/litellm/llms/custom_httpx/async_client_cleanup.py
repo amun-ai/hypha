@@ -12,7 +12,7 @@ async def close_litellm_async_clients():
     and closes any aiohttp client sessions that are still open.
     """
     # Import here to avoid circular import
-    import litellm
+    from hypha import litellm
     from hypha.litellm.llms.custom_httpx.aiohttp_handler import BaseLLMAIOHTTPHandler
 
     cache_dict = getattr(litellm.in_memory_llm_clients_cache, "cache_dict", {})

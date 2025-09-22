@@ -115,7 +115,7 @@ def batch_completions(
 ):
     """
     Example usage:
-    import litellm
+    from hypha import litellm
     import os
     from hypha.litellm import batch_completion
 

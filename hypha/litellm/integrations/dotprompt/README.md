@@ -37,7 +37,7 @@ input:
 ### 2. Use with LiteLLM
 
 ```python
-import litellm
+from hypha import litellm
 
 litellm.set_global_prompt_directory("path/to/your/prompts")
 

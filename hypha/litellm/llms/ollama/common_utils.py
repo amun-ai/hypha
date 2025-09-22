@@ -61,7 +61,7 @@ class OllamaModelInfo(BaseLLMModelInfo):
         """Get API key from environment variables or litellm configuration"""
         import os
 
-        import litellm
+        from hypha import litellm
         from hypha.litellm.secret_managers.main import get_secret_str
 
         return (
