@@ -573,34 +573,25 @@ class LLMProxyWorker(BaseWorker):
             full_client_id = config.get("id", f"{workspace}/{client_id}")
             session["full_client_id"] = full_client_id
             
-            # Connect as a client to register services with retry logic
-            client = None
-            max_connect_retries = 3
-            for attempt in range(max_connect_retries):
-                try:
-                    client = await connect_to_server({
-                        "server_url": server_url,
-                        "client_id": client_id,
-                        "workspace": workspace,
-                        "token": token,
-                        "app_id": app_id,
-                    })
+            # Connect as a client to register services
+            try:
+                client = await connect_to_server({
+                    "server_url": server_url,
+                    "client_id": client_id,
+                    "workspace": workspace,
+                    "token": token,
+                    "app_id": app_id,
+                })
 
-                    # Verify the client connection is established
-                    if not client:
-                        raise ValueError("Failed to connect to server - client is None")
+                # Verify the client connection is established
+                if not client:
+                    raise ValueError("Failed to connect to server - client is None")
 
-                    # Connection successful
-                    logger.info(f"Successfully connected to server on attempt {attempt + 1}")
-                    break
+                logger.info(f"Successfully connected to server with client_id: {client_id}")
 
-                except Exception as e:
-                    if attempt < max_connect_retries - 1:
-                        logger.warning(f"Connection attempt {attempt + 1} failed: {e}, retrying...")
-                        await asyncio.sleep(1)
-                    else:
-                        logger.error(f"Failed to connect after {max_connect_retries} attempts: {e}")
-                        raise ValueError(f"Failed to establish client connection after {max_connect_retries} attempts: {e}")
+            except Exception as e:
+                logger.error(f"Failed to establish client connection: {e}")
+                raise ValueError(f"Failed to establish client connection: {e}")
 
             # Store client in session for cleanup
             session["client"] = client
