@@ -206,11 +206,17 @@ async def test_llm_proxy_installation_and_basic_operation(
     except Exception as e:
         print(f"Test failed with error: {e}")
         # Clean up on failure
-        await controller.stop(session_id)
+        try:
+            await controller.stop(session_id)
+        except Exception as stop_error:
+            print(f"Warning: Could not stop session {session_id}: {stop_error}")
         raise
-    
+
     # Clean up after successful test
-    await controller.stop(session_id)
+    try:
+        await controller.stop(session_id)
+    except Exception as stop_error:
+        print(f"Warning: Session {session_id} may have already stopped: {stop_error}")
     await controller.uninstall(app_id)
     
     print("LLM proxy basic operation test completed successfully")
@@ -402,7 +408,10 @@ async def test_llm_proxy_with_workspace_secrets(
     except Exception as e:
         print(f"Test failed with error: {e}")
         # Clean up on failure
-        await controller.stop(session_id_secrets)
+        try:
+            await controller.stop(session_id_secrets)
+        except Exception as stop_error:
+            print(f"Warning: Could not stop session {session_id_secrets}: {stop_error}")
         await controller.uninstall(app_id_secrets)
         await api.set_env("TEST_OPENAI_KEY", None)
         await api.set_env("TEST_CLAUDE_KEY", None)
@@ -410,7 +419,10 @@ async def test_llm_proxy_with_workspace_secrets(
         raise
     
     # Clean up after successful test
-    await controller.stop(session_id_secrets)
+    try:
+        await controller.stop(session_id_secrets)
+    except Exception as stop_error:
+        print(f"Warning: Session {session_id_secrets} may have already stopped: {stop_error}")
     await controller.uninstall(app_id_secrets)
     await api.set_env("TEST_OPENAI_KEY", None)
     await api.set_env("TEST_CLAUDE_KEY", None)
@@ -548,12 +560,18 @@ async def test_llm_proxy_with_multiple_models(
     except Exception as e:
         print(f"Test failed with error: {e}")
         # Clean up on failure
-        await controller.stop(session_id)
+        try:
+            await controller.stop(session_id)
+        except Exception as stop_error:
+            print(f"Warning: Could not stop session {session_id}: {stop_error}")
         await controller.uninstall(app_id)
         raise
-    
+
     # Clean up after successful test
-    await controller.stop(session_id)
+    try:
+        await controller.stop(session_id)
+    except Exception as stop_error:
+        print(f"Warning: Session {session_id} may have already stopped: {stop_error}")
     await controller.uninstall(app_id)
     
     print("Multi-provider LLM proxy test completed")
@@ -798,8 +816,11 @@ async def test_llm_proxy_lifecycle_management(
     
     # Stop
     print(f"About to stop session: {session_id}")
-    await controller.stop(session_id)
-    print(f"Stopped session: {session_id}")
+    try:
+        await controller.stop(session_id)
+        print(f"Stopped session: {session_id}")
+    except Exception as stop_error:
+        print(f"Warning: Session {session_id} may have already stopped: {stop_error}")
     
     # Verify services are cleaned up
     await asyncio.sleep(1)
@@ -876,8 +897,8 @@ async def test_llm_proxy_lifecycle_management(
     try:
         # Stop before uninstall
         await controller.stop(session2_id)
-    except:
-        pass  # Continue with cleanup even if stop fails
+    except Exception as e:
+        print(f"Warning: Could not stop session2 {session2_id}: {e}")  # Continue with cleanup even if stop fails
     
     try:
         # Uninstall
@@ -1033,15 +1054,27 @@ async def test_llm_proxy_concurrent_sessions(
     except Exception as e:
         print(f"Test failed with error: {e}")
         # Clean up on failure
-        await controller.stop(session1_id)
-        await controller.stop(session2_id)
+        try:
+            await controller.stop(session1_id)
+        except Exception as stop_error:
+            print(f"Warning: Could not stop session1 {session1_id}: {stop_error}")
+        try:
+            await controller.stop(session2_id)
+        except Exception as stop_error:
+            print(f"Warning: Could not stop session2 {session2_id}: {stop_error}")
         await controller.uninstall(app1_id)
         await controller.uninstall(app2_id)
         raise
     
     # Clean up
-    await controller.stop(session1_id)
-    await controller.stop(session2_id)
+    try:
+        await controller.stop(session1_id)
+    except Exception as stop_error:
+        print(f"Warning: Session1 {session1_id} may have already stopped: {stop_error}")
+    try:
+        await controller.stop(session2_id)
+    except Exception as stop_error:
+        print(f"Warning: Session2 {session2_id} may have already stopped: {stop_error}")
     await controller.uninstall(app1_id)
     await controller.uninstall(app2_id)
     
@@ -1299,7 +1332,10 @@ async def test_llm_proxy_memory_leak_detection(
     
     # Clean up before assertions
     try:
-        await controller.stop(session_id)
+        try:
+            await controller.stop(session_id)
+        except Exception as stop_error:
+            print(f"Warning: Session {session_id} may have already stopped: {stop_error}")
         await controller.uninstall(app_id)
     except:
         pass  # Continue with assertions even if cleanup fails
