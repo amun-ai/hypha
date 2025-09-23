@@ -694,10 +694,13 @@ class LLMProxyWorker(BaseWorker):
         except Exception as e:
             logger.error(f"Failed to start LLM proxy: {e}")
             traceback.print_exc()
-            
-            session["info"]["status"] = "failed"
-            session["info"]["logs"] = f"Failed to start LLM proxy: {str(e)}"
-            session["logs"].append(f"Failed: {str(e)}")
+
+            # Only update session info if session exists and has info key
+            if session and "info" in session:
+                session["info"]["status"] = "failed"
+                session["info"]["logs"] = f"Failed to start LLM proxy: {str(e)}"
+            if session and "logs" in session:
+                session["logs"].append(f"Failed: {str(e)}")
             raise
 
     @schema_method
