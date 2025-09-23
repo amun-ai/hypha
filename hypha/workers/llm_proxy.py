@@ -526,9 +526,15 @@ class LLMProxyWorker(BaseWorker):
                 self._sessions[full_client_id] = {"redirect_to": session_id}
             
             logger.info(f"Created session {session_id} from manifest with {len(model_list)} models, indexed as {full_client_id}")
-        
+
+        # Ensure we have the actual session, not a redirect
+        # After creating a redirect above, we need to re-fetch the actual session
+        session = self._get_actual_session(session_id)
+        if not session:
+            raise ValueError(f"Failed to get actual session for {session_id}")
+
         session["last_access"] = asyncio.get_event_loop().time()
-        
+
         # Now start the LLM proxy service
         logger.info(f"Starting LLM proxy service for session {session_id}")
         try:
