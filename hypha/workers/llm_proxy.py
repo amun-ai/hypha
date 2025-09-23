@@ -635,16 +635,39 @@ class LLMProxyWorker(BaseWorker):
                         proxy_server.llm_router = current_session.get("router")
                         proxy_server.llm_model_list = current_session.get("model_list", [])
                         proxy_server.general_settings = current_session.get("litellm_settings", {})
-                        
+
+                        # Get the app from session or create it if needed
+                        app = current_session.get("app")
+                        if not app:
+                            logger.warning(f"App not found in session {session_id}, attempting to recreate")
+                            app = await self._create_litellm_app(session_id)
+                            current_session["app"] = app
+
                         # Call the actual app
                         await app(args["scope"], args["receive"], args["send"])
-                        
+
+                    except Exception as e:
+                        logger.error(f"Error serving LLM proxy request for session {session_id}: {e}")
+                        # Return 500 error
+                        scope = args["scope"]
+                        receive = args["receive"]
+                        send = args["send"]
+
+                        await send({
+                            'type': 'http.response.start',
+                            'status': 500,
+                            'headers': [(b'content-type', b'application/json')],
+                        })
+                        await send({
+                            'type': 'http.response.body',
+                            'body': f'{{"error": "Internal server error: {str(e)}"}}'.encode(),
+                        })
                     finally:
                         # Restore original global state
                         if original_router is not None:
                             proxy_server.llm_router = original_router
                         if original_model_list is not None:
-                            proxy_server.llm_model_list = original_model_list  
+                            proxy_server.llm_model_list = original_model_list
                         if original_settings is not None:
                             proxy_server.general_settings = original_settings
                 
