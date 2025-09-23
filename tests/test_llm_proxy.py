@@ -728,12 +728,18 @@ async def test_llm_proxy_workspace_isolation(
     except Exception as e:
         print(f"Test failed with error: {e}")
         # Clean up on failure
-        await controller1.stop(session1_id)
+        try:
+            await controller1.stop(session1_id)
+        except Exception as stop_error:
+            print(f"Warning: Could not stop session {session1_id}: {stop_error}")
         await controller1.uninstall(app1_id)
         raise
-    
+
     # Clean up after successful test
-    await controller1.stop(session1_id)
+    try:
+        await controller1.stop(session1_id)
+    except Exception as stop_error:
+        print(f"Warning: Session {session1_id} may have already stopped: {stop_error}")
     await controller1.uninstall(app1_id)
     
     print("Workspace isolation test completed")
