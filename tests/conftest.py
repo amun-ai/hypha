@@ -304,6 +304,17 @@ def postgres_server():
             time.sleep(8)  # Give more time for pgvector container to initialize
         else:
             print("Using existing PostgreSQL container:", existing_container)
+            # In GitHub Actions, ensure pgvector extension is created
+            try:
+                engine = create_engine(
+                    f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@127.0.0.1:{POSTGRES_PORT}/{POSTGRES_DB}"
+                )
+                with engine.connect() as connection:
+                    connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                    connection.commit()
+                    print("Created pgvector extension in existing container")
+            except Exception as e:
+                print(f"Note: Could not create pgvector extension: {e}")
     else:
         # Check if the PostgreSQL pgvector image exists locally
         image_exists = subprocess.run(
