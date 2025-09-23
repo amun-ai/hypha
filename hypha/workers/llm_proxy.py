@@ -695,18 +695,41 @@ class LLMProxyWorker(BaseWorker):
             
             # Register the LLM service as an ASGI service (type="asgi")
             logger.info(f"Registering service {service_id} for app {app_id}")
-            service_info = await client.register_service({
-                "id": service_id,
-                "name": f"LLM Proxy - {session_id}",
-                "type": "asgi",  # Changed from "llm-proxy" to "asgi" to use existing ASGI middleware
-                "description": f"LLM proxy service with {len(session['model_list'])} models",
-                "serve": serve_llm,  # ASGI handler function
-                "config": {
-                    "visibility": "protected",  # Only accessible within workspace
-                    "require_context": True,
-                },
-                "app_id": app_id,  # Associate with the app
-            })
+
+            # Important: Add a small delay to ensure connection is fully established
+            # This addresses a race condition where the connection might not be fully ready
+            await asyncio.sleep(0.1)
+
+            try:
+                service_info = await client.register_service({
+                    "id": service_id,
+                    "name": f"LLM Proxy - {session_id}",
+                    "type": "asgi",  # Changed from "llm-proxy" to "asgi" to use existing ASGI middleware
+                    "description": f"LLM proxy service with {len(session['model_list'])} models",
+                    "serve": serve_llm,  # ASGI handler function
+                    "config": {
+                        "visibility": "protected",  # Only accessible within workspace
+                        "require_context": True,
+                    },
+                    "app_id": app_id,  # Associate with the app
+                })
+            except Exception as e:
+                # Log more details about the connection state when registration fails
+                if hasattr(client, 'rpc'):
+                    rpc = client.rpc
+                    connection_state = "unknown"
+                    if hasattr(rpc, '_connection'):
+                        if rpc._connection is None:
+                            connection_state = "connection is None"
+                        elif not hasattr(rpc._connection, 'manager_id'):
+                            connection_state = "connection exists but no manager_id attribute"
+                        elif rpc._connection.manager_id is None:
+                            connection_state = "manager_id is None"
+                        else:
+                            connection_state = f"manager_id = {rpc._connection.manager_id}"
+                    logger.error(f"Registration failed. Connection state: {connection_state}")
+                logger.error(f"Failed to register service: {e}")
+                raise
             
             # Store the full service ID including the client ID path
             full_service_id = service_info["id"]
