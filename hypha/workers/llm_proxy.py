@@ -533,6 +533,11 @@ class LLMProxyWorker(BaseWorker):
         if not session:
             raise ValueError(f"Failed to get actual session for {session_id}")
 
+        # Validate the session has required fields
+        if "model_list" not in session:
+            logger.error(f"Session {session_id} is missing model_list. Session keys: {list(session.keys())}")
+            raise ValueError(f"Session {session_id} is invalid - missing model_list")
+
         session["last_access"] = asyncio.get_event_loop().time()
 
         # Now start the LLM proxy service
@@ -701,11 +706,14 @@ class LLMProxyWorker(BaseWorker):
             await asyncio.sleep(0.1)
 
             try:
+                # Get model count safely - session should always have model_list but be defensive
+                model_count = len(session.get('model_list', []))
+
                 service_info = await client.register_service({
                     "id": service_id,
                     "name": f"LLM Proxy - {session_id}",
                     "type": "asgi",  # Changed from "llm-proxy" to "asgi" to use existing ASGI middleware
-                    "description": f"LLM proxy service with {len(session['model_list'])} models",
+                    "description": f"LLM proxy service with {model_count} models",
                     "serve": serve_llm,  # ASGI handler function
                     "config": {
                         "visibility": "protected",  # Only accessible within workspace
