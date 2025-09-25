@@ -637,14 +637,22 @@ class LLMProxyWorker(BaseWorker):
 
             # Store client in session for cleanup
             session["client"] = client
-            
+
+            # Ensure we have the actual session, not a redirect, before accessing fields
+            actual_session = self._get_actual_session(session_id)
+            if not actual_session:
+                raise ValueError(f"Session {session_id} not found after client connection")
+
             # Resolve any HYPHA_SECRET: prefixed values in model_list
             # This must be done after connecting to the server
             resolved_model_list = await self._resolve_secrets_in_model_list(
-                session["model_list"], 
+                actual_session.get("model_list", []),
                 client
             )
-            session["model_list"] = resolved_model_list
+            actual_session["model_list"] = resolved_model_list
+
+            # Update the session reference in case it was different
+            session = actual_session
             
             # Re-create the litellm app with resolved secrets
             app = await self._create_litellm_app(session_id)
