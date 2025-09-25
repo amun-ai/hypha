@@ -379,6 +379,12 @@ class LLMProxyWorker(BaseWorker):
         if not model_list:
             raise ValueError("No model_list found in app manifest config")
         
+        # Generate a master key for this session if not provided
+        import secrets
+        if "master_key" not in litellm_settings:
+            # Generate a secure random key for this session
+            litellm_settings["master_key"] = f"sk-hypha-{session_id[:8]}-{secrets.token_hex(16)}"
+
         # Store session info as dict
         session_info = {
             "session_id": session_id,
@@ -386,7 +392,7 @@ class LLMProxyWorker(BaseWorker):
             "logs": "LLM proxy session prepared",
             "outputs": {}
         }
-        
+
         self._sessions[session_id] = {
             "info": session_info,
             "model_list": model_list,
@@ -395,6 +401,7 @@ class LLMProxyWorker(BaseWorker):
             "user": user_info.id,
             "last_access": asyncio.get_event_loop().time(),
             "logs": ["LLM proxy session initialized"],
+            "master_key": litellm_settings["master_key"],  # Store master key early
         }
         
         # Add session_id to manifest for the execute phase
@@ -405,17 +412,17 @@ class LLMProxyWorker(BaseWorker):
 
     async def _create_litellm_app(self, session_id: str) -> FastAPI:
         """Create or configure the litellm FastAPI app.
-        
+
         This configures litellm's global proxy_server app with our model list
         and settings, then returns the app for ASGI serving.
         """
         session = self._get_actual_session(session_id)
         if not session:
             raise ValueError(f"Session {session_id} not found")
-        
+
         model_list = session["model_list"]
         litellm_settings = session.get("litellm_settings", {})
-        
+
         # Ensure each model has an API key to prevent initialization errors
         # For models with mock_response, use a dummy key
         for model in model_list:
@@ -424,7 +431,7 @@ class LLMProxyWorker(BaseWorker):
                 # If there's a mock_response and no api_key, add a dummy one
                 if "mock_response" in params and not params.get("api_key"):
                     params["api_key"] = "dummy-key-for-mock"
-        
+
         # Create a Router with our model configuration
         # The Router handles load balancing and model selection
         from hypha.litellm.router import Router
@@ -434,18 +441,27 @@ class LLMProxyWorker(BaseWorker):
             set_verbose=litellm_settings.get("debug", False),
             debug_level=litellm_settings.get("debug_level", "INFO"),
         )
-        
+
         # Store session-specific configuration instead of setting global variables
         session["router"] = router
         session["litellm_settings"] = litellm_settings
-        
+
+        # The master key was already generated during compile
+        # Just ensure it's in the session if not already there
+        if "master_key" not in session and "master_key" in litellm_settings:
+            session["master_key"] = litellm_settings["master_key"]
+
         # Get the app - this is the FastAPI app with all routes already configured
         # We'll handle session-specific routing in the serve function
         from hypha.litellm.proxy import proxy_server
         app = proxy_server.app
-        
+
+        # Set the master key in proxy_server for authentication
+        proxy_server.master_key = session["master_key"]
+        proxy_server.litellm_master_key_hash = None  # Will be set when needed
+
         logger.info(f"Configured litellm proxy app for session {session_id} with {len(model_list)} models")
-        
+
         return app
 
     @schema_method
@@ -653,12 +669,14 @@ class LLMProxyWorker(BaseWorker):
                     original_router = getattr(proxy_server, 'llm_router', None)
                     original_model_list = getattr(proxy_server, 'llm_model_list', None)
                     original_settings = getattr(proxy_server, 'general_settings', None)
-                    
+                    original_master_key = getattr(proxy_server, 'master_key', None)
+
                     try:
                         # Set session-specific configuration
                         proxy_server.llm_router = current_session.get("router")
                         proxy_server.llm_model_list = current_session.get("model_list", [])
                         proxy_server.general_settings = current_session.get("litellm_settings", {})
+                        proxy_server.master_key = current_session.get("master_key")
 
                         # Get the app from session or create it if needed
                         app = current_session.get("app")
@@ -694,6 +712,8 @@ class LLMProxyWorker(BaseWorker):
                             proxy_server.llm_model_list = original_model_list
                         if original_settings is not None:
                             proxy_server.general_settings = original_settings
+                        if original_master_key is not None:
+                            proxy_server.master_key = original_master_key
                 
                 return serve_llm
             
@@ -738,6 +758,7 @@ class LLMProxyWorker(BaseWorker):
                 "providers": list(configured_providers),
                 "endpoints": self._get_litellm_endpoints(service_id),
                 "base_url": f"/apps/{service_id}",
+                "master_key": session.get("master_key"),  # Include master key for API access
             }
             
             session["logs"].append(f"LLM proxy started with service ID: {service_id}")

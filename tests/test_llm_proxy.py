@@ -808,16 +808,22 @@ async def test_llm_proxy_lifecycle_management(
     session = await controller.start(app_id, wait_for_service=unique_service_id, timeout=30)
     session_id = session["id"]
     print(f"Started session: {session_id}")
-    
+
     await asyncio.sleep(2)
-    
+
+    # The session returned by start already contains the outputs with the master key
+    master_key = session.get("outputs", {}).get("master_key")
+    print(f"Master key: {master_key}")
+
     # Verify it's running
     base_url = f"http://127.0.0.1:{SIO_PORT}/{api.config.workspace}/apps/{unique_service_id}"
-    headers = {"Authorization": f"Bearer {test_user_token}"}
-    
+    # Use the LLM proxy's master key for authentication
+    headers = {"Authorization": f"Bearer {master_key}"} if master_key else {"Authorization": f"Bearer {test_user_token}"}
+
     async with httpx.AsyncClient() as client:
-        response = await client.get(f"{base_url}/health", headers=headers, timeout=10)
-        assert response.status_code in [200, 204], "Service should be healthy"
+        # Try /health/readiness which is simpler and doesn't require a database
+        response = await client.get(f"{base_url}/health/readiness", headers=headers, timeout=10)
+        assert response.status_code in [200, 204], f"Service should be healthy, got {response.status_code}: {response.text}"
         print("Service is healthy after start")
     
     # Stop
@@ -844,7 +850,7 @@ async def test_llm_proxy_lifecycle_management(
             try:
                 # Try to access the service - if it fails, it's cleaned up
                 async with httpx.AsyncClient() as client:
-                    response = await client.get(f"{base_url}/health", headers=headers, timeout=5)
+                    response = await client.get(f"{base_url}/health/readiness", headers=headers, timeout=5)
                     if response.status_code >= 400:
                         print(f"Service cleanup confirmed after {(i+1)*2} seconds")
                         break
@@ -872,12 +878,17 @@ async def test_llm_proxy_lifecycle_management(
     session2 = await controller.start(app_id, wait_for_service=unique_service_id, timeout=30)
     session2_id = session2["id"]
     print(f"Restarted with new session: {session2_id}")
-    
+
     await asyncio.sleep(2)
-    
+
+    # Get the new session's master key from the returned session
+    master_key2 = session2.get("outputs", {}).get("master_key")
+    print(f"New master key: {master_key2}")
+    headers2 = {"Authorization": f"Bearer {master_key2}"} if master_key2 else {"Authorization": f"Bearer {test_user_token}"}
+
     # Verify it's running again - with debugging for 500 errors
     async with httpx.AsyncClient() as client:
-        response = await client.get(f"{base_url}/health", headers=headers, timeout=10)
+        response = await client.get(f"{base_url}/health/readiness", headers=headers2, timeout=10)
         if response.status_code != 200 and response.status_code != 204:
             print(f"Service health check failed with status {response.status_code}")
             try:
@@ -888,7 +899,7 @@ async def test_llm_proxy_lifecycle_management(
             
             # Try to get more information about what services are registered
             try:
-                models_response = await client.get(f"{base_url}/v1/models", headers=headers, timeout=10)
+                models_response = await client.get(f"{base_url}/v1/models", headers=headers2, timeout=10)
                 print(f"Models endpoint status: {models_response.status_code}")
                 if models_response.status_code == 200:
                     print(f"Models available: {models_response.json()}")
