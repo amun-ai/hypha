@@ -95,24 +95,28 @@ class LLMProxyWorker(BaseWorker):
 
     async def _resolve_secrets_in_model_list(self, model_list: List[Dict], server) -> List[Dict]:
         """Resolve HYPHA_SECRET: prefixed values in model_list by fetching from workspace env.
-        
+
         Args:
             model_list: List of model configurations
-            server: The connected server instance to fetch env variables from
-            
+            server: The connected server instance to fetch env variables from (can be None)
+
         Returns:
             Updated model_list with resolved secrets
         """
+        # If no server provided, return model_list as-is (no secret resolution)
+        if server is None:
+            return model_list
+
         resolved_list = []
-        
+
         for model_config in model_list:
             # Deep copy to avoid modifying the original
             resolved_model = model_config.copy()
-            
+
             # Check litellm_params for secrets
             if "litellm_params" in resolved_model:
                 litellm_params = resolved_model["litellm_params"].copy()
-                
+
                 # Check each parameter for HYPHA_SECRET: prefix
                 for param_key, param_value in litellm_params.items():
                     if isinstance(param_value, str) and param_value.startswith("HYPHA_SECRET:"):
@@ -577,8 +581,9 @@ class LLMProxyWorker(BaseWorker):
             # Store the full client ID for later cleanup
             full_client_id = config.get("id", f"{workspace}/{client_id}")
             session["full_client_id"] = full_client_id
-            
-            # Connect as a client to register services
+
+            # We need to connect to register the service
+            # Create a client connection
             try:
                 client = await connect_to_server({
                     "server_url": server_url,
@@ -591,6 +596,9 @@ class LLMProxyWorker(BaseWorker):
                 # Verify the client connection is established
                 if not client:
                     raise ValueError("Failed to connect to server - client is None")
+
+                # Wait a bit for connection to stabilize
+                await asyncio.sleep(0.2)
 
                 logger.info(f"Successfully connected to server with client_id: {client_id}")
 
@@ -691,58 +699,35 @@ class LLMProxyWorker(BaseWorker):
             
             # Create the session-specific serve function
             serve_llm = create_session_serve_function(session_id)
-            
-            # Check if we already registered this service in a previous start
-            if "registered_service_id" in session and session.get("client"):
-                # Service already registered, just return the session_id
-                logger.info(f"Service {service_id} already registered as {session['registered_service_id']}, skipping registration")
-                return session_id
-            
-            # Register the LLM service as an ASGI service (type="asgi")
-            logger.info(f"Registering service {service_id} for app {app_id}")
 
-            # Important: Add a small delay to ensure connection is fully established
-            # This addresses a race condition where the connection might not be fully ready
-            await asyncio.sleep(0.1)
+            # Store the ASGI handler in the session
+            session["serve"] = serve_llm
+
+            # Register the service through the client connection
+            logger.info(f"Registering ASGI handler for LLM proxy service: {service_id}")
 
             try:
-                # Get model count safely - session should always have model_list but be defensive
-                model_count = len(session.get('model_list', []))
-
                 service_info = await client.register_service({
                     "id": service_id,
                     "name": f"LLM Proxy - {session_id}",
-                    "type": "asgi",  # Changed from "llm-proxy" to "asgi" to use existing ASGI middleware
-                    "description": f"LLM proxy service with {model_count} models",
-                    "serve": serve_llm,  # ASGI handler function
+                    "type": "asgi",
+                    "description": f"LLM proxy service with {len(session.get('model_list', []))} models",
+                    "serve": serve_llm,
                     "config": {
-                        "visibility": "protected",  # Only accessible within workspace
+                        "visibility": "protected",
                         "require_context": True,
                     },
-                    "app_id": app_id,  # Associate with the app
+                    "app_id": app_id,
                 })
+
+                # Store the registered service info
+                session["service_info"] = service_info
+                session["registered_service_id"] = service_info.get("id", f"{full_client_id}:{service_id}")
+                logger.info(f"Successfully registered LLM proxy service: {session['registered_service_id']}")
+
             except Exception as e:
-                # Log more details about the connection state when registration fails
-                if hasattr(client, 'rpc'):
-                    rpc = client.rpc
-                    connection_state = "unknown"
-                    if hasattr(rpc, '_connection'):
-                        if rpc._connection is None:
-                            connection_state = "connection is None"
-                        elif not hasattr(rpc._connection, 'manager_id'):
-                            connection_state = "connection exists but no manager_id attribute"
-                        elif rpc._connection.manager_id is None:
-                            connection_state = "manager_id is None"
-                        else:
-                            connection_state = f"manager_id = {rpc._connection.manager_id}"
-                    logger.error(f"Registration failed. Connection state: {connection_state}")
                 logger.error(f"Failed to register service: {e}")
                 raise
-            
-            # Store the full service ID including the client ID path
-            full_service_id = service_info["id"]
-            logger.info(f"Successfully registered LLM proxy service with full ID: {full_service_id}")
-            session["registered_service_id"] = full_service_id
             
             # Update session info - using /apps/ path now instead of /llm/
             session["info"]["status"] = "running"
@@ -786,27 +771,30 @@ class LLMProxyWorker(BaseWorker):
         # Check if session exists in memory
         session = self._get_actual_session(session_id)
         if session:
-            
-            # Try to unregister the service first if we have a client
+            # Try to unregister the service if we have a client
             client = session.get("client")
             if client and "registered_service_id" in session:
                 try:
                     service_id_to_unregister = session["registered_service_id"]
-                    logger.info(f"Unregistering service before cleanup: {service_id_to_unregister}")
+                    logger.info(f"Unregistering service: {service_id_to_unregister}")
                     await client.unregister_service(service_id_to_unregister)
                     logger.info(f"Successfully unregistered service: {service_id_to_unregister}")
                 except Exception as e:
-                    # Service may already be gone if client disconnected
-                    # This is expected behavior, not an error
-                    if "not found" in str(e).lower() or "Service not found" in str(e):
-                        logger.debug(f"Service {session.get('registered_service_id')} already cleaned up (expected if client disconnected)")
+                    # Service may already be gone
+                    if "not found" in str(e).lower():
+                        logger.debug(f"Service {service_id_to_unregister} already cleaned up")
                     else:
-                        # Only log as error if it's not a "not found" issue
-                        logger.warning(f"Failed to unregister service {session.get('registered_service_id')}: {e}")
-            else:
-                logger.warning(f"Session {session_id} has no client or registered_service_id for cleanup")
-                logger.warning(f"Session keys: {list(session.keys())}")
-            
+                        logger.warning(f"Failed to unregister service: {e}")
+
+            # Clean up client connection if any
+            if client:
+                try:
+                    # Disconnect the client to clean up any resources
+                    await client.disconnect()
+                    logger.info(f"Disconnected client for session {session_id}")
+                except Exception as e:
+                    logger.debug(f"Client disconnection during cleanup: {e}")
+
             # Now cleanup the session
             await self._cleanup_session(session_id)
         else:
@@ -841,7 +829,21 @@ class LLMProxyWorker(BaseWorker):
             if session.get("service_id") == service_id:
                 return session.get("app")
         return None
-    
+
+    @schema_method
+    async def get_service_info(
+        self,
+        session_id: str,
+        context: Optional[dict] = None
+    ) -> dict:
+        """Get the service info including the ASGI handler for a session."""
+        session = self._get_actual_session(session_id)
+        if not session:
+            raise ValueError(f"Session {session_id} not found")
+
+        # Return the service info with the serve function
+        return session.get("service_info", {})
+
     def get_service_api(self):
         """Get the service API definition."""
         return {
@@ -858,6 +860,7 @@ class LLMProxyWorker(BaseWorker):
             "start": self.start,
             "stop": self.stop,
             "get_logs": self.get_logs,
+            "get_service_info": self.get_service_info,
         }
 
 
