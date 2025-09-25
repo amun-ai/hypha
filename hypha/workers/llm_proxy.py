@@ -613,8 +613,21 @@ class LLMProxyWorker(BaseWorker):
                 if not client:
                     raise ValueError("Failed to connect to server - client is None")
 
-                # Wait a bit for connection to stabilize
-                await asyncio.sleep(0.2)
+                # Wait for connection to be fully established with manager_id
+                max_wait = 5.0  # Maximum 5 seconds
+                wait_interval = 0.1
+                elapsed = 0.0
+
+                while elapsed < max_wait:
+                    # Check if the connection has manager_id
+                    if hasattr(client, '_connection') and hasattr(client._connection, 'manager_id') and client._connection.manager_id:
+                        logger.info(f"Connection established with manager_id: {client._connection.manager_id}")
+                        break
+                    await asyncio.sleep(wait_interval)
+                    elapsed += wait_interval
+                else:
+                    # Timeout - connection still doesn't have manager_id
+                    logger.warning(f"Connection established but manager_id not set after {max_wait}s")
 
                 logger.info(f"Successfully connected to server with client_id: {client_id}")
 
