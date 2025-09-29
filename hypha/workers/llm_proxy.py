@@ -635,13 +635,15 @@ class LLMProxyWorker(BaseWorker):
                 logger.error(f"Failed to establish client connection: {e}")
                 raise ValueError(f"Failed to establish client connection: {e}")
 
-            # Store client in session for cleanup
-            session["client"] = client
-
-            # Ensure we have the actual session, not a redirect, before accessing fields
+            # Ensure we have the actual session, not a redirect, before storing client
             actual_session = self._get_actual_session(session_id)
             if not actual_session:
-                raise ValueError(f"Session {session_id} not found after client connection")
+                # If session doesn't exist at all (shouldn't happen at this point), use the current session
+                actual_session = session
+                logger.warning(f"Using current session as actual session for {session_id}")
+
+            # Store client in the actual session for cleanup
+            actual_session["client"] = client
 
             # Resolve any HYPHA_SECRET: prefixed values in model_list
             # This must be done after connecting to the server
@@ -651,7 +653,7 @@ class LLMProxyWorker(BaseWorker):
             )
             actual_session["model_list"] = resolved_model_list
 
-            # Update the session reference in case it was different
+            # Update the session reference to use the actual session
             session = actual_session
             
             # Re-create the litellm app with resolved secrets
