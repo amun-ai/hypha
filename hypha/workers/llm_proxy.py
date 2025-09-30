@@ -600,41 +600,13 @@ class LLMProxyWorker(BaseWorker):
 
             # We need to connect to register the service
             # Create a client connection
-            try:
-                client = await connect_to_server({
-                    "server_url": server_url,
-                    "client_id": client_id,
-                    "workspace": workspace,
-                    "token": token,
-                    "app_id": app_id,
-                })
-
-                # Verify the client connection is established
-                if not client:
-                    raise ValueError("Failed to connect to server - client is None")
-
-                # Wait for connection to be fully established with manager_id
-                max_wait = 5.0  # Maximum 5 seconds
-                wait_interval = 0.1
-                elapsed = 0.0
-
-                while elapsed < max_wait:
-                    # Check if the connection has manager_id
-                    if hasattr(client, '_connection') and hasattr(client._connection, 'manager_id') and client._connection.manager_id:
-                        logger.info(f"Connection established with manager_id: {client._connection.manager_id}")
-                        break
-                    await asyncio.sleep(wait_interval)
-                    elapsed += wait_interval
-                else:
-                    # Timeout - connection still doesn't have manager_id
-                    logger.warning(f"Connection established but manager_id not set after {max_wait}s")
-
-                logger.info(f"Successfully connected to server with client_id: {client_id}")
-
-            except Exception as e:
-                logger.error(f"Failed to establish client connection: {e}")
-                raise ValueError(f"Failed to establish client connection: {e}")
-
+            client = await connect_to_server({
+                "server_url": server_url,
+                "client_id": client_id,
+                "workspace": workspace,
+                "token": token,
+                "app_id": app_id,
+            })
             # Ensure we have the actual session, not a redirect, before storing client
             actual_session = self._get_actual_session(session_id)
             if not actual_session:
@@ -671,8 +643,6 @@ class LLMProxyWorker(BaseWorker):
                     current_session = self._get_actual_session(session_id)
                     if not current_session:
                         # Session not found - return 404
-                        scope = args["scope"]
-                        receive = args["receive"]
                         send = args["send"]
                         
                         await send({
@@ -848,7 +818,6 @@ class LLMProxyWorker(BaseWorker):
             # Try to connect and clean up any services registered by this session
             if context and context.get("ws"):
                 try:
-                    from hypha_rpc import connect_to_server
                     # Extract workspace and client_id from session_id
                     if "/" in session_id:
                         workspace, client_id = session_id.split("/", 1)
