@@ -608,22 +608,6 @@ class LLMProxyWorker(BaseWorker):
                 "app_id": app_id,
             })
 
-            # Wait for connection to be fully established with manager_id
-            max_wait = 5.0  # Maximum 5 seconds
-            wait_interval = 0.1
-            elapsed = 0.0
-
-            while elapsed < max_wait:
-                # Check if the connection has manager_id
-                if hasattr(client.rpc, '_connection') and hasattr(client.rpc._connection, 'manager_id') and client.rpc._connection.manager_id:
-                    logger.info(f"Connection established with manager_id: {client.rpc._connection.manager_id}")
-                    break
-                await asyncio.sleep(wait_interval)
-                elapsed += wait_interval
-            else:
-                # Timeout - connection still doesn't have manager_id
-                logger.warning(f"Connection established but manager_id not set after {max_wait}s - proceeding anyway")
-
             # Ensure we have the actual session, not a redirect, before storing client
             actual_session = self._get_actual_session(session_id)
             if not actual_session:
