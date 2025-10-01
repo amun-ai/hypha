@@ -761,22 +761,14 @@ class RedisRPCConnection:
         event_bus_ref = self._event_bus if hasattr(self, '_event_bus') else None
 
         # PRIORITY 1: Clean filtered_handler (the main leak source)
-        # Clear reference IMMEDIATELY to prevent leaks even if unregistration fails
-        try:
-            if hasattr(self, '_filtered_handler') and self._filtered_handler:
-                handler = self._filtered_handler
-                self._filtered_handler = None  # Clear reference IMMEDIATELY
-                try:
-                    if event_bus_ref:  # Use saved reference
-                        # Remove specific handler for this client's pattern
-                        event_bus_ref.off(f"{self._workspace}/*:msg", handler)
-                    logger.debug(f"Unregistered filtered_handler for {self._workspace}/{self._client_id}")
-                except Exception as e:
-                    logger.debug(f"Error unregistering filtered_handler: {e}")
-        except Exception as e:
-            logger.debug(f"Critical error clearing filtered_handler: {e}")
-            # Ensure it's cleared even if everything else fails
-            self._filtered_handler = None
+        # Clear reference IMMEDIATELY to prevent leaks
+        if hasattr(self, '_filtered_handler') and self._filtered_handler:
+            handler = self._filtered_handler
+            self._filtered_handler = None  # Clear reference IMMEDIATELY
+            if event_bus_ref:  # Use saved reference
+                # Remove specific handler for this client's pattern
+                event_bus_ref.off(f"{self._workspace}/*:msg", handler)
+            logger.debug(f"Unregistered filtered_handler for {self._workspace}/{self._client_id}")
         
         # PRIORITY 2: Clear other circular references (but more gently)
         try:
@@ -832,13 +824,9 @@ class RedisRPCConnection:
             
             # Clean up direct message handler using saved event_bus reference
             if self._handle_message and event_bus_ref:
-                try:
-                    # Remove specific handler for this client's direct messages
-                    event_bus_ref.off(f"{self._workspace}/{self._client_id}:msg", self._handle_message)
-                    self._handle_message = None
-                except Exception:
-                    # Clear reference even if unregistering fails
-                    self._handle_message = None
+                # Remove specific handler for this client's direct messages
+                event_bus_ref.off(f"{self._workspace}/{self._client_id}:msg", self._handle_message)
+                self._handle_message = None
             else:
                 # Just clear the reference if event_bus is not available
                 self._handle_message = None
