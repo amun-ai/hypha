@@ -768,11 +768,8 @@ class RedisRPCConnection:
                 self._filtered_handler = None  # Clear reference IMMEDIATELY
                 try:
                     if event_bus_ref:  # Use saved reference
-                        # Try to remove specific handler first
+                        # Remove specific handler for this client's pattern
                         event_bus_ref.off(f"{self._workspace}/*:msg", handler)
-                        # Defensive: ensure pattern is fully cleared
-                        # This handles cases where handler identity check fails
-                        event_bus_ref._redis_event_bus.clear_all(f"{self._workspace}/*:msg")
                     logger.debug(f"Unregistered filtered_handler for {self._workspace}/{self._client_id}")
                 except Exception as e:
                     logger.debug(f"Error unregistering filtered_handler: {e}")
@@ -836,10 +833,8 @@ class RedisRPCConnection:
             # Clean up direct message handler using saved event_bus reference
             if self._handle_message and event_bus_ref:
                 try:
-                    # Try to remove specific handler first
+                    # Remove specific handler for this client's direct messages
                     event_bus_ref.off(f"{self._workspace}/{self._client_id}:msg", self._handle_message)
-                    # Defensive: ensure pattern is fully cleared
-                    event_bus_ref._redis_event_bus.clear_all(f"{self._workspace}/{self._client_id}:msg")
                     self._handle_message = None
                 except Exception:
                     # Clear reference even if unregistering fails
