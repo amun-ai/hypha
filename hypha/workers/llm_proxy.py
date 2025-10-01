@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 class LLMProxyWorker(BaseWorker):
     """Worker for LLM proxy using litellm for multi-provider support."""
 
+    # Class-level lock to synchronize global state access across all sessions
+    _global_state_lock = asyncio.Lock()
+
     def __init__(self, store, workspace_manager, worker_id):
         """Initialize the LLM proxy worker."""
         super().__init__()
@@ -410,11 +413,11 @@ class LLMProxyWorker(BaseWorker):
         # Return the updated manifest and files (unchanged)
         return manifest, files
 
-    async def _create_litellm_app(self, session_id: str) -> FastAPI:
-        """Create or configure the litellm FastAPI app.
+    async def _create_litellm_app(self, session_id: str):
+        """Create an isolated litellm proxy app for this session.
 
-        This configures litellm's global proxy_server app with our model list
-        and settings, then returns the app for ASGI serving.
+        Instead of using the shared global proxy_server.app, this creates
+        an ASGI wrapper that provides session-specific isolation.
         """
         session = self._get_actual_session(session_id)
         if not session:
@@ -442,7 +445,7 @@ class LLMProxyWorker(BaseWorker):
             debug_level=litellm_settings.get("debug_level", "INFO"),
         )
 
-        # Store session-specific configuration instead of setting global variables
+        # Store session-specific configuration
         session["router"] = router
         session["litellm_settings"] = litellm_settings
 
@@ -451,18 +454,60 @@ class LLMProxyWorker(BaseWorker):
         if "master_key" not in session and "master_key" in litellm_settings:
             session["master_key"] = litellm_settings["master_key"]
 
-        # Get the app - this is the FastAPI app with all routes already configured
-        # We'll handle session-specific routing in the serve function
+        # Create an isolated ASGI app wrapper for this session
+        # This wrapper intercepts all requests and sets session-specific state
         from hypha.litellm.proxy import proxy_server
-        app = proxy_server.app
+        base_app = proxy_server.app
 
-        # Set the master key in proxy_server for authentication
-        proxy_server.master_key = session["master_key"]
-        proxy_server.litellm_master_key_hash = None  # Will be set when needed
+        class SessionIsolatedApp:
+            """ASGI wrapper that provides session isolation for LiteLLM."""
 
-        logger.info(f"Configured litellm proxy app for session {session_id} with {len(model_list)} models")
+            def __init__(self, base_app, session_data, worker):
+                self.base_app = base_app
+                self.session_data = session_data
+                self.session_router = session_data["router"]
+                self.session_model_list = session_data["model_list"]
+                self.session_settings = session_data.get("litellm_settings", {})
+                self.session_master_key = session_data.get("master_key")
+                self.worker = worker
 
-        return app
+            async def __call__(self, scope, receive, send):
+                """Handle ASGI requests with session-specific configuration."""
+                from hypha.litellm.proxy import proxy_server
+
+                # Use class-level lock to ensure only one session modifies globals at a time
+                async with self.worker._global_state_lock:
+                    # Save original global state
+                    original_router = getattr(proxy_server, 'llm_router', None)
+                    original_model_list = getattr(proxy_server, 'llm_model_list', None)
+                    original_settings = getattr(proxy_server, 'general_settings', None)
+                    original_master_key = getattr(proxy_server, 'master_key', None)
+
+                    try:
+                        # Set session-specific configuration
+                        proxy_server.llm_router = self.session_router
+                        proxy_server.llm_model_list = self.session_model_list
+                        proxy_server.general_settings = self.session_settings
+                        # Set master_key to None to disable LiteLLM's internal auth
+                        # Hypha handles authentication at a higher level
+                        proxy_server.master_key = None
+
+                        # Call the base app with session-specific state
+                        await self.base_app(scope, receive, send)
+
+                    finally:
+                        # Restore original global state
+                        proxy_server.llm_router = original_router
+                        proxy_server.llm_model_list = original_model_list
+                        proxy_server.general_settings = original_settings
+                        proxy_server.master_key = original_master_key
+
+        # Create and return the isolated app instance
+        isolated_app = SessionIsolatedApp(base_app, session, self)
+
+        logger.info(f"Created isolated litellm proxy app for session {session_id} with {len(model_list)} models")
+
+        return isolated_app
 
     @schema_method
     async def start(
@@ -639,13 +684,13 @@ class LLMProxyWorker(BaseWorker):
                     """ASGI handler for the LLM proxy service with session-specific routing."""
                     if context:
                         logger.debug(f'LLM proxy: {context["user"]["id"]} - {args["scope"]["method"]} - {args["scope"]["path"]}')
-                    
+
                     # Get session-specific configuration
                     current_session = self._get_actual_session(session_id)
                     if not current_session:
                         # Session not found - return 404
                         send = args["send"]
-                        
+
                         await send({
                             'type': 'http.response.start',
                             'status': 404,
@@ -656,37 +701,22 @@ class LLMProxyWorker(BaseWorker):
                             'body': b'{"error": "Session not found"}',
                         })
                         return
-                    
-                    # Temporarily set global variables for this request
-                    # This is a workaround since litellm uses global state
-                    from hypha.litellm.proxy import proxy_server
-                    original_router = getattr(proxy_server, 'llm_router', None)
-                    original_model_list = getattr(proxy_server, 'llm_model_list', None)
-                    original_settings = getattr(proxy_server, 'general_settings', None)
-                    original_master_key = getattr(proxy_server, 'master_key', None)
 
                     try:
-                        # Set session-specific configuration
-                        proxy_server.llm_router = current_session.get("router")
-                        proxy_server.llm_model_list = current_session.get("model_list", [])
-                        proxy_server.general_settings = current_session.get("litellm_settings", {})
-                        proxy_server.master_key = current_session.get("master_key")
-
-                        # Get the app from session or create it if needed
+                        # Get the isolated app from session or create it if needed
+                        # The SessionIsolatedApp wrapper handles global state isolation
                         app = current_session.get("app")
                         if not app:
                             logger.warning(f"App not found in session {session_id}, attempting to recreate")
                             app = await self._create_litellm_app(session_id)
                             current_session["app"] = app
 
-                        # Call the actual app
+                        # Call the isolated app - it handles global state internally
                         await app(args["scope"], args["receive"], args["send"])
 
                     except Exception as e:
                         logger.error(f"Error serving LLM proxy request for session {session_id}: {e}")
                         # Return 500 error
-                        scope = args["scope"]
-                        receive = args["receive"]
                         send = args["send"]
 
                         await send({
@@ -698,17 +728,7 @@ class LLMProxyWorker(BaseWorker):
                             'type': 'http.response.body',
                             'body': f'{{"error": "Internal server error: {str(e)}"}}'.encode(),
                         })
-                    finally:
-                        # Restore original global state
-                        if original_router is not None:
-                            proxy_server.llm_router = original_router
-                        if original_model_list is not None:
-                            proxy_server.llm_model_list = original_model_list
-                        if original_settings is not None:
-                            proxy_server.general_settings = original_settings
-                        if original_master_key is not None:
-                            proxy_server.master_key = original_master_key
-                
+
                 return serve_llm
             
             # Create the session-specific serve function

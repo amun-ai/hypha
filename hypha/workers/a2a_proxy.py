@@ -731,14 +731,15 @@ async def hypha_startup(server):
 
 async def start_worker(server_url, workspace, token):
     """Start A2A worker standalone."""
-    from hypha_rpc import connect
+    from hypha_rpc import connect_to_server
 
     if not A2A_SDK_AVAILABLE:
         logger.error("A2A library not available")
         return
 
-    server = await connect(server_url, workspace=workspace, token=token)
-    worker = A2AClientRunner(server.rpc)
+    server = await connect_to_server(server_url, workspace=workspace, token=token)
+    worker = A2AClientRunner()
+    await server.register_service(worker.get_worker_service())
     logger.info(f"A2A worker started, server: {server_url}, workspace: {workspace}")
 
     return worker

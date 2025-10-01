@@ -30,7 +30,7 @@ class PythonEvalRunner(BaseWorker):
 
     instance_counter: int = 0
 
-    def __init__(self, server):
+    def __init__(self):
         """Initialize the Python evaluation runner."""
         super().__init__()
         self.controller_id = str(PythonEvalRunner.instance_counter)
@@ -300,17 +300,18 @@ class PythonEvalRunner(BaseWorker):
 
 async def hypha_startup(server):
     """Hypha startup function to initialize Python eval worker."""
-    worker = PythonEvalRunner(server)
+    worker = PythonEvalRunner()
     await worker.register_worker_service(server)
     logger.info("Python eval worker initialized and registered")
 
 
 async def start_worker(server_url, workspace, token):
     """Start Python eval worker standalone."""
-    from hypha_rpc import connect
+    from hypha_rpc import connect_to_server
 
-    server = await connect(server_url, workspace=workspace, token=token)
-    worker = PythonEvalRunner(server.rpc)
+    server = await connect_to_server(server_url, workspace=workspace, token=token)
+    worker = PythonEvalRunner()
+    await worker.register_worker_service(server)
     logger.info(
         f"Python eval worker started, server: {server_url}, workspace: {workspace}"
     )
