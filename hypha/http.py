@@ -1050,6 +1050,19 @@ class HTTPProxy:
                 
                 status = "HEALTHY" if health_score >= 80 else "WARNING" if health_score >= 60 else "CRITICAL"
                 
+                # === COUNT OBJECTS ===
+                # Count RPC objects and connection objects for memory leak detection
+                rpc_object_count = 0
+                connection_object_count = 0
+
+                # Count RPC objects in all connections
+                for conn in RedisRPCConnection._connections.values():
+                    if hasattr(conn, '_object_store') and conn._object_store:
+                        rpc_object_count += len(conn._object_store)
+
+                # Connection objects are the connections themselves
+                connection_object_count = len(RedisRPCConnection._connections)
+
                 # === RESPONSE ===
                 response_data = {
                     "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -1067,6 +1080,10 @@ class HTTPProxy:
                         "total_closed": RedisRPCConnection._connections_closed_total._value._value,
                         "orphaned": orphaned_connections,
                         "leaked_handlers": leaked_handlers,  # Should always be 0
+                    },
+                    "objects": {
+                        "rpc_objects": rpc_object_count,
+                        "connection_objects": connection_object_count,
                     },
                     "event_bus": event_bus_health,
                     "system": system_info,
