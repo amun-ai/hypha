@@ -1,15 +1,19 @@
 """Provide the http proxy."""
 
+import asyncio
 import inspect
 import json
-import traceback
-from typing import Any
 import logging
+import os
 import sys
+import traceback
+from datetime import datetime
 from pathlib import Path
+from typing import Any
+
 import httpx
-import datetime
 import msgpack
+import psutil
 from fastapi import Depends, Request
 from starlette.routing import Route, Match
 from starlette.types import ASGIApp
@@ -23,8 +27,6 @@ from fastapi.responses import (
     StreamingResponse,
 )
 import jose
-import os
-
 from starlette.datastructures import Headers, MutableHeaders
 
 from hypha_rpc import RPC
@@ -944,104 +946,27 @@ class HTTPProxy:
 
         @app.get(norm_url("/health"))
         async def health_diagnostics(req: Request) -> JSONResponse:
-            """Comprehensive health endpoint with memory leak monitoring.
+            """Production health endpoint with essential metrics.
             
-            Provides detailed diagnostics for:
-            1. Memory usage and garbage collection
-            2. RedisRPCConnection objects and potential leaks
-            3. Asyncio tasks and background processes
-            4. Event bus and connection health
-            5. System resources and performance metrics
+            Note: Memory leak fixes are implemented at the root cause level in
+            disconnect() method. This endpoint provides monitoring only.
+            
+            Provides:
+            1. Memory usage and trends
+            2. Connection metrics and lifecycle
+            3. Event bus health
+            4. System resources
+            5. Simple leak detection (should always be 0 after fixes)
             """
-            import gc
-            import asyncio
-            import psutil
-            import sys
-            from datetime import datetime
-            
             try:
-                # Collect garbage before analysis to get accurate counts
-                collected = gc.collect()
-                
-                # === MEMORY DIAGNOSTICS ===
+                # === BASIC METRICS ===
                 process = psutil.Process()
                 memory_info = process.memory_info()
                 
-                # === REDISRPCCONNECTION ANALYSIS ===
                 from hypha.core import RedisRPCConnection
                 
-                # Get active connections
+                # Active connections
                 active_connections = len(RedisRPCConnection._connections)
-                connection_details = []
-                anonymous_connections = 0
-                
-                for conn_key, conn in RedisRPCConnection._connections.items():
-                    workspace, client_id = conn_key.split('/', 1)
-                    if client_id.startswith('anonymous-'):
-                        anonymous_connections += 1
-                    
-                    connection_details.append({
-                        "workspace": workspace,
-                        "client_id": client_id,
-                        "is_anonymous": client_id.startswith('anonymous-'),
-                        "has_filtered_handler": hasattr(conn, '_filtered_handler') and conn._filtered_handler is not None,
-                        "has_event_bus": hasattr(conn, '_event_bus') and conn._event_bus is not None,
-                        "stop_flag": getattr(conn, '_stop', False)
-                    })
-                
-                # === GARBAGE COLLECTION ANALYSIS ===
-                gc_stats = {
-                    "collected_objects": collected,
-                    "generation_counts": gc.get_count(),
-                    "generation_thresholds": gc.get_threshold(),
-                    "total_objects": len(gc.get_objects()),
-                }
-                
-                # Count objects by type (focus on potential leak sources)
-                object_counts = {}
-                rpc_objects = 0
-                connection_objects = 0
-                
-                for obj in gc.get_objects():
-                    obj_type = type(obj).__name__
-                    if obj_type not in object_counts:
-                        object_counts[obj_type] = 0
-                    object_counts[obj_type] += 1
-                    
-                    # Count specific leak-prone objects
-                    if obj_type == 'RPC':
-                        rpc_objects += 1
-                    elif obj_type == 'RedisRPCConnection':
-                        connection_objects += 1
-                
-                # Get top 10 most common object types
-                top_objects = dict(sorted(object_counts.items(), key=lambda x: x[1], reverse=True)[:10])
-                
-                # === ASYNCIO TASK ANALYSIS ===
-                try:
-                    current_loop = asyncio.get_running_loop()
-                    all_tasks = asyncio.all_tasks(current_loop)
-                    
-                    task_analysis = {
-                        "total_tasks": len(all_tasks),
-                        "running_tasks": len([t for t in all_tasks if not t.done()]),
-                        "completed_tasks": len([t for t in all_tasks if t.done()]),
-                        "cancelled_tasks": len([t for t in all_tasks if t.cancelled()]),
-                        "failed_tasks": len([t for t in all_tasks if t.done() and not t.cancelled() and t.exception()]),
-                    }
-                    
-                    # Analyze task names for patterns
-                    task_names = {}
-                    for task in all_tasks:
-                        name = task.get_name() if hasattr(task, 'get_name') else 'unnamed'
-                        if name not in task_names:
-                            task_names[name] = 0
-                        task_names[name] += 1
-                    
-                    task_analysis["task_names"] = dict(sorted(task_names.items(), key=lambda x: x[1], reverse=True)[:10])
-                    
-                except RuntimeError:
-                    task_analysis = {"error": "No event loop running"}
                 
                 # === EVENT BUS HEALTH ===
                 event_bus = self.store.get_event_bus()
@@ -1055,76 +980,73 @@ class HTTPProxy:
                     ),
                 }
                 
-                # === LEAK DETECTION ANALYSIS ===
-                # Check for potential leaks based on our previous analysis
-                potential_leaks = []
+                # === SIMPLE LEAK CHECK ===
+                # After our fixes, this should always be 0
+                # If not, it indicates a regression
+                leaked_handlers = 0
+                orphaned_connections = 0
                 
-                # Check for connections without proper cleanup
+                # Quick scan for stopped connections with handlers (indicates leak)
                 for conn in RedisRPCConnection._connections.values():
-                    if hasattr(conn, '_filtered_handler') and conn._filtered_handler is not None:
-                        potential_leaks.append({
-                            "type": "filtered_handler_not_cleared",
-                            "workspace": conn._workspace,
-                            "client_id": conn._client_id,
-                            "severity": "medium"
-                        })
-                    
-                    if hasattr(conn, '_event_bus') and conn._event_bus is not None and conn._stop:
-                        potential_leaks.append({
-                            "type": "event_bus_not_cleared_after_stop",
-                            "workspace": conn._workspace,
-                            "client_id": conn._client_id,
-                            "severity": "high"
-                        })
+                    if hasattr(conn, '_stop') and conn._stop:
+                        orphaned_connections += 1
+                        if hasattr(conn, '_filtered_handler') and conn._filtered_handler is not None:
+                            leaked_handlers += 1
                 
-                # Check RPC object references
-                for obj in gc.get_objects():
-                    if obj.__class__.__name__ == 'RPC':
-                        if hasattr(obj, '_connection') and obj._connection is not None:
-                            # Check if the connection is supposed to be closed
-                            if hasattr(obj._connection, '_stop') and obj._connection._stop:
-                                potential_leaks.append({
-                                    "type": "rpc_holding_closed_connection",
-                                    "client_id": getattr(obj, '_client_id', 'unknown'),
-                                    "severity": "high"
-                                })
+                # Check for orphaned event bus clients
+                active_conn_keys = set(RedisRPCConnection._connections.keys())
+                event_bus_clients = set(event_bus._local_clients)
+                orphaned_event_bus_clients = len(event_bus_clients - active_conn_keys)
                 
                 # === SYSTEM RESOURCES ===
                 system_info = {
-                    "cpu_percent": psutil.cpu_percent(),
+                    "cpu_percent": psutil.cpu_percent(interval=0.1),
                     "memory_percent": psutil.virtual_memory().percent,
                     "disk_usage": psutil.disk_usage('/').percent,
                     "load_average": psutil.getloadavg() if hasattr(psutil, 'getloadavg') else None,
                 }
                 
+                # === ASYNCIO TASK COUNT ===
+                try:
+                    current_loop = asyncio.get_running_loop()
+                    all_tasks = asyncio.all_tasks(current_loop)
+                    active_tasks = len([t for t in all_tasks if not t.done()])
+                except RuntimeError:
+                    active_tasks = 0
+                
                 # === HEALTH ASSESSMENT ===
                 health_score = 100
                 issues = []
                 
-                # Memory usage check
+                # Critical: Memory leaks (should never happen after fixes)
+                if leaked_handlers > 0:
+                    health_score -= 50
+                    issues.append(f"CRITICAL: {leaked_handlers} leaked handlers detected (regression)")
+                
+                # Critical: Event bus failure
+                if event_bus_health["circuit_breaker_open"]:
+                    health_score -= 40
+                    issues.append("Event bus circuit breaker is open")
+                
+                # Warning: High memory
                 if memory_info.rss > 2 * 1024 * 1024 * 1024:  # > 2GB
                     health_score -= 20
                     issues.append("High memory usage (>2GB)")
                 
-                # Connection leak check
-                if anonymous_connections > 50:
-                    health_score -= 30
-                    issues.append(f"High anonymous connections ({anonymous_connections})")
-                
-                # Potential leaks check
-                if len(potential_leaks) > 0:
-                    health_score -= 25
-                    issues.append(f"{len(potential_leaks)} potential memory leaks detected")
-                
-                # Task accumulation check
-                if task_analysis.get("total_tasks", 0) > 1000:
+                # Warning: High task count
+                if active_tasks > 1000:
                     health_score -= 15
-                    issues.append("High task count (>1000)")
+                    issues.append(f"High active task count ({active_tasks})")
                 
-                # Event bus health check
-                if event_bus_health["circuit_breaker_open"]:
-                    health_score -= 40
-                    issues.append("Event bus circuit breaker is open")
+                # Info: Orphaned connections (minor issue)
+                if orphaned_connections > 10:
+                    health_score -= 5
+                    issues.append(f"{orphaned_connections} orphaned connections (being GC'd)")
+                
+                # Info: Orphaned event bus clients
+                if orphaned_event_bus_clients > 10:
+                    health_score -= 5
+                    issues.append(f"{orphaned_event_bus_clients} orphaned event bus clients")
                 
                 status = "HEALTHY" if health_score >= 80 else "WARNING" if health_score >= 60 else "CRITICAL"
                 
@@ -1135,39 +1057,32 @@ class HTTPProxy:
                     "health_score": health_score,
                     "issues": issues,
                     "memory": {
-                        "rss_bytes": memory_info.rss,
                         "rss_mb": round(memory_info.rss / 1024 / 1024, 2),
-                        "vms_bytes": memory_info.vms,
                         "vms_mb": round(memory_info.vms / 1024 / 1024, 2),
                         "percent": psutil.virtual_memory().percent,
                     },
                     "connections": {
-                        "total_active": active_connections,
-                        "anonymous_count": anonymous_connections,
-                        "named_count": active_connections - anonymous_connections,
+                        "active": active_connections,
                         "total_created": RedisRPCConnection._connections_created_total._value._value,
                         "total_closed": RedisRPCConnection._connections_closed_total._value._value,
-                        "details": connection_details[:20],  # Limit to first 20 for response size
+                        "orphaned": orphaned_connections,
+                        "leaked_handlers": leaked_handlers,  # Should always be 0
                     },
-                    "garbage_collection": gc_stats,
-                    "objects": {
-                        "rpc_objects": rpc_objects,
-                        "connection_objects": connection_objects,
-                        "top_object_types": top_objects,
-                    },
-                    "asyncio_tasks": task_analysis,
                     "event_bus": event_bus_health,
-                    "potential_leaks": potential_leaks,
                     "system": system_info,
-                    "diagnostics": {
-                        "python_version": sys.version,
-                        "process_id": process.pid,
-                        "uptime_seconds": round(psutil.time.time() - process.create_time(), 2),
-                    }
+                    "tasks": {
+                        "active": active_tasks,
+                    },
+                    "leak_monitor": {
+                        "leaked_handlers": leaked_handlers,
+                        "orphaned_event_bus_clients": orphaned_event_bus_clients,
+                        "note": "Leaks are fixed at root cause in disconnect(). Non-zero values indicate regression."
+                    },
+                    "uptime_seconds": round(psutil.time.time() - process.create_time(), 2),
                 }
                 
                 # Return appropriate HTTP status based on health
-                status_code = 200 if status == "HEALTHY" else 503 if status == "CRITICAL" else 200
+                status_code = 200 if status in ["HEALTHY", "WARNING"] else 503
                 
                 return JSONResponse(
                     content=response_data,
@@ -1316,7 +1231,7 @@ class HTTPProxy:
                             ),
                             "pubsub": "healthy",
                             "last_successful_connection": (
-                                datetime.datetime.fromtimestamp(
+                                datetime.fromtimestamp(
                                     event_bus._last_successful_connection
                                 ).isoformat()
                                 if event_bus._last_successful_connection

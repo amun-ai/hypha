@@ -87,6 +87,9 @@ class BrowserWorker(BaseWorker):
         self._session_data: Dict[str, Dict[str, Any]] = {}
         self.initialized = False
 
+        # Session limits to prevent unbounded memory growth
+        self._MAX_CONCURRENT_SESSIONS = int(os.environ.get("HYPHA_MAX_BROWSER_SESSIONS", "20"))
+
         # Initialize cache manager
         self.cache_manager = None
 
@@ -158,6 +161,15 @@ class BrowserWorker(BaseWorker):
 
         if session_id in self._sessions:
             raise WorkerError(f"Session {session_id} already exists")
+
+        # Check session limit to prevent unbounded memory growth
+        if len(self._sessions) >= self._MAX_CONCURRENT_SESSIONS:
+            raise WorkerError(
+                f"Maximum concurrent sessions ({self._MAX_CONCURRENT_SESSIONS}) reached. "
+                f"Currently have {len(self._sessions)} active sessions. "
+                f"Stop unused sessions before creating new ones. "
+                f"Configure limit via HYPHA_MAX_BROWSER_SESSIONS environment variable."
+            )
 
         # Create session info
         session_info = SessionInfo(

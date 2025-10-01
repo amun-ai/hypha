@@ -93,6 +93,18 @@ class EventBus:
         else:
             self._callbacks.pop(event_name, None)
 
+    def clear_all(self, event_name):
+        """Remove all callbacks for a specific event pattern.
+        
+        This is useful for cleanup when you want to ensure no handlers remain
+        for a pattern, regardless of handler identity. This is more aggressive
+        than off() and guarantees complete cleanup.
+        
+        Args:
+            event_name: The event pattern to clear all handlers for
+        """
+        self._callbacks.pop(event_name, None)
+
     def emit(self, event_name, data):
         """Trigger an event and return a task that completes when all handlers are done."""
         tasks = []

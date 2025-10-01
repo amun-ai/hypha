@@ -250,6 +250,9 @@ class TerminalWorker(BaseWorker):
         self._MAX_LOG_ENTRIES = 100
         self._ALLOWED_CONTROL_CHARS = {7, 8, 9, 10, 11, 12, 13, 27}  # BEL, BS, TAB, LF, VT, FF, CR, ESC
         
+        # Session limits to prevent unbounded memory growth
+        self._MAX_CONCURRENT_SESSIONS = int(os.environ.get("HYPHA_MAX_TERMINAL_SESSIONS", "50"))
+        
         # convert true/false string to bool, and keep the string if it's not a bool
         if isinstance(use_local_url, str):
             if use_local_url.lower() == "true":
@@ -633,6 +636,15 @@ class TerminalWorker(BaseWorker):
 
         if session_id in self._sessions:
             raise WorkerError(f"Session {session_id} already exists")
+
+        # Check session limit to prevent unbounded memory growth
+        if len(self._sessions) >= self._MAX_CONCURRENT_SESSIONS:
+            raise WorkerError(
+                f"Maximum concurrent sessions ({self._MAX_CONCURRENT_SESSIONS}) reached. "
+                f"Currently have {len(self._sessions)} active sessions. "
+                f"Stop unused sessions before creating new ones. "
+                f"Configure limit via HYPHA_MAX_TERMINAL_SESSIONS environment variable."
+            )
 
         # Report initial progress
         await progress_callback(
