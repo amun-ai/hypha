@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import uuid
+import socket
 from threading import Thread
 import secrets
 
@@ -952,9 +953,18 @@ def custom_auth_server_fixture():
 @pytest_asyncio.fixture(name="local_auth_server")
 def local_auth_server_fixture():
     """Start a server with local authentication for testing."""
-    # Use a different port for the local auth server
-    LOCAL_AUTH_PORT = 39000
-    
+    # Find a free port dynamically to avoid conflicts in parallel testing
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        s.listen(1)
+        LOCAL_AUTH_PORT = s.getsockname()[1]
+
+    # Also find a free port for MinIO to avoid conflicts in parallel testing
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        s.listen(1)
+        MINIO_PORT = s.getsockname()[1]
+
     with subprocess.Popen(
         [
             sys.executable,
@@ -965,6 +975,7 @@ def local_auth_server_fixture():
             "--enable-s3",
             "--reset-redis",
             "--start-minio-server",
+            f"--minio-port={MINIO_PORT}",
             "--minio-root-user=minioadmin",
             "--minio-root-password=minioadmin",
         ],
@@ -982,12 +993,12 @@ def local_auth_server_fixture():
             time.sleep(0.1)
         if timeout <= 0:
             raise TimeoutError("Local auth server did not start in time")
-        
+
         response = requests.get(f"http://127.0.0.1:{LOCAL_AUTH_PORT}/health/liveness")
         assert response.ok
-        
+
         yield f"http://127.0.0.1:{LOCAL_AUTH_PORT}"
-        
+
         proc.terminate()
         try:
             proc.wait(timeout=5)
