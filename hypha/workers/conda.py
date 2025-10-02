@@ -18,6 +18,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+from pydantic import Field
+from hypha_rpc.utils.schema import schema_method
 from hypha.workers.base import (
     BaseWorker,
     WorkerConfig,
@@ -324,14 +326,27 @@ class CondaWorker(BaseWorker):
         """Return whether the worker should use local URLs."""
         return self._use_local_url
 
+    @schema_method
     async def compile(
         self,
-        manifest: dict,
-        files: list,
-        config: dict = None,
+        manifest: dict = Field(..., description="Application manifest containing dependencies, channels, and entry_point. Required fields: 'dependencies' (list of conda/pip packages) and 'entry_point' (main script filename, defaults to 'main.py'). Supports conda packages and pip packages via {'pip': ['package-name']} syntax."),
+        files: list = Field(..., description="List of application files to be staged in the conda environment working directory."),
+        config: dict = Field(None, description="Optional compilation configuration settings."),
         context: Optional[Dict[str, Any]] = None,
     ) -> tuple[dict, list]:
-        """Compile conda environment application - validate manifest."""
+        """Compile conda environment application - validate manifest.
+
+        Validates and normalizes the application manifest for conda environment execution:
+        1. Ensures required dependencies are present (pip, ipykernel, jupyter_client, pyzmq, hypha-rpc)
+        2. Normalizes dependencies and channels into list format
+        3. Sets default entry_point if not specified
+
+        Returns:
+            Tuple of (normalized_manifest, files) ready for environment creation
+
+        Raises:
+            ValueError: If manifest structure is invalid
+        """
         # Validate manifest has required fields
         if "dependencies" not in manifest and "dependencies" not in manifest:
             logger.warning("No dependencies or dependencies specified in manifest")
@@ -583,12 +598,27 @@ class CondaWorker(BaseWorker):
                         else:
                             raise
 
+    @schema_method
     async def start(
         self,
-        config: Union[WorkerConfig, Dict[str, Any]],
+        config: Union[WorkerConfig, Dict[str, Any]] = Field(..., description="Worker configuration containing session_id, app_id, workspace, client_id, manifest, entry_point, and token for authentication. Can be a WorkerConfig object or dictionary."),
         context: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Start a new conda environment session."""
+        """Start a new conda environment session.
+
+        Creates and initializes a conda environment based on the application manifest:
+        1. Fetches the application script from the artifact store
+        2. Creates or reuses a cached conda environment with specified dependencies
+        3. Initializes a Jupyter kernel for code execution
+        4. Registers services defined in the application
+
+        Returns:
+            Session ID string for the started session
+
+        Raises:
+            WorkerError: If session already exists or creation fails
+            HTTPException: If artifact fetch fails
+        """
         # Handle both pydantic model and dict input for RPC compatibility
         if isinstance(config, dict):
             config = WorkerConfig(**config)
@@ -1011,18 +1041,30 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
             "is_new_env": is_new_env,
         }
 
+    @schema_method
     async def execute(
         self,
-        session_id: str,
-        script: str,
-        config: Optional[Dict[str, Any]] = None,
-        progress_callback: Optional[Any] = None,
-        output_callback: Optional[Any] = None,
+        session_id: str = Field(..., description="The session ID of the running conda environment session to execute code in."),
+        script: str = Field(..., description="Python code to execute in the conda environment's Jupyter kernel. The code will be executed in the isolated environment with all dependencies available."),
+        config: Optional[Dict[str, Any]] = Field(None, description="Optional execution configuration settings."),
+        progress_callback: Optional[Any] = Field(None, description="Optional callback function to receive progress updates during execution. Can be sync or async callable."),
+        output_callback: Optional[Any] = Field(None, description="Optional callback function to receive real-time execution output (stdout, stderr, display data). Can be sync or async callable."),
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Execute a script in the running Jupyter kernel session.
-        
-        This implements the new execute API method for interacting with running sessions.
+        """Execute Python code in the running Jupyter kernel session.
+
+        Executes the provided Python script in the session's isolated conda environment:
+        1. Validates session exists and is running
+        2. Streams execution to kernel
+        3. Captures and returns execution results, stdout/stderr, and display data
+        4. Invokes optional callbacks for progress and output
+
+        Returns:
+            Execution result dictionary containing 'status', 'result', 'error', and 'output' fields
+
+        Raises:
+            SessionNotFoundError: If session_id doesn't exist
+            WorkerError: If session is not running or execution fails
         
         Args:
             session_id: The session to execute in
@@ -1140,10 +1182,23 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
                 }
             }
 
+    @schema_method
     async def stop(
-        self, session_id: str, context: Optional[Dict[str, Any]] = None
+        self,
+        session_id: str = Field(..., description="The session ID of the conda environment session to stop."),
+        context: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Stop a conda environment session."""
+        """Stop a conda environment session.
+
+        Gracefully shuts down the session:
+        1. Stops the Jupyter kernel
+        2. Cleans up incomplete conda environments (not marked ready)
+        3. Removes session working directory
+        4. Updates session status to STOPPED
+
+        Raises:
+            WorkerError: If stop operation fails (session is still removed)
+        """
         if session_id not in self._sessions:
             logger.warning(
                 f"Conda environment session {session_id} not found for stopping"
@@ -1218,12 +1273,13 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
 
     
 
+    @schema_method
     async def get_logs(
         self,
-        session_id: str,
-        type: Optional[str] = None,
-        offset: int = 0,
-        limit: Optional[int] = None,
+        session_id: str = Field(..., description="The session ID to retrieve logs from."),
+        type: Optional[str] = Field(None, description="Type of logs to retrieve ('output', 'error', or None for all). Filters logs by category."),
+        offset: int = Field(0, description="Starting index for log pagination. Use 0 to get logs from the beginning."),
+        limit: Optional[int] = Field(None, description="Maximum number of log entries to return. If None, returns all logs from offset to end."),
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Get logs for a conda environment session.
@@ -1272,8 +1328,17 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
             "limit": limit
         }
 
+    @schema_method
     async def shutdown(self, context: Optional[Dict[str, Any]] = None) -> None:
-        """Shutdown the conda environment worker."""
+        """Shutdown the conda environment worker.
+
+        Gracefully stops all running sessions and cleans up resources:
+        1. Stops all active conda environment sessions
+        2. Shuts down Jupyter kernels
+        3. Cleans up working directories
+
+        This method is called when the worker is being terminated.
+        """
         logger.info("Shutting down conda environment worker...")
 
         # Stop all sessions (which will shutdown kernels)

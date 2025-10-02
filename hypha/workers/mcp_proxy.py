@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional, Union
 
 from hypha_rpc import connect_to_server
 from hypha.core import UserInfo
+from pydantic import Field
+from hypha_rpc.utils.schema import schema_method
 from hypha.workers.base import (
     BaseWorker,
     WorkerConfig,
@@ -96,11 +98,12 @@ class MCPClientRunner(BaseWorker):
         """Return whether the worker should use local URLs."""
         return True  # Built-in worker runs in same cluster/host
 
+    @schema_method
     async def compile(
         self,
-        manifest: dict,
-        files: list,
-        config: dict = None,
+        manifest: dict = Field(..., description="Application manifest for MCP server. Required for type 'mcp-server': 'mcpServers' (dict of MCP server configurations). Each server config should include connection details (command, args, env, etc.)."),
+        files: list = Field(..., description="List of application files. Can include a 'source' file with JSON configuration containing mcpServers."),
+        config: dict = Field(None, description="Optional compilation configuration settings."),
         context: Optional[Dict[str, Any]] = None,
     ) -> tuple[dict, list]:
         """Compile MCP server manifest and files.
@@ -169,9 +172,10 @@ class MCPClientRunner(BaseWorker):
         # Not an MCP server type, return unchanged
         return manifest, files
 
+    @schema_method
     async def start(
         self,
-        config: Union[WorkerConfig, Dict[str, Any]],
+        config: Union[WorkerConfig, Dict[str, Any]] = Field(..., description="Worker configuration containing session_id, app_id, workspace, client_id, manifest, and token. Can be a WorkerConfig object or dictionary with these fields."),
         context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Start a new MCP client session."""
@@ -1146,8 +1150,11 @@ class MCPClientRunner(BaseWorker):
             logger.error(error_msg)
             raise Exception(error_msg)
 
+    @schema_method
     async def stop(
-        self, session_id: str, context: Optional[Dict[str, Any]] = None
+        self, 
+        session_id: str = Field(..., description="The session ID to stop. Must be a valid MCP session."),
+        context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Stop an MCP session."""
         if session_id not in self._sessions:
@@ -1194,12 +1201,13 @@ class MCPClientRunner(BaseWorker):
 
     
 
+    @schema_method
     async def get_logs(
         self,
-        session_id: str,
-        type: Optional[str] = None,
-        offset: int = 0,
-        limit: Optional[int] = None,
+        session_id: str = Field(..., description="The session ID to get logs from. Must be a valid MCP session."),
+        type: Optional[str] = Field(None, description="Filter logs by type. Supported types: 'info', 'error', 'debug'."),
+        offset: int = Field(0, description="Pagination offset - number of log entries to skip."),
+        limit: Optional[int] = Field(None, description="Maximum number of log entries to return. If None, returns all entries from offset."),
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Get logs for an MCP session.
@@ -1248,7 +1256,11 @@ class MCPClientRunner(BaseWorker):
 
     
 
-    async def shutdown(self, context: Optional[Dict[str, Any]] = None) -> None:
+    @schema_method
+    async def shutdown(
+        self, 
+        context: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Shutdown the MCP proxy worker."""
         logger.info("Shutting down MCP proxy worker...")
 

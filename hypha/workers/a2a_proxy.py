@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional, Union
 import httpx
 from hypha_rpc import connect_to_server
 from hypha.core import UserInfo
+from pydantic import Field
+from hypha_rpc.utils.schema import schema_method
 from hypha.workers.base import (
     BaseWorker,
     WorkerConfig,
@@ -79,25 +81,26 @@ class A2AClientRunner(BaseWorker):
         """Return whether the worker should use local URLs."""
         return True  # Built-in worker runs in same cluster/host
 
+    @schema_method
     async def compile(
         self,
-        manifest: dict,
-        files: list,
-        config: dict = None,
+        manifest: dict = Field(..., description="Application manifest for A2A agent. Required for type 'a2a-agent': 'a2aServers' (dict of A2A agent configurations). Each agent config should include 'endpoint' (URL) and optional 'headers' for authentication."),
+        files: list = Field(..., description="List of application files. Can include a 'source' file with JSON configuration containing a2aServers."),
+        config: dict = Field(None, description="Optional compilation configuration settings."),
         context: Optional[Dict[str, Any]] = None,
     ) -> tuple[dict, list]:
         """Compile A2A agent manifest and files.
 
         This method processes A2A agent configuration:
         1. Looks for 'source' file containing JSON configuration
-        2. Extracts a2aAgents from the source or manifest
+        2. Extracts a2aServers from the source or manifest
         3. Updates manifest with proper A2A agent settings
         4. Generates source file with final configuration
         """
         # For A2A agents, check if we need to generate source from manifest
         if manifest.get("type") == "a2a-agent":
-            # Extract A2A agents configuration
-            a2a_agents = manifest.get("a2aAgents", {})
+            # Extract A2A servers configuration
+            a2a_servers = manifest.get("a2aServers", {})
 
             # Look for source file that might contain additional config
             source_file = None
@@ -106,7 +109,7 @@ class A2AClientRunner(BaseWorker):
                     source_file = file_info
                     break
 
-            # If source file exists, try to parse it as JSON to extract a2aAgents
+            # If source file exists, try to parse it as JSON to extract a2aServers
             if source_file:
                 try:
                     source_content = source_file.get("content", "{}")
@@ -114,21 +117,20 @@ class A2AClientRunner(BaseWorker):
                         json.loads(source_content) if source_content.strip() else {}
                     )
 
-                    # Merge agents from source with manifest
-                    if "a2aAgents" in source_json:
-                        source_agents = source_json["a2aAgents"]
+                    # Merge servers from source with manifest
+                    if "a2aServers" in source_json:
+                        source_servers = source_json["a2aServers"]
                         # Manifest takes precedence, but use source as fallback
-                        merged_agents = {**source_agents, **a2a_agents}
-                        a2a_agents = merged_agents
+                        merged_servers = {**source_servers, **a2a_servers}
+                        a2a_servers = merged_servers
 
                 except json.JSONDecodeError as e:
                     logger.warning(f"Failed to parse source as JSON: {e}")
 
-            assert a2a_agents, "a2aAgents configuration is required"
             # Create final configuration
             final_manifest = {
                 "type": "a2a-agent",
-                "a2aAgents": a2a_agents,
+                "a2aServers": a2a_servers,
                 "name": manifest.get("name", "A2A Agent"),
                 "description": manifest.get("description", "A2A agent application"),
                 "version": manifest.get("version", "1.0.0"),
@@ -143,7 +145,7 @@ class A2AClientRunner(BaseWorker):
             source_content = json.dumps(final_manifest, indent=2)
 
             # Create new files list, replacing or adding source
-            new_files = [f for f in files if f.get("path") != "source"]
+            new_files = [f for f in files if f.get("name") != "source"]
             new_files.append(
                 {"path": "source", "content": source_content, "format": "text"}
             )
@@ -153,15 +155,13 @@ class A2AClientRunner(BaseWorker):
         # Not an A2A agent type, return unchanged
         return manifest, files
 
+    @schema_method
     async def start(
         self,
-        config: Union[WorkerConfig, Dict[str, Any]],
+        config: Union[WorkerConfig, Dict[str, Any]] = Field(..., description="Worker configuration containing session_id, app_id, workspace, client_id, manifest, and token. Can be a WorkerConfig object or dictionary with these fields."),
         context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Start a new A2A client session."""
-        if not A2A_SDK_AVAILABLE:
-            raise WorkerError("A2A SDK not available. Install with: pip install a2a")
-
         # Handle both pydantic model and dict input for RPC compatibility
         if isinstance(config, dict):
             config = WorkerConfig(**config)
@@ -202,7 +202,6 @@ class A2AClientRunner(BaseWorker):
             logger.error(f"Failed to start A2A session {session_id}: {e}")
             # Clean up failed session
             self._sessions.pop(session_id, None)
-            self._session_data.pop(session_id, None)  # Also clean up session data if it exists
             raise
 
     async def _start_a2a_session(self, config: WorkerConfig) -> Dict[str, Any]:
@@ -595,8 +594,11 @@ class A2AClientRunner(BaseWorker):
             logger.error(error_msg)
             raise Exception(error_msg)
 
+    @schema_method
     async def stop(
-        self, session_id: str, context: Optional[Dict[str, Any]] = None
+        self, 
+        session_id: str = Field(..., description="The session ID to stop. Must be a valid A2A session."),
+        context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Stop an A2A session."""
         if session_id not in self._sessions:
@@ -607,37 +609,32 @@ class A2AClientRunner(BaseWorker):
 
         try:
             session_data = self._session_data.get(session_id)
-            if session_data:
-                # Get the client from session data
-                client = session_data.get("client")
-                if client:
-                    # Unregister services
-                    services = session_data.get("services", [])
-                    for service_name in services:
-                        try:
-                            await client.unregister_service(service_name)
-                            logger.info(f"Unregistered service: {service_name}")
-                        except Exception as e:
-                            logger.warning(f"Failed to unregister service {service_name}: {e}")
+            if not session_data:
+                raise RuntimeError(f"No session data found for session {session_id}")
+            
+            # Get the client from session data
+            client = session_data.get("client")
+            if not client:
+                raise RuntimeError(f"No client found for session {session_id}")
+            
+            # Unregister services
+            services = session_data.get("services", [])
+            for service_id in services:
+                try:
+                    await client.unregister_service(service_id)
+                    logger.info(f"Unregister service: {service_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to unregister service {service_id}: {e}")
 
-                    # Disconnect the Hypha client to prevent memory leak
-                    try:
-                        await client.disconnect()
-                        logger.info(f"Disconnected Hypha client for session {session_id}")
-                    except Exception as e:
-                        logger.warning(f"Failed to disconnect client for session {session_id}: {e}")
-
-                # Close all HTTP clients
-                a2a_clients = session_data.get("a2a_clients", {})
-                for agent_name, agent_info in a2a_clients.items():
-                    if "client" in agent_info:
-                        try:
-                            await agent_info["client"].aclose()
-                            logger.info(f"Closed HTTP client for agent: {agent_name}")
-                        except Exception as e:
-                            logger.warning(f"Failed to close HTTP client for {agent_name}: {e}")
-            else:
-                logger.warning(f"No session data found for session {session_id}, skipping cleanup")
+            # Disconnect the Hypha client to prevent memory leak
+            try:
+                await client.disconnect()
+                logger.info(f"Disconnected Hypha client for session {session_id}")
+            except Exception as e:
+                logger.warning(f"Failed to disconnect client: {e}")
+            
+            # Log cleanup
+            logger.info(f"Cleaning up A2A connections for session {session_id}")
 
             session_info.status = SessionStatus.STOPPED
             logger.info(f"Stopped A2A session {session_id}")
@@ -653,12 +650,13 @@ class A2AClientRunner(BaseWorker):
             self._session_data.pop(session_id, None)
 
 
+    @schema_method
     async def get_logs(
         self,
-        session_id: str,
-        type: Optional[str] = None,
-        offset: int = 0,
-        limit: Optional[int] = None,
+        session_id: str = Field(..., description="The session ID to get logs from. Must be a valid A2A session."),
+        type: Optional[str] = Field(None, description="Filter logs by type. Supported types: 'info', 'error', 'debug'."),
+        offset: int = Field(0, description="Pagination offset - number of log entries to skip."),
+        limit: Optional[int] = Field(None, description="Maximum number of log entries to return. If None, returns all entries from offset."),
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Get logs for an A2A session.
@@ -707,14 +705,21 @@ class A2AClientRunner(BaseWorker):
 
     
 
-    async def shutdown(self, context: Optional[Dict[str, Any]] = None) -> None:
+    @schema_method
+    async def shutdown(
+        self, 
+        context: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Shutdown the A2A proxy worker."""
         logger.info("Shutting down A2A proxy worker...")
 
-        # Stop all sessions - any failure should be propagated
+        # Stop all sessions
         session_ids = list(self._sessions.keys())
         for session_id in session_ids:
-            await self.stop(session_id)
+            try:
+                await self.stop(session_id)
+            except Exception as e:
+                logger.warning(f"Failed to stop A2A session {session_id}: {e}")
 
         logger.info("A2A proxy worker shutdown complete")
 
