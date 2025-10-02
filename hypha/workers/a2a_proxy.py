@@ -84,8 +84,8 @@ class A2AClientRunner(BaseWorker):
     @schema_method
     async def compile(
         self,
-        manifest: dict = Field(..., description="Application manifest for A2A agent. Required for type 'a2a-agent': 'a2aServers' (dict of A2A agent configurations). Each agent config should include 'endpoint' (URL) and optional 'headers' for authentication."),
-        files: list = Field(..., description="List of application files. Can include a 'source' file with JSON configuration containing a2aServers."),
+        manifest: dict = Field(..., description="Application manifest for A2A agent. Required for type 'a2a-agent': 'a2aAgents' (dict of A2A agent configurations). Each agent config should include 'url' (endpoint URL) and optional 'headers' for authentication."),
+        files: list = Field(..., description="List of application files. Can include a 'source' file with JSON configuration containing a2aAgents."),
         config: dict = Field(None, description="Optional compilation configuration settings."),
         context: Optional[Dict[str, Any]] = None,
     ) -> tuple[dict, list]:
@@ -93,14 +93,14 @@ class A2AClientRunner(BaseWorker):
 
         This method processes A2A agent configuration:
         1. Looks for 'source' file containing JSON configuration
-        2. Extracts a2aServers from the source or manifest
+        2. Extracts a2aAgents from the source or manifest
         3. Updates manifest with proper A2A agent settings
         4. Generates source file with final configuration
         """
         # For A2A agents, check if we need to generate source from manifest
         if manifest.get("type") == "a2a-agent":
-            # Extract A2A servers configuration
-            a2a_servers = manifest.get("a2aServers", {})
+            # Extract A2A agents configuration
+            a2a_agents = manifest.get("a2aAgents", {})
 
             # Look for source file that might contain additional config
             source_file = None
@@ -109,7 +109,7 @@ class A2AClientRunner(BaseWorker):
                     source_file = file_info
                     break
 
-            # If source file exists, try to parse it as JSON to extract a2aServers
+            # If source file exists, try to parse it as JSON to extract a2aAgents
             if source_file:
                 try:
                     source_content = source_file.get("content", "{}")
@@ -117,20 +117,24 @@ class A2AClientRunner(BaseWorker):
                         json.loads(source_content) if source_content.strip() else {}
                     )
 
-                    # Merge servers from source with manifest
-                    if "a2aServers" in source_json:
-                        source_servers = source_json["a2aServers"]
+                    # Merge agents from source with manifest
+                    if "a2aAgents" in source_json:
+                        source_agents = source_json["a2aAgents"]
                         # Manifest takes precedence, but use source as fallback
-                        merged_servers = {**source_servers, **a2a_servers}
-                        a2a_servers = merged_servers
+                        merged_agents = {**source_agents, **a2a_agents}
+                        a2a_agents = merged_agents
 
                 except json.JSONDecodeError as e:
                     logger.warning(f"Failed to parse source as JSON: {e}")
 
+            # Validate a2aAgents configuration
+            if not a2a_agents:
+                raise ValueError("a2aAgents configuration is required for type 'a2a-agent'")
+
             # Create final configuration
             final_manifest = {
                 "type": "a2a-agent",
-                "a2aServers": a2a_servers,
+                "a2aAgents": a2a_agents,
                 "name": manifest.get("name", "A2A Agent"),
                 "description": manifest.get("description", "A2A agent application"),
                 "version": manifest.get("version", "1.0.0"),

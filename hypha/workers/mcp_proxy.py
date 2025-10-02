@@ -144,6 +144,10 @@ class MCPClientRunner(BaseWorker):
                 except json.JSONDecodeError as e:
                     logger.warning(f"Failed to parse source as JSON: {e}")
 
+            # Validate mcpServers configuration
+            if not mcp_servers:
+                raise ValueError("mcpServers configuration is required for type 'mcp-server'")
+
             # Create final configuration
             final_manifest = {
                 "type": "mcp-server",
