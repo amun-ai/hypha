@@ -2388,7 +2388,7 @@ class ArtifactController:
         Generate a list of candidate aliases based on the alias pattern and id_parts.
         """
         if alias_pattern is None:
-            hrid = HRID(delimiter="-", hridfmt=("adjective", "noun", "verb", "adverb"))
+            hrid = HRID(delimiter="-", elements=["adjective", "noun", "verb", "adverb"])
             return [hrid.generate() for _ in range(max_candidates)]
         placeholder_pattern = re.compile(r"\{(\w+)\}")
         placeholders = placeholder_pattern.findall(alias_pattern)
