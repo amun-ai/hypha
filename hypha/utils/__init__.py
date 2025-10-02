@@ -195,21 +195,21 @@ def safe_join(directory: str, *pathnames: str) -> Optional[str]:
     return posixpath.join(*parts)
 
 
-def parse_s3_list_response(response, delimeter):
+def parse_s3_list_response(response, delimiter):
     """Parse the s3 list object response."""
     if response.get("KeyCount") == 0:
         return []
     items = [
         {
             "type": "file",
-            "name": item["Key"].split("/")[-1] if delimeter == "/" else item["Key"],
+            "name": item["Key"].split("/")[-1] if delimiter == "/" else item["Key"],
             "size": item["Size"],
             "last_modified": datetime.timestamp(item["LastModified"]),
         }
         for item in response.get("Contents", [])
     ]
-    # only include when delimeter is /
-    if delimeter == "/":
+    # only include when delimiter is /
+    if delimiter == "/":
         items += [
             {"type": "directory", "name": item["Prefix"].rstrip("/").split("/")[-1]}
             for item in response.get("CommonPrefixes", [])
@@ -217,30 +217,30 @@ def parse_s3_list_response(response, delimeter):
     return items
 
 
-def list_objects_sync(s3_client, bucket, prefix=None, delimeter="/"):
+def list_objects_sync(s3_client, bucket, prefix=None, delimiter="/"):
     """List a objects sync."""
     prefix = prefix or ""
     response = s3_client.list_objects_v2(
-        Bucket=bucket, Prefix=prefix, Delimiter=delimeter
+        Bucket=bucket, Prefix=prefix, Delimiter=delimiter
     )
 
-    items = parse_s3_list_response(response, delimeter)
+    items = parse_s3_list_response(response, delimiter)
     while response["IsTruncated"]:
         response = s3_client.list_objects_v2(
             Bucket=bucket,
             Prefix=prefix,
-            Delimiter=delimeter,
+            Delimiter=delimiter,
             ContinuationToken=response["NextContinuationToken"],
         )
-        items += parse_s3_list_response(response, delimeter)
+        items += parse_s3_list_response(response, delimiter)
     return items
 
 
-def remove_objects_sync(s3_client, bucket, prefix, delimeter=""):
+def remove_objects_sync(s3_client, bucket, prefix, delimiter=""):
     """Remove all objects in a folder."""
     assert prefix != "" and prefix.endswith("/")
     response = s3_client.list_objects_v2(
-        Bucket=bucket, Prefix=prefix, Delimiter=delimeter
+        Bucket=bucket, Prefix=prefix, Delimiter=delimiter
     )
     items = response.get("Contents", [])
     if len(items) > 0:
@@ -265,7 +265,7 @@ def remove_objects_sync(s3_client, bucket, prefix, delimeter=""):
         response = s3_client.list_objects_v2(
             Bucket=bucket,
             Prefix=prefix,
-            Delimiter=delimeter,
+            Delimiter=delimiter,
             ContinuationToken=response["NextContinuationToken"],
         )
         items = response.get("Contents", [])
@@ -293,34 +293,34 @@ async def list_objects_async(
     s3_client,
     bucket: str,
     prefix: Optional[str] = None,
-    delimeter: str = "/",
+    delimiter: str = "/",
     max_length: Optional[int] = None,
 ):
     """List objects async."""
     prefix = prefix or ""
     response = await s3_client.list_objects_v2(
-        Bucket=bucket, Prefix=prefix, Delimiter=delimeter
+        Bucket=bucket, Prefix=prefix, Delimiter=delimiter
     )
-    items = parse_s3_list_response(response, delimeter)
+    items = parse_s3_list_response(response, delimiter)
     while response["IsTruncated"]:
         response = await s3_client.list_objects_v2(
             Bucket=bucket,
             Prefix=prefix,
-            Delimiter=delimeter,
+            Delimiter=delimiter,
             ContinuationToken=response["NextContinuationToken"],
         )
-        items += parse_s3_list_response(response, delimeter)
+        items += parse_s3_list_response(response, delimiter)
         if max_length and len(items) > max_length:
             items = items[:max_length]
             break
     return items
 
 
-async def remove_objects_async(s3_client, bucket, prefix, delimeter=""):
+async def remove_objects_async(s3_client, bucket, prefix, delimiter=""):
     """Remove all objects in a folder asynchronously."""
     assert prefix != "" and prefix.endswith("/")
     response = await s3_client.list_objects_v2(
-        Bucket=bucket, Prefix=prefix, Delimiter=delimeter
+        Bucket=bucket, Prefix=prefix, Delimiter=delimiter
     )
     items = response.get("Contents", [])
     if len(items) > 0:
@@ -345,7 +345,7 @@ async def remove_objects_async(s3_client, bucket, prefix, delimeter=""):
         response = await s3_client.list_objects_v2(
             Bucket=bucket,
             Prefix=prefix,
-            Delimiter=delimeter,
+            Delimiter=delimiter,
             ContinuationToken=response["NextContinuationToken"],
         )
         items = response.get("Contents", [])
