@@ -183,6 +183,16 @@ minio:
 postgresql:
   enabled: true
 
+  global:
+    # Enable the use of a custom security context
+    securityContext:
+      enabled: true
+      fsGroup: 1001  # Ensures the mounted volumes are accessible to the non-root user (1001)
+    
+    # Allow custom pgvector image
+    security:
+      allowInsecureImages: true
+
   image:
     registry: docker.io
     repository: oeway/postgresql-pgvector
