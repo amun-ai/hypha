@@ -97,16 +97,10 @@ async def test_llm_proxy_installation_and_basic_operation(
     try:
         # Test basic functionality
         if service_id:
-            # Extract the actual service name from the full service_id
-            if "@" in service_id:
-                service_path = service_id.split("@")[0]
-                llm_service = await api.get_service(service_path)
-                assert llm_service is not None, "Service should be registered"
-                print(f"Service found: {service_path}")
-            else:
-                llm_service = await api.get_service(service_id)
-                assert llm_service is not None, "LLM service should be registered"
-                print(f"LLM service found: {service_id}")
+            # Use the full service_id including the @app_id part
+            llm_service = await api.get_service(service_id)
+            assert llm_service is not None, "LLM service should be registered"
+            print(f"LLM service found: {service_id}")
         
         # Test HTTP requests to the LLM endpoint
         llm_service_id = "test-llm-service"
