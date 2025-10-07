@@ -14,6 +14,8 @@ from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 from kubernetes.stream import stream
 
+from pydantic import Field
+from hypha_rpc.utils.schema import schema_method
 from hypha.workers.base import (
     BaseWorker,
     WorkerConfig,
@@ -109,11 +111,12 @@ class KubernetesWorker(BaseWorker):
         """Return whether the worker requires a context."""
         return True
 
+    @schema_method
     async def compile(
         self,
-        manifest: dict,
-        files: list,
-        config: dict = None,
+        manifest: dict = Field(..., description="Application manifest for Kubernetes pod. Required fields: 'image' (container image with tag, e.g., 'python:3.9'). Optional fields: 'image_pull_policy' ('Always', 'IfNotPresent', 'Never'), 'restart_policy' (default 'Never'), 'timeout' (pod creation timeout in seconds), 'env' (dict of environment variables), 'command' (list of command args)."),
+        files: list = Field(..., description="List of application files (currently not used by Kubernetes worker as files are embedded in the container image)."),
+        config: dict = Field(None, description="Optional compilation configuration settings."),
         context: Optional[Dict[str, Any]] = None,
     ) -> tuple[dict, list]:
         """Compile Kubernetes pod application - validate manifest."""
@@ -146,9 +149,10 @@ class KubernetesWorker(BaseWorker):
         logger.info(f"Compiled Kubernetes pod manifest for image: {image}")
         return manifest, files
 
+    @schema_method
     async def start(
         self,
-        config: Union[WorkerConfig, Dict[str, Any]],
+        config: Union[WorkerConfig, Dict[str, Any]] = Field(..., description="Worker configuration containing session_id, app_id, workspace, client_id, manifest, and token. Can be a WorkerConfig object or dictionary with these fields."),
         context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Start a new Kubernetes pod session."""
@@ -396,8 +400,11 @@ class KubernetesWorker(BaseWorker):
             "timeout": timeout,
         }
 
+    @schema_method
     async def stop(
-        self, session_id: str, context: Optional[Dict[str, Any]] = None
+        self, 
+        session_id: str = Field(..., description="The session ID to stop. Must be a valid Kubernetes pod session."),
+        context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Stop a Kubernetes pod session."""
         if session_id not in self._sessions:
@@ -457,12 +464,13 @@ class KubernetesWorker(BaseWorker):
             raise SessionNotFoundError(f"Kubernetes pod session {session_id} not found")
         return self._sessions[session_id]
 
+    @schema_method
     async def get_logs(
         self,
-        session_id: str,
-        type: Optional[str] = None,
-        offset: int = 0,
-        limit: Optional[int] = None,
+        session_id: str = Field(..., description="The session ID to get logs from. Must be a valid Kubernetes pod session."),
+        type: Optional[str] = Field(None, description="Filter logs by type. Supported types: 'stdout', 'stderr', 'info', 'error', 'progress'."),
+        offset: int = Field(0, description="Pagination offset - number of log entries to skip."),
+        limit: Optional[int] = Field(None, description="Maximum number of log entries to return. If None, returns all entries from offset."),
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Get logs for a Kubernetes pod session.
@@ -526,12 +534,13 @@ class KubernetesWorker(BaseWorker):
             "limit": limit
         }
 
+    @schema_method
     async def execute(
         self,
-        session_id: str,
-        script: str,
-        config: Optional[Dict[str, Any]] = None,
-        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        session_id: str = Field(..., description="The session ID to execute the command in. Must be a valid running Kubernetes pod session."),
+        script: str = Field(..., description="The script or command to execute inside the Kubernetes pod."),
+        config: Optional[Dict[str, Any]] = Field(None, description="Optional execution configuration. Supported keys: 'timeout' (max execution time in seconds, default 30), 'container' (container name, default 'main'), 'shell' (shell to use, default '/bin/sh')."),
+        progress_callback: Optional[Any] = Field(None, description="Optional callback function for execution progress updates."),
         context: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """Execute a script in the running pod session.
@@ -727,7 +736,11 @@ class KubernetesWorker(BaseWorker):
                 }
             }
 
-    async def shutdown(self, context: Optional[Dict[str, Any]] = None) -> None:
+    @schema_method
+    async def shutdown(
+        self, 
+        context: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Shutdown the Kubernetes worker."""
         logger.info("Shutting down Kubernetes worker...")
 

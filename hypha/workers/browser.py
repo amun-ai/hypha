@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 import httpx
 from playwright.async_api import Page, async_playwright, Browser
 from jinja2 import Environment, PackageLoader, select_autoescape
+from pydantic import Field
+from hypha_rpc.utils.schema import schema_method
 
 from hypha.workers.base import (
     BaseWorker,
@@ -87,6 +89,9 @@ class BrowserWorker(BaseWorker):
         self._session_data: Dict[str, Dict[str, Any]] = {}
         self.initialized = False
 
+        # Session limits to prevent unbounded memory growth
+        self._MAX_CONCURRENT_SESSIONS = int(os.environ.get("HYPHA_MAX_BROWSER_SESSIONS", "20"))
+
         # Initialize cache manager
         self.cache_manager = None
 
@@ -144,12 +149,28 @@ class BrowserWorker(BaseWorker):
         self.initialized = True
         return self.browser
 
+    @schema_method
     async def start(
         self,
-        config: Union[WorkerConfig, Dict[str, Any]],
+        config: Union[WorkerConfig, Dict[str, Any]] = Field(..., description="Worker configuration containing session_id, app_id, workspace, client_id, manifest, and token. Can be a WorkerConfig object or dictionary."),
         context: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Start a new browser session."""
+        """Start a new browser session.
+
+        Creates a new browser tab and loads the application:
+        1. Initializes Playwright browser if needed
+        2. Creates a new browser page/tab
+        3. Loads compiled HTML application
+        4. Sets up authentication and communication
+        5. Waits for application to initialize
+
+        Returns:
+            Session ID string for the started browser session
+
+        Raises:
+            WorkerError: If session already exists or maximum concurrent sessions reached
+            Exception: If browser initialization or app loading fails
+        """
         # Handle both pydantic model and dict input for RPC compatibility
         if isinstance(config, dict):
             config = WorkerConfig(**config)
@@ -158,6 +179,15 @@ class BrowserWorker(BaseWorker):
 
         if session_id in self._sessions:
             raise WorkerError(f"Session {session_id} already exists")
+
+        # Check session limit to prevent unbounded memory growth
+        if len(self._sessions) >= self._MAX_CONCURRENT_SESSIONS:
+            raise WorkerError(
+                f"Maximum concurrent sessions ({self._MAX_CONCURRENT_SESSIONS}) reached. "
+                f"Currently have {len(self._sessions)} active sessions. "
+                f"Stop unused sessions before creating new ones. "
+                f"Configure limit via HYPHA_MAX_BROWSER_SESSIONS environment variable."
+            )
 
         # Create session info
         session_info = SessionInfo(
@@ -418,10 +448,22 @@ class BrowserWorker(BaseWorker):
             await context.close()
             raise e
 
+    @schema_method
     async def stop(
-        self, session_id: str, context: Optional[Dict[str, Any]] = None
+        self,
+        session_id: str = Field(..., description="The session ID of the browser session to stop."),
+        context: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Stop a browser session."""
+        """Stop a browser session.
+
+        Closes the browser tab and cleans up session resources:
+        1. Closes the browser page/tab
+        2. Updates session status to STOPPED
+        3. Cleans up session data
+
+        Raises:
+            WorkerError: If stop operation fails (session is still removed)
+        """
         if session_id not in self._sessions:
             logger.warning(
                 f"Browser session {session_id} not found for stopping, may have already been cleaned up"
@@ -452,15 +494,18 @@ class BrowserWorker(BaseWorker):
         self._session_data.pop(session_id, None)
 
 
+    @schema_method
     async def get_logs(
         self,
-        session_id: str,
-        type: Optional[str] = None,
-        offset: int = 0,
-        limit: Optional[int] = None,
+        session_id: str = Field(..., description="The session ID to retrieve logs from."),
+        type: Optional[str] = Field(None, description="Type of logs to retrieve (e.g., 'log', 'error', 'warning', or None for all). Filters browser console messages by category."),
+        offset: int = Field(0, description="Starting index for log pagination. Use 0 to get logs from the beginning."),
+        limit: Optional[int] = Field(None, description="Maximum number of log entries to return. If None, returns all logs from offset to end."),
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Get logs for a browser session.
+
+        Returns browser console messages captured during execution:
         
         Returns a dictionary with:
         - items: List of log events, each with 'type' and 'content' fields
@@ -506,8 +551,17 @@ class BrowserWorker(BaseWorker):
 
     
 
+    @schema_method
     async def shutdown(self, context: Optional[Dict[str, Any]] = None) -> None:
-        """Shutdown the browser worker."""
+        """Shutdown the browser worker.
+
+        Gracefully stops all browser sessions and closes the browser:
+        1. Stops all active browser sessions
+        2. Closes browser tabs
+        3. Shuts down Playwright browser instance
+
+        This method is called when the worker is being terminated.
+        """
         logger.info("Shutting down browser worker...")
 
         # Stop all sessions
@@ -578,14 +632,17 @@ class BrowserWorker(BaseWorker):
 
         return local_url, public_url
 
+    @schema_method
     async def compile(
         self,
-        manifest: dict,
-        files: list,
-        config: dict = None,
+        manifest: dict = Field(..., description="Application manifest containing HTML/JavaScript code or ImJoy plugin configuration. Supports raw HTML, ImJoy plugin format, or URLs to load content from."),
+        files: list = Field(..., description="List of additional files to include in the browser application."),
+        config: dict = Field(None, description="Optional compilation configuration settings."),
         context: Optional[Dict[str, Any]] = None,
     ) -> tuple[dict, list]:
         """Compile browser app manifest and files.
+
+        Validates and processes the application manifest for browser execution:
 
         This method:
         1. Looks for 'source' file OR config/script files in the files list
@@ -1200,14 +1257,17 @@ class BrowserWorker(BaseWorker):
         if base_url:
             context_options["base_url"] = base_url
 
+    @schema_method
     async def execute(
         self,
-        session_id: str,
-        script: str,
+        session_id: str = Field(..., description="The session ID of the running browser session to execute code in."),
+        script: str = Field(..., description="JavaScript code to execute in the browser page. The code will be evaluated in the browser's JavaScript context."),
         context: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """Execute JavaScript code in a browser session.
-        
+
+        Executes JavaScript in the browser page context and returns the result.
+
         Args:
             session_id: The session ID to execute the script in
             script: JavaScript code to execute in the page context

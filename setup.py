@@ -45,7 +45,7 @@ REQUIREMENTS = [
     "uuid-utils>=0.9.0",
     "sqlmodel>=0.0.22",
     "alembic>=1.14.0",
-    "hrid>=0.2.4",
+    "hrid==0.3.0",
     "stream-zip>=0.0.83",
     "prompt-toolkit>=3.0.50",
     "ptpython>=3.0.29",

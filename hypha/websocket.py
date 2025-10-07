@@ -46,9 +46,11 @@ class WebsocketServer:
         self._idle_timeout = int(os.environ.get("HYPHA_WS_IDLE_TIMEOUT", "600"))
         # Background task to clean up idle connections
         try:
+            # Check if there's a running event loop before creating the coroutine
+            loop = asyncio.get_running_loop()
             self._idle_cleanup_task = asyncio.create_task(self._idle_cleanup_loop())
         except RuntimeError:
-            # No running loop yet (e.g., during startup tests); created later on first use
+            # No running loop yet (e.g., during startup tests); will be created later on first use
             self._idle_cleanup_task = None
 
         @app.websocket(path)
@@ -502,9 +504,11 @@ class WebsocketServer:
         self._stop = True
         # Stop idle cleanup task
         if getattr(self, "_idle_cleanup_task", None):
+            self._idle_cleanup_task.cancel()
             try:
-                self._idle_cleanup_task.cancel()
-            except Exception:
+                await self._idle_cleanup_task
+            except asyncio.CancelledError:
+                # Expected when cancelling the task
                 pass
             self._idle_cleanup_task = None
 

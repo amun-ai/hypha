@@ -19,6 +19,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+from pydantic import Field
+from hypha_rpc.utils.schema import schema_method
 from hypha.workers.base import (
     BaseWorker,
     WorkerConfig,
@@ -250,6 +252,9 @@ class TerminalWorker(BaseWorker):
         self._MAX_LOG_ENTRIES = 100
         self._ALLOWED_CONTROL_CHARS = {7, 8, 9, 10, 11, 12, 13, 27}  # BEL, BS, TAB, LF, VT, FF, CR, ESC
         
+        # Session limits to prevent unbounded memory growth
+        self._MAX_CONCURRENT_SESSIONS = int(os.environ.get("HYPHA_MAX_TERMINAL_SESSIONS", "50"))
+        
         # convert true/false string to bool, and keep the string if it's not a bool
         if isinstance(use_local_url, str):
             if use_local_url.lower() == "true":
@@ -333,11 +338,12 @@ class TerminalWorker(BaseWorker):
         """Return whether the worker should use local URLs."""
         return self._use_local_url
 
+    @schema_method
     async def compile(
         self,
-        manifest: dict,
-        files: list,
-        config: dict = None,
+        manifest: dict = Field(..., description="Application manifest containing startup_command and entry_point. Optional fields: 'startup_command' (defaults to '/bin/bash'), 'entry_point' (main script filename, defaults to 'main.sh')."),
+        files: list = Field(..., description="List of application files to be staged in the terminal session working directory."),
+        config: dict = Field(None, description="Optional compilation configuration settings."),
         context: Optional[Dict[str, Any]] = None,
     ) -> tuple[dict, list]:
         """Compile terminal application - validate manifest."""
@@ -613,9 +619,10 @@ class TerminalWorker(BaseWorker):
                         else:
                             raise
 
+    @schema_method
     async def start(
         self,
-        config: Union[WorkerConfig, Dict[str, Any]],
+        config: Union[WorkerConfig, Dict[str, Any]] = Field(..., description="Worker configuration containing session_id, app_id, workspace, client_id, manifest, and token. Can be a WorkerConfig object or dictionary with these fields."),
         context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Start a new terminal session."""
@@ -633,6 +640,15 @@ class TerminalWorker(BaseWorker):
 
         if session_id in self._sessions:
             raise WorkerError(f"Session {session_id} already exists")
+
+        # Check session limit to prevent unbounded memory growth
+        if len(self._sessions) >= self._MAX_CONCURRENT_SESSIONS:
+            raise WorkerError(
+                f"Maximum concurrent sessions ({self._MAX_CONCURRENT_SESSIONS}) reached. "
+                f"Currently have {len(self._sessions)} active sessions. "
+                f"Stop unused sessions before creating new ones. "
+                f"Configure limit via HYPHA_MAX_TERMINAL_SESSIONS environment variable."
+            )
 
         # Report initial progress
         await progress_callback(
@@ -941,13 +957,14 @@ class TerminalWorker(BaseWorker):
             logger.error(f"Failed to execute command in session {session_id}: {e}")
             yield {"type": "error", "message": error_msg}
 
+    @schema_method
     async def execute(
         self,
-        session_id: str,
-        script: str,
-        config: Optional[Dict[str, Any]] = None,
-        progress_callback: Optional[Any] = None,
-        output_callback: Optional[Any] = None,
+        session_id: str = Field(..., description="The session ID to execute the command in. Must be a valid running terminal session."),
+        script: str = Field(..., description="The command or script to execute in the terminal session."),
+        config: Optional[Dict[str, Any]] = Field(None, description="Optional execution configuration. Supported keys: 'timeout' (max execution time in seconds, default 5.0), 'raw_output' (whether to return raw output with ANSI codes, default False)."),
+        progress_callback: Optional[Any] = Field(None, description="Optional callback function for execution progress updates."),
+        output_callback: Optional[Any] = Field(None, description="Optional callback function for streaming output as it's generated."),
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Execute a command in the running terminal session.
@@ -1180,8 +1197,11 @@ class TerminalWorker(BaseWorker):
                 }
             }
 
+    @schema_method
     async def stop(
-        self, session_id: str, context: Optional[Dict[str, Any]] = None
+        self, 
+        session_id: str = Field(..., description="The session ID to stop. Must be a valid terminal session."),
+        context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Stop a terminal session."""
         if session_id not in self._sessions:
@@ -1241,12 +1261,13 @@ class TerminalWorker(BaseWorker):
             self._capture_tasks.pop(session_id, None)
             self._session_emitters.pop(session_id, None)
 
+    @schema_method
     async def get_logs(
         self,
-        session_id: str,
-        type: Optional[str] = None,
-        offset: int = 0,
-        limit: Optional[int] = None,
+        session_id: str = Field(..., description="The session ID to get logs from. Must be a valid terminal session."),
+        type: Optional[str] = Field(None, description="Filter logs by type. Supported types: 'stdout', 'stderr', 'info', 'error', 'screen'. Special type 'screen' returns the rendered screen content as a string."),
+        offset: int = Field(0, description="Pagination offset - number of log entries to skip."),
+        limit: Optional[int] = Field(None, description="Maximum number of log entries to return. If None, returns all entries from offset."),
         context: Optional[Dict[str, Any]] = None,
     ) -> Union[Dict[str, Any], str]:
         """Get logs for a terminal session.
@@ -1657,7 +1678,11 @@ class TerminalWorker(BaseWorker):
             logger.error(error_msg)
             return {"success": False, "error": error_msg, "sessions": []}
 
-    async def shutdown(self, context: Optional[Dict[str, Any]] = None) -> None:
+    @schema_method
+    async def shutdown(
+        self, 
+        context: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Shutdown the terminal worker."""
         logger.info("Shutting down terminal worker...")
 
