@@ -1190,7 +1190,7 @@ async def test_llm_proxy_memory_leak_detection(
     initial_data = initial_health.json()
     
     initial_memory = initial_data["memory"]["rss_mb"]
-    initial_connections = initial_data["connections"]["total_active"]
+    initial_connections = initial_data["connections"]["active"]
     initial_objects = initial_data["objects"]
     
     print(f"   Initial memory: {initial_memory} MB")
@@ -1312,7 +1312,7 @@ async def test_llm_proxy_memory_leak_detection(
     final_data = final_health.json()
     
     final_memory = final_data["memory"]["rss_mb"]
-    final_connections = final_data["connections"]["total_active"]
+    final_connections = final_data["connections"]["active"]
     final_objects = final_data["objects"]
     
     print(f"   Final memory: {final_memory} MB")
