@@ -1223,7 +1223,7 @@ class ArtifactController:
                     template_engine = view_config.get("template_engine", "jinja2")
                     custom_headers = view_config.get("headers", {})
                     metadata = view_config.get("metadata", {})
-                    use_builtin_template = view_config.get("use_builtin_template", True)
+                    use_builtin_template = view_config.get("use_builtin_template", False)
 
                     
                     # Handle root_directory properly - if it's "/", use file_path directly
