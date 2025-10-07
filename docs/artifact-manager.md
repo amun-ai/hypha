@@ -2567,6 +2567,7 @@ async def deploy_static_site():
         "root_directory": "/", # it can be a subdirectory too
         "templates": ["index.html", "about.html"],  # Files that use Jinja2 templates
         "template_engine": "jinja2",
+        "use_builtin_template": False,
         "headers": {
             "Access-Control-Allow-Origin": "*",
             "Cache-Control": "max-age=3600"
@@ -2756,6 +2757,7 @@ view_config = {
     "root_directory": "/",
     "templates": ["index.html", "about.html", "contact.html"],  # Files to render with Jinja2
     "template_engine": "jinja2",  # Currently only Jinja2 is supported
+    "use_builtin_template": False,
     "headers": {
         "Access-Control-Allow-Origin": "*",  # CORS headers
         "Cache-Control": "max-age=3600",     # Caching headers

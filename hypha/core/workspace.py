@@ -961,8 +961,11 @@ class WorkspaceManager:
             logger.error(f"Failed to verify workspace creation: {str(e)}")
             raise
 
+        # Broadcast to the current workspace where the command was executed
+        # so that listeners in that workspace can be notified
+        current_workspace = user_info.get_workspace()
         await self._event_bus.broadcast(
-            workspace.id, "workspace_loaded", workspace.model_dump()
+            current_workspace, "workspace_loaded", workspace.model_dump()
         )
         if user_info.get_workspace() != workspace.id:
             await self.bookmark(
@@ -1006,8 +1009,10 @@ class WorkspaceManager:
         if self._s3_controller:
             await self._s3_controller.cleanup_workspace(workspace_info, force=True)
         await self._redis.hdel("workspaces", workspace_info.id)
+        # Broadcast to the current workspace where the command was executed
+        current_workspace = user_info.get_workspace()
         await self._event_bus.broadcast(
-            workspace_info.id, "workspace_deleted", workspace_info.model_dump()
+            current_workspace, "workspace_deleted", workspace_info.model_dump()
         )
         # remove the workspace from the user's bookmarks
         user_workspace = await self.load_workspace_info(user_info.get_workspace())

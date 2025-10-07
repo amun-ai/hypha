@@ -1285,10 +1285,11 @@ async def hypha_startup(server):
 
 async def start_worker(server_url, workspace, token):
     """Start MCP worker standalone."""
-    from hypha_rpc import connect
+    from hypha_rpc import connect_to_server
 
-    await connect(server_url, workspace=workspace, token=token)
+    server = await connect_to_server(server_url, workspace=workspace, token=token)
     worker = MCPClientRunner()
+    await worker.register_worker_service(server)
     logger.info(f"MCP worker started, server: {server_url}, workspace: {workspace}")
 
     return worker

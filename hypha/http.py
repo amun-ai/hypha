@@ -252,6 +252,33 @@ class ASGIRoutingMiddleware:
                         # Check multiple possible ways the service type might be stored
                         service_type = getattr(service, "type", None)
                         if service_type in ["asgi", "ASGI"]:
+                            # Reset activity timer for app services to prevent premature cleanup
+                            # ASGI services accessed via HTTP don't trigger normal RPC activity tracking
+                            # because HTTP requests bypass the WebSocket RPC layer. We need to manually
+                            # reset the timer for the client that registered this service.
+                            # The service ID format is: workspace/client_id:service_name
+                            # We need to extract the client_id part to reset its activity timer.
+                            service_full_id = getattr(service, "id", "")
+                            if service_full_id and "/" in service_full_id:
+                                # Extract client_id from service ID
+                                # Format: workspace/client_id:service_name
+                                parts = service_full_id.split("/", 1)
+                                if len(parts) == 2:
+                                    client_part = parts[1]
+                                    if ":" in client_part:
+                                        client_id = client_part.split(":", 1)[0]
+                                        full_client_id = f"{parts[0]}/{client_id}"
+
+                                        # Only reset timer for app services (identified by _rapp_ prefix)
+                                        if "/_rapp_" in full_client_id or "/_app_" in full_client_id:
+                                            try:
+                                                activity_tracker = self.store.get_activity_tracker()
+                                                await activity_tracker.reset_timer(full_client_id, entity_type="client")
+                                                logger.debug(f"Reset activity timer for client: {full_client_id}")
+                                            except Exception as e:
+                                                # Not critical - just log and continue
+                                                logger.debug(f"Could not reset activity timer for {full_client_id}: {e}")
+
                             # Call the ASGI app with manually provided receive and send
                             await service.serve(
                                 {

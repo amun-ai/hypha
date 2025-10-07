@@ -1496,8 +1496,8 @@ class TestCondaWorkerSubprocess:
         """Test that conda worker CLI properly validates required arguments."""
         import subprocess
         import sys
-        
-        # Skip if conda/mamba is not available  
+
+        # Skip if conda/mamba is not available
         try:
             subprocess.run(["conda", "--version"], check=True, capture_output=True)
         except (subprocess.CalledProcessError, FileNotFoundError):
@@ -1508,37 +1508,43 @@ class TestCondaWorkerSubprocess:
 
         try:
             print("🚀 Testing conda worker CLI argument validation...")
-            
+
+            # Create clean environment without HYPHA_* variables
+            clean_env = os.environ.copy()
+            for key in list(clean_env.keys()):
+                if key.startswith("HYPHA_"):
+                    del clean_env[key]
+
             # Test missing server-url
             result = subprocess.run([
                 sys.executable, "-m", "hypha.workers.conda"
-            ], capture_output=True, text=True, timeout=10)
+            ], capture_output=True, text=True, timeout=10, env=clean_env)
             
             print(f"No args return code: {result.returncode}")
             print(f"STDERR:\n{result.stderr}")
             
             # Should fail with missing required arguments
             assert result.returncode != 0, "Expected failure for missing required arguments"
-            assert "server-url is required" in result.stderr, f"Expected server-url error in stderr: {result.stderr}"
+            assert "--server-url is required" in result.stderr, f"Expected server-url error in stderr: {result.stderr}"
             
             # Test missing workspace
             result = subprocess.run([
                 sys.executable, "-m", "hypha.workers.conda",
                 "--server-url", "http://test.com"
-            ], capture_output=True, text=True, timeout=10)
+            ], capture_output=True, text=True, timeout=10, env=clean_env)
             
             assert result.returncode != 0, "Expected failure for missing workspace"
-            assert "workspace is required" in result.stderr, f"Expected workspace error in stderr: {result.stderr}"
+            assert "--workspace is required" in result.stderr, f"Expected workspace error in stderr: {result.stderr}"
             
             # Test missing token
             result = subprocess.run([
-                sys.executable, "-m", "hypha.workers.conda", 
+                sys.executable, "-m", "hypha.workers.conda",
                 "--server-url", "http://test.com",
                 "--workspace", "test"
-            ], capture_output=True, text=True, timeout=10)
+            ], capture_output=True, text=True, timeout=10, env=clean_env)
             
             assert result.returncode != 0, "Expected failure for missing token"
-            assert "token is required" in result.stderr, f"Expected token error in stderr: {result.stderr}"
+            assert "--token is required" in result.stderr, f"Expected token error in stderr: {result.stderr}"
             
             print(f"✅ CLI validation test completed successfully!")
             print(f"   All required argument validations working correctly")

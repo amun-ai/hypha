@@ -266,12 +266,18 @@ async def test_system_events_service_lifecycle(fastapi_server):
     await api2.disconnect()
 
 
-@pytest.mark.skip(reason="Requires admin privileges for workspace creation")
 async def test_system_events_workspace_lifecycle(fastapi_server):
     """Test that workspace lifecycle events are properly broadcast to subscribed clients."""
     import random
-    
-    api = await connect_to_server({"name": "workspace manager", "server_url": WS_SERVER_URL})
+    import os
+
+    # Use root token for admin operations
+    root_token = os.environ.get("HYPHA_ROOT_TOKEN")
+    api = await connect_to_server({
+        "name": "workspace manager",
+        "server_url": WS_SERVER_URL,
+        "token": root_token
+    })
     token = await api.generate_token()
 
     api2 = await connect_to_server(

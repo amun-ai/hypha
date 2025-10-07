@@ -94,10 +94,10 @@ python -m hypha.server
 ### 1. Connect to Hypha Server
 
 ```python
-from hypha import connect
+from hypha import connect_to_server
 
 # Connect to server with k8s worker enabled
-server = await connect({
+server = await connect_to_server({
     "server_url": "https://your-hypha-server.com",
     "token": "your-token"
 })
@@ -270,11 +270,11 @@ config = {
         "command": ["python", "-c"],
         "args": ["""
 import os
-from hypha import connect
+from hypha import connect_to_server
 
 async def main():
     # Connect using injected environment variables
-    server = await connect({
+    server = await connect_to_server({
         'server_url': os.environ['HYPHA_SERVER_URL'],
         'token': os.environ['HYPHA_TOKEN'],
         'workspace': os.environ['HYPHA_WORKSPACE']
