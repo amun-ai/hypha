@@ -343,7 +343,7 @@ interface = {
 
 1. **`protected`** (DEFAULT) - Only accessible by clients in the same workspace
 2. **`public`** - Accessible by all authenticated users across workspaces
-3. **`unlisted`** - Hidden from discovery but accessible to workspace members
+3. **`unlisted`** - Same as public, accessible for all users, but not discoverable
 
 ### When Additional Permission Checks Are Required
 
@@ -668,6 +668,8 @@ In case of error, use git diff tool to compare passing branch to compare differe
 If you failed to run the tests, warn the user the failure, never conclude to the user that you completed the task if you haven't actually run and pass the tests.
 
 When user provide description about error, provide CI error logs, or any other information, the first thing to do is to try to create a test to reproduce the issue, never try to fix it in the first place, always try to reproduce the issue and do a root cause analysis, once you clearly understand the issue, move on to the actual fix.
+
+Whatever you do, do not cheat, never fix issue by masking out issue, or hide issue. For example do not fix multiple service issue when get_service by setting a default mode, getting service without a mode should correctly raise the issue, it's a designed feature to avoid confusion when multiple services responding to the requests, you should instead look at why there are several services, whether it's because a service clean up issue. there are other cases that you should avoid this type of shallow fix of issue, focus on the root cause.
 
 Commit to git is ok if instructed, but NEVER reset a branch this will cause the lost of commit history.
 

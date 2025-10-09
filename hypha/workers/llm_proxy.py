@@ -4,10 +4,11 @@ import asyncio
 import logging
 import traceback
 import uuid
+import re
+import secrets
 from typing import Any, Dict, List, Optional
 
 
-from fastapi import FastAPI
 from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
 
@@ -38,7 +39,6 @@ class LLMProxyWorker(BaseWorker):
 
         Returns a dictionary mapping endpoint names to their URLs.
         """
-        import re
         from hypha.litellm.proxy import proxy_server
 
         # Get all routes from the litellm proxy server app
@@ -246,7 +246,6 @@ class LLMProxyWorker(BaseWorker):
                 logger.info(f"_cleanup_session: Disconnected client for session {session_id}")
             except Exception as e:
                 logger.error(f"_cleanup_session: Failed to disconnect client: {e}")
-                import traceback
                 logger.error(f"_cleanup_session: Disconnect traceback: {traceback.format_exc()}")
         else:
             logger.warning(f"_cleanup_session: Session {session_id} has no client for cleanup")
@@ -383,7 +382,6 @@ class LLMProxyWorker(BaseWorker):
             raise ValueError("No model_list found in app manifest config")
         
         # Generate a master key for this session if not provided
-        import secrets
         if "master_key" not in litellm_settings:
             # Generate a secure random key for this session
             litellm_settings["master_key"] = f"sk-hypha-{session_id[:8]}-{secrets.token_hex(16)}"
@@ -900,22 +898,9 @@ class LLMProxyWorker(BaseWorker):
 
 async def hypha_startup(server):
     """Register the LLM proxy worker as a startup function."""
-    import sys
-    print("LLM PROXY STARTUP CALLED", file=sys.stderr)
     logger.info("LLM proxy startup function called")
 
-    import traceback
     try:
-        # Check if litellm dependencies are installed
-        try:
-            import openai
-            import tiktoken
-        except ImportError as e:
-            logger.warning(f"LiteLLM dependencies not installed: {e}. Skipping LLM proxy worker registration.")
-            logger.warning("To use LLM proxy, install with: pip install hypha[llm-proxy]")
-            print(f"LLM PROXY SKIPPED: Missing dependencies - {e}", file=sys.stderr)
-            return None
-
         logger.info("Starting LLM proxy worker registration...")
         from hypha.workers.llm_proxy import LLMProxyWorker
         
@@ -938,10 +923,8 @@ async def hypha_startup(server):
         result = await server.register_service(service)
         
         logger.info(f"LLM proxy worker registered successfully with id: {result.id}, supported_types: {service.get('supported_types')}")
-        print(f"LLM PROXY REGISTERED: {result.id}", file=sys.stderr)
         return service
     except Exception as e:
         logger.error(f"Failed to register LLM proxy worker: {e}")
-        print(f"LLM PROXY ERROR: {e}", file=sys.stderr)
         traceback.print_exc()
         raise

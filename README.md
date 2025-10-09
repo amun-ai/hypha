@@ -42,6 +42,8 @@ To get started with Hypha, follow the installation and setup instructions in the
 
 Hypha is released under the MIT License. See the [LICENSE](./LICENSE) file for more details.
 
+This project includes code from third-party libraries. See the [THIRD_PARTY_LICENSES](./THIRD_PARTY_LICENSES) file for additional license information.
+
 ## Contributing
 
 We welcome contributions from the community. Please see our [Contributing Guidelines](./CONTRIBUTING.md) for more information.

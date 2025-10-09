@@ -1429,9 +1429,6 @@ class MCPRoutingMiddleware:
                 
                 # Try to get the service and create an adapter to extract capabilities
                 try:
-                    # Import required modules
-                    from starlette.requests import Request
-                    
                     # Create a mock request for auth
                     request = Request(scope, receive=None, send=None)
                     user_info = await self.store.login_optional(request)
