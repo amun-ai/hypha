@@ -58,7 +58,7 @@ This directory contains a comprehensive Docker Compose setup for running Hypha S
 
 The main Hypha application server with full feature set enabled.
 
-- **Image**: `ghcr.io/amun-ai/hypha:0.21.25`
+- **Image**: `ghcr.io/amun-ai/hypha:0.21.26`
 - **Port**: 9527
 - **Features Enabled**:
   - Server Apps

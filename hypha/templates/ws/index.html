@@ -231,9 +231,8 @@
 
 <body class="bg-black text-white font-poppins">
     <div id="app"></div>
-    <script type="module">
-        import { HyphaCore } from "https://cdn.jsdelivr.net/npm/hypha-core@0.20.60/dist/hypha-core.mjs";
-
+    <!-- Define defaultService synchronously before other scripts -->
+    <script>
         const defaultService = {
             getServerConfig(context){
                 let token;
@@ -260,6 +259,9 @@
             }
         }
         window.defaultService = defaultService;
+    </script>
+    <script type="module">
+        import { HyphaCore } from "https://cdn.jsdelivr.net/npm/hypha-core@0.20.60/dist/hypha-core.mjs";
         const hyphaCore = new HyphaCore({base_url: `${window.HYPHA_BASE_PATH || ''}/hypha-core-app/`, default_service: defaultService});
         hyphaCore.on("add_window", (config) => {
             const root = document.getElementById("hypha-window-container");
