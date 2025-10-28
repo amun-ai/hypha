@@ -2611,10 +2611,20 @@ class WorkspaceManager:
                 f"Failed to list applications in workspace {workspace}, error: {traceback.format_exc()}"
             )
             applications = []
-        applications = {
-            item["manifest"]["id"]: ApplicationManifest.model_validate(item["manifest"])
-            for item in applications
-        }
+        # Build applications dict, using alias as fallback if manifest["id"] is missing
+        # This handles legacy artifacts or partially failed installations
+        applications_list = applications  # Save the list before converting to dict
+        applications = {}
+        for item in applications_list:
+            manifest = item.get("manifest", {})
+            # Use manifest["id"] if available
+            app_key = manifest.get("id")
+            if app_key:
+                applications[app_key] = ApplicationManifest.model_validate(manifest)
+            else:
+                logger.warning(
+                    f"Skipping artifact {item.get('id')} - missing both manifest['id'] and alias"
+                )
         if app_id not in applications:
             raise KeyError(
                 f"Application id `{app_id}` not found in workspace {workspace}"
