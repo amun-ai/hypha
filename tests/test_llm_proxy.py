@@ -1015,7 +1015,9 @@ async def test_llm_proxy_concurrent_sessions(
             # Test service 1
             base_url1 = f"http://127.0.0.1:{SIO_PORT}/{api.config.workspace}/apps/{unique_service_id1}"
             response1 = await client.get(f"{base_url1}/v1/models", headers=headers, timeout=10)
-            assert response1.status_code == 200, "Service 1 should be accessible"
+            if response1.status_code != 200:
+                print(f"Service 1 error response: status={response1.status_code}, body={response1.text}")
+            assert response1.status_code == 200, f"Service 1 should be accessible, got {response1.status_code}: {response1.text}"
             models1 = response1.json()
             print(f"Service 1 models response: {models1}")
             # Look for model-1 in the response
@@ -1026,7 +1028,9 @@ async def test_llm_proxy_concurrent_sessions(
             # Test service 2
             base_url2 = f"http://127.0.0.1:{SIO_PORT}/{api.config.workspace}/apps/{unique_service_id2}"
             response2 = await client.get(f"{base_url2}/v1/models", headers=headers, timeout=10)
-            assert response2.status_code == 200, "Service 2 should be accessible"
+            if response2.status_code != 200:
+                print(f"Service 2 error response: status={response2.status_code}, body={response2.text}")
+            assert response2.status_code == 200, f"Service 2 should be accessible, got {response2.status_code}: {response2.text}"
             models2 = response2.json()
             print(f"Service 2 models response: {models2}")
             # Look for model-2 in the response
