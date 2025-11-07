@@ -748,6 +748,7 @@ class LLMProxyWorker(BaseWorker):
             logger.info(f"Registering ASGI handler for LLM proxy service: {service_id}")
 
             try:
+                logger.info(f"Registering service with id='{service_id}', full_client_id='{full_client_id}', app_id='{app_id}'")
                 service_info = await client.register_service({
                     "id": service_id,
                     "name": f"LLM Proxy - {session_id}",
@@ -765,6 +766,7 @@ class LLMProxyWorker(BaseWorker):
                 session["service_info"] = service_info
                 session["registered_service_id"] = service_info.get("id", f"{full_client_id}:{service_id}")
                 logger.info(f"Successfully registered LLM proxy service: {session['registered_service_id']}")
+                logger.info(f"Service info returned from registration: id={service_info.get('id')}, type={service_info.get('type')}")
 
             except Exception as e:
                 logger.error(f"Failed to register service: {e}")
