@@ -220,11 +220,11 @@ class LLMProxyWorker(BaseWorker):
             del self._sessions[key]
             logger.info(f"Removed session reference with key: {key}")
         
-        # Disconnect the client if it exists
+        # Unregister the service and disconnect the client
         client = session.get("client")
         if client:
             try:
-                # Unregister the LLM service before disconnecting
+                # Unregister service first
                 if "registered_service_id" in session:
                     try:
                         service_id_to_unregister = session["registered_service_id"]
@@ -239,13 +239,14 @@ class LLMProxyWorker(BaseWorker):
                         else:
                             # Only log as warning if it's not a "not found" issue
                             logger.warning(f"_cleanup_session: Failed to unregister service {session.get('registered_service_id')}: {e}")
-                
+
                 # Disconnect the client - this should also trigger cleanup
                 logger.info(f"_cleanup_session: Disconnecting client for session {session_id}")
                 await client.disconnect()
                 logger.info(f"_cleanup_session: Disconnected client for session {session_id}")
             except Exception as e:
                 logger.error(f"_cleanup_session: Failed to disconnect client: {e}")
+                import traceback
                 logger.error(f"_cleanup_session: Disconnect traceback: {traceback.format_exc()}")
         else:
             logger.warning(f"_cleanup_session: Session {session_id} has no client for cleanup")
@@ -282,10 +283,10 @@ class LLMProxyWorker(BaseWorker):
         # Clear session data to help with garbage collection
         # First set large objects to None to break references
         session["router"] = None
-        session["client"] = None
         session["app"] = None
         session["model_list"] = None
         session["litellm_settings"] = None
+        session["client"] = None
 
         # Then clear the entire session
         session.clear()
@@ -636,20 +637,27 @@ class LLMProxyWorker(BaseWorker):
             workspace = config.get("workspace", context["ws"])
             server_url = config.get("server_url", "")
             token = config.get("token", "")
-            
+
             # Store the full client ID for later cleanup
             full_client_id = config.get("id", f"{workspace}/{client_id}")
             session["full_client_id"] = full_client_id
 
-            # We need to connect to register the service
-            # Create a client connection
-            client = await connect_to_server({
-                "server_url": server_url,
-                "client_id": client_id,
-                "workspace": workspace,
-                "token": token,
-                "app_id": app_id,
-            })
+            # Create a client connection to register the service
+            # This is required because ASGI services with serve functions cannot be registered
+            # through the workspace_manager.register_service() method (serve functions can't be serialized)
+            try:
+                client = await connect_to_server({
+                    "server_url": server_url,
+                    "client_id": client_id,
+                    "workspace": workspace,
+                    "token": token,
+                    "app_id": app_id,
+                })
+            except Exception as e:
+                # If connection fails (e.g., during server shutdown), log and raise
+                # This prevents the race condition where connect_to_server is called during shutdown
+                logger.error(f"Failed to connect to server for service registration: {e}")
+                raise Exception(f"Cannot register LLM proxy service: server connection failed - {e}")
 
             # Ensure we have the actual session, not a redirect, before storing client
             actual_session = self._get_actual_session(session_id)
@@ -667,6 +675,7 @@ class LLMProxyWorker(BaseWorker):
                 actual_session.get("model_list", []),
                 client
             )
+
             actual_session["model_list"] = resolved_model_list
 
             # Update the session reference to use the actual session
@@ -735,7 +744,7 @@ class LLMProxyWorker(BaseWorker):
             # Store the ASGI handler in the session
             session["serve"] = serve_llm
 
-            # Register the service through the client connection
+            # Register the service using the client connection
             logger.info(f"Registering ASGI handler for LLM proxy service: {service_id}")
 
             try:
@@ -759,6 +768,11 @@ class LLMProxyWorker(BaseWorker):
 
             except Exception as e:
                 logger.error(f"Failed to register service: {e}")
+                # Clean up the client if registration fails
+                try:
+                    await client.disconnect()
+                except:
+                    pass
                 raise
             
             # Update session info - using /apps/ path now instead of /llm/
@@ -804,7 +818,7 @@ class LLMProxyWorker(BaseWorker):
         # Check if session exists in memory
         session = self._get_actual_session(session_id)
         if session:
-            # Try to unregister the service if we have a client
+            # Unregister the service using the client connection
             client = session.get("client")
             if client and "registered_service_id" in session:
                 try:
@@ -819,16 +833,7 @@ class LLMProxyWorker(BaseWorker):
                     else:
                         logger.warning(f"Failed to unregister service: {e}")
 
-            # Clean up client connection if any
-            if client:
-                try:
-                    # Disconnect the client to clean up any resources
-                    await client.disconnect()
-                    logger.info(f"Disconnected client for session {session_id}")
-                except Exception as e:
-                    logger.debug(f"Client disconnection during cleanup: {e}")
-
-            # Now cleanup the session
+            # Now cleanup the session (which will disconnect the client)
             await self._cleanup_session(session_id)
         else:
             # Session not in memory - still try to clean up any registered services

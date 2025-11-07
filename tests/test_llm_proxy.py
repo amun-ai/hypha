@@ -21,8 +21,6 @@ pytestmark = pytest.mark.asyncio
 # INTEGRATION TESTS WITH REAL INFRASTRUCTURE
 # ============================================================================
 
-# skip this test due to the mysterious "Failed to notify workspace manager: 'NoneType' object has no attribute 'manager_id'" error
-@pytest.mark.skip(reason="Failed to notify workspace manager: 'NoneType' object has no attribute 'manager_id'")
 async def test_llm_proxy_installation_and_basic_operation(
     minio_server, fastapi_server, test_user_token
 ):
