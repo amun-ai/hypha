@@ -2663,6 +2663,73 @@ async def test_staging_backward_compatibility(
     await artifact_manager.delete(artifact_id=dataset.id)
 
 
+async def test_edit_commits_when_stage_false_and_artifact_staged(
+    minio_server, fastapi_server_sqlite, test_user_token
+):
+    """Test that calling edit() with stage=False commits staged changes."""
+    api = await connect_to_server(
+        {
+            "name": "sqlite test client",
+            "server_url": SERVER_URL_SQLITE,
+            "token": test_user_token,
+        }
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create initial artifact
+    dataset = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Initial Dataset", "version": "1.0.0"},
+        stage=False
+    )
+    
+    # Verify initial state
+    assert dataset["manifest"]["name"] == "Initial Dataset"
+    assert dataset["manifest"]["version"] == "1.0.0"
+    assert len(dataset["versions"]) == 1
+    
+    # Enter staging mode by editing with stage=True
+    await artifact_manager.edit(
+        artifact_id=dataset.id,
+        manifest={"name": "Staged Dataset", "version": "2.0.0"},
+        stage=True,
+        version="new"
+    )
+    
+    # Verify artifact is in staging mode
+    staged_data = await artifact_manager.read(artifact_id=dataset.id, version="stage")
+    assert staged_data["manifest"]["name"] == "Staged Dataset"
+    assert staged_data["manifest"]["version"] == "2.0.0"
+    
+    # Verify published version is still the original
+    published_data = await artifact_manager.read(artifact_id=dataset.id)
+    assert published_data["manifest"]["name"] == "Initial Dataset"
+    assert published_data["manifest"]["version"] == "1.0.0"
+    assert len(published_data["versions"]) == 1  # Still only one version
+    
+    # Now call edit() with stage=False (or default) - this should commit the staged changes
+    await artifact_manager.edit(
+        artifact_id=dataset.id,
+        manifest={"name": "Staged Dataset", "version": "2.0.0", "description": "Final edit"},
+        stage=False  # Explicitly set to False
+    )
+    
+    # Verify the staged changes are now committed
+    final_data = await artifact_manager.read(artifact_id=dataset.id)
+    assert final_data["manifest"]["name"] == "Staged Dataset"
+    assert final_data["manifest"]["version"] == "2.0.0"
+    assert final_data["manifest"]["description"] == "Final edit"
+    assert len(final_data["versions"]) == 2  # Now should have 2 versions
+    
+    # Verify we're no longer in staging mode
+    # Reading with version="stage" should fail or return the same as latest
+    stage_data = await artifact_manager.read(artifact_id=dataset.id, version="stage")
+    # If we get here, staging data should match committed data
+    assert stage_data["manifest"]["name"] == "Staged Dataset"
+    # Clean up
+    await artifact_manager.delete(artifact_id=dataset.id)
+
+
 async def test_staging_with_files_isolation(
     minio_server, fastapi_server_sqlite, test_user_token
 ):
