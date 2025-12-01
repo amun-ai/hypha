@@ -9923,3 +9923,109 @@ async def test_document_chunking_and_vector_search(
     # Clean up - delete the collection artifact
     await artifact_manager.delete(collection_id, context={"ws": workspace})
     print(f"Successfully tested document chunking and vector search on artifact-manager.md")
+
+
+async def test_list_files_pagination(minio_server, fastapi_server_sqlite, test_user_token):
+    """Test file listing pagination with offset and limit parameters."""
+
+    # Connect to server and get artifact manager
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL_SQLITE, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a dataset artifact
+    dataset_manifest = {
+        "name": "pagination-test-dataset",
+        "description": "Dataset for testing pagination",
+    }
+    dataset = await artifact_manager.create(
+        type="dataset",
+        manifest=dataset_manifest,
+        version="stage",
+    )
+
+    # Upload 25 test files to verify pagination works across multiple pages
+    num_files = 25
+    file_names = []
+    for i in range(num_files):
+        file_name = f"file_{i:03d}.txt"
+        file_names.append(file_name)
+        file_contents = f"Contents of file {i}"
+        put_url = await artifact_manager.put_file(
+            artifact_id=dataset.id,
+            file_path=file_name,
+        )
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.put(put_url, data=file_contents)
+            assert response.status_code == 200
+
+    # Commit the dataset
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    # Test 1: List all files without pagination
+    all_files = await artifact_manager.list_files(artifact_id=dataset.id, limit=1000)
+    assert len(all_files) == num_files, f"Expected {num_files} files, got {len(all_files)}"
+
+    # Test 2: List files with limit only (first page)
+    page_size = 10
+    first_page = await artifact_manager.list_files(artifact_id=dataset.id, limit=page_size, offset=0)
+    assert len(first_page) == page_size, f"Expected {page_size} files in first page"
+
+    # Test 3: List second page with offset
+    second_page = await artifact_manager.list_files(artifact_id=dataset.id, limit=page_size, offset=page_size)
+    assert len(second_page) == page_size, f"Expected {page_size} files in second page"
+
+    # Verify no overlap between pages
+    first_page_names = {f["name"] for f in first_page}
+    second_page_names = {f["name"] for f in second_page}
+    assert len(first_page_names.intersection(second_page_names)) == 0, "Pages should not overlap"
+
+    # Test 4: List third page (partial)
+    third_page = await artifact_manager.list_files(artifact_id=dataset.id, limit=page_size, offset=2 * page_size)
+    assert len(third_page) == num_files - (2 * page_size), f"Expected {num_files - (2 * page_size)} files in third page"
+
+    # Test 5: Test offset beyond available files
+    empty_page = await artifact_manager.list_files(artifact_id=dataset.id, limit=page_size, offset=num_files + 10)
+    assert len(empty_page) == 0, "Expected empty result when offset exceeds file count"
+
+    # Test 6: Test HTTP endpoint with pagination
+    # Generate a token for HTTP authentication
+    token = await api.generate_token()
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        # First page via HTTP
+        response = await client.get(
+            f"{SERVER_URL_SQLITE}/{api.config.workspace}/artifacts/{dataset.alias}/files/?limit=10&offset=0",
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        assert response.status_code == 200
+        http_first_page = response.json()
+        assert len(http_first_page) == 10
+
+        # Second page via HTTP
+        response = await client.get(
+            f"{SERVER_URL_SQLITE}/{api.config.workspace}/artifacts/{dataset.alias}/files/?limit=10&offset=10",
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        assert response.status_code == 200
+        http_second_page = response.json()
+        assert len(http_second_page) == 10
+
+        # Verify no overlap
+        http_first_names = {f["name"] for f in http_first_page}
+        http_second_names = {f["name"] for f in http_second_page}
+        assert len(http_first_names.intersection(http_second_names)) == 0
+
+    # Test 7: Verify order consistency across pages
+    # Combine all pages and verify they match the full list
+    combined_pages = first_page + second_page + third_page
+    assert len(combined_pages) == num_files
+
+    combined_names = {f["name"] for f in combined_pages}
+    all_names = {f["name"] for f in all_files}
+    assert combined_names == all_names, "Combined pages should match full list"
+
+    # Clean up
+    await artifact_manager.delete(dataset.id)
+    print("Successfully tested file listing pagination")
