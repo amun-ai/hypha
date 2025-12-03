@@ -1315,6 +1315,7 @@ class ServerAppController:
                     target_alias=app_id,
                     target_workspace=workspace,
                     overwrite=overwrite,
+                    stage=stage,
                     context=context,
                 )
                 

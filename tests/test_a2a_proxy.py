@@ -699,8 +699,9 @@ async def test_a2a_cleanup_after_stop(fastapi_server, test_user_token):
     }
 
     # Install the A2A app
-    app_info = await controller.install(manifest=a2a_app_config, overwrite=True, stage=True)
-    await controller.commit_app(app_info.id)
+    # Note: With the new artifact staging behavior, calling edit() multiple times
+    # may auto-commit the artifact, so we don't need to explicitly commit
+    app_info = await controller.install(manifest=a2a_app_config, overwrite=True, stage=False)
 
     # Step 3: Start the A2A app
     print("Starting A2A app for cleanup test...")
