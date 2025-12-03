@@ -2625,7 +2625,7 @@ class ServerAppController:
             await self.artifact_manager.edit(
                 app_id,
                 version=version,
-                stage=stage,
+                stage=True,
                 manifest=manifest.model_dump(mode="json"),
                 context=context,
             )
