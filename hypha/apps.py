@@ -2095,6 +2095,7 @@ class ServerAppController:
                     published_artifact["id"],
                     manifest=manifest,
                     version="stage" if stage else None,
+                    stage=stage,
                     context=context,
                 )
                 # Don't commit here - the artifact is either:
