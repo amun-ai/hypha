@@ -1952,7 +1952,7 @@ class ServerAppController:
                 start_config["progress_callback"] = progress_callback
 
             info = await self.start(
-                app_id, version="stage", context=context, **start_config
+                app_id, version="stage", stage=True, context=context, **start_config
             )
             await self.stop(info["id"], context=context)
 
@@ -2625,7 +2625,7 @@ class ServerAppController:
             await self.artifact_manager.edit(
                 app_id,
                 version=version,
-                stage=True,
+                stage=stage,
                 manifest=manifest.model_dump(mode="json"),
                 context=context,
             )
