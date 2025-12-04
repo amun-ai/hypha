@@ -877,6 +877,11 @@ class S3Controller:
             ge=1,
             le=10000
         ),
+        offset: int = PydanticField(
+            0,
+            description="Number of files to skip before returning results. Used for pagination. Default: 0.",
+            ge=0
+        ),
         context: dict = None,
     ) -> Dict[str, Any]:
         """
@@ -894,12 +899,15 @@ class S3Controller:
         Examples:
             # List files in workspace root
             files = await list_files("")
-            
+
             # List files in a subdirectory
             files = await list_files("datasets/images")
-            
+
             # List with pagination
             files = await list_files("large-folder", max_length=100)
+
+            # List next page with offset
+            next_page = await list_files("large-folder", max_length=100, offset=100)
         
         Limitations:
             - Maximum 10000 files per request
@@ -924,7 +932,7 @@ class S3Controller:
             if not full_path.endswith("/"):
                 full_path += "/"
             items = await list_objects_async(
-                s3_client, self.workspace_bucket, full_path, max_length=max_length
+                s3_client, self.workspace_bucket, full_path, max_length=max_length, offset=offset
             )
             return items
 

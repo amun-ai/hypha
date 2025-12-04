@@ -644,6 +644,12 @@ def create_login_service(store):
             "headers": {"Location": f"{login_service_url.replace('/services/', '/apps/')}"},
             "body": "Redirecting to profile page..."
         }
+    
+    async def logout(config=None):
+        """Provide the logout url."""
+        return {
+            "logout_url": f"{login_service_url.replace('/services/', '/apps/')}/?logout=true&close=true"
+        }
 
     logger.info(
         f"To preview the login page, visit: {login_service_url.replace('/services/', '/apps/')}"
@@ -659,5 +665,6 @@ def create_login_service(store):
         "check": check_login,
         "report": report_login,
         "profile": profile,
+        "logout": logout,
     }
 

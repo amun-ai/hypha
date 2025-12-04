@@ -295,25 +295,48 @@ async def list_objects_async(
     prefix: Optional[str] = None,
     delimiter: str = "/",
     max_length: Optional[int] = None,
+    offset: int = 0,
 ):
-    """List objects async."""
+    """List objects async with pagination support.
+    
+    Args:
+        s3_client: The S3 client instance
+        bucket: S3 bucket name
+        prefix: Object key prefix to filter by
+        delimiter: Delimiter for grouping keys (default "/")
+        max_length: Maximum number of items to return (page size)
+        offset: Number of items to skip before returning results
+        
+    Returns:
+        List of items (files/directories) after applying offset and limit
+    """
     prefix = prefix or ""
     response = await s3_client.list_objects_v2(
         Bucket=bucket, Prefix=prefix, Delimiter=delimiter
     )
-    items = parse_s3_list_response(response, delimiter)
+    all_items = parse_s3_list_response(response, delimiter)
+    
+    # Continue fetching if we need more items to satisfy offset + max_length
     while response["IsTruncated"]:
+        # If we have enough items (offset + max_length), we can stop early
+        if max_length and len(all_items) >= offset + max_length:
+            break
+            
         response = await s3_client.list_objects_v2(
             Bucket=bucket,
             Prefix=prefix,
             Delimiter=delimiter,
             ContinuationToken=response["NextContinuationToken"],
         )
-        items += parse_s3_list_response(response, delimiter)
-        if max_length and len(items) > max_length:
-            items = items[:max_length]
-            break
-    return items
+        all_items += parse_s3_list_response(response, delimiter)
+    
+    # Apply offset and limit
+    start_index = offset
+    if max_length:
+        end_index = offset + max_length
+        return all_items[start_index:end_index]
+    else:
+        return all_items[start_index:]
 
 
 async def remove_objects_async(s3_client, bucket, prefix, delimiter=""):

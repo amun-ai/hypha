@@ -444,48 +444,6 @@ response = client.responses.create(
 print(response.content)
 ```
 
-### LiteLLM Integration
-
-Add to your LiteLLM configuration:
-
-```yaml
-model_list:
-  - model_name: gpt-4o
-    litellm_params:
-      model: openai/gpt-4o
-      api_key: sk-xxxxxxx
-
-mcp_servers:
-  hypha_calculator:
-    url: "http://localhost:9527/my-workspace/mcp/my-calculator-service/mcp"
-    description: "Hypha calculator service"
-```
-
-Then use with the LiteLLM proxy:
-
-```bash
-curl -X POST http://localhost:4000/v1/responses \
-  --header 'Content-Type: application/json' \
-  --header "Authorization: Bearer $LITELLM_API_KEY" \
-  --data '{
-    "model": "gpt-4o",
-    "tools": [
-      {
-        "type": "mcp",
-        "server_label": "litellm",
-        "server_url": "litellm_proxy",
-        "require_approval": "never",
-        "headers": {
-          "x-litellm-api-key": "Bearer YOUR_LITELLM_API_KEY",
-          "x-mcp-servers": "hypha_calculator"
-        }
-      }
-    ],
-    "input": "Calculate 100 / 4",
-    "tool_choice": "required"
-  }'
-```
-
 ### Direct MCP Client Usage
 
 Using the official MCP SDK:

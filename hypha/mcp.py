@@ -1194,14 +1194,23 @@ class MCPRoutingMiddleware:
             ).__aenter__()
             
             try:
-                # Build full service ID
-                if "/" in service_id:
-                    full_service_id = service_id
-                elif ":" in service_id:
-                    full_service_id = f"{workspace}/{service_id}"
+                # Build full service ID with proper handling of @app_id and wildcard
+                # Extract @app_id suffix if present
+                app_id_suffix = ""
+                service_id_without_app = service_id
+                if "@" in service_id:
+                    parts = service_id.rsplit("@", 1)
+                    service_id_without_app = parts[0]
+                    app_id_suffix = f"@{parts[1]}"
+
+                if "/" in service_id_without_app:
+                    full_service_id = service_id_without_app + app_id_suffix
+                elif ":" in service_id_without_app:
+                    full_service_id = f"{workspace}/{service_id_without_app}{app_id_suffix}"
                 else:
-                    full_service_id = f"{workspace}/{service_id}"
-                
+                    # Use wildcard for client ID
+                    full_service_id = f"{workspace}/*:{service_id_without_app}{app_id_suffix}"
+
                 service_info = await api.get_service_info(full_service_id, {"mode": mode})
                 service = await api.get_service(full_service_id)
                 
@@ -1227,14 +1236,23 @@ class MCPRoutingMiddleware:
             async with self.store.get_workspace_interface(
                 user_info, user_info.scope.current_workspace
             ) as api:
-                # Build full service ID
-                if "/" in service_id:
-                    full_service_id = service_id
-                elif ":" in service_id:
-                    full_service_id = f"{workspace}/{service_id}"
+                # Build full service ID with proper handling of @app_id and wildcard
+                # Extract @app_id suffix if present
+                app_id_suffix = ""
+                service_id_without_app = service_id
+                if "@" in service_id:
+                    parts = service_id.rsplit("@", 1)
+                    service_id_without_app = parts[0]
+                    app_id_suffix = f"@{parts[1]}"
+
+                if "/" in service_id_without_app:
+                    full_service_id = service_id_without_app + app_id_suffix
+                elif ":" in service_id_without_app:
+                    full_service_id = f"{workspace}/{service_id_without_app}{app_id_suffix}"
                 else:
-                    full_service_id = f"{workspace}/{service_id}"
-                
+                    # Use wildcard for client ID
+                    full_service_id = f"{workspace}/*:{service_id_without_app}{app_id_suffix}"
+
                 service_info = await api.get_service_info(full_service_id, {"mode": mode, "read_app_manifest": True})
                 service = await api.get_service(full_service_id)
                 
@@ -1437,14 +1455,23 @@ class MCPRoutingMiddleware:
                     async with self.store.get_workspace_interface(
                         user_info, user_info.scope.current_workspace
                     ) as api:
-                        # Build full service ID
-                        if "/" in service_id:
-                            full_service_id = service_id
-                        elif ":" in service_id:
-                            full_service_id = f"{workspace}/{service_id}"
+                        # Build full service ID with proper handling of @app_id and wildcard
+                        # Extract @app_id suffix if present
+                        app_id_suffix = ""
+                        service_id_without_app = service_id
+                        if "@" in service_id:
+                            parts = service_id.rsplit("@", 1)
+                            service_id_without_app = parts[0]
+                            app_id_suffix = f"@{parts[1]}"
+
+                        if "/" in service_id_without_app:
+                            full_service_id = service_id_without_app + app_id_suffix
+                        elif ":" in service_id_without_app:
+                            full_service_id = f"{workspace}/{service_id_without_app}{app_id_suffix}"
                         else:
-                            full_service_id = f"{workspace}/{service_id}"
-                        
+                            # Use wildcard for client ID
+                            full_service_id = f"{workspace}/*:{service_id_without_app}{app_id_suffix}"
+
                         # Try to get service info
                         try:
                             service_info = await api.get_service_info(full_service_id, {"read_app_manifest": True})
@@ -1636,20 +1663,29 @@ class MCPRoutingMiddleware:
                 try:
                     # Build the full service ID based on what's provided
                     # Service IDs can be in several formats:
-                    # 1. Simple service name: "my-service"
-                    # 2. Client-qualified: "client-id:service-name"
+                    # 1. Simple service name: "my-service" or "my-service@app-id"
+                    # 2. Client-qualified: "client-id:service-name" or "client-id:service-name@app-id"
                     # 3. Workspace-qualified: "workspace/service-name" or "workspace/client-id:service-name"
-                    
-                    if "/" in service_id:
+
+                    # Extract @app_id suffix if present
+                    app_id_suffix = ""
+                    service_id_without_app = service_id
+                    if "@" in service_id:
+                        parts = service_id.rsplit("@", 1)
+                        service_id_without_app = parts[0]
+                        app_id_suffix = f"@{parts[1]}"
+
+                    if "/" in service_id_without_app:
                         # Already has workspace prefix, use as-is
-                        full_service_id = service_id
-                    elif ":" in service_id:
+                        full_service_id = service_id_without_app + app_id_suffix
+                    elif ":" in service_id_without_app:
                         # Has client ID but no workspace, prepend workspace
-                        full_service_id = f"{workspace}/{service_id}"
+                        full_service_id = f"{workspace}/{service_id_without_app}{app_id_suffix}"
                     else:
-                        # Simple service name, prepend workspace
-                        full_service_id = f"{workspace}/{service_id}"
-                    
+                        # Simple service name without client ID, use wildcard *:
+                        # This allows matching services regardless of client ID
+                        full_service_id = f"{workspace}/*:{service_id_without_app}{app_id_suffix}"
+
                     service_info = await api.get_service_info(
                         full_service_id, {"mode": _mode, "read_app_manifest": True}
                     )

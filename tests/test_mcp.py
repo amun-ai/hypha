@@ -2586,3 +2586,355 @@ async def test_mcp_memory_leak_detection(fastapi_server, test_user_token):
     print("   🔥 STRICT mode: Very low tolerance for growth!")
     print("   - Health endpoint monitors MCP service memory usage")
     print("=" * 60)
+
+
+async def test_mcp_auto_start_idle_service(fastapi_server, test_user_token):
+    """Test that MCP can auto-start idle services from installed apps."""
+    api = await connect_to_server(
+        {"name": "test-mcp-autostart", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+
+    workspace = api.config.workspace
+
+    # Install a simple test app with schema annotations
+    app_source = """
+<config lang="json">
+{
+    "name": "Test MCP Auto-Start App",
+    "type": "web-python",
+    "version": "0.1.0"
+}
+</config>
+<script lang="python">
+from hypha_rpc import api
+from hypha_rpc.utils.schema import schema_method
+from pydantic import Field
+
+class MyService:
+    @schema_method
+    async def add(self, a: float = Field(..., description="First number"),
+                   b: float = Field(..., description="Second number")) -> float:
+        '''Add two numbers together.'''
+        return a + b
+
+service = MyService()
+api.export({"add": service.add})
+</script>
+    """
+
+    # Install the app
+    controller = await api.get_service("public/server-apps")
+    manifest = await controller.install(
+        source=app_source,
+        app_id="test-mcp-auto-start",
+        wait_for_service="default",  # Wait for service to register so manifest is populated
+        timeout=30,
+    )
+    print(f"Installed app manifest: {manifest}")
+
+    # Verify service is registered in manifest
+    assert len(manifest.get("services", [])) > 0, "Manifest should contain services"
+    print(f"Services in manifest: {manifest['services']}")
+
+    # Stop the app to make it idle
+    apps = await controller.list_running()
+    print(f"Running apps: {apps}")
+    running_apps = [app for app in apps if "test-mcp-auto-start" in app["id"]]
+    if len(running_apps) > 0:
+        for app in running_apps:
+            await controller.stop(app["id"])
+        await asyncio.sleep(2)
+
+    # Verify app is now idle
+    apps = await controller.list_running()
+    idle_apps = [app for app in apps if "test-mcp-auto-start" in app["id"]]
+    assert len(idle_apps) == 0, f"App should be idle, but found: {idle_apps}"
+
+    # Verify the app is installed
+    all_apps = await controller.list_apps()
+    print(f"All installed apps: {all_apps}")
+    installed_app = [app for app in all_apps if app["id"] == "test-mcp-auto-start"]
+    assert len(installed_app) > 0, "App should be installed"
+
+    # Now try to access the service via MCP
+    # This should trigger auto-start
+    mcp_url = f"{SERVER_URL}/{workspace}/mcp/default@test-mcp-auto-start/mcp"
+
+    # Create a JSON-RPC request to list tools
+    json_rpc_request = {
+        "jsonrpc": "2.0",
+        "method": "tools/list",
+        "id": 1,
+    }
+
+    headers = {
+        "Authorization": f"Bearer {test_user_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+
+    async with httpx.AsyncClient() as client:
+        # First request should trigger auto-start
+        response = await client.post(mcp_url, json=json_rpc_request, headers=headers, timeout=60.0)
+        print(f"MCP response status: {response.status_code}")
+        print(f"MCP response: {response.text}")
+
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
+
+        result = response.json()
+        assert "result" in result, f"Expected result in response, got: {result}"
+        assert "tools" in result["result"], f"Expected tools in result, got: {result}"
+
+        # Verify the 'add' tool is present
+        tools = result["result"]["tools"]
+        tool_names = [tool["name"] for tool in tools]
+        assert "add" in tool_names, f"Expected 'add' tool, got: {tool_names}"
+
+    # Verify the app is now running again
+    apps = await controller.list_running()
+    print(f"Apps after MCP access: {apps}")
+    running_apps = [app for app in apps if app.get("app_id") == "test-mcp-auto-start"]
+    assert len(running_apps) > 0, "App should be running after MCP access"
+
+    # Clean up
+    await controller.uninstall("test-mcp-auto-start")
+    await api.disconnect()
+
+
+async def test_mcp_auto_start_with_tool_call(fastapi_server, test_user_token):
+    """Test that MCP can auto-start idle services when calling tools."""
+    api = await connect_to_server(
+        {"name": "test-mcp-tool-autostart", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+
+    workspace = api.config.workspace
+
+    # Install a simple test app with a schema function
+    app_source = """
+<config lang="json">
+{
+    "name": "Test MCP Calculator",
+    "type": "web-python",
+    "version": "0.1.0"
+}
+</config>
+<script lang="python">
+from hypha_rpc import api
+from hypha_rpc.utils.schema import schema_method
+from pydantic import Field
+
+class Calculator:
+    @schema_method
+    async def multiply(self, a: float = Field(..., description="First number"),
+                       b: float = Field(..., description="Second number")) -> float:
+        '''Multiply two numbers together.'''
+        return a * b
+
+calc = Calculator()
+api.export({"multiply": calc.multiply})
+</script>
+    """
+
+    # Install the app
+    controller = await api.get_service("public/server-apps")
+    manifest = await controller.install(
+        source=app_source,
+        app_id="test-calculator",
+        wait_for_service="default",
+        timeout=30,
+    )
+    print(f"Installed calculator app: {manifest}")
+
+    # Verify service is registered in manifest
+    assert len(manifest.get("services", [])) > 0, "Manifest should contain services"
+
+    # Stop the app to make it idle
+    apps = await controller.list_running()
+    running_apps = [app for app in apps if app.get("app_id") == "test-calculator"]
+    if len(running_apps) > 0:
+        for app in running_apps:
+            await controller.stop(app["id"])
+        await asyncio.sleep(2)
+
+    # Verify stopped
+    apps = await controller.list_running()
+    stopped_apps = [app for app in apps if app.get("app_id") == "test-calculator"]
+    assert len(stopped_apps) == 0, "App should be stopped"
+
+    # Now try to call a tool via MCP - this should auto-start the app
+    mcp_url = f"{SERVER_URL}/{workspace}/mcp/default@test-calculator/mcp"
+
+    # Call the multiply tool
+    json_rpc_request = {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+            "name": "multiply",
+            "arguments": {"a": 6, "b": 7}
+        },
+        "id": 2,
+    }
+
+    headers = {
+        "Authorization": f"Bearer {test_user_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(mcp_url, json=json_rpc_request, headers=headers, timeout=60.0)
+        print(f"Tool call response: {response.status_code}")
+        print(f"Tool call result: {response.text}")
+
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
+
+        result = response.json()
+        assert "result" in result, f"Expected result in response, got: {result}"
+
+        # The result should contain content blocks with the answer
+        content = result["result"]["content"]
+        assert len(content) > 0, "Expected content in result"
+        assert "42" in content[0]["text"], f"Expected 42 in result, got: {content}"
+
+    # Verify app is running
+    apps = await controller.list_running()
+    running_apps = [app for app in apps if app.get("app_id") == "test-calculator"]
+    assert len(running_apps) > 0, "App should be running after tool call"
+
+    # Clean up
+    await controller.uninstall("test-calculator")
+    await api.disconnect()
+
+
+async def test_mcp_partial_service_id_without_client(fastapi_server, test_user_token):
+    """Test that MCP supports partial service IDs without explicit client_id."""
+    api = await connect_to_server(
+        {"name": "test-mcp-partial-id", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+
+    workspace = api.config.workspace
+
+    # Register a simple service with schema annotations
+    from hypha_rpc.utils.schema import schema_method
+    from pydantic import Field
+
+    class CalculatorService:
+        @schema_method
+        async def multiply(
+            self,
+            a: float = Field(..., description="First number"),
+            b: float = Field(..., description="Second number")
+        ) -> float:
+            """Multiply two numbers together."""
+            return a * b
+
+        @schema_method
+        async def divide(
+            self,
+            a: float = Field(..., description="Numerator"),
+            b: float = Field(..., description="Denominator")
+        ) -> float:
+            """Divide first number by second number."""
+            if b == 0:
+                raise ValueError("Cannot divide by zero")
+            return a / b
+
+    calc_service = CalculatorService()
+
+    # Register the service with a simple name
+    await api.register_service(
+        {
+            "id": "calculator",
+            "name": "Calculator Service",
+            "description": "A simple calculator service for testing",
+            "config": {
+                "visibility": "protected",
+                "require_context": False,
+            },
+            "multiply": calc_service.multiply,
+            "divide": calc_service.divide,
+        }
+    )
+
+    # Access the service via MCP using only the service name (no client_id)
+    # This should use the wildcard *: prefix internally
+    mcp_url = f"{SERVER_URL}/{workspace}/mcp/calculator/mcp"
+
+    headers = {
+        "Authorization": f"Bearer {test_user_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+
+    async with httpx.AsyncClient() as client:
+        # Test 1: List tools using partial service ID
+        list_tools_request = {
+            "jsonrpc": "2.0",
+            "method": "tools/list",
+            "id": 1,
+        }
+
+        response = await client.post(mcp_url, json=list_tools_request, headers=headers, timeout=30.0)
+        assert response.status_code == 200
+        result = response.json()
+        assert "result" in result
+        assert "tools" in result["result"]
+
+        tools = result["result"]["tools"]
+        tool_names = [tool["name"] for tool in tools]
+        assert "multiply" in tool_names, f"multiply tool not found in {tool_names}"
+        assert "divide" in tool_names, f"divide tool not found in {tool_names}"
+
+        # Test 2: Call a tool using partial service ID
+        multiply_request = {
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": "multiply",
+                "arguments": {
+                    "a": 6,
+                    "b": 7,
+                }
+            },
+            "id": 2,
+        }
+
+        response = await client.post(mcp_url, json=multiply_request, headers=headers, timeout=30.0)
+        assert response.status_code == 200
+        result = response.json()
+        assert "result" in result
+        assert "content" in result["result"]
+
+        # Extract the result from content
+        content = result["result"]["content"]
+        assert len(content) > 0
+        assert content[0]["type"] == "text"
+        assert "42" in content[0]["text"]
+
+        # Test 3: Call another tool
+        divide_request = {
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": "divide",
+                "arguments": {
+                    "a": 100,
+                    "b": 4,
+                }
+            },
+            "id": 3,
+        }
+
+        response = await client.post(mcp_url, json=divide_request, headers=headers, timeout=30.0)
+        assert response.status_code == 200
+        result = response.json()
+        assert "result" in result
+        assert "content" in result["result"]
+
+        content = result["result"]["content"]
+        assert len(content) > 0
+        assert content[0]["type"] == "text"
+        assert "25" in content[0]["text"]
+
+    # Clean up
+    await api.disconnect()

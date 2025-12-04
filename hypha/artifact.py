@@ -785,6 +785,7 @@ class ArtifactController:
             stage: bool = False,
             token: str = None,
             limit: int = 1000,
+            offset: int = 0,
             use_proxy: bool = None,
             expires_in: int = 3600,
             use_local_url: bool = False,
@@ -827,6 +828,7 @@ class ArtifactController:
                                 s3_config["bucket"],
                                 file_key.rstrip("/") + "/",
                                 max_length=limit,
+                                offset=offset,
                             )
                             if not items:
                                 raise HTTPException(
@@ -3260,10 +3262,13 @@ class ArtifactController:
                     if isinstance(artifact.staging, dict) and artifact.staging != convert_legacy_staging(artifact.staging):
                         flag_modified(artifact, "staging")
 
-                # Determine if we're in staging mode
-                is_staging = artifact.staging is not None or stage
-                
-                if stage or is_staging:
+                # Determine staging mode behavior:
+                # - If stage=True: Enter/continue staging mode
+                # - If stage=False and artifact.staging is None: Direct edit and commit
+                # - If stage=False and artifact.staging is not None: Apply edits to staging and commit
+                is_already_staged = artifact.staging is not None
+
+                if stage:
                     # Handle staging mode
                     logger.info(f"Artifact {artifact_id} entering/in staging mode")
                     
@@ -3307,9 +3312,35 @@ class ArtifactController:
                     
                     logger.info(f"Staging mode: version_index={version_index}, intent={artifact.staging.get('_intent')}")
                 else:
-                    # Not in staging mode - edit directly and commit
-                    logger.info(f"Artifact {artifact_id} direct edit mode")
-                    
+                    # Not in staging mode OR committing previously staged changes
+                    if is_already_staged:
+                        logger.info(f"Artifact {artifact_id} was in staging mode, now committing staged changes")
+
+                        # Apply staged changes first (if not overridden by new edits)
+                        staging_dict = artifact.staging
+
+                        # Use staged values if new values not provided
+                        if manifest is None and staging_dict.get("manifest") is not None:
+                            manifest = staging_dict["manifest"]
+                        if config is None and staging_dict.get("config") is not None:
+                            config = staging_dict["config"]
+                        if secrets is None and staging_dict.get("secrets") is not None:
+                            secrets = staging_dict["secrets"]
+                        if type is None and staging_dict.get("type") is not None:
+                            type = staging_dict["type"]
+
+                        # If version was not specified, check the staging intent
+                        if version is None:
+                            staging_intent = staging_dict.get("_intent")
+                            if staging_intent == "new_version":
+                                version = "new"
+
+                        # Clear staging since we're committing
+                        artifact.staging = None
+                        flag_modified(artifact, "staging")
+                    else:
+                        logger.info(f"Artifact {artifact_id} direct edit mode")
+
                     if version == "new":
                         # Create new version
                         versions = artifact.versions or []
@@ -3382,8 +3413,8 @@ class ArtifactController:
                 # Save to database
                 session.add(artifact)
                 await session.commit()
-                
-                if stage or is_staging:
+
+                if stage:
                     logger.info(f"Edited artifact with ID: {artifact_id} (staged), alias: {artifact.alias}")
                 else:
                     logger.info(f"Edited artifact with ID: {artifact_id} (committed), alias: {artifact.alias}")
@@ -5265,6 +5296,11 @@ class ArtifactController:
             False,
             description="Include pending file operations in the listing (uploads in progress, scheduled deletions)."
         ),
+        offset: int = PydanticField(
+            0,
+            description="Number of files to skip before returning results. Used for pagination. Default: 0.",
+            ge=0
+        ),
         context: Optional[dict] = PydanticField(
             None,
             description="Context containing user info and workspace. Usually provided automatically by the system."
@@ -5299,6 +5335,9 @@ class ArtifactController:
             files = await list_files("large-dataset", limit=100)
             if files['truncated']:
                 print("More files available")
+
+            # List next page with offset
+            next_page = await list_files("large-dataset", limit=100, offset=100)
             
         Raises:
             ValueError: If artifact_id invalid or stage used with version
@@ -5368,6 +5407,7 @@ class ArtifactController:
                         s3_config["bucket"],
                         full_path,
                         max_length=limit,
+                        offset=offset,
                     )
 
                     # If we're in staging mode, filter out files marked for removal

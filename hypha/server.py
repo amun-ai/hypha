@@ -264,13 +264,6 @@ def create_application(args):
         if local_auth_startup_function not in args.startup_functions:
             args.startup_functions.append(local_auth_startup_function)
             logger.info("Automatically added Local Authentication provider to startup functions")
-    
-    # Automatically add LLM proxy startup function if LLM proxy is enabled
-    if args.enable_llm_proxy:
-        llm_proxy_startup_function = "hypha.workers.llm_proxy:hypha_startup"
-        if llm_proxy_startup_function not in args.startup_functions:
-            args.startup_functions.append(llm_proxy_startup_function)
-            logger.info("Automatically added LLM proxy worker to startup functions")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -644,11 +637,6 @@ def get_argparser(add_help=True):
         "--enable-local-auth",
         action="store_true",
         help="enable local authentication provider with user management",
-    )
-    parser.add_argument(
-        "--enable-llm-proxy",
-        action="store_true",
-        help="enable LLM proxy worker for multi-provider LLM support via litellm",
     )
     parser.add_argument(
         "--interactive",

@@ -8,9 +8,3 @@ nvidia-pytriton==0.2.1; python_version == '3.8'
 simpervisor==1.0.0
 a2a-sdk>=0.2.11
 ipykernel>=6.0.0
-# LiteLLM dependencies for testing llm_proxy
-openai==1.99.5
-tiktoken==0.7.0
-click==8.1.7
-tokenizers==0.20.3
-cryptography==44.0.0

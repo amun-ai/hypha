@@ -1315,6 +1315,7 @@ class ServerAppController:
                     target_alias=app_id,
                     target_workspace=workspace,
                     overwrite=overwrite,
+                    stage=stage,
                     context=context,
                 )
                 
@@ -1951,7 +1952,7 @@ class ServerAppController:
                 start_config["progress_callback"] = progress_callback
 
             info = await self.start(
-                app_id, version="stage", context=context, **start_config
+                app_id, version="stage", stage=True, context=context, **start_config
             )
             await self.stop(info["id"], context=context)
 
@@ -2094,6 +2095,7 @@ class ServerAppController:
                     published_artifact["id"],
                     manifest=manifest,
                     version="stage" if stage else None,
+                    stage=stage,
                     context=context,
                 )
                 # Don't commit here - the artifact is either:

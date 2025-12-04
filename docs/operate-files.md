@@ -1026,14 +1026,15 @@ print(result["message"])
 
 ---
 
-### `list_files(path: str = "", max_length: int = 1000) -> Dict[str, Any]`
+### `list_files(path: str = "", max_length: int = 1000, offset: int = 0) -> Dict[str, Any]`
 
-Lists files and directories in the specified path.
+Lists files and directories in the specified path with pagination support.
 
 **Parameters:**
 
 - `path`: Optional. The relative path to list files from. Defaults to `""` (root of workspace).
 - `max_length`: Optional. Maximum number of items to return. Defaults to 1000.
+- `offset`: Optional. Number of items to skip before returning results. Used for pagination. Defaults to 0.
 
 **Returns:** A list of file and directory objects, each containing:
 - `name`: The name of the file or directory
@@ -1050,6 +1051,20 @@ files = await s3controller.list_files()
 # List files in a specific directory
 files = await s3controller.list_files(
     path="data/",
+)
+
+# List files with pagination (first page of 100 items)
+page1 = await s3controller.list_files(
+    path="data/",
+    max_length=100,
+    offset=0,
+)
+
+# List next page
+page2 = await s3controller.list_files(
+    path="data/",
+    max_length=100,
+    offset=100,
 )
 
 for file in files:
