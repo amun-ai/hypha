@@ -4033,6 +4033,7 @@ async def test_edit_version_behavior(minio_server, fastapi_server, test_user_tok
     # Edit without version should update staging area (since artifact is already staged)
     await artifact_manager.edit(
         artifact_id=legacy_artifact.id,
+        stage=True,
         manifest={"name": "Legacy Updated", "description": "Legacy description"},
         # No version parameter - should update staging area
     )
@@ -4668,7 +4669,7 @@ async def test_create_zip_file_download_weight_behavior(
         type="dataset",
         parent_id=collection.id,
         manifest={"name": "Download Weight Test Dataset"},
-        version="stage",
+        stage=True,
     )
 
     # Add files with different download weights
