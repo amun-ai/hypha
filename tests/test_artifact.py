@@ -8496,6 +8496,7 @@ async def test_cross_workspace_draft_creation(
     # User 2 can also edit the draft using the full ID
     await artifact_manager2.edit(
         artifact_id=draft["id"],  # Use full ID
+        stage=True,  # Keep it in staging mode (avoid auto-commit)
         manifest={
             "name": "Model Example 1 - Updated",
             "description": "Updated by user 2"
