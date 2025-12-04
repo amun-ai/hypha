@@ -216,7 +216,7 @@ def create_application(args):
 
         # Set S3 settings automatically
         args.endpoint_url = server_url
-        args.endpoint_url_public = server_url
+        args.endpoint_url_public = args.endpoint_url_public or server_url
         args.access_key_id = args.minio_root_user
         args.secret_access_key = args.minio_root_password
         args.enable_s3 = True
