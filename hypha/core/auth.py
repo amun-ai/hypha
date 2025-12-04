@@ -645,7 +645,7 @@ def create_login_service(store):
             "body": "Redirecting to profile page..."
         }
     
-    async def logout(config):
+    async def logout(config=None):
         """Provide the logout url."""
         return {
             "logout_url": f"{login_service_url.replace('/services/', '/apps/')}/?logout=true&close=true"
