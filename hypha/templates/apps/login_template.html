@@ -350,6 +350,12 @@
                     alert(`Failed to report token. Please try again later. (${response.status}: ${response.statusText})`);
                 }
                 else{
+                    // Check if we need to clear login info after reporting token
+                    const clear = urlParams.get('clear');
+                    if (clear === 'true') {
+                        await clearLoginState();
+                    }
+
                     if (redirect) {
                         setTimeout(() => {
                             window.location.href = redirect;
