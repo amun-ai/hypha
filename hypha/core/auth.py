@@ -648,7 +648,7 @@ def create_login_service(store):
     async def logout(config):
         """Provide the logout url."""
         return {
-            "logout_url": f"{login_service_url.replace('/services/', '/apps/')}/?logout=true"
+            "logout_url": f"{login_service_url.replace('/services/', '/apps/')}/?logout=true&close=true"
         }
 
     logger.info(
