@@ -600,9 +600,9 @@ def fastapi_server_redis_1(redis_server, minio_server):
 
 
 @pytest_asyncio.fixture(name="fastapi_server_redis_2", scope="session")
-def fastapi_server_redis_2(redis_server, minio_server, fastapi_server):
+def fastapi_server_redis_2(redis_server, minio_server):
     """Start a backup server as test fixture and tear down after test."""
-    # Add a small delay to ensure the first server is fully initialized
+    # Add a small delay to ensure Redis and MinIO are fully initialized
     time.sleep(1)
     
     with subprocess.Popen(
