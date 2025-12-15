@@ -1745,24 +1745,30 @@ class WorkspaceManager:
                     # Skip unlisted services from other workspaces
                     continue
 
-            # Permission check for protected services
+            # SECURITY: Permission check for protected services
+            # This is the critical security enforcement point that ensures:
+            # 1. Anonymous users (with workspace="ws-anonymous") can ONLY see public services
+            # 2. Authenticated users without workspace permission need authorized_workspaces
+            # 3. Protected services (default visibility) are isolated by workspace
             if service_visibility not in ["public", "unlisted"]:
                 has_workspace_permission = user_info.check_permission(
                     service_workspace, UserPermission.read
                 )
-                
+
                 if not has_workspace_permission:
-                    # Check if user's workspace is in authorized_workspaces
+                    # User doesn't have permission for this workspace
+                    # Check if user's workspace is in authorized_workspaces for controlled access
                     config = service_dict.get("config", {})
                     authorized_workspaces = config.get("authorized_workspaces") if isinstance(config, dict) else getattr(config, 'authorized_workspaces', None)
                     user_workspace = cws  # Current workspace from context
-                    
+
                     if not (authorized_workspaces and user_workspace in authorized_workspaces):
-                        # User doesn't have access, skip this service
+                        # SECURITY: User doesn't have access - skip this protected service
+                        # This ensures anonymous users (cws="ws-anonymous") cannot see protected services
                         continue
-                    
+
                     # User is authorized via authorized_workspaces
-                    # For security, remove the authorized_workspaces list
+                    # For security, remove the authorized_workspaces list from response
                     if "authorized_workspaces" in service_dict.get("config", {}):
                         del service_dict["config"]["authorized_workspaces"]
                 # else: user has workspace permission, keep authorized_workspaces for owner
@@ -2299,29 +2305,31 @@ class WorkspaceManager:
             raise ValueError(
                 f"Invalid mode: {mode}. Mode must be 'random', 'first', 'last', 'exact', 'min_load', 'native:random', or 'select:criteria:function' format (e.g., 'select:min:get_load')"
             )
-        # Check access permissions
+        # SECURITY: Check access permissions for protected/unlisted services
+        # This ensures anonymous users can ONLY access public services via MCP/HTTP endpoints
         if not key.startswith(b"services:public|"):
             # For non-public services, validate context and permissions
             self.validate_context(context, permission=UserPermission.read)
             # First check if user has read permission in the service's workspace
             has_workspace_permission = user_info.check_permission(workspace, UserPermission.read)
-            
+
             if not has_workspace_permission:
                 # Get service data to check authorized_workspaces
                 service_data = await self._redis.hgetall(key)
                 service_info = ServiceInfo.from_redis_dict(service_data)
-                
+
                 # Check if the service has authorized_workspaces configured
                 authorized_workspaces = getattr(service_info.config, 'authorized_workspaces', None)
                 user_workspace = context.get("ws") if context else None
-                
+
                 # Check if user's workspace is in the authorized_workspaces list
                 if not (authorized_workspaces and user_workspace and user_workspace in authorized_workspaces):
-                    # User is not authorized - don't reveal any service information
+                    # SECURITY: User is not authorized - don't reveal any service information
+                    # This blocks anonymous users (workspace="ws-anonymous") from accessing protected services
                     raise PermissionError(
                         f"Permission denied for non-public service in workspace {workspace}"
                     )
-                
+
                 # User is authorized via authorized_workspaces
                 # For security, remove the authorized_workspaces list from the returned service info
                 # so that authorized users from other workspaces cannot see the full list
