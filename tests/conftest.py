@@ -87,6 +87,42 @@ def _wait_for_server_health(server_url, server_name, max_timeout=40):
     return False
 
 
+def _is_port_available(port):
+    """Check if a port is available for binding."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(('127.0.0.1', port))
+            return True
+    except OSError:
+        return False
+
+
+def _kill_process_on_port(port):
+    """Kill any process using the specified port."""
+    try:
+        # Try to find and kill process using lsof (Unix-like systems)
+        if sys.platform != 'win32':
+            result = subprocess.run(
+                ['lsof', '-ti', f':{port}'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.stdout.strip():
+                pids = result.stdout.strip().split('\n')
+                for pid in pids:
+                    try:
+                        subprocess.run(['kill', '-9', pid], timeout=5)
+                        print(f"Killed process {pid} using port {port}")
+                    except Exception as e:
+                        print(f"Failed to kill process {pid}: {e}")
+                # Wait a bit for port to be released
+                time.sleep(0.5)
+    except Exception as e:
+        print(f"Error trying to kill process on port {port}: {e}")
+
+
 def _cleanup_server_process(proc, server_name):
     """Helper function to cleanup server processes robustly."""
     try:
@@ -557,6 +593,15 @@ def fastapi_server_sqlite_fixture(minio_server):
 @pytest_asyncio.fixture(name="fastapi_server_redis_1", scope="session")
 def fastapi_server_redis_1(redis_server, minio_server):
     """Start server as test fixture and tear down after test."""
+    # Check if port is available, if not try to clean it up
+    if not _is_port_available(SIO_PORT_REDIS_1):
+        print(f"Port {SIO_PORT_REDIS_1} is already in use, attempting to clean up...")
+        _kill_process_on_port(SIO_PORT_REDIS_1)
+        # Wait a bit and check again
+        time.sleep(1)
+        if not _is_port_available(SIO_PORT_REDIS_1):
+            raise RuntimeError(f"Port {SIO_PORT_REDIS_1} is still in use after cleanup attempt")
+
     with subprocess.Popen(
         [
             sys.executable,
@@ -604,7 +649,16 @@ def fastapi_server_redis_2(redis_server, minio_server, fastapi_server):
     """Start a backup server as test fixture and tear down after test."""
     # Add a small delay to ensure the first server is fully initialized
     time.sleep(1)
-    
+
+    # Check if port is available, if not try to clean it up
+    if not _is_port_available(SIO_PORT_REDIS_2):
+        print(f"Port {SIO_PORT_REDIS_2} is already in use, attempting to clean up...")
+        _kill_process_on_port(SIO_PORT_REDIS_2)
+        # Wait a bit and check again
+        time.sleep(1)
+        if not _is_port_available(SIO_PORT_REDIS_2):
+            raise RuntimeError(f"Port {SIO_PORT_REDIS_2} is still in use after cleanup attempt")
+
     with subprocess.Popen(
         [
             sys.executable,
@@ -638,7 +692,7 @@ def fastapi_server_redis_2(redis_server, minio_server, fastapi_server):
             except Exception:
                 pass
             raise TimeoutError("Server (fastapi_server_redis_2) did not start in time")
-        
+
         yield
         _cleanup_server_process(proc, "fastapi_server_redis_2")
 
