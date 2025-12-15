@@ -25,6 +25,88 @@ async with connect_to_server({
     pass
 ```
 
+### Logging Out
+
+Hypha provides a `logout` function to properly end user sessions. This clears the authentication state on both the client and server side (including Auth0 session).
+
+#### Python Client
+
+```python
+from hypha_rpc import logout
+
+# Logout with a callback to handle the logout URL
+async def logout_callback(context):
+    # The context contains the logout_url for server-side logout
+    print(f"Please visit to complete logout: {context['logout_url']}")
+    # In a GUI application, you might open this URL in a browser
+    import webbrowser
+    webbrowser.open(context['logout_url'])
+
+await logout({
+    "server_url": "https://ai.imjoy.io",
+    "logout_callback": logout_callback
+})
+```
+
+#### JavaScript Client (Browser)
+
+```javascript
+import { hyphaWebsocketClient } from 'hypha-rpc';
+
+// Logout with a callback to handle the logout URL
+const logoutCallback = async (context) => {
+    // Open logout URL in a popup to complete server-side logout
+    if (context.logout_url) {
+        window.open(context.logout_url, '_blank', 'width=600,height=700');
+    }
+};
+
+await hyphaWebsocketClient.logout({
+    server_url: window.location.origin,
+    logout_callback: logoutCallback,
+});
+
+// Also clear local storage and cookies
+localStorage.removeItem('hypha_token');
+localStorage.removeItem('hypha_user_profile');
+document.cookie = 'access_token=; path=/; max-age=0; samesite=lax';
+```
+
+#### Complete Logout Flow
+
+For a complete logout that clears both local state and server-side sessions:
+
+```javascript
+async function performLogout() {
+    try {
+        // 1. Call server-side logout
+        await hyphaWebsocketClient.logout({
+            server_url: window.location.origin,
+            logout_callback: async (context) => {
+                if (context.logout_url) {
+                    // Opens Auth0 logout which clears the IdP session
+                    window.open(context.logout_url, '_blank', 'width=600,height=700');
+                }
+            },
+        });
+    } catch (e) {
+        console.log("Error during server logout:", e);
+    }
+
+    // 2. Clear local cookies
+    document.cookie = 'access_token=; path=/; max-age=0; samesite=lax';
+
+    // 3. Clear local storage
+    localStorage.removeItem('hypha_token');
+    localStorage.removeItem('hypha_user_profile');
+
+    // 4. Disconnect from server (optional)
+    if (server) {
+        await server.disconnect();
+    }
+}
+```
+
 ### Setting Up Your Own Auth0 Account
 
 For production deployments, you should configure your own Auth0 account:
@@ -471,11 +553,31 @@ async def report_login_handler(key, token=None, email=None, **kwargs):
     """Report login completion (called by login page)."""
     if key not in LOGIN_SESSIONS:
         raise ValueError("Invalid login key")
-    
+
     LOGIN_SESSIONS[key]["status"] = "completed"
     LOGIN_SESSIONS[key]["token"] = token
     LOGIN_SESSIONS[key]["email"] = email
     return {"success": True}
+
+async def custom_logout_handler(config=None):
+    """Handle logout requests.
+
+    This handler is called when a client requests to logout.
+    It should return a dictionary with a 'logout_url' that the client
+    will open to complete the server-side logout (e.g., Auth0 logout).
+
+    Args:
+        config: Optional configuration passed from the client
+
+    Returns:
+        Dictionary with 'logout_url' for completing the logout flow
+    """
+    # For custom auth, you might redirect to your own logout page
+    # or to an identity provider's logout endpoint
+    logout_page_url = "/public/apps/hypha-login/?logout=true&close=true"
+    return {
+        "logout_url": logout_page_url
+    }
 
 # 5. User Management Functions
 async def signup_handler(server, context=None, name=None, email=None, password=None):
@@ -578,18 +680,19 @@ async def hypha_startup(server):
         parse_token=custom_parse_token,
         generate_token=custom_generate_token,
         get_token=custom_get_token,  # Optional custom extraction
-        
+
         # Login service handlers
         index_handler=login_page_handler,
         start_handler=start_login_handler,
         check_handler=check_login_handler,
         report_handler=report_login_handler,
-        
+        logout_handler=custom_logout_handler,  # Custom logout handler
+
         # Additional service methods
         signup=lambda context=None, **kwargs: signup_handler(server, context, **kwargs),
         login=lambda context=None, **kwargs: login_handler(server, context, **kwargs)
     )
-    
+
     logger.info("Custom authentication service registered")
 ```
 
@@ -609,6 +712,7 @@ The login service implements the OAuth-like flow used by hypha-rpc's `login()` f
 - **start_handler**: Initiates a login session, returns a key and URLs
 - **check_handler**: Polls for login completion (used by hypha-rpc)
 - **report_handler**: Reports successful login (called by login page)
+- **logout_handler**: Returns logout URL for ending sessions (called by hypha-rpc's `logout()`)
 
 #### 4. Additional Methods
 Any extra keyword arguments to `register_auth_service` are added as methods to the login service. These can be called via `/public/services/hypha-login/<method_name>`.
