@@ -1,1 +1,1 @@
-(()=>{importScripts("https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.66/dist/hypha-rpc-websocket.min.js");hyphaWebsocketClient.setupLocalClient({enable_execution:!0}).then(e=>{console.log("Hypha WebWorker initialized.",e)}).catch(console.error);})();
+(()=>{importScripts("https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.85/dist/hypha-rpc-websocket.min.js");hyphaWebsocketClient.setupLocalClient({enable_execution:!0}).then(e=>{console.log("Hypha WebWorker initialized.",e)}).catch(console.error);})();

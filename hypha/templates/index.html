@@ -343,16 +343,28 @@
             };
 
             const onLogout = async () => {
-                // Clear cookies and localStorage
-                document.cookie = 'access_token=; path=/; max-age=0; samesite=lax';
-                document.cookie = 'hypha_version=; path=/; max-age=0; samesite=lax';
-                localStorage.removeItem('hypha_token');
-                localStorage.removeItem('hypha_user_profile');
-                
+                try {
+                    // Use the logout function from hypha-rpc
+                    const logoutCallback = async (context) => {
+                        // Open logout URL in a popup window to complete server-side logout
+                        if (context.logout_url) {
+                            const popupWindow = window.open(context.logout_url, '_blank', 'width=600,height=700');
+                            // The popup will close itself when done
+                        }
+                    };
+
+                    await hyphaWebsocketClient.logout({
+                        server_url: window.location.origin,
+                        logout_callback: logoutCallback,
+                    });
+                } catch (e) {
+                    console.log("Error during server logout:", e);
+                }
+
                 // Clear React state
                 setIsLoggedIn(false);
                 setUser(null);
-                
+
                 // Optionally disconnect from server
                 if (hyphaServer) {
                     try {

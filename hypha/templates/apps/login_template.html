@@ -153,18 +153,22 @@
 
         document.addEventListener('DOMContentLoaded', async () => {
             try {
-                // Check for logout parameter first
                 const urlParams = new URLSearchParams(window.location.search);
-                if (urlParams.get('logout') === 'true') {
-                    await logout();
-                    if (urlParams.get('close' === 'true')){
-                        setTimeout(() => {
-                            window.close();
-                        }, 500);
-                    }
+
+                // Check if we should close after logout (returned from Auth0 logout)
+                if (urlParams.get('close_after_logout') === 'true') {
+                    window.close();
                     return;
                 }
-                
+
+                // Check for logout parameter first
+                if (urlParams.get('logout') === 'true') {
+                    await logout();
+                    // Note: logout() redirects to Auth0, so code below won't execute
+                    // The close logic is handled via close_after_logout parameter after redirect
+                    return;
+                }
+
                 await window.showUserProfile();
             } catch (e) {
                 console.log("Not logged in, showing login button.");
@@ -380,6 +384,10 @@
             let href = window.location.href.split('?')[0];
             if (urlParams.get('redirect')) {
                 href = urlParams.get('redirect');
+            }
+            // Preserve close parameter through Auth0 logout redirect
+            if (urlParams.get('close') === 'true') {
+                href += (href.includes('?') ? '&' : '?') + 'close_after_logout=true';
             }
             document.cookie = 'access_token=; path=/; max-age=0; samesite=lax';
             document.cookie = 'hypha_version=; path=/; max-age=0; samesite=lax';
