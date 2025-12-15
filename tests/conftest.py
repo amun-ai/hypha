@@ -958,11 +958,16 @@ def local_auth_server_fixture():
         s.listen(1)
         LOCAL_AUTH_PORT = s.getsockname()[1]
 
-    # Also find a free port for MinIO to avoid conflicts in parallel testing
+    # Find free ports for MinIO API and console to avoid conflicts in parallel testing
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(('', 0))
         s.listen(1)
         MINIO_PORT = s.getsockname()[1]
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        s.listen(1)
+        MINIO_CONSOLE_PORT = s.getsockname()[1]
 
     with subprocess.Popen(
         [
@@ -975,6 +980,7 @@ def local_auth_server_fixture():
             "--reset-redis",
             "--start-minio-server",
             f"--minio-port={MINIO_PORT}",
+            f"--minio-console-port={MINIO_CONSOLE_PORT}",
             "--minio-root-user=minioadmin",
             "--minio-root-password=minioadmin",
         ],
