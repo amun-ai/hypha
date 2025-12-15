@@ -204,6 +204,7 @@ def create_application(args):
             executable_path=args.cache_dir or args.executable_path,
             workdir=args.minio_workdir,
             port=args.minio_port,
+            console_port=args.minio_console_port,
             root_user=args.minio_root_user,
             root_password=args.minio_root_password,
             minio_version=args.minio_version,
@@ -664,6 +665,12 @@ def get_argparser(add_help=True):
         type=int,
         default=9000,
         help="port for the built-in Minio server",
+    )
+    parser.add_argument(
+        "--minio-console-port",
+        type=int,
+        default=None,
+        help="port for the built-in Minio console (defaults to minio-port + 1)",
     )
     parser.add_argument(
         "--minio-root-user",

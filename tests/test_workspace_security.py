@@ -4,10 +4,12 @@ import pytest
 from hypha_rpc import connect_to_server
 import uuid
 import asyncio
+import requests
 from unittest.mock import patch
 
 from . import (
     WS_SERVER_URL,
+    SERVER_URL,
     find_item,
     wait_for_workspace_ready,
 )
@@ -450,5 +452,134 @@ async def test_system_connection_workspace_context(fastapi_server, test_user_tok
     # Verify context contains correct workspace
     assert result["ws"] == user_workspace, \
         f"Context should contain user's workspace {user_workspace}, got {result['ws']}"
-    
+
+    await api.disconnect()
+
+
+async def test_anonymous_user_list_services_public_only(fastapi_server, test_user_token):
+    """Test that anonymous users can only see public services."""
+
+    # Connect as authenticated user to create services
+    api = await connect_to_server({
+        "client_id": "test-authenticated-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+    workspace = api.config.workspace
+
+    # Register a public service
+    await api.register_service({
+        "id": "public-service",
+        "name": "Public Service",
+        "config": {"visibility": "public", "require_context": False},
+        "echo": lambda x: x,
+    })
+
+    # Register a protected service (default visibility)
+    await api.register_service({
+        "id": "protected-service",
+        "name": "Protected Service",
+        "config": {"visibility": "protected", "require_context": False},
+        "echo": lambda x: x,
+    })
+
+    # Register an unlisted service
+    await api.register_service({
+        "id": "unlisted-service",
+        "name": "Unlisted Service",
+        "config": {"visibility": "unlisted", "require_context": False},
+        "echo": lambda x: x,
+    })
+
+    # Make anonymous HTTP request to list services
+    response = requests.get(f"{SERVER_URL}/{workspace}/services/")
+    assert response.status_code == 200, f"HTTP request failed: {response.text}"
+
+    services = response.json()
+    service_ids = [s["id"] for s in services]
+
+    # Helper function to check if service exists
+    def has_service(service_id_suffix):
+        return any(sid.endswith(service_id_suffix) for sid in service_ids)
+
+    # Anonymous user should ONLY see public services
+    assert has_service("public-service"), f"Anonymous user should see public services, got: {service_ids}"
+    assert not has_service("protected-service"), \
+        f"Anonymous user should NOT see protected services, got: {service_ids}"
+    assert not has_service("unlisted-service"), \
+        f"Anonymous user should NOT see unlisted services, got: {service_ids}"
+
+    await api.disconnect()
+
+
+async def test_anonymous_user_cross_workspace_listing(fastapi_server, test_user_token):
+    """Test that anonymous users listing another workspace's services only see public."""
+
+    # Connect as authenticated user and create a workspace with various services
+    api = await connect_to_server({
+        "client_id": "test-cross-workspace-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    # Create a new workspace
+    ws_info = await api.create_workspace({
+        "name": f"test-workspace-{uuid.uuid4()}",
+        "description": "Test workspace for anonymous listing",
+    }, overwrite=True)
+    workspace = ws_info["id"]
+
+    # Generate token for the new workspace
+    ws_token = await api.generate_token({"workspace": workspace})
+
+    # Connect to the new workspace
+    ws_api = await connect_to_server({
+        "client_id": "test-ws-client",
+        "workspace": workspace,
+        "server_url": WS_SERVER_URL,
+        "token": ws_token,
+    })
+
+    # Register services with different visibilities
+    await ws_api.register_service({
+        "id": "ws-public-service",
+        "name": "Workspace Public Service",
+        "config": {"visibility": "public"},
+        "test": lambda: "public",
+    })
+
+    await ws_api.register_service({
+        "id": "ws-protected-service",
+        "name": "Workspace Protected Service",
+        "config": {"visibility": "protected"},
+        "test": lambda: "protected",
+    })
+
+    await ws_api.register_service({
+        "id": "ws-unlisted-service",
+        "name": "Workspace Unlisted Service",
+        "config": {"visibility": "unlisted"},
+        "test": lambda: "unlisted",
+    })
+
+    # Anonymous HTTP request to list services in the workspace
+    response = requests.get(f"{SERVER_URL}/{workspace}/services/")
+    assert response.status_code == 200, f"HTTP request failed: {response.text}"
+
+    services = response.json()
+    service_ids = [s["id"] for s in services]
+
+    # Helper function to check if service exists
+    def has_service(service_id_suffix):
+        return any(sid.endswith(service_id_suffix) for sid in service_ids)
+
+    # Anonymous user should ONLY see public services
+    assert has_service("ws-public-service"), \
+        f"Anonymous user should see public services in other workspaces, got: {service_ids}"
+    assert not has_service("ws-protected-service"), \
+        f"Anonymous user should NOT see protected services in other workspaces, got: {service_ids}"
+    assert not has_service("ws-unlisted-service"), \
+        f"Anonymous user should NOT see unlisted services in other workspaces, got: {service_ids}"
+
+    await ws_api.disconnect()
     await api.disconnect()

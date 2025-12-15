@@ -2150,6 +2150,12 @@
                                 <div className="flex justify-between items-center w-full mt-3">
                                     <div className="flex gap-2">
                                         <button
+                                            className="bg-blue-500 hover:bg-blue-400 text-white font-bold py-1 px-3 rounded text-sm transition duration-300"
+                                            onClick={() => onMoreInfo(artifact)}
+                                        >
+                                            <i className="fas fa-edit mr-1"></i> Info & Edit
+                                        </button>
+                                        <button
                                             className="bg-green-600 hover:bg-green-500 text-white font-bold py-1 px-3 rounded text-sm transition duration-300"
                                             onClick={() => {
                                                 // Navigate to the view page for this artifact
@@ -2157,13 +2163,7 @@
                                             }}
                                             title="View artifact"
                                         >
-                                            <i className="fas fa-eye mr-1"></i> View
-                                        </button>
-                                        <button
-                                            className="bg-blue-500 hover:bg-blue-400 text-white font-bold py-1 px-3 rounded text-sm transition duration-300"
-                                            onClick={() => onMoreInfo(artifact)}
-                                        >
-                                            <i className="fas fa-info-circle mr-1"></i> More Info
+                                            <i className="fas fa-eye mr-1"></i> View Page
                                         </button>
                                         {isCollection && (
                                             <button
@@ -2764,46 +2764,46 @@
                     alert('Cannot create folders in committed artifacts. Please edit the artifact first to stage it for changes.');
                     return;
                 }
-                
+
                 const folderName = prompt('Enter folder name:');
                 if (!folderName || !folderName.trim()) {
                     return;
                 }
-                
+
                 const sanitizedFolderName = folderName.trim().replace(/[^a-zA-Z0-9._-]/g, '_');
                 if (sanitizedFolderName !== folderName.trim()) {
                     if (!confirm(`Folder name will be sanitized to: "${sanitizedFolderName}". Continue?`)) {
                         return;
                     }
                 }
-                
+
                 try {
                     window.showLoadingSpinner(`Creating folder ${sanitizedFolderName}...`);
                     const keepFilePath = parentPath ? `${parentPath}/${sanitizedFolderName}/.keep` : `${sanitizedFolderName}/.keep`;
-                    
+
                     // Create a .keep file to represent the folder
                     const keepFile = new Blob([''], { type: 'text/plain' });
-                    const presignedUrl = await s3.putFile(keepFilePath);
-                    
+                    const presignedUrl = await am.putFile(currentArtifact.id, keepFilePath);
+
                     const response = await axios.put(presignedUrl, keepFile, {
                         headers: {
                             "Content-Type": "text/plain",
                         },
                     });
-                    
+
                     if (response.status === 200) {
                         console.log(`Folder ${sanitizedFolderName} created successfully`);
-                        
+
                         // Refresh the appropriate file list
                         if (parentPath) {
-                            const updatedFiles = await listFiles(parentPath);
+                            const updatedFiles = await listFiles(currentArtifact.id, parentPath);
                             setExpandedDirs(prev => ({
                                 ...prev,
                                 [parentPath]: updatedFiles
                             }));
                         } else {
-                            const updatedFiles = await listFiles();
-                            setFileList(updatedFiles);
+                            const updatedFiles = await listFiles(currentArtifact.id, "");
+                            setFiles(updatedFiles);
                         }
                     } else {
                         console.error("Folder creation failed", response.statusText);
