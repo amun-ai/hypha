@@ -9,7 +9,7 @@ import time
 import uuid
 from datetime import datetime
 from email.utils import formatdate
-from typing import Any, Dict
+from typing import Any, Dict, Union
 
 import botocore
 from aiobotocore.session import get_session
@@ -1070,9 +1070,9 @@ class S3Controller:
     @schema_method
     async def put_file(
         self,
-        file_path: str = PydanticField(
+        file_path: Union[str, List[str]] = PydanticField(
             ...,
-            description="Path where the file will be stored. Example: 'uploads/document.pdf' or 'data/images/photo.jpg'. Do not include workspace prefix."
+            description="Path(s) where file(s) will be stored. Can be a single string or list for batch operations. Example: 'uploads/doc.pdf' or ['file1.txt', 'file2.txt']. Do not include workspace prefix."
         ),
         use_proxy: bool = PydanticField(
             None,
@@ -1088,43 +1088,56 @@ class S3Controller:
             gt=0,
             le=604800
         ),
-        ttl: Optional[int] = PydanticField(
+        ttl: Optional[Union[int, List[int]]] = PydanticField(
             None,
-            description="Time-to-live in seconds. File will be automatically deleted after this period. Set to None for permanent storage.",
+            description="Time-to-live in seconds. Can be a single value or list matching file_path. Files will be automatically deleted after this period.",
             gt=0
         ),
         context: dict = None,
-    ) -> str:
+    ) -> Union[str, Dict[str, str]]:
         """
-        Generate a presigned URL for uploading a file to S3 storage.
-        
-        This method creates a temporary signed URL that allows direct file upload to S3
-        without needing permanent credentials. The URL can be used with HTTP PUT request.
-        
+        Generate presigned URL(s) for uploading file(s) to S3 storage.
+
+        Supports both single file and batch operations:
+        - Pass a string for file_path: returns a single URL string
+        - Pass a list for file_path: returns a dict mapping paths to URLs (optimized batch mode)
+
         Returns:
-            Presigned URL string for uploading the file
-            
+            Single URL string (if file_path is string) or Dict[str, str] (if file_path is list)
+
         Examples:
-            # Get URL for uploading a document
+            # Single file upload
             upload_url = await put_file("documents/report.pdf")
-            
-            # Upload with automatic deletion after 1 day
-            upload_url = await put_file("temp/data.csv", ttl=86400)
-            
-            # Get URL valid for 30 minutes
-            upload_url = await put_file("uploads/image.jpg", expires_in=1800)
-        
+
+            # Batch upload (optimized)
+            urls = await put_file(["file1.txt", "file2.txt", "file3.txt"])
+            # Returns: {"file1.txt": "url1", "file2.txt": "url2", "file3.txt": "url3"}
+
         Raises:
-            ValueError: If workspace not found
+            ValueError: If workspace not found or list lengths mismatch
             PermissionError: If workspace is read-only or user lacks write permission
-            
-        Limitations:
-            - Maximum URL expiration time is 7 days (604800 seconds)
-            - Requires read_write permission on the workspace
-            - Workspace must not be read-only
         """
         workspace = context["ws"]
         user_info = UserInfo.from_context(context)
+
+        # Determine if this is batch mode
+        is_batch = isinstance(file_path, list)
+
+        if is_batch:
+            file_paths = file_path
+            if not file_paths:
+                raise ValueError("file_path list must contain at least one path")
+
+            # Handle ttl
+            if isinstance(ttl, list):
+                if len(ttl) != len(file_paths):
+                    raise ValueError(f"ttl list length ({len(ttl)}) must match file_path list length ({len(file_paths)})")
+                ttls = ttl
+            else:
+                ttls = [ttl] * len(file_paths)
+        else:
+            file_paths = [file_path]
+            ttls = [ttl if not isinstance(ttl, list) else ttl[0]]
 
         ws = await self.store.get_workspace_info(workspace, load=True)
         if not ws:
@@ -1134,23 +1147,33 @@ class S3Controller:
         if not user_info.check_permission(ws.id, UserPermission.read_write):
             raise PermissionError(f"Permission denied: {workspace}")
 
-        # Schedule file for deletion if TTL is specified
-        if ttl is not None and ttl > 0:
-            await self._schedule_file_deletion(file_path, workspace, ttl)
+        # Generate URLs for all files
+        presigned_urls = {}
+        for fpath, file_ttl in zip(file_paths, ttls):
+            # Schedule file for deletion if TTL is specified
+            if file_ttl is not None and file_ttl > 0:
+                await self._schedule_file_deletion(fpath, workspace, file_ttl)
 
-        return await self.generate_presigned_url(
-            file_path,
-            client_method="put_object",
-            expiration=expires_in,
-            context=context,
-        )
+            url = await self.generate_presigned_url(
+                fpath,
+                client_method="put_object",
+                expiration=expires_in,
+                context=context,
+            )
+            presigned_urls[fpath] = url
+
+        # Return single URL or dict based on input type
+        if is_batch:
+            return presigned_urls
+        else:
+            return presigned_urls[file_paths[0]]
 
     @schema_method
     async def get_file(
         self,
-        file_path: str = PydanticField(
+        file_path: Union[str, List[str]] = PydanticField(
             ...,
-            description="Path to the file to download. Example: 'documents/report.pdf' or 'data/images/photo.jpg'. Do not include workspace prefix."
+            description="Path(s) to file(s) to download. Can be a single string or list for batch operations. Example: 'documents/report.pdf' or ['file1.txt', 'file2.txt']. Do not include workspace prefix."
         ),
         use_proxy: bool = PydanticField(
             None,
@@ -1167,37 +1190,41 @@ class S3Controller:
             le=604800
         ),
         context: dict = None,
-    ) -> str:
+    ) -> Union[str, Dict[str, str]]:
         """
-        Generate a presigned URL for downloading a file from S3 storage.
-        
-        This method creates a temporary signed URL that allows direct file download from S3
-        without needing permanent credentials. The URL can be used with HTTP GET request.
-        
+        Generate presigned URL(s) for downloading file(s) from S3 storage.
+
+        Supports both single file and batch operations:
+        - Pass a string for file_path: returns a single URL string
+        - Pass a list for file_path: returns a dict mapping paths to URLs (optimized batch mode)
+
         Returns:
-            Presigned URL string for downloading the file
-            
+            Single URL string (if file_path is string) or Dict[str, str] (if file_path is list)
+
         Examples:
-            # Get URL for downloading a document
+            # Single file download
             download_url = await get_file("documents/report.pdf")
-            
-            # Get URL valid for 30 minutes
-            download_url = await get_file("data/results.csv", expires_in=1800)
-            
-            # Get local URL for internal service
-            download_url = await get_file("models/weights.bin", use_local_url=True)
-        
+
+            # Batch download (optimized)
+            urls = await get_file(["file1.txt", "file2.txt", "file3.txt"])
+            # Returns: {"file1.txt": "url1", "file2.txt": "url2", "file3.txt": "url3"}
+
         Raises:
             ValueError: If workspace not found
             PermissionError: If user lacks read permission
-            
-        Limitations:
-            - Maximum URL expiration time is 7 days (604800 seconds)
-            - Requires read permission on the workspace
-            - File must exist in the specified path
         """
         workspace = context["ws"]
         user_info = UserInfo.from_context(context)
+
+        # Determine if this is batch mode
+        is_batch = isinstance(file_path, list)
+
+        if is_batch:
+            file_paths = file_path
+            if not file_paths:
+                raise ValueError("file_path list must contain at least one path")
+        else:
+            file_paths = [file_path]
 
         ws = await self.store.get_workspace_info(workspace, load=True)
         if not ws:
@@ -1205,12 +1232,22 @@ class S3Controller:
         if not user_info.check_permission(ws.id, UserPermission.read):
             raise PermissionError(f"Permission denied: {workspace}")
 
-        return await self.generate_presigned_url(
-            file_path,
-            client_method="get_object",
-            expiration=expires_in,
-            context=context,
-        )
+        # Generate URLs for all files
+        presigned_urls = {}
+        for fpath in file_paths:
+            url = await self.generate_presigned_url(
+                fpath,
+                client_method="get_object",
+                expiration=expires_in,
+                context=context,
+            )
+            presigned_urls[fpath] = url
+
+        # Return single URL or dict based on input type
+        if is_batch:
+            return presigned_urls
+        else:
+            return presigned_urls[file_paths[0]]
 
     @schema_method
     async def put_file_start_multipart(

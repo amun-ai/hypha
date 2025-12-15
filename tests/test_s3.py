@@ -832,3 +832,83 @@ async def test_s3_ttl_functionality(minio_server, fastapi_server, test_user_toke
     print("🎉 TTL functionality test completed successfully!")
 
     await api.disconnect()
+
+
+async def test_s3_batch_put_file(minio_server, fastapi_server, test_user_token):
+    """Test batch put_file operations with list input for S3 controller."""
+    api = await connect_to_server(
+        {
+            "name": "test-client-s3-batch-put",
+            "server_url": WS_SERVER_URL,
+            "token": test_user_token,
+        }
+    )
+    s3controller = await api.get_service("public/s3-storage")
+
+    # Test batch put_file with list input
+    file_paths = ["batch/file1.txt", "batch/file2.txt", "batch/file3.txt"]
+    urls = await s3controller.put_file(file_path=file_paths)
+
+    # Verify we got a dict back
+    assert isinstance(urls, dict), f"Expected dict, got {type(urls)}"
+    assert len(urls) == 3, f"Expected 3 URLs, got {len(urls)}"
+
+    # Verify all file paths are in the result
+    for path in file_paths:
+        assert path in urls, f"Missing URL for {path}"
+        assert isinstance(urls[path], str), f"URL for {path} is not a string"
+
+    # Upload files to verify URLs work
+    for i, path in enumerate(file_paths):
+        response = requests.put(urls[path], data=f"s3 content {i}")
+        assert response.ok, f"Failed to upload {path}: {response.text}"
+
+    # Verify files were uploaded
+    files_list = await s3controller.list_files("batch/")
+    file_names = [f["name"] for f in files_list]
+    assert len(file_names) == 3, f"Expected 3 files, got {len(file_names)}"
+    for path in file_paths:
+        filename = path.split("/")[-1]
+        assert filename in file_names, f"File {filename} not found in listing"
+
+    await api.disconnect()
+
+
+async def test_s3_batch_get_file(minio_server, fastapi_server, test_user_token):
+    """Test batch get_file operations with list input for S3 controller."""
+    api = await connect_to_server(
+        {
+            "name": "test-client-s3-batch-get",
+            "server_url": WS_SERVER_URL,
+            "token": test_user_token,
+        }
+    )
+    s3controller = await api.get_service("public/s3-storage")
+
+    # Upload some test files first
+    file_paths = ["batch-get/data1.txt", "batch-get/data2.txt", "batch-get/data3.txt"]
+    put_urls = await s3controller.put_file(file_path=file_paths)
+
+    for i, path in enumerate(file_paths):
+        response = requests.put(put_urls[path], data=f"s3 test data {i}")
+        assert response.ok, f"Failed to upload {path}: {response.text}"
+
+    # Test batch get_file with list input
+    get_urls = await s3controller.get_file(file_path=file_paths)
+
+    # Verify we got a dict back
+    assert isinstance(get_urls, dict), f"Expected dict, got {type(get_urls)}"
+    assert len(get_urls) == 3, f"Expected 3 URLs, got {len(get_urls)}"
+
+    # Verify all file paths are in the result
+    for path in file_paths:
+        assert path in get_urls, f"Missing URL for {path}"
+        assert isinstance(get_urls[path], str), f"URL for {path} is not a string"
+
+    # Download files to verify URLs work and content is correct
+    for i, path in enumerate(file_paths):
+        response = requests.get(get_urls[path])
+        assert response.ok, f"Failed to download {path}: {response.text}"
+        assert response.text == f"s3 test data {i}", f"Content mismatch for {path}"
+
+    await api.disconnect()
