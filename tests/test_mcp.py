@@ -2938,3 +2938,130 @@ async def test_mcp_partial_service_id_without_client(fastapi_server, test_user_t
 
     # Clean up
     await api.disconnect()
+
+
+async def test_mcp_anonymous_user_access_control(fastapi_server, test_user_token):
+    """Test that anonymous users can only access public MCP services."""
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+
+    workspace = api.config.workspace
+
+    # Register a public MCP service
+    async def public_list_tools() -> List[types.Tool]:
+        return [
+            types.Tool(
+                name="public_tool",
+                description="A publicly accessible tool",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "input": {"type": "string"}
+                    },
+                },
+            )
+        ]
+
+    async def public_call_tool(name: str, arguments: Dict[str, Any]) -> List[types.ContentBlock]:
+        if name == "public_tool":
+            return [types.TextContent(type="text", text="Public response")]
+        raise ValueError(f"Unknown tool: {name}")
+
+    await api.register_service(
+        {
+            "id": "public-mcp-service",
+            "type": "mcp",
+            "config": {"visibility": "public"},
+            "list_tools": public_list_tools,
+            "call_tool": public_call_tool,
+        }
+    )
+
+    # Register a protected MCP service (default visibility)
+    async def protected_list_tools() -> List[types.Tool]:
+        return [
+            types.Tool(
+                name="protected_tool",
+                description="A protected tool",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "input": {"type": "string"}
+                    },
+                },
+            )
+        ]
+
+    async def protected_call_tool(name: str, arguments: Dict[str, Any]) -> List[types.ContentBlock]:
+        if name == "protected_tool":
+            return [types.TextContent(type="text", text="Protected response")]
+        raise ValueError(f"Unknown tool: {name}")
+
+    await api.register_service(
+        {
+            "id": "protected-mcp-service",
+            "type": "mcp",
+            "config": {"visibility": "protected"},
+            "list_tools": protected_list_tools,
+            "call_tool": protected_call_tool,
+        }
+    )
+
+    # Test anonymous access (no token/auth)
+    async with httpx.AsyncClient() as client:
+        # Test 1: Anonymous user CAN access public MCP service info
+        public_info_response = await client.get(
+            f"{SERVER_URL}/{workspace}/mcp/public-mcp-service",
+            headers={"Accept": "application/json"}
+        )
+        assert public_info_response.status_code == 200, \
+            f"Anonymous user should be able to access public MCP service info: {public_info_response.text}"
+
+        # Test 2: Anonymous user CAN call public MCP service
+        public_mcp_url = f"{SERVER_URL}/{workspace}/mcp/public-mcp-service/mcp"
+        public_request = {
+            "jsonrpc": "2.0",
+            "method": "tools/list",
+            "id": "test-public-1",
+        }
+        public_response = await client.post(
+            public_mcp_url,
+            json=public_request,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            }
+        )
+        assert public_response.status_code == 200, \
+            f"Anonymous user should be able to call public MCP service: {public_response.text}"
+
+        # Test 3: Anonymous user CANNOT access protected MCP service info
+        protected_info_response = await client.get(
+            f"{SERVER_URL}/{workspace}/mcp/protected-mcp-service",
+            headers={"Accept": "application/json, text/event-stream"}
+        )
+        # Anonymous users should either get 403/404 or be blocked from seeing protected service
+        assert protected_info_response.status_code in [403, 404], \
+            f"Anonymous user should NOT access protected MCP service info, got status {protected_info_response.status_code}: {protected_info_response.text}"
+
+        # Test 4: Anonymous user CANNOT call protected MCP service
+        protected_mcp_url = f"{SERVER_URL}/{workspace}/mcp/protected-mcp-service/mcp"
+        protected_request = {
+            "jsonrpc": "2.0",
+            "method": "tools/list",
+            "id": "test-protected-1",
+        }
+        protected_response = await client.post(
+            protected_mcp_url,
+            json=protected_request,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            }
+        )
+        # Anonymous users should be blocked from calling protected services
+        assert protected_response.status_code in [403, 404], \
+            f"Anonymous user should NOT be able to call protected MCP service, got status {protected_response.status_code}: {protected_response.text}"
+
+    await api.disconnect()
