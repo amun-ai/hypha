@@ -267,11 +267,14 @@ class RedisStore:
 
         self._database_uri = database_uri
         if self._database_uri is None:
-            self._database_uri = (
-                "sqlite+aiosqlite:///:memory:"  # In-memory SQLite for testing
-            )
+            # Use temporary file-based database instead of in-memory to avoid transaction isolation issues
+            # In-memory databases with shared cache still have problems with multiple async sessions
+            import tempfile
+            temp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
+            temp_db.close()
+            self._database_uri = f"sqlite+aiosqlite:///{temp_db.name}"
             logger.warning(
-                "Using in-memory SQLite database for event logging, all data will be lost on restart!"
+                f"Using temporary file-based SQLite database at {temp_db.name} for event logging, will be cleaned up on exit!"
             )
 
         self._ollama_host = ollama_host
@@ -291,7 +294,27 @@ class RedisStore:
         else:
             self._openai_client = None
 
-        self._sql_engine = create_async_engine(self._database_uri, echo=False)
+        # For SQLite databases, configure for better concurrency
+        if self._database_uri.startswith("sqlite"):
+            from sqlalchemy.pool import NullPool
+            from sqlalchemy import event
+
+            self._sql_engine = create_async_engine(
+                self._database_uri,
+                echo=False,
+                poolclass=NullPool,  # Use NullPool for SQLite to avoid connection reuse issues
+                connect_args={"check_same_thread": False}
+            )
+
+            # Set SQLite pragmas for better concurrency
+            @event.listens_for(self._sql_engine.sync_engine, "connect")
+            def set_sqlite_pragma(dbapi_conn, connection_record):
+                cursor = dbapi_conn.cursor()
+                cursor.execute("PRAGMA journal_mode=DELETE")  # Disable WAL mode
+                cursor.execute("PRAGMA read_uncommitted=1")  # Allow reading uncommitted data
+                cursor.close()
+        else:
+            self._sql_engine = create_async_engine(self._database_uri, echo=False)
 
         if redis_uri and redis_uri.startswith("redis://"):
             from redis import asyncio as aioredis
