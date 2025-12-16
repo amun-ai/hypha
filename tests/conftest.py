@@ -98,29 +98,43 @@ def _is_port_available(port):
         return False
 
 
-def _kill_process_on_port(port):
-    """Kill any process using the specified port."""
+def _kill_process_on_port(port, max_retries=5):
+    """Kill any process using the specified port with retry logic."""
     try:
         # Try to find and kill process using lsof (Unix-like systems)
         if sys.platform != 'win32':
-            result = subprocess.run(
-                ['lsof', '-ti', f':{port}'],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            if result.stdout.strip():
-                pids = result.stdout.strip().split('\n')
-                for pid in pids:
-                    try:
-                        subprocess.run(['kill', '-9', pid], timeout=5)
-                        print(f"Killed process {pid} using port {port}")
-                    except Exception as e:
-                        print(f"Failed to kill process {pid}: {e}")
-                # Wait a bit for port to be released
-                time.sleep(0.5)
+            for attempt in range(max_retries):
+                result = subprocess.run(
+                    ['lsof', '-ti', f':{port}'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if result.stdout.strip():
+                    pids = result.stdout.strip().split('\n')
+                    for pid in pids:
+                        try:
+                            subprocess.run(['kill', '-9', pid], timeout=5)
+                            print(f"Killed process {pid} using port {port}")
+                        except Exception as e:
+                            print(f"Failed to kill process {pid}: {e}")
+                    # Wait progressively longer for port to be released
+                    wait_time = 0.5 * (attempt + 1)
+                    time.sleep(wait_time)
+
+                    # Check if port is now available
+                    if _is_port_available(port):
+                        print(f"Successfully freed port {port} after {attempt + 1} attempts")
+                        return True
+                else:
+                    # No process found using the port
+                    return True
+
+            print(f"Failed to free port {port} after {max_retries} attempts")
+            return False
     except Exception as e:
         print(f"Error trying to kill process on port {port}: {e}")
+        return False
 
 
 def _cleanup_server_process(proc, server_name):
@@ -593,14 +607,16 @@ def fastapi_server_sqlite_fixture(minio_server):
 @pytest_asyncio.fixture(name="fastapi_server_redis_1", scope="session")
 def fastapi_server_redis_1(redis_server, minio_server):
     """Start server as test fixture and tear down after test."""
-    # Check if port is available, if not try to clean it up
+    # Check if port is available, if not try to clean it up with retries
     if not _is_port_available(SIO_PORT_REDIS_1):
         print(f"Port {SIO_PORT_REDIS_1} is already in use, attempting to clean up...")
-        _kill_process_on_port(SIO_PORT_REDIS_1)
-        # Wait a bit and check again
-        time.sleep(1)
-        if not _is_port_available(SIO_PORT_REDIS_1):
-            raise RuntimeError(f"Port {SIO_PORT_REDIS_1} is still in use after cleanup attempt")
+        success = _kill_process_on_port(SIO_PORT_REDIS_1, max_retries=5)
+        if not success:
+            raise RuntimeError(
+                f"Port {SIO_PORT_REDIS_1} is still in use after cleanup attempts. "
+                f"This could be due to a previous test run not cleaning up properly. "
+                f"Try running: lsof -ti :{SIO_PORT_REDIS_1} | xargs kill -9"
+            )
 
     with subprocess.Popen(
         [
@@ -650,14 +666,16 @@ def fastapi_server_redis_2(redis_server, minio_server):
     # Add a small delay to ensure Redis and MinIO are fully initialized
     time.sleep(1)
 
-    # Check if port is available, if not try to clean it up
+    # Check if port is available, if not try to clean it up with retries
     if not _is_port_available(SIO_PORT_REDIS_2):
         print(f"Port {SIO_PORT_REDIS_2} is already in use, attempting to clean up...")
-        _kill_process_on_port(SIO_PORT_REDIS_2)
-        # Wait a bit and check again
-        time.sleep(1)
-        if not _is_port_available(SIO_PORT_REDIS_2):
-            raise RuntimeError(f"Port {SIO_PORT_REDIS_2} is still in use after cleanup attempt")
+        success = _kill_process_on_port(SIO_PORT_REDIS_2, max_retries=5)
+        if not success:
+            raise RuntimeError(
+                f"Port {SIO_PORT_REDIS_2} is still in use after cleanup attempts. "
+                f"This could be due to a previous test run not cleaning up properly. "
+                f"Try running: lsof -ti :{SIO_PORT_REDIS_2} | xargs kill -9"
+            )
 
     with subprocess.Popen(
         [
