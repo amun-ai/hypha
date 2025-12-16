@@ -128,6 +128,7 @@ async def test_batch_get_file(
     artifact_manager = await api.get_service("public/artifact-manager")
 
     # Create a test collection and dataset with files
+    # Use the same pattern as test_batch_put_file which works
     collection = await artifact_manager.create(
         alias="batch-get-test-collection",
         type="collection",
@@ -135,9 +136,6 @@ async def test_batch_get_file(
         config={"permissions": {"*": "rw+"}},
         version="stage",
     )
-
-    # Commit the collection before creating child artifacts
-    await artifact_manager.commit(collection.id)
 
     try:
         dataset = await artifact_manager.create(
