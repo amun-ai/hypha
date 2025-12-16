@@ -1801,6 +1801,28 @@ class ArtifactController:
                 # Try to get the workspace and alias separately for better error message
                 if "/" in artifact_id:
                     ws, alias = artifact_id.split("/")
+                    # Check if there's a staged artifact with this ID
+                    staged_query = select(ArtifactModel).where(
+                        and_(
+                            ArtifactModel.workspace == ws,
+                            ArtifactModel.alias == alias,
+                            ArtifactModel.staging.isnot(None),
+                        )
+                    )
+                    staged_result = await self._execute_with_retry(
+                        session,
+                        staged_query,
+                        description=f"_get_artifact_with_parent staged check for '{artifact_id}'",
+                    )
+                    staged_artifact = staged_result.scalar_one_or_none()
+                    if staged_artifact:
+                        raise KeyError(
+                            f"Artifact with ID '{artifact_id}' exists but is in staging mode (not committed). "
+                            f"To use this artifact as a parent for child artifacts, you must first commit it using artifact_manager.commit('{artifact_id}'). "
+                            f"Alternatively, create both parent and child in staging mode, then commit the child which will commit the entire hierarchy."
+                        )
+
+                    # Check if artifact exists at all (for race condition detection)
                     query = select(ArtifactModel).where(
                         and_(
                             ArtifactModel.workspace == ws,
