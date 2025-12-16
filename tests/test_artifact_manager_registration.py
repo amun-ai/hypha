@@ -136,6 +136,9 @@ async def test_batch_get_file(
         version="stage",
     )
 
+    # Commit the collection before creating child artifacts
+    await artifact_manager.commit(collection.id)
+
     try:
         dataset = await artifact_manager.create(
             alias="batch-get-dataset",
