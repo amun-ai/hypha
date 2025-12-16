@@ -134,7 +134,6 @@ async def test_batch_get_file(
         type="collection",
         manifest={"name": "Batch Get Test"},
         config={"permissions": {"*": "rw+"}},
-        version="stage",
     )
 
     try:
@@ -179,10 +178,7 @@ async def test_batch_get_file(
             response = requests.get(get_urls[path])
             assert response.ok, f"Failed to download {path}: {response.text}"
             assert response.text == f"test data {i}", f"Content mismatch for {path}"
-
+    except Exception as exp:
+        raise exp
     finally:
-        try:
-            await artifact_manager.delete(collection.id)
-        except Exception:
-            pass  # Collection may have been already deleted
         await api.disconnect()
