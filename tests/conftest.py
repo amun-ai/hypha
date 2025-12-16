@@ -137,6 +137,7 @@ def _kill_process_on_port(port, max_retries=5):
         return False
 
 
+
 def _cleanup_server_process(proc, server_name):
     """Helper function to cleanup server processes robustly."""
     try:
@@ -618,6 +619,7 @@ def fastapi_server_redis_1(redis_server, minio_server):
                 f"Try running: lsof -ti :{SIO_PORT_REDIS_1} | xargs kill -9"
             )
 
+
     with subprocess.Popen(
         [
             sys.executable,
@@ -661,9 +663,9 @@ def fastapi_server_redis_1(redis_server, minio_server):
 
 
 @pytest_asyncio.fixture(name="fastapi_server_redis_2", scope="session")
-def fastapi_server_redis_2(redis_server, minio_server):
+def fastapi_server_redis_2(redis_server, minio_server, fastapi_server):
     """Start a backup server as test fixture and tear down after test."""
-    # Add a small delay to ensure Redis and MinIO are fully initialized
+    # Add a small delay to ensure the first server is fully initialized
     time.sleep(1)
 
     # Check if port is available, if not try to clean it up with retries
@@ -676,6 +678,7 @@ def fastapi_server_redis_2(redis_server, minio_server):
                 f"This could be due to a previous test run not cleaning up properly. "
                 f"Try running: lsof -ti :{SIO_PORT_REDIS_2} | xargs kill -9"
             )
+
 
     with subprocess.Popen(
         [
