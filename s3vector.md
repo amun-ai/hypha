@@ -4,6 +4,20 @@
 
 The S3 Vector Search Engine implements a Turbopuffer-inspired architecture for scalable vector search with the following key characteristics:
 
+## Requirements
+
+- **Python**: >= 3.11
+- **zarr**: >= 3.1.0 (for S3-backed array storage)
+- **fastembed**: For text-to-vector embedding (optional, but required for text queries)
+- **aiobotocore**: For async S3 operations
+- **redis/fakeredis**: For caching (optional, improves performance)
+
+```bash
+pip install "zarr>=3.1.0" fastembed aiobotocore redis
+```
+
+## Key Features
+
 - **SPANN (Space Partition Approximate Nearest Neighbor)** indexing for billion-scale vectors
 - **S3 as persistent storage** - all data persisted to S3, no local disk requirements
 - **Redis as ephemeral cache** - optional caching layer with TTL for hot data
@@ -301,8 +315,8 @@ num_shards = min(
 await engine.create_collection(
     collection_id="products",
     config={
-        "dimensions": 384,
-        "metric": "cosine",      # cosine, l2, or ip
+        "dimension": 384,
+        "metric": "cosine",      # cosine, l2, or ip (inner_product)
         "num_centroids": 100,    # Optional, auto-computed if not set
         "shard_size": 50000      # Optional, default 100k
     }
@@ -319,7 +333,7 @@ collections = await engine.list_collections()
 info = await engine.get_collection_info("products")
 # Returns: {
 #     "collection_id": "products",
-#     "dimensions": 384,
+#     "dimension": 384,
 #     "metric": "cosine",
 #     "total_vectors": 1000000,
 #     "num_shards": 100
@@ -341,21 +355,336 @@ ids = await engine.add_vectors(
 results = await engine.search_vectors(
     collection_id="products",
     query_vector=np.array([...]),       # Query vector
-    k=10,                                # Number of results
-    filter_metadata={"category": "electronics"}  # Optional filter
+    limit=10,                           # Number of results
+    filters={"category": "electronics"} # Optional filter
 )
 
 # Search by text (requires embedding model)
 results = await engine.search_vectors(
     collection_id="products",
-    query_text="laptop for video editing",
-    k=5
+    query_vector="laptop for video editing",  # Text is auto-embedded
+    limit=5
 )
 
 # Returns: [
-#     {"id": "prod_3", "score": 0.95, "metadata": {...}},
-#     {"id": "prod_7", "score": 0.89, "metadata": {...}},
+#     {"id": "prod_3", "_score": 0.95, "category": "electronics", ...},
+#     {"id": "prod_7", "_score": 0.89, "category": "electronics", ...},
 # ]
+# Note: metadata fields are flattened into the result
+```
+
+## Usage via Hypha Artifact Manager
+
+The S3 Vector Search Engine is accessed through the Hypha artifact manager service. This provides a unified API for vector operations across different backends (PgVector, S3Vector).
+
+### Connecting to Hypha Server
+
+```python
+from hypha_rpc import connect_to_server
+
+# Connect to Hypha server
+api = await connect_to_server({
+    "name": "my-vector-client",
+    "server_url": "https://hypha.aicell.io",  # or your server URL
+    "token": "your-token-here",
+})
+
+# Get the artifact manager service
+artifact_manager = await api.get_service("public/artifact-manager")
+```
+
+## Practical Examples
+
+### Example 1: Create S3Vector Collection
+
+Create a vector collection using the S3Vector engine.
+
+```python
+from hypha_rpc import connect_to_server
+
+# Connect to Hypha
+api = await connect_to_server({
+    "name": "vector-client",
+    "server_url": "https://hypha.aicell.io",
+    "token": "your-token",
+})
+artifact_manager = await api.get_service("public/artifact-manager")
+
+# Create a vector collection with S3Vector engine
+collection = await artifact_manager.create(
+    type="vector-collection",
+    alias="my-documents",
+    manifest={
+        "name": "Document Embeddings",
+        "description": "Semantic search over documents",
+    },
+    config={
+        "vector_engine": "s3vector",  # Use S3-based vector storage
+        "dimension": 384,
+        "distance_metric": "cosine",
+        "embedding_model": "BAAI/bge-small-en-v1.5",
+    },
+)
+
+collection_id = collection["id"]
+print(f"Created collection: {collection_id}")
+```
+
+### Example 2: Adding Vectors
+
+Add document vectors with metadata for semantic search.
+
+```python
+# Add vectors to the collection
+vectors = [
+    {
+        "id": "doc1",
+        "vector": [0.1, 0.2, ...],  # 384-dimensional vector
+        "manifest": {
+            "title": "Python Programming",
+            "text": "Python is a popular programming language for machine learning",
+            "category": "programming",
+        },
+    },
+    {
+        "id": "doc2",
+        "vector": [0.15, 0.25, ...],
+        "manifest": {
+            "title": "JavaScript Guide",
+            "text": "JavaScript is used for web development",
+            "category": "programming",
+        },
+    },
+    {
+        "id": "doc3",
+        "vector": [0.3, 0.1, ...],
+        "manifest": {
+            "title": "Italian Cuisine",
+            "text": "Italian pizza is made with fresh tomatoes",
+            "category": "food",
+        },
+    },
+]
+
+# Add vectors to collection
+vector_ids = await artifact_manager.add_vectors(collection_id, vectors)
+print(f"Added {len(vector_ids)} vectors: {vector_ids}")
+# Output: Added 3 vectors: ['doc1', 'doc2', 'doc3']
+```
+
+### Example 3: Semantic Search
+
+Search for similar documents using vector similarity.
+
+```python
+# Search by vector similarity
+results = await artifact_manager.search_vectors(
+    collection_id,
+    query=[0.12, 0.22, ...],  # Query vector (384 dimensions)
+    limit=5,
+    return_fields=["title", "text", "category"],
+)
+
+for i, result in enumerate(results):
+    print(f"{i+1}. [{result['category']}] {result['title']}")
+    print(f"   Score: {result.get('_score', 'N/A')}")
+
+# Example output:
+# 1. [programming] Python Programming
+#    Score: 0.95
+# 2. [programming] JavaScript Guide
+#    Score: 0.82
+# 3. [food] Italian Cuisine
+#    Score: 0.45
+```
+
+### Example 4: Filtered Search
+
+Combine vector similarity with metadata filters.
+
+```python
+# Search only within "programming" category
+results = await artifact_manager.search_vectors(
+    collection_id,
+    query=[0.12, 0.22, ...],
+    filters={"category": "programming"},  # Only programming docs
+    limit=10,
+    return_fields=["title", "text", "category"],
+)
+
+# All results will have category="programming"
+for result in results:
+    assert result["category"] == "programming"
+    print(f"- {result['title']} (Score: {result.get('_score', 'N/A')})")
+```
+
+### Example 5: Using with Parent Collection (S3 Config Inheritance)
+
+S3 configuration can be inherited from a parent collection.
+
+```python
+# Create a parent collection with S3 config
+parent = await artifact_manager.create(
+    type="collection",
+    alias="my-workspace",
+    manifest={"name": "My Workspace"},
+)
+
+# Create vector collection under parent - inherits S3 config
+vector_collection = await artifact_manager.create(
+    type="vector-collection",
+    alias="embeddings",
+    parent_id=parent["id"],  # Inherit S3 config from parent
+    manifest={"name": "Document Embeddings"},
+    config={
+        "vector_engine": "s3vector",
+        "dimension": 384,
+        "distance_metric": "cosine",
+        # No s3_config needed - inherited from parent
+    },
+)
+```
+
+### Example 6: Listing and Pagination
+
+List vectors with pagination for large collections.
+
+```python
+# List vectors with pagination
+results = await artifact_manager.list_vectors(
+    collection_id,
+    limit=20,
+    offset=0,
+    return_fields=["title", "category"],
+)
+
+print(f"Found {len(results)} vectors")
+
+# Paginate through all results
+offset = 0
+page_size = 100
+all_vectors = []
+
+while True:
+    page = await artifact_manager.list_vectors(
+        collection_id,
+        limit=page_size,
+        offset=offset,
+        return_fields=["title"],
+    )
+    if not page:
+        break
+    all_vectors.extend(page)
+    offset += page_size
+
+print(f"Total vectors: {len(all_vectors)}")
+```
+
+### Example 7: Comparing Vector Engines
+
+The artifact manager supports multiple vector engines with the same API.
+
+```python
+# Create collection with PgVector (PostgreSQL-based)
+pgvector_collection = await artifact_manager.create(
+    type="vector-collection",
+    alias="pgvector-docs",
+    manifest={"name": "PgVector Documents"},
+    config={
+        "vector_engine": "pgvector",  # Use PostgreSQL
+        "dimension": 384,
+        "distance_metric": "cosine",
+    },
+)
+
+# Create collection with S3Vector (S3-based)
+s3vector_collection = await artifact_manager.create(
+    type="vector-collection",
+    alias="s3vector-docs",
+    manifest={"name": "S3Vector Documents"},
+    config={
+        "vector_engine": "s3vector",  # Use S3 storage
+        "dimension": 384,
+        "distance_metric": "cosine",
+    },
+)
+
+# Both use the same API for operations
+for collection_id in [pgvector_collection["id"], s3vector_collection["id"]]:
+    await artifact_manager.add_vectors(collection_id, vectors)
+    results = await artifact_manager.search_vectors(collection_id, query=[...], limit=5)
+```
+
+### Example 8: Distance Metrics
+
+Different distance metrics for different use cases.
+
+```python
+# Cosine similarity - best for semantic similarity (normalized vectors)
+cosine_collection = await artifact_manager.create(
+    type="vector-collection",
+    alias="cosine-search",
+    config={
+        "vector_engine": "s3vector",
+        "dimension": 384,
+        "distance_metric": "cosine",  # Range: 0 to 1
+    },
+)
+
+# L2 (Euclidean) distance - best for spatial/geometric similarity
+l2_collection = await artifact_manager.create(
+    type="vector-collection",
+    alias="l2-search",
+    config={
+        "vector_engine": "s3vector",
+        "dimension": 384,
+        "distance_metric": "l2",  # Lower is more similar
+    },
+)
+
+# Inner product - for maximum inner product search
+ip_collection = await artifact_manager.create(
+    type="vector-collection",
+    alias="ip-search",
+    config={
+        "vector_engine": "s3vector",
+        "dimension": 384,
+        "distance_metric": "ip",  # Higher is more similar
+    },
+)
+```
+
+## Verified Test Results
+
+The following behaviors have been verified through integration tests:
+
+| Test Case | Result | Notes |
+|-----------|--------|-------|
+| Semantic similarity search | ✅ Pass | Returns relevant documents by category |
+| Text-to-vector query | ✅ Pass | Automatic embedding generation works |
+| Combined filter + vector search | ✅ Pass | Metadata filters respect vector ordering |
+| Cosine distance metric | ✅ Pass | Scores in [0, 1] range |
+| L2 distance metric | ✅ Pass | Converted to similarity scores |
+| Empty collection search | ✅ Pass | Returns empty list |
+| Large limit handling | ✅ Pass | Returns min(limit, collection_size) |
+| Non-matching filter | ✅ Pass | Returns empty list |
+| Offset pagination | ✅ Pass | No overlap between pages |
+| Exact match scoring | ✅ Pass | Score ≈ 1.0 for identical text |
+
+### Sample Search Output
+
+```text
+=== Programming Query ===
+Query: What programming languages are good for AI and data science?
+  1. [prog] Score: 0.7248 - Python is a popular programming language for machine learning
+  2. [prog] Score: 0.6141 - Rust is a systems programming language focused on safety
+  3. [prog] Score: 0.5369 - JavaScript is used for web development and frontend applications
+
+=== Exact Match Query ===
+Query: Python is a popular programming language for machine learning
+  1. [prog] Score: 1.0000 - Python is a popular programming language for machine learning
+  2. [prog] Score: 0.6560 - Rust is a systems programming language focused on safety
+  3. [prog] Score: 0.6228 - JavaScript is used for web development and frontend applications
 ```
 
 ## Testing Strategy
@@ -446,26 +775,6 @@ METRICS = {
 | **Embeddings** | FastEmbed | FastEmbed | Built-in | Built-in | Built-in |
 | **Filtering** | Post-filter | SQL | Pre-filter | GraphQL | Payload |
 | **Memory** | O(√n) | O(n) | - | O(n) | O(n) |
-
-## Future Enhancements
-
-### Near-term (v2.0)
-- [ ] Incremental centroid updates without full rebuild
-- [ ] Product quantization for 4x compression
-- [ ] Batch insert optimization with write-ahead log
-- [ ] Prometheus metrics export
-
-### Medium-term (v3.0)
-- [ ] GPU acceleration with RAPIDS cuML
-- [ ] Distributed search across multiple workers
-- [ ] Learned index structures (ML for shard selection)
-- [ ] Multi-vector document support
-
-### Long-term
-- [ ] Streaming updates with Kafka/Kinesis
-- [ ] Cross-region replication
-- [ ] Hybrid search (vector + keyword)
-- [ ] AutoML for index tuning
 
 ## Conclusion
 
