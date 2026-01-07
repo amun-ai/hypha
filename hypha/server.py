@@ -115,6 +115,13 @@ def start_builtin_services(
             workspace_bucket=args.workspace_bucket,
         )
 
+        # Mount Git router for artifact Git storage support
+        from hypha.git.artifact_integration import GitArtifactManager
+        git_manager = GitArtifactManager(artifact_manager)
+        git_router = git_manager.get_router()
+        app.include_router(git_router)
+        logger.info("Git artifact storage enabled")
+
     if args.enable_server_apps:
         assert args.enable_s3, "Server apps require S3 to be enabled"
         # pylint: disable=import-outside-toplevel

@@ -1013,6 +1013,25 @@ class RedisStore:
             )
             return self._http_anonymous_user
 
+    async def login_required(
+        self,
+        request: Request = None,
+    ):
+        """Return user info or raise an error if not authenticated.
+
+        Unlike login_optional, this requires valid authentication.
+        Raises HTTPException 401 if no valid token is provided.
+        """
+        from fastapi import HTTPException
+
+        token = await extract_token_from_scope(request.scope)
+        if not token:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        user_info = await self.parse_user_token(token)
+        if user_info.scope.current_workspace is None:
+            user_info.scope.current_workspace = user_info.get_workspace()
+        return user_info
+
     async def get_all_workspace(self):
         """Get all workspaces."""
         workspaces = await self._redis.hgetall("workspaces")

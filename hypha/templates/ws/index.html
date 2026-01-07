@@ -2508,7 +2508,7 @@
         };
 
         // Enhanced Artifact Info Modal with full file tree functionality
-        const ArtifactInfoModal = ({ artifact, onClose, listFiles, am }) => {
+        const ArtifactInfoModal = ({ artifact, onClose, listFiles, am, ws }) => {
             const [files, setFiles] = React.useState(null);
             const [loading, setLoading] = React.useState(false);
             const [uploading, setUploading] = React.useState(false);
@@ -2521,11 +2521,43 @@
             // Drag and drop state
             const [dragCounter, setDragCounter] = React.useState(0);
             const [isDragOver, setIsDragOver] = React.useState(false);
-            
+
             // Local artifact state that can be updated dynamically
             const [currentArtifact, setCurrentArtifact] = React.useState(artifact);
-            
+
+            // Git URL with token (for clone & push)
+            const [gitAuthUrl, setGitAuthUrl] = React.useState(null);
+            const [generatingToken, setGeneratingToken] = React.useState(false);
+            const [gitUrlCopied, setGitUrlCopied] = React.useState(false);
+
             const canUpload = currentArtifact.staging !== null; // Can only upload to staged artifacts
+
+            // Generate git URL with embedded token (works for both clone and push)
+            const generateGitAuthUrl = async () => {
+                if (!ws || !currentArtifact.git_url) return;
+                try {
+                    setGeneratingToken(true);
+                    // Generate a token with write permission, valid for 1 hour
+                    const token = await ws.generateToken({ expires_in: 3600 });
+                    // Parse the git URL and insert credentials
+                    const gitUrl = new URL(currentArtifact.git_url);
+                    gitUrl.username = 'git';
+                    gitUrl.password = token;
+                    setGitAuthUrl(gitUrl.toString());
+                } catch (error) {
+                    console.error('Failed to generate git auth token:', error);
+                    alert('Failed to generate auth token: ' + error.message);
+                } finally {
+                    setGeneratingToken(false);
+                }
+            };
+
+            // Copy git URL and show feedback
+            const copyGitUrl = (url) => {
+                navigator.clipboard.writeText(`git clone ${url}`);
+                setGitUrlCopied(true);
+                setTimeout(() => setGitUrlCopied(false), 2000);
+            };
         
             const handleListFiles = async () => {
                 if (loading) return;
@@ -3266,9 +3298,47 @@
                                             </div>
                                         </div>
                                     )}
+
+                                    {/* Git Repository URL - shown when storage is 'git' */}
+                                    {currentArtifact.git_url && (
+                                        <div className="mt-4 pt-3 border-t border-gray-700">
+                                            <div className="flex items-center gap-2 mb-2">
+                                                <i className="fab fa-git-alt text-orange-400"></i>
+                                                <span className="text-gray-300 font-medium">Git Repository</span>
+                                            </div>
+                                            {/* Git URL (read-only or authenticated) */}
+                                            <div className="flex items-center gap-2">
+                                                <code className={`flex-1 bg-gray-900 px-3 py-2 rounded text-sm font-mono overflow-x-auto ${gitAuthUrl ? 'text-yellow-400' : 'text-green-400'}`}>
+                                                    git clone {gitAuthUrl || currentArtifact.git_url}
+                                                </code>
+                                                <button
+                                                    className={`${gitUrlCopied ? 'bg-green-600' : 'bg-gray-600 hover:bg-gray-500'} text-white px-3 py-2 rounded transition duration-200`}
+                                                    onClick={() => copyGitUrl(gitAuthUrl || currentArtifact.git_url)}
+                                                    title={gitUrlCopied ? 'Copied!' : 'Copy clone command'}
+                                                >
+                                                    <i className={`fas ${gitUrlCopied ? 'fa-check' : 'fa-copy'}`}></i>
+                                                </button>
+                                                {!gitAuthUrl && (
+                                                    <button
+                                                        className="bg-orange-600 hover:bg-orange-500 text-white px-3 py-2 rounded transition duration-200 flex items-center gap-2"
+                                                        onClick={generateGitAuthUrl}
+                                                        disabled={generatingToken}
+                                                        title="Generate URL with auth token for push access"
+                                                    >
+                                                        <i className={`fas ${generatingToken ? 'fa-spinner fa-spin' : 'fa-key'}`}></i>
+                                                    </button>
+                                                )}
+                                            </div>
+                                            <p className="text-xs text-gray-500 mt-2">
+                                                {gitAuthUrl
+                                                    ? 'Authenticated URL (clone & push). Token expires in 1 hour.'
+                                                    : 'Read-only clone. Click the key icon to generate an authenticated URL for push access.'}
+                                            </p>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
-                            
+
                             {/* File Management Section */}
                             <div className="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
                                 <div className="bg-gray-750 px-6 py-4 border-b border-gray-700">
@@ -3492,6 +3562,7 @@ license: "MIT"`);
             const [customType, setCustomType] = React.useState('');
             const [isCustomType, setIsCustomType] = React.useState(false);
             const [creating, setCreating] = React.useState(false);
+            const [storageType, setStorageType] = React.useState('raw');
 
             const handleTypeChange = (e) => {
                 const value = e.target.value;
@@ -3572,6 +3643,11 @@ license: "MIT"`);
                         } catch (error) {
                             throw new Error(`Invalid JSON in config: ${error.message}`);
                         }
+                    }
+
+                    // Add storage type to config
+                    if (storageType === 'git') {
+                        config.storage = 'git';
                     }
 
                     window.addProgressLog('Creating artifact...', 'info');
@@ -3692,6 +3768,25 @@ license: "MIT"`);
 
                                         <div>
                                             <label className="block text-sm font-medium text-gray-300 mb-1">
+                                                Storage Type
+                                            </label>
+                                            <select
+                                                value={storageType}
+                                                onChange={(e) => setStorageType(e.target.value)}
+                                                className="w-full px-3 py-2 border border-gray-600 rounded-md bg-gray-900 text-white"
+                                            >
+                                                <option value="raw">Raw (S3 File Storage)</option>
+                                                <option value="git">Git (Version Control)</option>
+                                            </select>
+                                            <p className="text-xs text-gray-400 mt-1">
+                                                {storageType === 'git'
+                                                    ? 'Files will be stored in a Git repository. You can clone, push, and pull using standard Git clients.'
+                                                    : 'Files will be stored directly in S3. Use the web interface or API to upload files.'}
+                                            </p>
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-300 mb-1">
                                                 Parent Collection ID (optional)
                                             </label>
                                             <input
@@ -3782,7 +3877,7 @@ license: "MIT"`);
         };                  
         
         // Enhanced Artifacts Panel with full functionality
-        const ArtifactsPanel = ({ am }) => {
+        const ArtifactsPanel = ({ am, ws }) => {
             const [artifacts, setArtifacts] = React.useState([]);
             const [expandedArtifacts, setExpandedArtifacts] = React.useState({});
             const [selectedArtifact, setSelectedArtifact] = React.useState(null);
@@ -4077,6 +4172,7 @@ license: "MIT"`);
                             onClose={() => setSelectedArtifact(null)}
                             listFiles={listFiles}
                             am={am}
+                            ws={ws}
                         />
                     )}
                     
@@ -6429,7 +6525,7 @@ license: "MIT"`);
                                 Artifacts in workspace: <code>{workspaceId}</code>
                             </p>
                             <div className="mt-6">
-                                <ArtifactsPanel am={am} />
+                                <ArtifactsPanel am={am} ws={ws} />
                             </div>
                         </>
                     )}

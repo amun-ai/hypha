@@ -1887,18 +1887,28 @@ class ArtifactController:
         artifact_data["_id"] = artifact.id
         # Exclude 'secrets' from artifact_data to prevent exposure
         artifact_data.pop("secrets", None)
-        
+
         # Convert dict-based staging back to list format for API backward compatibility
         if artifact_data.get("staging") and isinstance(artifact_data["staging"], dict):
             staging_dict = artifact_data["staging"]
             staging_list = staging_dict.get("files", [])
-            
+
             # Add intent markers as list items for backward compatibility
             if "_intent" in staging_dict:
                 staging_list.append({"_intent": staging_dict["_intent"]})
-            
+
             artifact_data["staging"] = staging_list
-        
+
+        # Add git_url if storage is "git"
+        config = artifact.config or {}
+        if config.get("storage") == "git":
+            from urllib.parse import quote
+            base_url = self.store.public_base_url
+            # URL-encode workspace and alias for safe use in git clone commands
+            encoded_workspace = quote(artifact.workspace, safe='')
+            encoded_alias = quote(artifact.alias, safe='')
+            artifact_data["git_url"] = f"{base_url}/{encoded_workspace}/git/{encoded_alias}"
+
         return artifact_data
 
     def _expand_permission(self, permission):
@@ -3053,6 +3063,29 @@ class ArtifactController:
                         overwrite=overwrite,
                         config=config,
                     )
+
+                # Initialize Git storage if storage type is "git"
+                storage_type = config.get("storage", "raw")
+                if storage_type == "git":
+                    from hypha.git.repo import S3GitRepo
+
+                    default_branch = config.get("git_default_branch", "main")
+                    git_prefix = f"{s3_config['prefix']}/{new_artifact.id}/git"
+
+                    async with self._create_client_async(s3_config) as s3_client:
+                        await S3GitRepo.init_bare(
+                            s3_client,
+                            s3_config["bucket"],
+                            git_prefix,
+                            default_branch=default_branch.encode(),
+                        )
+
+                    # Store Git configuration
+                    config["storage"] = "git"
+                    config["git_default_branch"] = default_branch
+                    new_artifact.config = config
+
+                    logger.info(f"Initialized Git storage for artifact {new_artifact.workspace}/{new_artifact.alias}")
 
                 await session.commit()
                 await self._save_version_to_s3(

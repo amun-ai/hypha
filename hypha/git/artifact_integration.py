@@ -1,0 +1,160 @@
+"""Integration between Git repositories and Hypha artifacts.
+
+This module provides the bridge between Hypha's artifact system and
+Git repositories, allowing artifacts to be accessed via Git protocol.
+"""
+
+import logging
+from contextlib import asynccontextmanager
+
+from hypha.git.repo import S3GitRepo
+from hypha.git.http import create_git_router
+
+logger = logging.getLogger(__name__)
+
+
+class GitArtifactManager:
+    """Manager for Git-enabled artifacts.
+
+    This class handles:
+    - Providing access to Git repos for HTTP protocol handlers
+    - Managing Git-related artifact configuration
+
+    Git is automatically enabled for artifacts with config.storage == "git".
+    """
+
+    def __init__(self, artifact_controller):
+        """Initialize Git artifact manager.
+
+        Args:
+            artifact_controller: The ArtifactController instance
+        """
+        self.artifact_controller = artifact_controller
+        self._repo_cache = {}
+
+    @asynccontextmanager
+    async def get_repo(
+        self,
+        workspace: str,
+        alias: str,
+        user_info,
+        write: bool = False,
+    ):
+        """Get or create a Git repository for an artifact.
+
+        Args:
+            workspace: Workspace name
+            alias: Artifact alias
+            user_info: User info for permission checking
+            write: Whether write access is needed
+
+        Yields:
+            S3GitRepo instance
+
+        Raises:
+            KeyError: If artifact not found or Git storage not enabled
+            PermissionError: If user lacks required permissions
+        """
+        artifact_id = f"{workspace}/{alias}"
+
+        # Get artifact and check permissions
+        session = await self.artifact_controller._get_session()
+        try:
+            async with session.begin():
+                artifact, parent_artifact = await self.artifact_controller._get_artifact_with_permission(
+                    user_info,
+                    artifact_id,
+                    "read" if not write else "commit",
+                    session,
+                )
+
+                # Check if Git storage is enabled
+                config = artifact.config or {}
+                if config.get("storage") != "git":
+                    raise KeyError(f"Git storage not enabled for artifact {artifact_id}")
+
+                # Get S3 config
+                s3_config = self.artifact_controller._get_s3_config(
+                    artifact, parent_artifact
+                )
+
+                # Create S3 client and repo
+                async with self.artifact_controller._create_client_async(
+                    s3_config
+                ) as s3_client:
+                    prefix = f"{s3_config['prefix']}/{artifact.id}/git"
+
+                    repo = S3GitRepo(
+                        s3_client,
+                        s3_config["bucket"],
+                        prefix,
+                    )
+                    await repo.initialize()
+
+                    yield repo
+
+        finally:
+            await session.close()
+
+    def get_router(self):
+        """Get FastAPI router for Git HTTP protocol.
+
+        Returns:
+            FastAPI router with Git endpoints
+        """
+
+        async def get_repo_callback(workspace, alias, user_info, write=False):
+            """Callback to get repo for HTTP handlers."""
+            artifact_id = f"{workspace}/{alias}"
+            logger.info(f"Git repo request: workspace={workspace}, alias={alias}, write={write}")
+
+            session = await self.artifact_controller._get_session()
+            try:
+                async with session.begin():
+                    try:
+                        artifact, parent_artifact = await self.artifact_controller._get_artifact_with_permission(
+                            user_info,
+                            artifact_id,
+                            "read" if not write else "commit",
+                            session,
+                        )
+                    except Exception as e:
+                        logger.error(f"Git repo error: artifact not found or permission denied: {artifact_id}, error: {e}")
+                        raise KeyError(f"Artifact not found: {artifact_id}") from e
+
+                    config = artifact.config or {}
+                    storage_type = config.get("storage")
+                    logger.info(f"Git repo: artifact {artifact_id} has storage type: {storage_type}")
+                    if storage_type != "git":
+                        raise KeyError(f"Git storage not enabled for artifact {artifact_id} (storage={storage_type})")
+
+                    s3_config = self.artifact_controller._get_s3_config(
+                        artifact, parent_artifact
+                    )
+
+                    # Note: We create the client here but it will be managed
+                    # by the caller through the context manager
+                    s3_client = await self.artifact_controller._create_client_async(
+                        s3_config
+                    ).__aenter__()
+
+                    prefix = f"{s3_config['prefix']}/{artifact.id}/git"
+                    repo = S3GitRepo(s3_client, s3_config["bucket"], prefix)
+                    await repo.initialize()
+
+                    # Store cleanup info for later
+                    repo._s3_client_context = s3_client
+                    repo._session = session
+
+                    return repo
+
+            except Exception:
+                await session.close()
+                raise
+
+        return create_git_router(
+            get_repo_callback,
+            self.artifact_controller.store.login_optional,
+            self.artifact_controller.store.login_required,
+            self.artifact_controller.store.parse_user_token,
+        )

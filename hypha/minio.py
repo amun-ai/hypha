@@ -342,8 +342,15 @@ def generate_command(cmd_template, **kwargs):
     return cmd_template.format(**kwargs)
 
 
-def execute_command_sync(cmd_template, mc_executable, **kwargs):
-    """Execute the command synchronously."""
+def execute_command_sync(cmd_template, mc_executable, timeout=30, **kwargs):
+    """Execute the command synchronously.
+
+    Args:
+        cmd_template: Command template string
+        mc_executable: Path to mc executable
+        timeout: Timeout in seconds (default 30)
+        **kwargs: Additional arguments for command template
+    """
     command_string = generate_command(cmd_template, json=True, **kwargs)
     command_string = mc_executable + command_string.lstrip("mc")
     try:
@@ -353,15 +360,19 @@ def execute_command_sync(cmd_template, mc_executable, **kwargs):
                 command_string,
                 stderr=subprocess.STDOUT,
                 shell=True,
+                timeout=timeout,
             )
         else:
             _output = subprocess.check_output(
                 command_string.split(),
                 stderr=subprocess.STDOUT,
+                timeout=timeout,
             )
         success, output = True, _output.decode("utf-8")
     except subprocess.CalledProcessError as err:
         success, output = False, err.output.decode("utf-8")
+    except subprocess.TimeoutExpired:
+        success, output = False, f"Command timed out after {timeout} seconds"
     return parse_output(success, output, command_string)
 
 
