@@ -230,7 +230,15 @@ def start_minio_server(
     cmd.append(workdir)
 
     try:
-        proc = subprocess.Popen(cmd, env=my_env)
+        # Redirect stdout/stderr to prevent output buffer blocking when
+        # pytest captures output. Without this, the subprocess output can
+        # fill up buffers and cause hangs.
+        proc = subprocess.Popen(
+            cmd,
+            env=my_env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
         # Wait for server to be available
         start_time = time.time()

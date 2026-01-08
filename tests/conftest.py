@@ -314,7 +314,31 @@ def triton_server():
 @pytest_asyncio.fixture(name="postgres_server", scope="session")
 def postgres_server():
     """Start a fresh PostgreSQL server as a test fixture and tear down after the test."""
-    # Check if the container is already running
+    # In GitHub Actions, PostgreSQL is provided as a service container on port 5432
+    # We just need to ensure the extension is created and yield
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print("Using GitHub Actions PostgreSQL service on port 5432")
+        # Wait for PostgreSQL to be ready and ensure pgvector extension
+        timeout = 30
+        while timeout > 0:
+            try:
+                engine = create_engine(
+                    f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@127.0.0.1:{POSTGRES_PORT}/{POSTGRES_DB}"
+                )
+                with engine.connect() as connection:
+                    connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                    connection.commit()
+                    print("PostgreSQL service ready with pgvector extension")
+                break
+            except Exception as e:
+                if timeout <= 1:
+                    print(f"PostgreSQL connection failed: {e}")
+                timeout -= 1
+                time.sleep(1)
+        yield
+        return
+
+    # Local development: Check if the container is already running
     existing_container = subprocess.run(
         ["docker", "ps", "-q", "-f", "name=^hypha-postgres$"],
         capture_output=True,
@@ -323,50 +347,36 @@ def postgres_server():
 
     # Stop and remove the existing container if it is running
     if existing_container:
-        if os.environ.get("GITHUB_ACTIONS") != "true":
-            print(
-                "Stopping and removing existing PostgreSQL container:",
-                existing_container,
-            )
-            subprocess.run(["docker", "stop", existing_container], check=True)
-            # Attempt to remove the container, but ignore errors if it does not exist
-            subprocess.run(["docker", "rm", existing_container], check=False)
+        print(
+            "Stopping and removing existing PostgreSQL container:",
+            existing_container,
+        )
+        subprocess.run(["docker", "stop", existing_container], check=True)
+        # Attempt to remove the container, but ignore errors if it does not exist
+        subprocess.run(["docker", "rm", existing_container], check=False)
 
-            # Start a new PostgreSQL container with pgvector
-            print("Starting a new PostgreSQL container with pgvector")
-            result = subprocess.run(
-                [
-                    "docker",
-                    "run",
-                    "--name",
-                    "hypha-postgres",
-                    "--rm",
-                    "-e",
-                    f"POSTGRES_PASSWORD={POSTGRES_PASSWORD}",
-                    "-p",
-                    f"{POSTGRES_PORT}:5432",
-                    "-d",
-                    "oeway/postgresql-pgvector:17.6.0-pgvector-0.8.1",
-                ],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            print(f"Started container: {result.stdout.strip()}")
-            time.sleep(8)  # Give more time for pgvector container to initialize
-        else:
-            print("Using existing PostgreSQL container:", existing_container)
-            # In GitHub Actions, ensure pgvector extension is created
-            try:
-                engine = create_engine(
-                    f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@127.0.0.1:{POSTGRES_PORT}/{POSTGRES_DB}"
-                )
-                with engine.connect() as connection:
-                    connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-                    connection.commit()
-                    print("Created pgvector extension in existing container")
-            except Exception as e:
-                print(f"Note: Could not create pgvector extension: {e}")
+        # Start a new PostgreSQL container with pgvector
+        print("Starting a new PostgreSQL container with pgvector")
+        result = subprocess.run(
+            [
+                "docker",
+                "run",
+                "--name",
+                "hypha-postgres",
+                "--rm",
+                "-e",
+                f"POSTGRES_PASSWORD={POSTGRES_PASSWORD}",
+                "-p",
+                f"{POSTGRES_PORT}:5432",
+                "-d",
+                "oeway/postgresql-pgvector:17.6.0-pgvector-0.8.1",
+            ],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        print(f"Started container: {result.stdout.strip()}")
+        time.sleep(8)  # Give more time for pgvector container to initialize
     else:
         # Check if the PostgreSQL pgvector image exists locally
         image_exists = subprocess.run(
@@ -502,6 +512,9 @@ def fastapi_server_fixture(minio_server, postgres_server):
     ROOT_TOKEN = secrets.token_urlsafe(32)
     os.environ["HYPHA_ROOT_TOKEN"] = ROOT_TOKEN  # Store for tests to use
     
+    # Redirect stdout/stderr to DEVNULL to prevent output buffer blocking
+    # when pytest captures output. Without this, the subprocess output can
+    # fill up buffers and cause hangs during test execution.
     with subprocess.Popen(
         [
             sys.executable,
@@ -536,6 +549,8 @@ def fastapi_server_fixture(minio_server, postgres_server):
             "hypha.workers.terminal:hypha_startup",
         ],
         env=test_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     ) as proc:
         timeout = 20
         while timeout > 0:
@@ -583,6 +598,8 @@ def fastapi_server_sqlite_fixture(minio_server):
             "--s3-admin-type=generic",
         ],
         env=test_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     ) as proc:
         timeout = 20
         while timeout > 0:
@@ -642,6 +659,8 @@ def fastapi_server_redis_1(redis_server, minio_server):
             "--enable-service-search",
         ],
         env=test_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         # Ensure the process has its own process group
         preexec_fn=os.setsid if hasattr(os, 'setsid') else None,
     ) as proc:
@@ -698,6 +717,8 @@ def fastapi_server_redis_2(redis_server, minio_server, fastapi_server):
             # f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
         ],
         env=test_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         # Ensure the process has its own process group
         preexec_fn=os.setsid if hasattr(os, 'setsid') else None,
     ) as proc:
@@ -730,6 +751,8 @@ def fastapi_subpath_server_fixture(minio_server):
             "--base-path=/my/engine",
         ],
         env=test_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     ) as proc:
         timeout = 10
         while timeout > 0:
@@ -998,6 +1021,8 @@ def custom_auth_server_fixture():
             "./tests/custom_auth_startup_test.py:hypha_startup",
         ],
         env=test_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     ) as proc:
         timeout = 20
         while timeout > 0:
@@ -1060,6 +1085,8 @@ def local_auth_server_fixture():
             "--minio-root-password=minioadmin",
         ],
         env=test_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     ) as proc:
         timeout = 30
         while timeout > 0:
