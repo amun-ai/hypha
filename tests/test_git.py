@@ -49,7 +49,7 @@ async def test_git_clone_empty_repo(
         manifest={"name": "Git Clone Test"},
         config={"storage": "git"},
     )
-    await artifact_manager.commit(artifact_id=artifact_alias)
+    # Note: Git-storage artifacts don't use staging/commit - they're ready immediately
 
     workspace = api.config.workspace
     base_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
@@ -98,7 +98,7 @@ async def test_git_ls_remote(
         manifest={"name": "Git ls-remote Test"},
         config={"storage": "git"},
     )
-    await artifact_manager.commit(artifact_id=artifact_alias)
+    # Note: Git-storage artifacts don't use staging/commit - they're ready immediately
 
     workspace = api.config.workspace
     base_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
@@ -141,7 +141,7 @@ async def test_git_protocol_discovery(
         manifest={"name": "Git Discovery Test"},
         config={"storage": "git"},
     )
-    await artifact_manager.commit(artifact_id=artifact_alias)
+    # Note: Git-storage artifacts don't use staging/commit - they're ready immediately
 
     workspace = api.config.workspace
     base_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
@@ -182,7 +182,7 @@ async def test_git_clone_add_commit_push(
         manifest={"name": "Git Push Test"},
         config={"storage": "git"},
     )
-    await artifact_manager.commit(artifact_id=artifact_alias)
+    # Note: Git-storage artifacts don't use staging/commit - they're ready immediately
 
     workspace = api.config.workspace
     port = SIO_PORT
@@ -303,7 +303,7 @@ async def test_git_receive_pack_requires_auth(
         manifest={"name": "Git Auth Test"},
         config={"storage": "git"},
     )
-    await artifact_manager.commit(artifact_id=artifact_alias)
+    # Note: Git-storage artifacts don't use staging/commit - they're ready immediately
 
     workspace = api.config.workspace
     base_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
@@ -401,9 +401,7 @@ async def test_git_lfs_push_and_pull(
         manifest={"name": "LFS Test Repository", "description": "Test repo for Git LFS"},
         config={"storage": "git"},  # Enable git storage
     )
-
-    # Commit the artifact to make it accessible
-    await artifact_manager.commit(artifact_id=artifact_alias)
+    # Note: Git-storage artifacts don't use staging/commit - they're ready immediately
 
     workspace = api.config.workspace
     port = SIO_PORT
@@ -562,7 +560,7 @@ async def test_lfs_batch_api_via_http(
         manifest={"name": "LFS Batch Test"},
         config={"storage": "git"},
     )
-    await artifact_manager.commit(artifact_id=artifact_alias)
+    # Note: Git-storage artifacts don't use staging/commit - they're ready immediately
 
     workspace = api.config.workspace
     batch_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}/info/lfs/objects/batch"
