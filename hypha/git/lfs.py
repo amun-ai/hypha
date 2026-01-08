@@ -9,12 +9,15 @@ Git LFS Protocol:
 3. Client uploads/downloads directly to S3 (streaming, no server memory usage)
 4. Optionally, client calls verify endpoint after upload
 
+Uses S3 client factory pattern for reliable async operations:
+Each S3 operation creates a fresh client context to avoid connection
+pool exhaustion and hanging issues with aiobotocore.
+
 Reference: https://github.com/git-lfs/git-lfs/blob/main/docs/api/batch.md
 """
 
 import hashlib
 import logging
-from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -28,6 +31,117 @@ LFS_CONTENT_TYPE = "application/vnd.git-lfs+json"
 
 # Default URL expiration time (1 hour)
 DEFAULT_EXPIRES_IN = 3600
+
+# LFS pointer version URLs
+LFS_VERSION_URLS = [
+    "https://git-lfs.github.com/spec/v1",
+    "https://hawser.github.com/spec/v1",  # Pre-release version
+]
+
+# Maximum size for LFS pointer files (per spec: 1024 bytes)
+LFS_POINTER_MAX_SIZE = 1024
+
+
+class LFSPointer:
+    """Parsed Git LFS pointer file."""
+
+    def __init__(self, oid: str, size: int, version: str = "https://git-lfs.github.com/spec/v1"):
+        self.oid = oid
+        self.size = size
+        self.version = version
+
+    @classmethod
+    def parse(cls, content: bytes) -> Optional["LFSPointer"]:
+        """Parse an LFS pointer from file content.
+
+        Args:
+            content: Raw file content (bytes)
+
+        Returns:
+            LFSPointer if content is a valid LFS pointer, None otherwise
+        """
+        # LFS pointers must be less than 1024 bytes
+        if len(content) > LFS_POINTER_MAX_SIZE:
+            return None
+
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+
+        lines = text.strip().split("\n")
+        if not lines:
+            return None
+
+        # Parse key-value pairs
+        data = {}
+        for line in lines:
+            parts = line.split(" ", 1)
+            if len(parts) != 2:
+                return None
+            key, value = parts
+            data[key] = value
+
+        # Check required fields
+        if "version" not in data:
+            return None
+
+        # Verify version URL
+        if data["version"] not in LFS_VERSION_URLS:
+            return None
+
+        if "oid" not in data or "size" not in data:
+            return None
+
+        # Parse OID (format: sha256:hexdigest)
+        oid_parts = data["oid"].split(":", 1)
+        if len(oid_parts) != 2 or oid_parts[0] != "sha256":
+            return None
+
+        oid = oid_parts[1]
+        if not all(c in "0123456789abcdef" for c in oid) or len(oid) != 64:
+            return None
+
+        try:
+            size = int(data["size"])
+        except ValueError:
+            return None
+
+        return cls(oid=oid, size=size, version=data["version"])
+
+    def get_s3_path(self, base_path: str) -> str:
+        """Get the S3 path for this LFS object.
+
+        Args:
+            base_path: Base path in S3 for the repository (e.g., workspace/artifact)
+
+        Returns:
+            Full S3 key for the LFS object
+        """
+        # LFS objects are stored at: {base_path}/git/lfs/objects/{oid[0:2]}/{oid[2:4]}/{oid}
+        return f"{base_path}/git/lfs/objects/{self.oid[0:2]}/{self.oid[2:4]}/{self.oid}"
+
+
+def is_lfs_pointer(content: bytes) -> bool:
+    """Check if content looks like an LFS pointer.
+
+    This is a quick check that doesn't fully parse the pointer.
+
+    Args:
+        content: File content
+
+    Returns:
+        True if content appears to be an LFS pointer
+    """
+    if len(content) > LFS_POINTER_MAX_SIZE:
+        return False
+
+    try:
+        text = content.decode("utf-8")
+        return text.startswith("version https://git-lfs.github.com/spec/v1") or \
+               text.startswith("version https://hawser.github.com/spec/v1")
+    except UnicodeDecodeError:
+        return False
 
 
 class LFSObjectRequest(BaseModel):
@@ -100,11 +214,15 @@ class GitLFSHandler:
     This handler manages LFS objects stored in S3. LFS objects are stored
     in the repository's git/lfs/objects directory with the path structure:
     {workspace}/{artifact_prefix}/git/lfs/objects/{oid[0:2]}/{oid[2:4]}/{oid}
+
+    Uses S3 client factory pattern for reliable async operations:
+    Each S3 operation creates a fresh client context to avoid connection
+    pool exhaustion and hanging issues with aiobotocore.
     """
 
     def __init__(
         self,
-        s3_client,
+        s3_client_factory: Callable,
         bucket: str,
         base_path: str,
         public_base_url: str,
@@ -113,13 +231,14 @@ class GitLFSHandler:
         """Initialize LFS handler.
 
         Args:
-            s3_client: Async S3 client
+            s3_client_factory: Factory function that returns an async context manager
+                               for S3 client
             bucket: S3 bucket name
             base_path: Base path in S3 for this repository (e.g., workspace/artifact)
             public_base_url: Public base URL for the Hypha server
             enable_s3_proxy: Whether to use S3 proxy URLs
         """
-        self.s3_client = s3_client
+        self.s3_client_factory = s3_client_factory
         self.bucket = bucket
         self.base_path = base_path
         self.public_base_url = public_base_url
@@ -144,13 +263,14 @@ class GitLFSHandler:
             True if object exists (and size matches if provided)
         """
         path = self._get_object_path(oid)
-        try:
-            response = await self.s3_client.head_object(Bucket=self.bucket, Key=path)
-            if expected_size is not None:
-                return response["ContentLength"] == expected_size
-            return True
-        except Exception:
-            return False
+        async with self.s3_client_factory() as s3_client:
+            try:
+                response = await s3_client.head_object(Bucket=self.bucket, Key=path)
+                if expected_size is not None:
+                    return response["ContentLength"] == expected_size
+                return True
+            except Exception:
+                return False
 
     async def get_object_size(self, oid: str) -> Optional[int]:
         """Get the size of an LFS object.
@@ -159,20 +279,22 @@ class GitLFSHandler:
             Size in bytes, or None if object doesn't exist
         """
         path = self._get_object_path(oid)
-        try:
-            response = await self.s3_client.head_object(Bucket=self.bucket, Key=path)
-            return response["ContentLength"]
-        except Exception:
-            return None
+        async with self.s3_client_factory() as s3_client:
+            try:
+                response = await s3_client.head_object(Bucket=self.bucket, Key=path)
+                return response["ContentLength"]
+            except Exception:
+                return None
 
     async def generate_download_url(self, oid: str, expires_in: int = DEFAULT_EXPIRES_IN) -> str:
         """Generate a presigned URL for downloading an LFS object."""
         path = self._get_object_path(oid)
-        url = await self.s3_client.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": self.bucket, "Key": path},
-            ExpiresIn=expires_in,
-        )
+        async with self.s3_client_factory() as s3_client:
+            url = await s3_client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self.bucket, "Key": path},
+                ExpiresIn=expires_in,
+            )
         if self.enable_s3_proxy:
             url = f"{self.public_base_url}/s3/{self.bucket}/{path}?{url.split('?')[1]}"
         return url
@@ -180,19 +302,36 @@ class GitLFSHandler:
     async def generate_upload_url(self, oid: str, size: int, expires_in: int = DEFAULT_EXPIRES_IN) -> str:
         """Generate a presigned URL for uploading an LFS object."""
         path = self._get_object_path(oid)
-        url = await self.s3_client.generate_presigned_url(
-            "put_object",
-            Params={
-                "Bucket": self.bucket,
-                "Key": path,
-                "ContentLength": size,
-                "ContentType": "application/octet-stream",
-            },
-            ExpiresIn=expires_in,
-        )
+        async with self.s3_client_factory() as s3_client:
+            url = await s3_client.generate_presigned_url(
+                "put_object",
+                Params={
+                    "Bucket": self.bucket,
+                    "Key": path,
+                    "ContentLength": size,
+                    "ContentType": "application/octet-stream",
+                },
+                ExpiresIn=expires_in,
+            )
         if self.enable_s3_proxy:
             url = f"{self.public_base_url}/s3/{self.bucket}/{path}?{url.split('?')[1]}"
         return url
+
+    async def upload_object(self, oid: str, body: bytes) -> None:
+        """Upload an LFS object directly to S3.
+
+        Args:
+            oid: Object ID (SHA-256 hash)
+            body: Object content
+        """
+        path = self._get_object_path(oid)
+        async with self.s3_client_factory() as s3_client:
+            await s3_client.put_object(
+                Bucket=self.bucket,
+                Key=path,
+                Body=body,
+                ContentType="application/octet-stream",
+            )
 
     async def handle_batch_request(
         self,
@@ -607,14 +746,8 @@ def create_lfs_router(
                 detail=f"Hash mismatch: expected {oid}, got {computed_hash}",
             )
 
-        # Upload to S3
-        path = handler._get_object_path(oid)
-        await handler.s3_client.put_object(
-            Bucket=handler.bucket,
-            Key=path,
-            Body=body,
-            ContentType="application/octet-stream",
-        )
+        # Upload to S3 using the handler method
+        await handler.upload_object(oid, body)
 
         logger.info(f"LFS upload complete: oid={oid}, size={size}")
         return Response(status_code=200)

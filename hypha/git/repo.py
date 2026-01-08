@@ -2,17 +2,21 @@
 
 This module provides a Git repository implementation backed by S3,
 combining the S3GitObjectStore and S3RefsContainer.
+
+Uses fully async S3 operations:
+- Read operations: Use async aiobotocore client factory
+- Write operations: Use async aiohttp-based S3 client with AWS Signature V4
 """
 
-import asyncio
 import logging
-from typing import Optional
+from typing import Callable, Optional
 
 from dulwich.objects import ObjectID
 from dulwich.repo import BaseRepo
 
 from hypha.git.object_store import S3GitObjectStore
 from hypha.git.refs import S3InfoRefsContainer
+from hypha.git.s3_async import create_async_s3_client
 
 logger = logging.getLogger(__name__)
 
@@ -24,40 +28,51 @@ class S3GitRepo(BaseRepo):
     references as individual S3 objects. It supports the full Git
     protocol via HTTP Smart transport.
 
-    Usage:
-        async with create_s3_client(config) as s3_client:
-            repo = S3GitRepo(s3_client, "bucket", "prefix")
-            await repo.initialize()
+    Uses fully async S3 operations:
+    - Read operations: Use async aiobotocore client factory
+    - Write operations: Use async aiohttp-based S3 client
 
-            # Use as a standard Git repo
-            head = repo.head()
+    Usage:
+        def s3_client_factory():
+            return session.create_client("s3", ...)
+
+        repo = S3GitRepo(s3_client_factory, "bucket", "prefix")
+        await repo.initialize()
+
+        # Use as a standard Git repo
+        head = repo.head()
     """
 
     def __init__(
         self,
-        s3_client,
+        s3_client_factory: Callable,
         bucket: str,
         prefix: str,
         object_format=None,
+        s3_config: Optional[dict] = None,
     ):
         """Initialize S3 Git repository.
 
         Args:
-            s3_client: Async S3 client (aiobotocore)
+            s3_client_factory: Factory function that returns an async context manager
+                               for S3 client (e.g., lambda: session.create_client("s3", ...))
             bucket: S3 bucket name
             prefix: Prefix path in bucket (e.g., "workspace/artifacts/123/git")
             object_format: Git object format (defaults to SHA1)
+            s3_config: S3 config dict with endpoint_url, access_key_id,
+                       secret_access_key, region_name for async write operations
         """
-        self._s3_client = s3_client
+        self._s3_client_factory = s3_client_factory
         self._bucket = bucket
         self._prefix = prefix.rstrip("/")
+        self._s3_config = s3_config
 
         # Create object store and refs container
         self._object_store = S3GitObjectStore(
-            s3_client, bucket, prefix, object_format=object_format
+            s3_client_factory, bucket, prefix, object_format=object_format, s3_config=s3_config
         )
         self._refs = S3InfoRefsContainer(
-            s3_client, bucket, prefix, object_store=self._object_store
+            s3_client_factory, bucket, prefix, object_store=self._object_store, s3_config=s3_config
         )
 
         # Initialize base repo
@@ -67,8 +82,8 @@ class S3GitRepo(BaseRepo):
         self.bare = True  # S3 repos are always bare
 
     @property
-    def s3_client(self):
-        return self._s3_client
+    def s3_client_factory(self):
+        return self._s3_client_factory
 
     @property
     def bucket(self) -> str:
@@ -90,30 +105,45 @@ class S3GitRepo(BaseRepo):
     @classmethod
     async def init_bare(
         cls,
-        s3_client,
+        s3_client_factory: Callable,
         bucket: str,
         prefix: str,
         default_branch: bytes = b"main",
+        s3_config: Optional[dict] = None,
     ) -> "S3GitRepo":
         """Initialize a new bare repository in S3.
 
         Args:
-            s3_client: Async S3 client
+            s3_client_factory: Factory function that returns an async context manager
+                               for S3 client
             bucket: S3 bucket name
             prefix: Prefix path in bucket
             default_branch: Name of the default branch
+            s3_config: S3 config dict with endpoint_url, access_key_id,
+                       secret_access_key, region_name for async write operations
 
         Returns:
             Initialized S3GitRepo instance
         """
-        repo = cls(s3_client, bucket, prefix)
+        if not s3_config:
+            raise RuntimeError(
+                "s3_config is required for init_bare. "
+                "Pass s3_config dict with endpoint_url, access_key_id, "
+                "secret_access_key, and region_name."
+            )
+
+        repo = cls(s3_client_factory, bucket, prefix, s3_config=s3_config)
 
         # Create initial HEAD pointing to default branch
         await repo._refs.set_symbolic_ref_async(b"HEAD", b"refs/heads/" + default_branch)
 
-        # Create the pack directory marker (not strictly necessary for S3)
+        # Create the pack directory marker using async S3 client
         pack_dir_key = f"{prefix}/objects/pack/.gitkeep"
-        await s3_client.put_object(Bucket=bucket, Key=pack_dir_key, Body=b"")
+        async_client = create_async_s3_client(s3_config)
+        try:
+            await async_client.put_object(bucket, pack_dir_key, b"")
+        finally:
+            await async_client.close()
 
         repo._initialized = True
         return repo

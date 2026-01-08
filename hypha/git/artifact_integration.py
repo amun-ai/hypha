@@ -2,10 +2,15 @@
 
 This module provides the bridge between Hypha's artifact system and
 Git repositories, allowing artifacts to be accessed via Git protocol.
+
+Uses S3 client factory pattern for reliable async operations:
+Each S3 operation creates a fresh client context to avoid connection
+pool exhaustion and hanging issues with aiobotocore.
 """
 
 import logging
 from contextlib import asynccontextmanager
+from functools import partial
 
 from hypha.git.repo import S3GitRepo
 from hypha.git.http import create_git_router
@@ -22,6 +27,8 @@ class GitArtifactManager:
     - Managing Git-related artifact configuration
 
     Git is automatically enabled for artifacts with config.storage == "git".
+
+    Uses S3 client factory pattern for reliable async operations.
     """
 
     def __init__(self, artifact_controller):
@@ -32,6 +39,17 @@ class GitArtifactManager:
         """
         self.artifact_controller = artifact_controller
         self._repo_cache = {}
+
+    def _create_s3_client_factory(self, s3_config):
+        """Create an S3 client factory for the given config.
+
+        Args:
+            s3_config: S3 configuration dictionary
+
+        Returns:
+            Factory function that returns an async context manager for S3 client
+        """
+        return partial(self.artifact_controller._create_client_async, s3_config)
 
     @asynccontextmanager
     async def get_repo(
@@ -79,20 +97,19 @@ class GitArtifactManager:
                     artifact, parent_artifact
                 )
 
-                # Create S3 client and repo
-                async with self.artifact_controller._create_client_async(
-                    s3_config
-                ) as s3_client:
-                    prefix = f"{s3_config['prefix']}/{artifact.id}/git"
+                # Create S3 client factory and repo
+                s3_client_factory = self._create_s3_client_factory(s3_config)
+                prefix = f"{s3_config['prefix']}/{artifact.id}/git"
 
-                    repo = S3GitRepo(
-                        s3_client,
-                        s3_config["bucket"],
-                        prefix,
-                    )
-                    await repo.initialize()
+                repo = S3GitRepo(
+                    s3_client_factory,
+                    s3_config["bucket"],
+                    prefix,
+                    s3_config=s3_config,
+                )
+                await repo.initialize()
 
-                    yield repo
+                yield repo
 
         finally:
             await session.close()
@@ -133,18 +150,14 @@ class GitArtifactManager:
                         artifact, parent_artifact
                     )
 
-                    # Note: We create the client here but it will be managed
-                    # by the caller through the context manager
-                    s3_client = await self.artifact_controller._create_client_async(
-                        s3_config
-                    ).__aenter__()
+                    # Create S3 client factory for the repo
+                    s3_client_factory = self._create_s3_client_factory(s3_config)
 
                     prefix = f"{s3_config['prefix']}/{artifact.id}/git"
-                    repo = S3GitRepo(s3_client, s3_config["bucket"], prefix)
+                    repo = S3GitRepo(s3_client_factory, s3_config["bucket"], prefix, s3_config=s3_config)
                     await repo.initialize()
 
-                    # Store cleanup info for later
-                    repo._s3_client_context = s3_client
+                    # Store session for cleanup later
                     repo._session = session
 
                     return repo
@@ -196,10 +209,8 @@ class GitArtifactManager:
                         artifact, parent_artifact
                     )
 
-                    # Create S3 client for LFS handler
-                    s3_client = await self.artifact_controller._create_client_async(
-                        s3_config
-                    ).__aenter__()
+                    # Create S3 client factory for LFS handler
+                    s3_client_factory = self._create_s3_client_factory(s3_config)
 
                     # Base path for LFS objects (same as git repo prefix but without /git)
                     base_path = f"{s3_config['prefix']}/{artifact.id}"
@@ -209,15 +220,14 @@ class GitArtifactManager:
                     enable_s3_proxy = self.artifact_controller.s3_controller.enable_s3_proxy
 
                     handler = GitLFSHandler(
-                        s3_client=s3_client,
+                        s3_client_factory=s3_client_factory,
                         bucket=s3_config["bucket"],
                         base_path=base_path,
                         public_base_url=public_base_url,
                         enable_s3_proxy=enable_s3_proxy,
                     )
 
-                    # Store cleanup info for later (session will be closed by caller)
-                    handler._s3_client_context = s3_client
+                    # Store session for cleanup later
                     handler._session = session
 
                     return handler

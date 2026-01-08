@@ -2,16 +2,19 @@
 
 This module provides an async implementation of a Git object store that
 stores all objects (as pack files) in S3, with no local file system usage.
+
+Uses fully async S3 operations:
+- Read operations: Use async aiobotocore client factory
+- Write operations: Use async aiohttp-based S3 client with AWS Signature V4
+  (bypasses aiobotocore's put_object which hangs with MinIO)
 """
 
 import asyncio
-import hashlib
 import io
 import logging
 import tempfile
-from collections.abc import AsyncIterator, Callable, Iterator
-from contextlib import asynccontextmanager
-from typing import Any, BinaryIO, Optional
+from collections.abc import AsyncIterator, Iterator
+from typing import BinaryIO, Callable, Optional
 
 from botocore.exceptions import ClientError
 
@@ -28,74 +31,27 @@ from dulwich.pack import (
     write_pack_index,
 )
 
+from hypha.git.s3_async import create_async_s3_client
+
 logger = logging.getLogger(__name__)
 
 
-class AsyncPackDataReader:
-    """Wrapper to read pack data from S3 asynchronously."""
-
-    def __init__(self, s3_client, bucket: str, key: str):
-        self._s3_client = s3_client
-        self._bucket = bucket
-        self._key = key
-        self._data: Optional[bytes] = None
-        self._offset = 0
-
-    async def load(self):
-        """Load the pack data from S3."""
-        if self._data is None:
-            response = await self._s3_client.get_object(
-                Bucket=self._bucket, Key=self._key
-            )
-            self._data = await response["Body"].read()
-        return self._data
-
-    def read(self, size: int = -1) -> bytes:
-        """Synchronous read for dulwich compatibility."""
-        if self._data is None:
-            raise RuntimeError("Pack data not loaded. Call load() first.")
-        if size == -1:
-            result = self._data[self._offset :]
-            self._offset = len(self._data)
-        else:
-            result = self._data[self._offset : self._offset + size]
-            self._offset += size
-        return result
-
-    def seek(self, offset: int, whence: int = 0):
-        """Seek to a position in the data."""
-        if self._data is None:
-            raise RuntimeError("Pack data not loaded. Call load() first.")
-        if whence == 0:
-            self._offset = offset
-        elif whence == 1:
-            self._offset += offset
-        elif whence == 2:
-            self._offset = len(self._data) + offset
-
-    def tell(self) -> int:
-        """Return current position."""
-        return self._offset
-
-    def close(self):
-        """Close the reader."""
-        self._data = None
-        self._offset = 0
-
-
 class S3Pack:
-    """A Git pack stored in S3."""
+    """A Git pack stored in S3.
+
+    Uses S3 client factory for loading pack data to ensure reliable async operations.
+    """
 
     def __init__(
         self,
         basename: str,
-        s3_client,
+        s3_client_factory: Callable,
         bucket: str,
         pack_dir: str,
         object_format=None,
     ):
         self._basename = basename
-        self._s3_client = s3_client
+        self._s3_client_factory = s3_client_factory
         self._bucket = bucket
         self._pack_dir = pack_dir
         self._object_format = object_format
@@ -112,17 +68,18 @@ class S3Pack:
         if self._pack is not None:
             return
 
-        # Load pack and index data in parallel
+        # Load pack and index data using fresh client context
         pack_key = f"{self._pack_dir}/{self._basename}.pack"
         idx_key = f"{self._pack_dir}/{self._basename}.idx"
 
-        pack_response, idx_response = await asyncio.gather(
-            self._s3_client.get_object(Bucket=self._bucket, Key=pack_key),
-            self._s3_client.get_object(Bucket=self._bucket, Key=idx_key),
-        )
+        async with self._s3_client_factory() as s3_client:
+            pack_response, idx_response = await asyncio.gather(
+                s3_client.get_object(Bucket=self._bucket, Key=pack_key),
+                s3_client.get_object(Bucket=self._bucket, Key=idx_key),
+            )
 
-        self._pack_data = await pack_response["Body"].read()
-        self._index_data = await idx_response["Body"].read()
+            self._pack_data = await pack_response["Body"].read()
+            self._index_data = await idx_response["Body"].read()
 
         # Create in-memory pack
         pack_file = io.BytesIO(self._pack_data)
@@ -178,38 +135,49 @@ class S3GitObjectStore(BucketBasedObjectStore):
     This object store keeps all objects in pack files stored in S3.
     It does not support loose objects (all objects are packed).
 
+    Uses fully async S3 operations:
+    - Read operations: Use async aiobotocore client factory
+    - Write operations: Use async aiohttp-based S3 client with AWS Signature V4
+
     Usage:
-        async with create_s3_client(config) as s3_client:
-            store = S3GitObjectStore(s3_client, "my-bucket", "artifacts/123/git")
-            await store.initialize()
-            # Use store...
+        def s3_client_factory():
+            return session.create_client("s3", ...)
+
+        store = S3GitObjectStore(s3_client_factory, "my-bucket", "artifacts/123/git")
+        await store.initialize()
+        # Use store...
     """
 
     def __init__(
         self,
-        s3_client,
+        s3_client_factory: Callable,
         bucket: str,
         prefix: str,
         object_format=None,
+        s3_config: Optional[dict] = None,
     ):
         """Initialize the S3 Git object store.
 
         Args:
-            s3_client: Async S3 client (aiobotocore)
+            s3_client_factory: Factory function that returns an async context manager
+                               for S3 client (e.g., lambda: session.create_client("s3", ...))
             bucket: S3 bucket name
             prefix: Prefix path in bucket (e.g., "workspace/artifacts/123/git")
             object_format: Git object format (defaults to SHA1)
+            s3_config: S3 config dict with endpoint_url, access_key_id,
+                       secret_access_key, region_name for async write operations
         """
         super().__init__(object_format=object_format)
-        self._s3_client = s3_client
+        self._s3_client_factory = s3_client_factory
         self._bucket = bucket
         self._prefix = prefix.rstrip("/")
         self._pack_dir = f"{self._prefix}/objects/pack"
         self._initialized = False
+        self._s3_config = s3_config
 
     @property
-    def s3_client(self):
-        return self._s3_client
+    def s3_client_factory(self):
+        return self._s3_client_factory
 
     @property
     def bucket(self) -> str:
@@ -232,21 +200,22 @@ class S3GitObjectStore(BucketBasedObjectStore):
 
     async def _iter_pack_names_async(self) -> AsyncIterator[str]:
         """List all pack files in S3."""
-        paginator = self._s3_client.get_paginator("list_objects_v2")
         prefix = self._pack_dir + "/"
 
-        try:
-            async for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
-                for obj in page.get("Contents", []):
-                    key = obj["Key"]
-                    if key.endswith(".pack"):
-                        # Extract basename: pack-{sha}.pack -> pack-{sha}
-                        basename = key[len(prefix) :].replace(".pack", "")
-                        yield basename
-        except ClientError as e:
-            if e.response.get("Error", {}).get("Code") == "NoSuchKey":
-                return
-            raise
+        async with self._s3_client_factory() as s3_client:
+            paginator = s3_client.get_paginator("list_objects_v2")
+            try:
+                async for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
+                    for obj in page.get("Contents", []):
+                        key = obj["Key"]
+                        if key.endswith(".pack"):
+                            # Extract basename: pack-{sha}.pack -> pack-{sha}
+                            basename = key[len(prefix) :].replace(".pack", "")
+                            yield basename
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") == "NoSuchKey":
+                    return
+                raise
 
     async def _update_pack_cache_async(self) -> list[S3Pack]:
         """Update the pack cache by scanning S3."""
@@ -260,7 +229,7 @@ class S3GitObjectStore(BucketBasedObjectStore):
             if name not in self._pack_cache:
                 pack = S3Pack(
                     name,
-                    self._s3_client,
+                    self._s3_client_factory,
                     self._bucket,
                     self._pack_dir,
                     self.object_format,
@@ -276,64 +245,44 @@ class S3GitObjectStore(BucketBasedObjectStore):
 
         return new_packs
 
-    def _upload_pack_sync(
+    async def _upload_pack_async(
         self, basename: str, pack_data: bytes, index_data: bytes
     ):
-        """Synchronous pack upload - runs in thread pool.
+        """Upload pack and index files to S3 using async aiohttp-based client.
 
-        Uses synchronous botocore to avoid aiobotocore connection pool issues.
+        Uses aiohttp with AWS Signature V4 signing, which works reliably
+        with MinIO unlike aiobotocore's put_object.
         """
-        import boto3
-        from botocore.config import Config
+        if not self._s3_config:
+            raise RuntimeError(
+                "s3_config is required for write operations. "
+                "Pass s3_config dict with endpoint_url, access_key_id, "
+                "secret_access_key, and region_name."
+            )
 
         pack_key = f"{self._pack_dir}/{basename}.pack"
         idx_key = f"{self._pack_dir}/{basename}.idx"
 
-        # Create sync client with same credentials
-        endpoint_url = self._s3_client._endpoint.host
-
-        sync_client = boto3.client(
-            "s3",
-            endpoint_url=endpoint_url,
-            aws_access_key_id=self._s3_client._request_signer._credentials.access_key,
-            aws_secret_access_key=self._s3_client._request_signer._credentials.secret_key,
-            region_name=self._s3_client._client_config.region_name,
-            config=Config(signature_version='s3v4'),
-        )
-
+        async_client = create_async_s3_client(self._s3_config)
         try:
             logger.debug(f"Uploading pack file: {pack_key}")
-            sync_client.put_object(
-                Bucket=self._bucket, Key=pack_key, Body=pack_data
-            )
+            await async_client.put_object(self._bucket, pack_key, pack_data)
             logger.debug(f"Uploading index file: {idx_key}")
-            sync_client.put_object(
-                Bucket=self._bucket, Key=idx_key, Body=index_data
-            )
+            await async_client.put_object(self._bucket, idx_key, index_data)
             logger.info(f"Uploaded pack {basename} to S3")
         finally:
-            sync_client.close()
-
-    async def _upload_pack_async(
-        self, basename: str, pack_data: bytes, index_data: bytes
-    ):
-        """Upload pack and index files to S3.
-
-        Uses synchronous boto3 in thread pool to avoid connection pool issues.
-        """
-        await asyncio.to_thread(
-            self._upload_pack_sync, basename, pack_data, index_data
-        )
+            await async_client.close()
 
     async def _delete_pack_async(self, basename: str):
         """Delete a pack from S3."""
         pack_key = f"{self._pack_dir}/{basename}.pack"
         idx_key = f"{self._pack_dir}/{basename}.idx"
 
-        await asyncio.gather(
-            self._s3_client.delete_object(Bucket=self._bucket, Key=pack_key),
-            self._s3_client.delete_object(Bucket=self._bucket, Key=idx_key),
-        )
+        async with self._s3_client_factory() as s3_client:
+            await asyncio.gather(
+                s3_client.delete_object(Bucket=self._bucket, Key=pack_key),
+                s3_client.delete_object(Bucket=self._bucket, Key=idx_key),
+            )
 
         logger.info(f"Deleted pack {basename} from S3")
 
@@ -352,7 +301,7 @@ class S3GitObjectStore(BucketBasedObjectStore):
         raise KeyError(sha)
 
     def _parse_pack_sync(self, pack_data: bytes) -> tuple[list, bytes, bytes]:
-        """Synchronous pack parsing - runs in thread pool.
+        """Synchronous pack parsing - runs in thread pool for CPU-bound work.
 
         Returns:
             Tuple of (entries, checksum, index_data)
@@ -387,6 +336,7 @@ class S3GitObjectStore(BucketBasedObjectStore):
         logger.debug(f"add_pack_async: parsing pack data ({len(pack_data)} bytes)")
 
         # Run synchronous pack parsing in thread pool to avoid blocking event loop
+        # (dulwich pack parsing is CPU-bound, not I/O-bound)
         entries, checksum, index_data = await asyncio.to_thread(
             self._parse_pack_sync, pack_data
         )
@@ -407,7 +357,7 @@ class S3GitObjectStore(BucketBasedObjectStore):
             await existing._ensure_loaded()
             return basename, existing.get_stored_checksum()
 
-        # Upload to S3
+        # Upload to S3 using async client
         logger.debug("add_pack_async: uploading to S3")
         await self._upload_pack_async(basename, pack_data, index_data)
         logger.debug("add_pack_async: upload complete")
@@ -415,7 +365,7 @@ class S3GitObjectStore(BucketBasedObjectStore):
         # Add to cache
         pack = S3Pack(
             basename,
-            self._s3_client,
+            self._s3_client_factory,
             self._bucket,
             self._pack_dir,
             self.object_format,

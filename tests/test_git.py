@@ -860,3 +860,126 @@ async def test_git_create_zip_file_empty_repo(
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
+
+
+@pytest.mark.asyncio
+async def test_git_lfs_files_endpoint_streaming(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+    check_git_lfs_installed,
+):
+    """Test that LFS-tracked files can be downloaded via /files/ endpoint.
+
+    This test:
+    1. Creates a git-storage artifact
+    2. Pushes a repo with LFS-tracked large files
+    3. Downloads the large file via /files/ endpoint (should stream from S3)
+    4. Verifies the content matches the original
+    """
+    import subprocess
+    import hashlib
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    # Connect to the server
+    api = await connect_to_server({
+        "name": "git-lfs-files-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    # Create git-storage artifact
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    artifact_alias = f"lfs-files-test-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "LFS Files Endpoint Test"},
+        config={"storage": "git"},
+    )
+
+    workspace = api.config.workspace
+    port = SIO_PORT
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Setup local repo with LFS
+        local_repo = os.path.join(tmpdir, "repo")
+        os.makedirs(local_repo)
+
+        subprocess.run(["git", "init"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
+
+        # Install and configure LFS
+        subprocess.run(["git", "lfs", "install"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "lfs", "track", "*.bin"], cwd=local_repo, check=True, capture_output=True)
+
+        # Create a large file (500 KB)
+        large_file_path = os.path.join(local_repo, "large_data.bin")
+        large_file_size = 500 * 1024  # 500 KB
+        large_file_content = os.urandom(large_file_size)
+        large_file_hash = hashlib.sha256(large_file_content).hexdigest()
+
+        with open(large_file_path, "wb") as f:
+            f.write(large_file_content)
+
+        # Also create a small regular file
+        small_file_path = os.path.join(local_repo, "README.md")
+        small_content = "# Test Repo\n\nThis repo has LFS files."
+        with open(small_file_path, "w") as f:
+            f.write(small_content)
+
+        # Add and commit
+        subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Add LFS file"], cwd=local_repo, check=True, capture_output=True)
+
+        # Push to Hypha
+        git_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
+        auth_url = f"http://git:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
+        subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
+
+        result = subprocess.run(
+            ["git", "push", "-u", "origin", "main"],
+            cwd=local_repo,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, f"Push failed: {result.stderr}"
+
+    # Test 1: Download LFS file via /files/ endpoint
+    files_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/files/large_data.bin"
+    resp = requests.get(files_url, params={"token": test_user_token}, timeout=60)
+    assert resp.status_code == 200, f"Failed to download LFS file: {resp.text}"
+
+    # Verify content matches original
+    downloaded_hash = hashlib.sha256(resp.content).hexdigest()
+    assert downloaded_hash == large_file_hash, "Downloaded LFS content doesn't match original"
+    assert len(resp.content) == large_file_size, f"Size mismatch: expected {large_file_size}, got {len(resp.content)}"
+
+    # Test 2: Download small regular file (should still work)
+    small_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/files/README.md"
+    resp = requests.get(small_url, params={"token": test_user_token}, timeout=30)
+    assert resp.status_code == 200
+    assert resp.text == small_content
+
+    # Test 3: Create ZIP with LFS file (verify streaming works)
+    zip_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/create-zip-file"
+    resp = requests.get(zip_url, params={"token": test_user_token}, timeout=60)
+    assert resp.status_code == 200, f"Create ZIP failed: {resp.text}"
+
+    # Verify ZIP contents
+    zip_buffer = io.BytesIO(resp.content)
+    with zipfile.ZipFile(zip_buffer, "r") as zf:
+        names = set(zf.namelist())
+        assert "large_data.bin" in names, f"LFS file not in ZIP: {names}"
+        assert "README.md" in names
+
+        # Verify LFS content in ZIP
+        lfs_content = zf.read("large_data.bin")
+        lfs_hash = hashlib.sha256(lfs_content).hexdigest()
+        assert lfs_hash == large_file_hash, "LFS content in ZIP doesn't match original"
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)

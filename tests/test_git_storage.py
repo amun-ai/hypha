@@ -1,15 +1,17 @@
 """Unit tests for Git S3-backed storage (object store, refs, repo).
 
 These tests use direct S3 access with dulwich Git operations - no Hypha server needed.
+
+Uses S3 client factory pattern: Each test creates a factory that provides
+fresh async context managers for S3 operations, matching the production pattern.
 """
 
-import asyncio
 import io
 import time
 import pytest
 import pytest_asyncio
+from contextlib import asynccontextmanager
 
-import boto3
 from aiobotocore.session import get_session as get_aiobotocore_session
 from botocore.config import Config
 
@@ -26,89 +28,90 @@ from . import (
 pytestmark = pytest.mark.asyncio
 
 
-def _sync_put_object(bucket: str, key: str, body: bytes):
-    """Synchronous S3 put_object using boto3.
-
-    aiobotocore's put_object has known issues with MinIO that cause hangs.
-    This helper uses synchronous boto3 which works reliably.
-    """
-    client = boto3.client(
-        "s3",
-        endpoint_url=MINIO_SERVER_URL,
-        aws_access_key_id=MINIO_ROOT_USER,
-        aws_secret_access_key=MINIO_ROOT_PASSWORD,
-        region_name="us-east-1",
-        config=Config(connect_timeout=60, read_timeout=300),
-    )
-    try:
-        client.put_object(Bucket=bucket, Key=key, Body=body)
-    finally:
-        client.close()
+def create_s3_config():
+    """Create S3 config dict for sync boto3 client."""
+    return {
+        "endpoint_url": MINIO_SERVER_URL,
+        "access_key_id": MINIO_ROOT_USER,
+        "secret_access_key": MINIO_ROOT_PASSWORD,
+        "region_name": "us-east-1",
+    }
 
 
-async def async_put_object(bucket: str, key: str, body: bytes):
-    """Async wrapper for put_object using thread pool.
+def create_s3_client_factory():
+    """Create an S3 client factory for tests.
 
-    Works around aiobotocore put_object issues with MinIO.
-    """
-    await asyncio.to_thread(_sync_put_object, bucket, key, body)
-
-
-@pytest_asyncio.fixture
-async def s3_client(minio_server):
-    """Create an async S3 client connected to MinIO.
-
-    Uses aiobotocore.session.get_session() - same pattern as artifact.py.
+    Returns a callable that returns an async context manager for S3 client.
+    Each call creates a fresh client context for reliable async operations.
     """
     session = get_aiobotocore_session()
-    async with session.create_client(
-        "s3",
-        endpoint_url=MINIO_SERVER_URL,
-        aws_access_key_id=MINIO_ROOT_USER,
-        aws_secret_access_key=MINIO_ROOT_PASSWORD,
-        region_name="us-east-1",
-        config=Config(connect_timeout=60, read_timeout=300),
-    ) as client:
-        yield client
+
+    @asynccontextmanager
+    async def s3_client_factory():
+        async with session.create_client(
+            "s3",
+            endpoint_url=MINIO_SERVER_URL,
+            aws_access_key_id=MINIO_ROOT_USER,
+            aws_secret_access_key=MINIO_ROOT_PASSWORD,
+            region_name="us-east-1",
+            config=Config(connect_timeout=60, read_timeout=300),
+        ) as client:
+            yield client
+
+    return s3_client_factory
 
 
 @pytest_asyncio.fixture
-async def git_test_bucket(s3_client):
+async def s3_config(minio_server):
+    """Create S3 config dict for sync boto3 client."""
+    return create_s3_config()
+
+
+@pytest_asyncio.fixture
+async def s3_client_factory(minio_server):
+    """Create an S3 client factory connected to MinIO.
+
+    Returns a callable that produces async context managers for S3 clients.
+    This matches the production pattern used in artifact_integration.py.
+    """
+    return create_s3_client_factory()
+
+
+@pytest_asyncio.fixture
+async def git_test_bucket(s3_client_factory):
     """Create a unique test bucket for Git tests."""
     import uuid
 
     bucket_name = f"git-test-{uuid.uuid4().hex[:8]}"
 
-    try:
-        await s3_client.create_bucket(Bucket=bucket_name)
-    except Exception:
-        pass  # Bucket may exist
+    async with s3_client_factory() as s3_client:
+        try:
+            await s3_client.create_bucket(Bucket=bucket_name)
+        except Exception:
+            pass  # Bucket may exist
 
     yield bucket_name
 
     # Cleanup: delete all objects and the bucket
-    try:
-        paginator = s3_client.get_paginator("list_objects_v2")
-        async for page in paginator.paginate(Bucket=bucket_name):
-            for obj in page.get("Contents", []):
-                await s3_client.delete_object(Bucket=bucket_name, Key=obj["Key"])
-        await s3_client.delete_bucket(Bucket=bucket_name)
-    except Exception:
-        pass
+    async with s3_client_factory() as s3_client:
+        try:
+            paginator = s3_client.get_paginator("list_objects_v2")
+            async for page in paginator.paginate(Bucket=bucket_name):
+                for obj in page.get("Contents", []):
+                    await s3_client.delete_object(Bucket=bucket_name, Key=obj["Key"])
+            await s3_client.delete_bucket(Bucket=bucket_name)
+        except Exception:
+            pass
 
 
 class TestS3GitObjectStore:
     """Tests for the S3-backed Git object store."""
 
-    async def test_store_initialization(self, s3_client, git_test_bucket):
+    async def test_store_initialization(self, s3_client_factory, s3_config, git_test_bucket):
         """Test that object store initializes correctly with empty state."""
         from hypha.git.object_store import S3GitObjectStore
 
-        store = S3GitObjectStore(
-            s3_client,
-            git_test_bucket,
-            "test-repo/git",
-        )
+        store = S3GitObjectStore(s3_client_factory, git_test_bucket, "test-repo/git", s3_config=s3_config)
         await store.initialize()
 
         assert store._initialized
@@ -116,15 +119,11 @@ class TestS3GitObjectStore:
         assert store.prefix == "test-repo/git"
         assert len(store._pack_cache) == 0
 
-    async def test_add_single_blob(self, s3_client, git_test_bucket):
+    async def test_add_single_blob(self, s3_client_factory, s3_config, git_test_bucket):
         """Test adding a single blob object to the store."""
         from hypha.git.object_store import S3GitObjectStore
 
-        store = S3GitObjectStore(
-            s3_client,
-            git_test_bucket,
-            "blob-test/git",
-        )
+        store = S3GitObjectStore(s3_client_factory, git_test_bucket, "blob-test/git", s3_config=s3_config)
         await store.initialize()
 
         # Create a blob
@@ -153,15 +152,11 @@ class TestS3GitObjectStore:
         assert type_num == Blob.type_num
         assert data == content
 
-    async def test_add_multiple_objects(self, s3_client, git_test_bucket):
+    async def test_add_multiple_objects(self, s3_client_factory, s3_config, git_test_bucket):
         """Test adding multiple objects including blobs, trees, and commits."""
         from hypha.git.object_store import S3GitObjectStore
 
-        store = S3GitObjectStore(
-            s3_client,
-            git_test_bucket,
-            "multi-obj/git",
-        )
+        store = S3GitObjectStore(s3_client_factory, git_test_bucket, "multi-obj/git", s3_config=s3_config)
         await store.initialize()
 
         # Create multiple blobs
@@ -202,14 +197,14 @@ class TestS3GitObjectStore:
         type_num, data = await store.get_raw_async(commit.id)
         assert type_num == Commit.type_num
 
-    async def test_pack_persistence(self, s3_client, git_test_bucket):
+    async def test_pack_persistence(self, s3_client_factory, s3_config, git_test_bucket):
         """Test that packs persist across store instances."""
         from hypha.git.object_store import S3GitObjectStore
 
         prefix = "persist-test/git"
 
         # Create first store and add objects
-        store1 = S3GitObjectStore(s3_client, git_test_bucket, prefix)
+        store1 = S3GitObjectStore(s3_client_factory, git_test_bucket, prefix, s3_config=s3_config)
         await store1.initialize()
 
         blob = Blob.from_string(b"Persistent content")
@@ -224,7 +219,7 @@ class TestS3GitObjectStore:
         store1.close()
 
         # Create new store instance
-        store2 = S3GitObjectStore(s3_client, git_test_bucket, prefix)
+        store2 = S3GitObjectStore(s3_client_factory, git_test_bucket, prefix, s3_config=s3_config)
         await store2.initialize()
 
         # Verify object is still accessible
@@ -236,28 +231,20 @@ class TestS3GitObjectStore:
 class TestS3RefsContainer:
     """Tests for the S3-backed refs container."""
 
-    async def test_refs_initialization(self, s3_client, git_test_bucket):
+    async def test_refs_initialization(self, s3_client_factory, s3_config, git_test_bucket):
         """Test refs container initialization."""
         from hypha.git.refs import S3RefsContainer
 
-        refs = S3RefsContainer(
-            s3_client,
-            git_test_bucket,
-            "refs-test/git",
-        )
+        refs = S3RefsContainer(s3_client_factory, git_test_bucket, "refs-test/git", s3_config=s3_config)
         await refs.initialize()
 
         assert refs._initialized
 
-    async def test_set_and_get_ref(self, s3_client, git_test_bucket):
+    async def test_set_and_get_ref(self, s3_client_factory, s3_config, git_test_bucket):
         """Test setting and getting a reference."""
         from hypha.git.refs import S3RefsContainer
 
-        refs = S3RefsContainer(
-            s3_client,
-            git_test_bucket,
-            "refs-setget/git",
-        )
+        refs = S3RefsContainer(s3_client_factory, git_test_bucket, "refs-setget/git", s3_config=s3_config)
         await refs.initialize()
 
         # Set a branch ref
@@ -269,15 +256,11 @@ class TestS3RefsContainer:
         value = await refs.get_ref_async(b"refs/heads/main")
         assert value == sha
 
-    async def test_symbolic_ref(self, s3_client, git_test_bucket):
+    async def test_symbolic_ref(self, s3_client_factory, s3_config, git_test_bucket):
         """Test symbolic references (like HEAD)."""
         from hypha.git.refs import S3RefsContainer
 
-        refs = S3RefsContainer(
-            s3_client,
-            git_test_bucket,
-            "refs-symbolic/git",
-        )
+        refs = S3RefsContainer(s3_client_factory, git_test_bucket, "refs-symbolic/git", s3_config=s3_config)
         await refs.initialize()
 
         # Set up main branch
@@ -295,15 +278,11 @@ class TestS3RefsContainer:
         resolved = refs[b"HEAD"]
         assert resolved == sha
 
-    async def test_compare_and_swap(self, s3_client, git_test_bucket):
+    async def test_compare_and_swap(self, s3_client_factory, s3_config, git_test_bucket):
         """Test atomic compare-and-swap operations."""
         from hypha.git.refs import S3RefsContainer
 
-        refs = S3RefsContainer(
-            s3_client,
-            git_test_bucket,
-            "refs-cas/git",
-        )
+        refs = S3RefsContainer(s3_client_factory, git_test_bucket, "refs-cas/git", s3_config=s3_config)
         await refs.initialize()
 
         sha1 = b"1" * 40
@@ -331,15 +310,11 @@ class TestS3RefsContainer:
         # Value should be updated
         assert await refs.get_ref_async(b"refs/heads/feature") == sha2
 
-    async def test_delete_ref(self, s3_client, git_test_bucket):
+    async def test_delete_ref(self, s3_client_factory, s3_config, git_test_bucket):
         """Test deleting references."""
         from hypha.git.refs import S3RefsContainer
 
-        refs = S3RefsContainer(
-            s3_client,
-            git_test_bucket,
-            "refs-delete/git",
-        )
+        refs = S3RefsContainer(s3_client_factory, git_test_bucket, "refs-delete/git", s3_config=s3_config)
         await refs.initialize()
 
         sha = b"d" * 40
@@ -355,15 +330,11 @@ class TestS3RefsContainer:
         # Verify ref is gone
         assert await refs.get_ref_async(b"refs/heads/to-delete") is None
 
-    async def test_multiple_refs(self, s3_client, git_test_bucket):
+    async def test_multiple_refs(self, s3_client_factory, s3_config, git_test_bucket):
         """Test managing multiple refs (branches and tags)."""
         from hypha.git.refs import S3RefsContainer
 
-        refs = S3RefsContainer(
-            s3_client,
-            git_test_bucket,
-            "refs-multi/git",
-        )
+        refs = S3RefsContainer(s3_client_factory, git_test_bucket, "refs-multi/git", s3_config=s3_config)
         await refs.initialize()
 
         # Create multiple branches and tags
@@ -389,16 +360,11 @@ class TestS3RefsContainer:
 class TestS3GitRepo:
     """Tests for the complete S3-backed Git repository."""
 
-    async def test_init_bare_repo(self, s3_client, git_test_bucket):
+    async def test_init_bare_repo(self, s3_client_factory, s3_config, git_test_bucket):
         """Test initializing a bare repository."""
         from hypha.git.repo import S3GitRepo
 
-        repo = await S3GitRepo.init_bare(
-            s3_client,
-            git_test_bucket,
-            "repo-init/git",
-            default_branch=b"main",
-        )
+        repo = await S3GitRepo.init_bare(s3_client_factory, git_test_bucket, "repo-init/git", default_branch=b"main", s3_config=s3_config)
 
         assert repo.bare
         assert await repo.is_empty()
@@ -407,15 +373,11 @@ class TestS3GitRepo:
         symref = await repo._refs.get_symref_async(b"HEAD")
         assert symref == b"refs/heads/main"
 
-    async def test_create_commit(self, s3_client, git_test_bucket):
+    async def test_create_commit(self, s3_client_factory, s3_config, git_test_bucket):
         """Test creating a commit in the repository."""
         from hypha.git.repo import S3GitRepo
 
-        repo = await S3GitRepo.init_bare(
-            s3_client,
-            git_test_bucket,
-            "repo-commit/git",
-        )
+        repo = await S3GitRepo.init_bare(s3_client_factory, git_test_bucket, "repo-commit/git", s3_config=s3_config)
 
         # Create objects
         blob = Blob.from_string(b"Initial content\n")
@@ -444,15 +406,11 @@ class TestS3GitRepo:
         head = await repo.head_async()
         assert head == commit.id
 
-    async def test_receive_pack(self, s3_client, git_test_bucket):
+    async def test_receive_pack(self, s3_client_factory, s3_config, git_test_bucket):
         """Test receiving a pack (simulating git push)."""
         from hypha.git.repo import S3GitRepo
 
-        repo = await S3GitRepo.init_bare(
-            s3_client,
-            git_test_bucket,
-            "repo-receive/git",
-        )
+        repo = await S3GitRepo.init_bare(s3_client_factory, git_test_bucket, "repo-receive/git", s3_config=s3_config)
 
         # Create objects
         blob = Blob.from_string(b"Push test content\n")
@@ -488,15 +446,11 @@ class TestS3GitRepo:
         head = await repo.head_async()
         assert head == commit.id
 
-    async def test_commit_chain(self, s3_client, git_test_bucket):
+    async def test_commit_chain(self, s3_client_factory, s3_config, git_test_bucket):
         """Test creating a chain of commits."""
         from hypha.git.repo import S3GitRepo
 
-        repo = await S3GitRepo.init_bare(
-            s3_client,
-            git_test_bucket,
-            "repo-chain/git",
-        )
+        repo = await S3GitRepo.init_bare(s3_client_factory, git_test_bucket, "repo-chain/git", s3_config=s3_config)
 
         commits = []
         parent_id = None
@@ -561,16 +515,12 @@ class TestGitHTTPHandler:
         length = int(result[:4], 16)
         assert length == 104
 
-    async def test_refs_advertisement_empty(self, s3_client, git_test_bucket):
+    async def test_refs_advertisement_empty(self, s3_client_factory, s3_config, git_test_bucket):
         """Test refs advertisement for empty repository."""
         from hypha.git.repo import S3GitRepo
         from hypha.git.http import GitHTTPHandler
 
-        repo = await S3GitRepo.init_bare(
-            s3_client,
-            git_test_bucket,
-            "http-empty/git",
-        )
+        repo = await S3GitRepo.init_bare(s3_client_factory, git_test_bucket, "http-empty/git", s3_config=s3_config)
 
         handler = GitHTTPHandler(repo)
 
@@ -585,16 +535,12 @@ class TestGitHTTPHandler:
         # Should have flush packets
         assert b"0000" in advertisement
 
-    async def test_refs_advertisement_with_refs(self, s3_client, git_test_bucket):
+    async def test_refs_advertisement_with_refs(self, s3_client_factory, s3_config, git_test_bucket):
         """Test refs advertisement with actual refs."""
         from hypha.git.repo import S3GitRepo
         from hypha.git.http import GitHTTPHandler
 
-        repo = await S3GitRepo.init_bare(
-            s3_client,
-            git_test_bucket,
-            "http-refs/git",
-        )
+        repo = await S3GitRepo.init_bare(s3_client_factory, git_test_bucket, "http-refs/git", s3_config=s3_config)
 
         # Create a commit and ref
         blob = Blob.from_string(b"HTTP test\n")
@@ -632,15 +578,11 @@ class TestGitHTTPHandler:
 class TestInfoRefsGeneration:
     """Tests for info/refs generation."""
 
-    async def test_generate_info_refs(self, s3_client, git_test_bucket):
+    async def test_generate_info_refs(self, s3_client_factory, s3_config, git_test_bucket):
         """Test generating info/refs content."""
         from hypha.git.refs import S3InfoRefsContainer
 
-        refs = S3InfoRefsContainer(
-            s3_client,
-            git_test_bucket,
-            "info-refs/git",
-        )
+        refs = S3InfoRefsContainer(s3_client_factory, git_test_bucket, "info-refs/git", s3_config=s3_config)
         await refs.initialize()
 
         # Add some refs
@@ -660,16 +602,12 @@ class TestInfoRefsGeneration:
 class TestRepoWithDulwichClient:
     """Integration tests using dulwich as a Git client."""
 
-    async def test_full_workflow(self, s3_client, git_test_bucket):
+    async def test_full_workflow(self, s3_client_factory, s3_config, git_test_bucket):
         """Test complete workflow: init, add objects, update refs, retrieve."""
         from hypha.git.repo import S3GitRepo
 
         # Initialize repo
-        repo = await S3GitRepo.init_bare(
-            s3_client,
-            git_test_bucket,
-            "full-workflow/git",
-        )
+        repo = await S3GitRepo.init_bare(s3_client_factory, git_test_bucket, "full-workflow/git", s3_config=s3_config)
 
         # Verify empty
         assert await repo.is_empty()
@@ -744,15 +682,11 @@ class TestRepoWithDulwichClient:
         assert refs[b"refs/heads/main"] == commit2.id
         assert refs[b"refs/tags/v1.0"] == commit1.id
 
-    async def test_branch_operations(self, s3_client, git_test_bucket):
+    async def test_branch_operations(self, s3_client_factory, s3_config, git_test_bucket):
         """Test branch creation and switching."""
         from hypha.git.repo import S3GitRepo
 
-        repo = await S3GitRepo.init_bare(
-            s3_client,
-            git_test_bucket,
-            "branch-ops/git",
-        )
+        repo = await S3GitRepo.init_bare(s3_client_factory, git_test_bucket, "branch-ops/git", s3_config=s3_config)
 
         # Create initial commit on main
         blob = Blob.from_string(b"Main branch content\n")
@@ -836,17 +770,13 @@ class TestGitHTTPProtocol:
         length = int(result[:4], 16)
         assert length == 104  # 100 + 4
 
-    async def test_refs_advertisement_generation(self, s3_client, git_test_bucket):
+    async def test_refs_advertisement_generation(self, s3_client_factory, s3_config, git_test_bucket):
         """Test generating refs advertisement for HTTP protocol."""
         from hypha.git.repo import S3GitRepo
         from hypha.git.http import GitHTTPHandler
 
         # Create test repo
-        repo = await S3GitRepo.init_bare(
-            s3_client,
-            git_test_bucket,
-            "http-test/git",
-        )
+        repo = await S3GitRepo.init_bare(s3_client_factory, git_test_bucket, "http-test/git", s3_config=s3_config)
 
         # Add a commit
         blob = Blob.from_string(b"HTTP protocol test\n")
@@ -882,16 +812,12 @@ class TestGitHTTPProtocol:
         # Should include capabilities
         assert b"multi_ack" in advertisement or b"side-band" in advertisement
 
-    async def test_empty_repo_advertisement(self, s3_client, git_test_bucket):
+    async def test_empty_repo_advertisement(self, s3_client_factory, s3_config, git_test_bucket):
         """Test refs advertisement for an empty repository."""
         from hypha.git.repo import S3GitRepo
         from hypha.git.http import GitHTTPHandler
 
-        repo = await S3GitRepo.init_bare(
-            s3_client,
-            git_test_bucket,
-            "empty-http-test/git",
-        )
+        repo = await S3GitRepo.init_bare(s3_client_factory, git_test_bucket, "empty-http-test/git", s3_config=s3_config)
 
         handler = GitHTTPHandler(repo)
         chunks = []
@@ -966,15 +892,11 @@ class TestGitBasicAuthUnit:
 class TestGitRepoFileAccess:
     """Tests for reading files and directory listings from Git repositories."""
 
-    async def test_list_tree_root(self, s3_client, git_test_bucket):
+    async def test_list_tree_root(self, s3_client_factory, s3_config, git_test_bucket):
         """Test listing files in the root directory."""
         from hypha.git.repo import S3GitRepo
 
-        repo = await S3GitRepo.init_bare(
-            s3_client,
-            git_test_bucket,
-            "file-list-root/git",
-        )
+        repo = await S3GitRepo.init_bare(s3_client_factory, git_test_bucket, "file-list-root/git", s3_config=s3_config)
 
         # Create a simple repo structure
         blob1 = Blob.from_string(b"README content\n")
@@ -1012,15 +934,11 @@ class TestGitRepoFileAccess:
             assert item["size"] is not None
             assert item["sha"] is not None
 
-    async def test_list_tree_subdirectory(self, s3_client, git_test_bucket):
+    async def test_list_tree_subdirectory(self, s3_client_factory, s3_config, git_test_bucket):
         """Test listing files in a subdirectory."""
         from hypha.git.repo import S3GitRepo
 
-        repo = await S3GitRepo.init_bare(
-            s3_client,
-            git_test_bucket,
-            "file-list-subdir/git",
-        )
+        repo = await S3GitRepo.init_bare(s3_client_factory, git_test_bucket, "file-list-subdir/git", s3_config=s3_config)
 
         # Create repo with subdirectory
         blob1 = Blob.from_string(b"Root file\n")
@@ -1075,15 +993,11 @@ class TestGitRepoFileAccess:
         assert "app.py" in names
         assert "test.py" in names
 
-    async def test_get_file_content(self, s3_client, git_test_bucket):
+    async def test_get_file_content(self, s3_client_factory, s3_config, git_test_bucket):
         """Test reading file content from the repository."""
         from hypha.git.repo import S3GitRepo
 
-        repo = await S3GitRepo.init_bare(
-            s3_client,
-            git_test_bucket,
-            "file-content/git",
-        )
+        repo = await S3GitRepo.init_bare(s3_client_factory, git_test_bucket, "file-content/git", s3_config=s3_config)
 
         file_content = b"Hello, Git storage!\nThis is a test file.\n"
         blob = Blob.from_string(file_content)
@@ -1109,15 +1023,11 @@ class TestGitRepoFileAccess:
         content = await repo.get_file_content_async("greeting.txt")
         assert content == file_content
 
-    async def test_get_file_content_nested(self, s3_client, git_test_bucket):
+    async def test_get_file_content_nested(self, s3_client_factory, s3_config, git_test_bucket):
         """Test reading file content from a nested path."""
         from hypha.git.repo import S3GitRepo
 
-        repo = await S3GitRepo.init_bare(
-            s3_client,
-            git_test_bucket,
-            "file-content-nested/git",
-        )
+        repo = await S3GitRepo.init_bare(s3_client_factory, git_test_bucket, "file-content-nested/git", s3_config=s3_config)
 
         file_content = b"Deeply nested content\n"
         blob = Blob.from_string(file_content)
@@ -1161,15 +1071,11 @@ class TestGitRepoFileAccess:
         content = await repo.get_file_content_async("/a/b/c/file.txt")
         assert content == file_content
 
-    async def test_get_file_not_found(self, s3_client, git_test_bucket):
+    async def test_get_file_not_found(self, s3_client_factory, s3_config, git_test_bucket):
         """Test that reading non-existent file returns None."""
         from hypha.git.repo import S3GitRepo
 
-        repo = await S3GitRepo.init_bare(
-            s3_client,
-            git_test_bucket,
-            "file-not-found/git",
-        )
+        repo = await S3GitRepo.init_bare(s3_client_factory, git_test_bucket, "file-not-found/git", s3_config=s3_config)
 
         blob = Blob.from_string(b"Content\n")
         tree = Tree()
@@ -1197,15 +1103,11 @@ class TestGitRepoFileAccess:
         content = await repo.get_file_content_async("nonexistent/path/file.txt")
         assert content is None
 
-    async def test_get_file_info(self, s3_client, git_test_bucket):
+    async def test_get_file_info(self, s3_client_factory, s3_config, git_test_bucket):
         """Test getting file information."""
         from hypha.git.repo import S3GitRepo
 
-        repo = await S3GitRepo.init_bare(
-            s3_client,
-            git_test_bucket,
-            "file-info/git",
-        )
+        repo = await S3GitRepo.init_bare(s3_client_factory, git_test_bucket, "file-info/git", s3_config=s3_config)
 
         file_content = b"File content for info test\n"
         blob = Blob.from_string(file_content)
@@ -1248,29 +1150,21 @@ class TestGitRepoFileAccess:
         info = await repo.get_file_info_async("nonexistent")
         assert info is None
 
-    async def test_list_empty_repo(self, s3_client, git_test_bucket):
+    async def test_list_empty_repo(self, s3_client_factory, s3_config, git_test_bucket):
         """Test listing files in an empty repository."""
         from hypha.git.repo import S3GitRepo
 
-        repo = await S3GitRepo.init_bare(
-            s3_client,
-            git_test_bucket,
-            "empty-list/git",
-        )
+        repo = await S3GitRepo.init_bare(s3_client_factory, git_test_bucket, "empty-list/git", s3_config=s3_config)
 
         # List should return empty list for empty repo
         items = await repo.list_tree_async("")
         assert items == []
 
-    async def test_get_file_from_specific_commit(self, s3_client, git_test_bucket):
+    async def test_get_file_from_specific_commit(self, s3_client_factory, s3_config, git_test_bucket):
         """Test reading file from a specific commit SHA."""
         from hypha.git.repo import S3GitRepo
 
-        repo = await S3GitRepo.init_bare(
-            s3_client,
-            git_test_bucket,
-            "commit-specific/git",
-        )
+        repo = await S3GitRepo.init_bare(s3_client_factory, git_test_bucket, "commit-specific/git", s3_config=s3_config)
 
         # Create first commit
         blob1 = Blob.from_string(b"Version 1\n")

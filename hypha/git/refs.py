@@ -2,11 +2,15 @@
 
 This module provides Git reference storage (branches, tags) backed by S3,
 with no local file system usage.
+
+Uses fully async S3 operations:
+- Read operations: Use async aiobotocore client factory
+- Write operations: Use async aiohttp-based S3 client with AWS Signature V4
+  (bypasses aiobotocore's put_object which hangs with MinIO)
 """
 
-import asyncio
 import logging
-from typing import Optional
+from typing import Callable, Optional
 
 from botocore.exceptions import ClientError
 
@@ -14,11 +18,12 @@ from dulwich.objects import ObjectID
 from dulwich.protocol import PEELED_TAG_SUFFIX
 from dulwich.refs import (
     HEADREF,
-    LOCAL_BRANCH_PREFIX,
     LOCAL_TAG_PREFIX,
     Ref,
     RefsContainer,
 )
+
+from hypha.git.s3_async import create_async_s3_client
 
 logger = logging.getLogger(__name__)
 
@@ -33,30 +38,39 @@ class S3RefsContainer(RefsContainer):
 
     This follows the "info/refs" format used by Git's dumb HTTP protocol,
     but stores refs as individual objects for atomic updates.
+
+    Uses fully async S3 operations:
+    - Read operations: Use async aiobotocore client factory
+    - Write operations: Use async aiohttp-based S3 client
     """
 
     def __init__(
         self,
-        s3_client,
+        s3_client_factory: Callable,
         bucket: str,
         prefix: str,
         object_store=None,
+        s3_config: Optional[dict] = None,
     ):
         """Initialize S3 refs container.
 
         Args:
-            s3_client: Async S3 client (aiobotocore)
+            s3_client_factory: Factory function that returns an async context manager
+                               for S3 client (e.g., lambda: session.create_client("s3", ...))
             bucket: S3 bucket name
             prefix: Prefix path in bucket (e.g., "workspace/artifacts/123/git")
             object_store: Optional object store for peeled tag resolution
+            s3_config: S3 config dict with endpoint_url, access_key_id,
+                       secret_access_key, region_name for async write operations
         """
         super().__init__()
-        self._s3_client = s3_client
+        self._s3_client_factory = s3_client_factory
         self._bucket = bucket
         self._prefix = prefix.rstrip("/")
         self._object_store = object_store
         self._refs_cache: dict[bytes, bytes] = {}
         self._initialized = False
+        self._s3_config = s3_config
 
     async def initialize(self):
         """Initialize by loading all refs from S3."""
@@ -69,37 +83,38 @@ class S3RefsContainer(RefsContainer):
         """Load all references from S3."""
         self._refs_cache.clear()
 
-        # Load HEAD
-        head = await self._read_ref_async(HEADREF)
-        if head:
-            self._refs_cache[HEADREF] = head
+        async with self._s3_client_factory() as s3_client:
+            # Load HEAD
+            head = await self._read_ref_with_client(s3_client, HEADREF)
+            if head:
+                self._refs_cache[HEADREF] = head
 
-        # List all refs
-        paginator = self._s3_client.get_paginator("list_objects_v2")
-        refs_prefix = f"{self._prefix}/refs/"
+            # List all refs
+            paginator = s3_client.get_paginator("list_objects_v2")
+            refs_prefix = f"{self._prefix}/refs/"
 
-        try:
-            async for page in paginator.paginate(
-                Bucket=self._bucket, Prefix=refs_prefix
-            ):
-                for obj in page.get("Contents", []):
-                    key = obj["Key"]
-                    # Convert S3 key to ref name
-                    ref_path = key[len(self._prefix) + 1 :]  # e.g., "refs/heads/main"
-                    ref_name = ref_path.encode("utf-8")
+            try:
+                async for page in paginator.paginate(
+                    Bucket=self._bucket, Prefix=refs_prefix
+                ):
+                    for obj in page.get("Contents", []):
+                        key = obj["Key"]
+                        # Convert S3 key to ref name
+                        ref_path = key[len(self._prefix) + 1 :]  # e.g., "refs/heads/main"
+                        ref_name = ref_path.encode("utf-8")
 
-                    # Read the ref value
-                    value = await self._read_ref_async(ref_name)
-                    if value:
-                        self._refs_cache[ref_name] = value
-        except ClientError:
-            pass  # No refs yet
+                        # Read the ref value
+                        value = await self._read_ref_with_client(s3_client, ref_name)
+                        if value:
+                            self._refs_cache[ref_name] = value
+            except ClientError:
+                pass  # No refs yet
 
-    async def _read_ref_async(self, name: bytes) -> Optional[bytes]:
-        """Read a reference from S3."""
+    async def _read_ref_with_client(self, s3_client, name: bytes) -> Optional[bytes]:
+        """Read a reference from S3 using provided client."""
         key = f"{self._prefix}/{name.decode('utf-8')}"
         try:
-            response = await self._s3_client.get_object(Bucket=self._bucket, Key=key)
+            response = await s3_client.get_object(Bucket=self._bucket, Key=key)
             data = await response["Body"].read()
             return data.strip()
         except ClientError as e:
@@ -107,66 +122,41 @@ class S3RefsContainer(RefsContainer):
                 return None
             raise
 
-    def _write_ref_sync(self, name: bytes, value: bytes):
-        """Synchronous ref write - runs in thread pool.
-
-        Uses synchronous botocore to avoid aiobotocore connection pool issues.
-        """
-        import boto3
-        from botocore.config import Config
-
-        key = f"{self._prefix}/{name.decode('utf-8')}"
-        endpoint_url = self._s3_client._endpoint.host
-
-        sync_client = boto3.client(
-            "s3",
-            endpoint_url=endpoint_url,
-            aws_access_key_id=self._s3_client._request_signer._credentials.access_key,
-            aws_secret_access_key=self._s3_client._request_signer._credentials.secret_key,
-            region_name=self._s3_client._client_config.region_name,
-            config=Config(signature_version='s3v4'),
-        )
-
-        try:
-            sync_client.put_object(
-                Bucket=self._bucket, Key=key, Body=value + b"\n"
-            )
-        finally:
-            sync_client.close()
+    async def _read_ref_async(self, name: bytes) -> Optional[bytes]:
+        """Read a reference from S3."""
+        async with self._s3_client_factory() as s3_client:
+            return await self._read_ref_with_client(s3_client, name)
 
     async def _write_ref_async(self, name: bytes, value: bytes):
-        """Write a reference to S3."""
-        await asyncio.to_thread(self._write_ref_sync, name, value)
-        self._refs_cache[name] = value
-        logger.debug(f"Wrote ref {name.decode()} = {value.decode()}")
+        """Write a reference to S3 using async aiohttp-based client.
 
-    def _delete_ref_sync(self, name: bytes):
-        """Synchronous ref delete - runs in thread pool."""
-        import boto3
-        from botocore.config import Config
+        Uses aiohttp with AWS Signature V4 signing, which works reliably
+        with MinIO unlike aiobotocore's put_object.
+        """
+        if not self._s3_config:
+            raise RuntimeError(
+                "s3_config is required for write operations. "
+                "Pass s3_config dict with endpoint_url, access_key_id, "
+                "secret_access_key, and region_name."
+            )
 
         key = f"{self._prefix}/{name.decode('utf-8')}"
-        endpoint_url = self._s3_client._endpoint.host
-
-        sync_client = boto3.client(
-            "s3",
-            endpoint_url=endpoint_url,
-            aws_access_key_id=self._s3_client._request_signer._credentials.access_key,
-            aws_secret_access_key=self._s3_client._request_signer._credentials.secret_key,
-            region_name=self._s3_client._client_config.region_name,
-            config=Config(signature_version='s3v4'),
-        )
-
+        async_client = create_async_s3_client(self._s3_config)
         try:
-            sync_client.delete_object(Bucket=self._bucket, Key=key)
-        except ClientError:
-            pass
+            await async_client.put_object(self._bucket, key, value + b"\n")
+            self._refs_cache[name] = value
+            logger.debug(f"Wrote ref {name.decode()} = {value.decode()}")
         finally:
-            sync_client.close()
+            await async_client.close()
 
     async def _delete_ref_async(self, name: bytes):
-        """Delete a reference from S3."""
-        await asyncio.to_thread(self._delete_ref_sync, name)
+        """Delete a reference from S3 using native async."""
+        key = f"{self._prefix}/{name.decode('utf-8')}"
+        async with self._s3_client_factory() as s3_client:
+            try:
+                await s3_client.delete_object(Bucket=self._bucket, Key=key)
+            except ClientError:
+                pass
         self._refs_cache.pop(name, None)
         logger.debug(f"Deleted ref {name.decode()}")
 
