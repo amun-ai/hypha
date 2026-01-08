@@ -120,7 +120,10 @@ def start_builtin_services(
         git_manager = GitArtifactManager(artifact_manager)
         git_router = git_manager.get_router()
         app.include_router(git_router)
-        logger.info("Git artifact storage enabled")
+        # Mount Git LFS router for large file support
+        lfs_router = git_manager.get_lfs_router()
+        app.include_router(lfs_router)
+        logger.info("Git artifact storage enabled (with LFS support)")
 
     if args.enable_server_apps:
         assert args.enable_s3, "Server apps require S3 to be enabled"
