@@ -983,3 +983,423 @@ async def test_git_lfs_files_endpoint_streaming(
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
+
+
+# Tests for Git Artifact API methods (list_files, get_file, put_file, commit, remove_file)
+
+
+async def test_git_artifact_list_files(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test list_files() on a git-storage artifact after git push."""
+    import subprocess
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-list-files-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    artifact_alias = f"git-list-test-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Git List Files Test"},
+        config={"storage": "git"},
+    )
+
+    workspace = api.config.workspace
+    git_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Initialize a local repo and push some files
+        local_repo = os.path.join(tmpdir, "repo")
+        os.makedirs(local_repo)
+        subprocess.run(["git", "init"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
+
+        # Create files
+        with open(os.path.join(local_repo, "README.md"), "w") as f:
+            f.write("# Test Repository\n")
+        with open(os.path.join(local_repo, "main.py"), "w") as f:
+            f.write('print("Hello")\n')
+
+        # Create a subdirectory with file
+        subdir = os.path.join(local_repo, "src")
+        os.makedirs(subdir)
+        with open(os.path.join(subdir, "utils.py"), "w") as f:
+            f.write("def helper(): pass\n")
+
+        # Add and commit
+        subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=local_repo, check=True, capture_output=True)
+
+        # Configure remote and push
+        auth_url = git_url.replace("http://", f"http://git:{test_user_token}@")
+        subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
+        result = subprocess.run(
+            ["git", "push", "-u", "origin", "main"],
+            cwd=local_repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"Push failed: {result.stderr}"
+
+    # Test list_files on root
+    files = await artifact_manager.list_files(artifact_id=artifact_alias)
+    names = [f["name"] for f in files]
+    assert "README.md" in names
+    assert "main.py" in names
+    assert "src" in names
+
+    # Check types
+    src_entry = [f for f in files if f["name"] == "src"][0]
+    assert src_entry["type"] == "directory"
+
+    readme_entry = [f for f in files if f["name"] == "README.md"][0]
+    assert readme_entry["type"] == "file"
+    assert readme_entry.get("size") is not None
+
+    # Test list_files on subdirectory
+    sub_files = await artifact_manager.list_files(artifact_id=artifact_alias, dir_path="src")
+    sub_names = [f["name"] for f in sub_files]
+    assert "utils.py" in sub_names
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+
+
+async def test_git_artifact_get_file(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test get_file() on a git-storage artifact to get file content."""
+    import subprocess
+    import uuid
+    import base64
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-get-file-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    artifact_alias = f"git-getfile-test-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Git Get File Test"},
+        config={"storage": "git"},
+    )
+
+    workspace = api.config.workspace
+    git_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
+
+    file_content = "# Hello Git World\n\nThis is test content."
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Initialize a local repo and push a file
+        local_repo = os.path.join(tmpdir, "repo")
+        os.makedirs(local_repo)
+        subprocess.run(["git", "init"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
+
+        # Create a file
+        with open(os.path.join(local_repo, "README.md"), "w") as f:
+            f.write(file_content)
+
+        # Add, commit, push
+        subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=local_repo, check=True, capture_output=True)
+        auth_url = git_url.replace("http://", f"http://git:{test_user_token}@")
+        subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
+        result = subprocess.run(
+            ["git", "push", "-u", "origin", "main"],
+            cwd=local_repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"Push failed: {result.stderr}"
+
+    # Test get_file - for git storage, regular files return dict with base64 content
+    result = await artifact_manager.get_file(artifact_id=artifact_alias, file_path="README.md")
+
+    # For git storage, regular files return a dict with content_base64
+    if isinstance(result, dict) and result.get("_type") == "git_file_content":
+        content = base64.b64decode(result["content_base64"]).decode()
+        assert content == file_content
+    elif isinstance(result, str) and result.startswith("http"):
+        # If it's an LFS file or proxy URL, fetch it
+        resp = requests.get(result, timeout=30)
+        assert resp.status_code == 200
+        assert file_content in resp.text
+    else:
+        # Direct content (shouldn't happen for git, but handle it)
+        assert file_content in str(result)
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+
+
+async def test_git_artifact_list_files_empty_repo(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test list_files() on an empty git-storage artifact returns empty list."""
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-empty-list-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    artifact_alias = f"git-empty-list-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Git Empty List Test"},
+        config={"storage": "git"},
+    )
+
+    # list_files on empty repo should return empty list
+    files = await artifact_manager.list_files(artifact_id=artifact_alias)
+    assert files == []
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+
+
+async def test_git_artifact_put_file_and_commit(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test put_file() and commit() on a git-storage artifact."""
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-put-commit-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    artifact_alias = f"git-put-commit-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Git Put/Commit Test"},
+        config={"storage": "git"},
+    )
+
+    # Step 1: Get presigned URL for upload
+    put_url = await artifact_manager.put_file(artifact_id=artifact_alias, file_path="test.txt")
+    assert put_url is not None
+    assert isinstance(put_url, str)
+    assert "test.txt" in put_url or "staging" in put_url
+
+    # Step 2: Upload content to the presigned URL
+    file_content = b"Hello from put_file API test!"
+    resp = requests.put(put_url, data=file_content, timeout=30)
+    assert resp.status_code == 200, f"Upload failed: {resp.text}"
+
+    # Step 3: Commit the staged file
+    result = await artifact_manager.commit(artifact_id=artifact_alias, comment="Add test.txt via API")
+    assert result is not None
+
+    # Step 4: Verify file is now in the repository
+    files = await artifact_manager.list_files(artifact_id=artifact_alias)
+    names = [f["name"] for f in files]
+    assert "test.txt" in names
+
+    # Step 5: Get the file content to verify
+    workspace = api.config.workspace
+    file_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/files/test.txt"
+    resp = requests.get(file_url, params={"token": test_user_token}, timeout=30)
+    assert resp.status_code == 200
+    assert resp.content == file_content
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+
+
+async def test_git_artifact_remove_file(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test remove_file() on a git-storage artifact."""
+    import subprocess
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-remove-file-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    artifact_alias = f"git-remove-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Git Remove File Test"},
+        config={"storage": "git"},
+    )
+
+    workspace = api.config.workspace
+    git_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Initialize a local repo and push files
+        local_repo = os.path.join(tmpdir, "repo")
+        os.makedirs(local_repo)
+        subprocess.run(["git", "init"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
+
+        # Create files
+        with open(os.path.join(local_repo, "keep.txt"), "w") as f:
+            f.write("Keep this file\n")
+        with open(os.path.join(local_repo, "delete.txt"), "w") as f:
+            f.write("Delete this file\n")
+
+        # Add, commit, push
+        subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=local_repo, check=True, capture_output=True)
+        auth_url = git_url.replace("http://", f"http://git:{test_user_token}@")
+        subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
+        result = subprocess.run(
+            ["git", "push", "-u", "origin", "main"],
+            cwd=local_repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"Push failed: {result.stderr}"
+
+    # Verify both files exist
+    files = await artifact_manager.list_files(artifact_id=artifact_alias)
+    names = [f["name"] for f in files]
+    assert "keep.txt" in names
+    assert "delete.txt" in names
+
+    # Step 1: Remove the file (stages it for removal)
+    result = await artifact_manager.remove_file(artifact_id=artifact_alias, file_path="delete.txt")
+    assert result is not None
+
+    # Step 2: Commit the removal
+    commit_result = await artifact_manager.commit(artifact_id=artifact_alias, comment="Remove delete.txt")
+    assert commit_result is not None
+
+    # Step 3: Verify file is gone
+    files = await artifact_manager.list_files(artifact_id=artifact_alias)
+    names = [f["name"] for f in files]
+    assert "keep.txt" in names
+    assert "delete.txt" not in names
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+
+
+async def test_git_artifact_version_resolution(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test list_files with version parameter (branch/tag) on git-storage artifact."""
+    import subprocess
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-version-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    artifact_alias = f"git-version-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Git Version Test"},
+        config={"storage": "git"},
+    )
+
+    workspace = api.config.workspace
+    port = SIO_PORT
+    git_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
+    auth_url = f"http://git:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        local_repo = os.path.join(tmpdir, "repo")
+        os.makedirs(local_repo)
+        subprocess.run(["git", "init"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
+
+        # Create first commit with v1 content
+        with open(os.path.join(local_repo, "file.txt"), "w") as f:
+            f.write("Version 1\n")
+        subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "v1"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "tag", "v1.0"], cwd=local_repo, check=True, capture_output=True)
+
+        # Create second commit with v2 content
+        with open(os.path.join(local_repo, "file.txt"), "w") as f:
+            f.write("Version 2\n")
+        with open(os.path.join(local_repo, "new_file.txt"), "w") as f:
+            f.write("New file in v2\n")
+        subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "v2"], cwd=local_repo, check=True, capture_output=True)
+
+        # Push with tags
+        subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
+        result = subprocess.run(
+            ["git", "push", "-u", "origin", "main", "--tags"],
+            cwd=local_repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"Push failed: {result.stderr}"
+
+    # Test 1: List files at HEAD (should have both files)
+    files_head = await artifact_manager.list_files(artifact_id=artifact_alias)
+    names_head = [f["name"] for f in files_head]
+    assert "file.txt" in names_head
+    assert "new_file.txt" in names_head
+
+    # Test 2: List files at tag v1.0 (should only have file.txt)
+    files_v1 = await artifact_manager.list_files(artifact_id=artifact_alias, version="v1.0")
+    names_v1 = [f["name"] for f in files_v1]
+    assert "file.txt" in names_v1
+    assert "new_file.txt" not in names_v1
+
+    # Test 3: List files with "main" branch name
+    files_main = await artifact_manager.list_files(artifact_id=artifact_alias, version="main")
+    names_main = [f["name"] for f in files_main]
+    assert "file.txt" in names_main
+    assert "new_file.txt" in names_main
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
