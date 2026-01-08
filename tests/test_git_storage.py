@@ -961,3 +961,364 @@ class TestGitBasicAuthUnit:
         credentials = base64.b64encode(b"git:token:with:colons").decode()
         token = extract_token_from_basic_auth(f"Basic {credentials}")
         assert token == "token:with:colons"
+
+
+class TestGitRepoFileAccess:
+    """Tests for reading files and directory listings from Git repositories."""
+
+    async def test_list_tree_root(self, s3_client, git_test_bucket):
+        """Test listing files in the root directory."""
+        from hypha.git.repo import S3GitRepo
+
+        repo = await S3GitRepo.init_bare(
+            s3_client,
+            git_test_bucket,
+            "file-list-root/git",
+        )
+
+        # Create a simple repo structure
+        blob1 = Blob.from_string(b"README content\n")
+        blob2 = Blob.from_string(b"print('hello')\n")
+
+        tree = Tree()
+        tree.add(b"README.md", 0o100644, blob1.id)
+        tree.add(b"main.py", 0o100644, blob2.id)
+
+        commit = Commit()
+        commit.tree = tree.id
+        commit.author = commit.committer = b"Test <test@example.com>"
+        commit.encoding = b"UTF-8"
+        commit.message = b"Initial commit\n"
+        commit.commit_time = commit.author_time = int(time.time())
+        commit.commit_timezone = commit.author_timezone = 0
+
+        pack_buffer = io.BytesIO()
+        write_pack_objects(pack_buffer, [blob1, blob2, tree, commit], DEFAULT_OBJECT_FORMAT)
+        pack_buffer.seek(0)
+        await repo._object_store.add_pack_async(pack_buffer.read())
+        await repo.set_ref_async(b"refs/heads/main", commit.id)
+
+        # List root directory
+        items = await repo.list_tree_async("")
+        assert len(items) == 2
+
+        names = [item["name"] for item in items]
+        assert "README.md" in names
+        assert "main.py" in names
+
+        # Check types and sizes
+        for item in items:
+            assert item["type"] == "blob"
+            assert item["size"] is not None
+            assert item["sha"] is not None
+
+    async def test_list_tree_subdirectory(self, s3_client, git_test_bucket):
+        """Test listing files in a subdirectory."""
+        from hypha.git.repo import S3GitRepo
+
+        repo = await S3GitRepo.init_bare(
+            s3_client,
+            git_test_bucket,
+            "file-list-subdir/git",
+        )
+
+        # Create repo with subdirectory
+        blob1 = Blob.from_string(b"Root file\n")
+        blob2 = Blob.from_string(b"Source code\n")
+        blob3 = Blob.from_string(b"Test code\n")
+
+        # Create src/ subdirectory tree
+        src_tree = Tree()
+        src_tree.add(b"app.py", 0o100644, blob2.id)
+        src_tree.add(b"test.py", 0o100644, blob3.id)
+
+        # Create root tree with subdirectory
+        root_tree = Tree()
+        root_tree.add(b"README.md", 0o100644, blob1.id)
+        root_tree.add(b"src", 0o40000, src_tree.id)
+
+        commit = Commit()
+        commit.tree = root_tree.id
+        commit.author = commit.committer = b"Test <test@example.com>"
+        commit.encoding = b"UTF-8"
+        commit.message = b"Initial commit\n"
+        commit.commit_time = commit.author_time = int(time.time())
+        commit.commit_timezone = commit.author_timezone = 0
+
+        pack_buffer = io.BytesIO()
+        write_pack_objects(
+            pack_buffer,
+            [blob1, blob2, blob3, src_tree, root_tree, commit],
+            DEFAULT_OBJECT_FORMAT,
+        )
+        pack_buffer.seek(0)
+        await repo._object_store.add_pack_async(pack_buffer.read())
+        await repo.set_ref_async(b"refs/heads/main", commit.id)
+
+        # List root - should have file and directory
+        root_items = await repo.list_tree_async("")
+        assert len(root_items) == 2
+
+        readme = [i for i in root_items if i["name"] == "README.md"][0]
+        assert readme["type"] == "blob"
+        assert readme["size"] == len(b"Root file\n")
+
+        src = [i for i in root_items if i["name"] == "src"][0]
+        assert src["type"] == "tree"
+        assert src["size"] is None  # Directories don't have size
+
+        # List src/ subdirectory
+        src_items = await repo.list_tree_async("src")
+        assert len(src_items) == 2
+
+        names = [item["name"] for item in src_items]
+        assert "app.py" in names
+        assert "test.py" in names
+
+    async def test_get_file_content(self, s3_client, git_test_bucket):
+        """Test reading file content from the repository."""
+        from hypha.git.repo import S3GitRepo
+
+        repo = await S3GitRepo.init_bare(
+            s3_client,
+            git_test_bucket,
+            "file-content/git",
+        )
+
+        file_content = b"Hello, Git storage!\nThis is a test file.\n"
+        blob = Blob.from_string(file_content)
+
+        tree = Tree()
+        tree.add(b"greeting.txt", 0o100644, blob.id)
+
+        commit = Commit()
+        commit.tree = tree.id
+        commit.author = commit.committer = b"Test <test@example.com>"
+        commit.encoding = b"UTF-8"
+        commit.message = b"Add greeting\n"
+        commit.commit_time = commit.author_time = int(time.time())
+        commit.commit_timezone = commit.author_timezone = 0
+
+        pack_buffer = io.BytesIO()
+        write_pack_objects(pack_buffer, [blob, tree, commit], DEFAULT_OBJECT_FORMAT)
+        pack_buffer.seek(0)
+        await repo._object_store.add_pack_async(pack_buffer.read())
+        await repo.set_ref_async(b"refs/heads/main", commit.id)
+
+        # Read file content
+        content = await repo.get_file_content_async("greeting.txt")
+        assert content == file_content
+
+    async def test_get_file_content_nested(self, s3_client, git_test_bucket):
+        """Test reading file content from a nested path."""
+        from hypha.git.repo import S3GitRepo
+
+        repo = await S3GitRepo.init_bare(
+            s3_client,
+            git_test_bucket,
+            "file-content-nested/git",
+        )
+
+        file_content = b"Deeply nested content\n"
+        blob = Blob.from_string(file_content)
+
+        # Create nested tree structure: a/b/c/file.txt
+        c_tree = Tree()
+        c_tree.add(b"file.txt", 0o100644, blob.id)
+
+        b_tree = Tree()
+        b_tree.add(b"c", 0o40000, c_tree.id)
+
+        a_tree = Tree()
+        a_tree.add(b"b", 0o40000, b_tree.id)
+
+        root_tree = Tree()
+        root_tree.add(b"a", 0o40000, a_tree.id)
+
+        commit = Commit()
+        commit.tree = root_tree.id
+        commit.author = commit.committer = b"Test <test@example.com>"
+        commit.encoding = b"UTF-8"
+        commit.message = b"Nested structure\n"
+        commit.commit_time = commit.author_time = int(time.time())
+        commit.commit_timezone = commit.author_timezone = 0
+
+        pack_buffer = io.BytesIO()
+        write_pack_objects(
+            pack_buffer,
+            [blob, c_tree, b_tree, a_tree, root_tree, commit],
+            DEFAULT_OBJECT_FORMAT,
+        )
+        pack_buffer.seek(0)
+        await repo._object_store.add_pack_async(pack_buffer.read())
+        await repo.set_ref_async(b"refs/heads/main", commit.id)
+
+        # Read deeply nested file
+        content = await repo.get_file_content_async("a/b/c/file.txt")
+        assert content == file_content
+
+        # Test with leading slash
+        content = await repo.get_file_content_async("/a/b/c/file.txt")
+        assert content == file_content
+
+    async def test_get_file_not_found(self, s3_client, git_test_bucket):
+        """Test that reading non-existent file returns None."""
+        from hypha.git.repo import S3GitRepo
+
+        repo = await S3GitRepo.init_bare(
+            s3_client,
+            git_test_bucket,
+            "file-not-found/git",
+        )
+
+        blob = Blob.from_string(b"Content\n")
+        tree = Tree()
+        tree.add(b"exists.txt", 0o100644, blob.id)
+
+        commit = Commit()
+        commit.tree = tree.id
+        commit.author = commit.committer = b"Test <test@example.com>"
+        commit.encoding = b"UTF-8"
+        commit.message = b"Test\n"
+        commit.commit_time = commit.author_time = int(time.time())
+        commit.commit_timezone = commit.author_timezone = 0
+
+        pack_buffer = io.BytesIO()
+        write_pack_objects(pack_buffer, [blob, tree, commit], DEFAULT_OBJECT_FORMAT)
+        pack_buffer.seek(0)
+        await repo._object_store.add_pack_async(pack_buffer.read())
+        await repo.set_ref_async(b"refs/heads/main", commit.id)
+
+        # Non-existent file
+        content = await repo.get_file_content_async("does-not-exist.txt")
+        assert content is None
+
+        # Non-existent directory in path
+        content = await repo.get_file_content_async("nonexistent/path/file.txt")
+        assert content is None
+
+    async def test_get_file_info(self, s3_client, git_test_bucket):
+        """Test getting file information."""
+        from hypha.git.repo import S3GitRepo
+
+        repo = await S3GitRepo.init_bare(
+            s3_client,
+            git_test_bucket,
+            "file-info/git",
+        )
+
+        file_content = b"File content for info test\n"
+        blob = Blob.from_string(file_content)
+
+        subdir = Tree()
+        subdir.add(b"nested.txt", 0o100644, blob.id)
+
+        root = Tree()
+        root.add(b"root.txt", 0o100644, blob.id)
+        root.add(b"subdir", 0o40000, subdir.id)
+
+        commit = Commit()
+        commit.tree = root.id
+        commit.author = commit.committer = b"Test <test@example.com>"
+        commit.encoding = b"UTF-8"
+        commit.message = b"Test\n"
+        commit.commit_time = commit.author_time = int(time.time())
+        commit.commit_timezone = commit.author_timezone = 0
+
+        pack_buffer = io.BytesIO()
+        write_pack_objects(pack_buffer, [blob, subdir, root, commit], DEFAULT_OBJECT_FORMAT)
+        pack_buffer.seek(0)
+        await repo._object_store.add_pack_async(pack_buffer.read())
+        await repo.set_ref_async(b"refs/heads/main", commit.id)
+
+        # Get file info
+        info = await repo.get_file_info_async("root.txt")
+        assert info["name"] == "root.txt"
+        assert info["type"] == "blob"
+        assert info["size"] == len(file_content)
+        assert info["sha"] is not None
+
+        # Get directory info
+        info = await repo.get_file_info_async("subdir")
+        assert info["name"] == "subdir"
+        assert info["type"] == "tree"
+        assert info["size"] is None
+
+        # Non-existent path
+        info = await repo.get_file_info_async("nonexistent")
+        assert info is None
+
+    async def test_list_empty_repo(self, s3_client, git_test_bucket):
+        """Test listing files in an empty repository."""
+        from hypha.git.repo import S3GitRepo
+
+        repo = await S3GitRepo.init_bare(
+            s3_client,
+            git_test_bucket,
+            "empty-list/git",
+        )
+
+        # List should return empty list for empty repo
+        items = await repo.list_tree_async("")
+        assert items == []
+
+    async def test_get_file_from_specific_commit(self, s3_client, git_test_bucket):
+        """Test reading file from a specific commit SHA."""
+        from hypha.git.repo import S3GitRepo
+
+        repo = await S3GitRepo.init_bare(
+            s3_client,
+            git_test_bucket,
+            "commit-specific/git",
+        )
+
+        # Create first commit
+        blob1 = Blob.from_string(b"Version 1\n")
+        tree1 = Tree()
+        tree1.add(b"file.txt", 0o100644, blob1.id)
+
+        commit1 = Commit()
+        commit1.tree = tree1.id
+        commit1.author = commit1.committer = b"Test <test@example.com>"
+        commit1.encoding = b"UTF-8"
+        commit1.message = b"First\n"
+        commit1.commit_time = commit1.author_time = int(time.time())
+        commit1.commit_timezone = commit1.author_timezone = 0
+
+        pack_buffer = io.BytesIO()
+        write_pack_objects(pack_buffer, [blob1, tree1, commit1], DEFAULT_OBJECT_FORMAT)
+        pack_buffer.seek(0)
+        await repo._object_store.add_pack_async(pack_buffer.read())
+        await repo.set_ref_async(b"refs/heads/main", commit1.id)
+
+        # Create second commit
+        blob2 = Blob.from_string(b"Version 2\n")
+        tree2 = Tree()
+        tree2.add(b"file.txt", 0o100644, blob2.id)
+
+        commit2 = Commit()
+        commit2.tree = tree2.id
+        commit2.parents = [commit1.id]
+        commit2.author = commit2.committer = b"Test <test@example.com>"
+        commit2.encoding = b"UTF-8"
+        commit2.message = b"Second\n"
+        commit2.commit_time = commit2.author_time = int(time.time()) + 1
+        commit2.commit_timezone = commit2.author_timezone = 0
+
+        pack_buffer = io.BytesIO()
+        write_pack_objects(pack_buffer, [blob2, tree2, commit2], DEFAULT_OBJECT_FORMAT)
+        pack_buffer.seek(0)
+        await repo._object_store.add_pack_async(pack_buffer.read())
+        await repo.set_ref_async(b"refs/heads/main", commit2.id)
+
+        # Read from HEAD (should be version 2)
+        content = await repo.get_file_content_async("file.txt")
+        assert content == b"Version 2\n"
+
+        # Read from first commit
+        content = await repo.get_file_content_async("file.txt", commit1.id)
+        assert content == b"Version 1\n"
+
+        # Read from second commit
+        content = await repo.get_file_content_async("file.txt", commit2.id)
+        assert content == b"Version 2\n"

@@ -468,6 +468,21 @@ class ArtifactController:
                 finally:
                     await session.close()
 
+                # Check if this is a git-storage artifact
+                config = artifact.config or {}
+                if config.get("storage") == "git":
+                    # Re-open session for git zip creation
+                    session = await self._get_session(read_only=True)
+                    return await self._create_git_zip_file(
+                        artifact,
+                        parent_artifact,
+                        files,
+                        version,
+                        silent,
+                        artifact_alias,
+                        session,
+                    )
+
                 version_index = self._get_version_index(artifact, version)
                 s3_config = self._get_s3_config(artifact, parent_artifact)
 
@@ -812,6 +827,23 @@ class ArtifactController:
                     ) = await self._get_artifact_with_permission(
                         user_info, artifact_id, "get_file", session
                     )
+
+                    # Check if this is a git-storage artifact
+                    config = artifact.config or {}
+                    if config.get("storage") == "git":
+                        # Handle git-storage artifacts
+                        return await self._get_git_file(
+                            artifact,
+                            parent_artifact,
+                            path,
+                            version,
+                            silent,
+                            limit,
+                            offset,
+                            session,
+                        )
+
+                    # Standard S3-based artifact storage
                     version_index = self._get_version_index(artifact, version)
                     s3_config = self._get_s3_config(artifact, parent_artifact)
                     file_key = safe_join(
@@ -857,7 +889,7 @@ class ArtifactController:
                     # Use proxy based on use_proxy parameter (None means use server config)
                     if use_proxy is None:
                         use_proxy = self.s3_controller.enable_s3_proxy
-                    
+
                     if use_proxy:
                         s3_client = self._create_client_async(s3_config)
                         return FSFileResponse(s3_client, s3_config["bucket"], file_key)
@@ -2394,6 +2426,308 @@ class ArtifactController:
             region_name=region_name,
             config=Config(connect_timeout=60, read_timeout=300),
         )
+
+    async def _get_git_file(
+        self,
+        artifact,
+        parent_artifact,
+        path: str,
+        version: str,
+        silent: bool,
+        limit: int,
+        offset: int,
+        session,
+    ):
+        """Get file or directory listing from a git-storage artifact.
+
+        Args:
+            artifact: The artifact model instance
+            parent_artifact: Parent artifact for S3 config inheritance
+            path: Path within the git repository
+            version: Git ref/commit (defaults to HEAD)
+            silent: If True, don't increment download count
+            limit: Max items to return for directory listing
+            offset: Offset for pagination
+            session: Database session
+
+        Returns:
+            Response object (file content or directory listing)
+        """
+        from fastapi.responses import Response
+        from hypha.git.repo import S3GitRepo
+        import mimetypes
+
+        s3_config = self._get_s3_config(artifact, parent_artifact)
+
+        async with self._create_client_async(s3_config) as s3_client:
+            prefix = f"{s3_config['prefix']}/{artifact.id}/git"
+            repo = S3GitRepo(s3_client, s3_config["bucket"], prefix)
+            await repo.initialize()
+
+            # Check if repository is empty
+            if await repo.is_empty():
+                raise HTTPException(
+                    status_code=404,
+                    detail="Repository is empty (no commits)",
+                )
+
+            # Determine commit SHA from version
+            commit_sha = None
+            if version and version != "stage":
+                # Try to resolve version as a ref or commit SHA
+                refs = await repo.get_refs_async()
+                # Check if it's a branch ref
+                branch_ref = f"refs/heads/{version}".encode()
+                if branch_ref in refs:
+                    commit_sha = refs[branch_ref]
+                # Check if it's a tag ref
+                elif f"refs/tags/{version}".encode() in refs:
+                    commit_sha = refs[f"refs/tags/{version}".encode()]
+                # Try as a commit SHA
+                elif len(version) >= 7:
+                    # Try to find matching commit
+                    sha_bytes = bytes.fromhex(version) if len(version) == 40 else None
+                    if sha_bytes and await repo.has_object_async(sha_bytes):
+                        commit_sha = sha_bytes
+
+            # Normalize path
+            path = path.strip("/") if path else ""
+
+            # Check if it's a directory listing request
+            if path.endswith("/") or path == "":
+                # List directory contents
+                items = await repo.list_tree_async(path, commit_sha)
+                if not items:
+                    # Check if the path exists but is empty or doesn't exist
+                    if path:
+                        file_info = await repo.get_file_info_async(path, commit_sha)
+                        if file_info and file_info["type"] == "blob":
+                            # It's a file, not a directory
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"'{path}' is a file, not a directory. Remove trailing slash.",
+                            )
+                    raise HTTPException(
+                        status_code=404,
+                        detail="Directory not found or empty",
+                    )
+
+                # Apply pagination
+                total = len(items)
+                items = items[offset : offset + limit]
+
+                # Format response similar to S3 listing
+                result = []
+                for item in items:
+                    entry = {
+                        "name": item["name"],
+                        "type": "directory" if item["type"] == "tree" else "file",
+                    }
+                    if item["size"] is not None:
+                        entry["size"] = item["size"]
+                    result.append(entry)
+
+                return {
+                    "items": result,
+                    "total": total,
+                    "offset": offset,
+                    "limit": limit,
+                }
+
+            # It's a file request
+            content = await repo.get_file_content_async(path, commit_sha)
+            if content is None:
+                # Check if it's a directory
+                items = await repo.list_tree_async(path, commit_sha)
+                if items:
+                    # It's a directory, return listing
+                    total = len(items)
+                    items = items[offset : offset + limit]
+                    result = []
+                    for item in items:
+                        entry = {
+                            "name": item["name"],
+                            "type": "directory" if item["type"] == "tree" else "file",
+                        }
+                        if item["size"] is not None:
+                            entry["size"] = item["size"]
+                        result.append(entry)
+                    return {
+                        "items": result,
+                        "total": total,
+                        "offset": offset,
+                        "limit": limit,
+                    }
+                raise HTTPException(
+                    status_code=404,
+                    detail="File not found",
+                )
+
+            # Increment download count unless silent
+            if not silent:
+                config = artifact.config or {}
+                download_weights = config.get("download_weights", {})
+                download_weight = download_weights.get(path) or 0
+                if download_weight > 0:
+                    await self._increment_stat(
+                        session,
+                        artifact.id,
+                        "download_count",
+                        increment=download_weight,
+                    )
+                    await session.commit()
+
+            # Determine content type
+            content_type, _ = mimetypes.guess_type(path)
+            if content_type is None:
+                content_type = "application/octet-stream"
+
+            # Return file content
+            filename = path.split("/")[-1] if "/" in path else path
+            return Response(
+                content=content,
+                media_type=content_type,
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Content-Length": str(len(content)),
+                },
+            )
+
+    async def _create_git_zip_file(
+        self,
+        artifact,
+        parent_artifact,
+        files: List[str],
+        version: str,
+        silent: bool,
+        artifact_alias: str,
+        session,
+    ):
+        """Create a zip file from a git-storage artifact.
+
+        Args:
+            artifact: The artifact model instance
+            parent_artifact: Parent artifact for S3 config inheritance
+            files: List of file paths to include (None for all files)
+            version: Git ref/commit (defaults to HEAD)
+            silent: If True, don't increment download count
+            artifact_alias: Alias for the zip filename
+            session: Database session
+
+        Returns:
+            StreamingResponse with zip content
+        """
+        from hypha.git.repo import S3GitRepo
+
+        s3_config = self._get_s3_config(artifact, parent_artifact)
+
+        async with self._create_client_async(s3_config) as s3_client:
+            prefix = f"{s3_config['prefix']}/{artifact.id}/git"
+            repo = S3GitRepo(s3_client, s3_config["bucket"], prefix)
+            await repo.initialize()
+
+            # Check if repository is empty
+            if await repo.is_empty():
+                raise HTTPException(
+                    status_code=404,
+                    detail="Repository is empty (no commits)",
+                )
+
+            # Determine commit SHA from version
+            commit_sha = None
+            if version and version != "stage":
+                refs = await repo.get_refs_async()
+                branch_ref = f"refs/heads/{version}".encode()
+                if branch_ref in refs:
+                    commit_sha = refs[branch_ref]
+                elif f"refs/tags/{version}".encode() in refs:
+                    commit_sha = refs[f"refs/tags/{version}".encode()]
+                elif len(version) >= 7:
+                    sha_bytes = bytes.fromhex(version) if len(version) == 40 else None
+                    if sha_bytes and await repo.has_object_async(sha_bytes):
+                        commit_sha = sha_bytes
+
+            # If no files specified, list all files recursively
+            if files is None:
+                async def list_all_files_recursive(dir_path=""):
+                    """Recursively list all files in the git tree."""
+                    items = await repo.list_tree_async(dir_path, commit_sha)
+                    for item in items:
+                        item_path = f"{dir_path}/{item['name']}".strip("/")
+                        if item["type"] == "tree":
+                            async for sub_path in list_all_files_recursive(item_path):
+                                yield sub_path
+                        else:
+                            yield item_path
+
+                files = [path async for path in list_all_files_recursive()]
+
+            logger.info(f"Creating ZIP file for git artifact: {artifact_alias}")
+
+            async def git_file_stream_generator(file_path: str):
+                """Stream file content from git repository in chunks."""
+                content = await repo.get_file_content_async(file_path, commit_sha)
+                if content is None:
+                    logger.error(f"File not found in git repo: {file_path}")
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"File not found: {file_path}",
+                    )
+                # Yield in chunks (64KB)
+                chunk_size = 1024 * 64
+                for i in range(0, len(content), chunk_size):
+                    yield content[i : i + chunk_size]
+
+            async def member_files():
+                """Yield file metadata and content for stream_zip."""
+                modified_at = datetime.now()
+                mode = S_IFREG | 0o600
+                total_weight = 0
+
+                config = artifact.config or {}
+                download_weights = config.get("download_weights", {})
+
+                # Check for special "create-zip-file" download weight
+                special_zip_weight = download_weights.get("create-zip-file")
+                if special_zip_weight is not None and not silent:
+                    total_weight = special_zip_weight
+                    logger.info(f"Using special zip download weight: {total_weight}")
+
+                for path in files:
+                    logger.info(f"Adding git file to ZIP: {path}")
+                    # Add to total weight unless silent or special zip weight is set
+                    if not silent and special_zip_weight is None:
+                        download_weight = download_weights.get(path) or 0
+                        total_weight += download_weight
+
+                    yield (
+                        path,
+                        modified_at,
+                        mode,
+                        ZIP_32,
+                        git_file_stream_generator(path),
+                    )
+
+                if total_weight > 0 and not silent:
+                    logger.info(
+                        f"Bumping download count for git artifact: {artifact_alias} by {total_weight}"
+                    )
+                    async with session.begin():
+                        await self._increment_stat(
+                            session,
+                            artifact.id,
+                            "download_count",
+                            increment=total_weight,
+                        )
+                        await session.commit()
+
+            return StreamingResponse(
+                async_stream_zip(member_files()),
+                media_type="application/zip",
+                headers={
+                    "Content-Disposition": f"attachment; filename={artifact_alias}.zip"
+                },
+            )
 
     async def _count_files_in_prefix(self, s3_client, bucket_name, prefix):
         paginator = s3_client.get_paginator("list_objects_v2")

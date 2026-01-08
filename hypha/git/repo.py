@@ -260,3 +260,266 @@ class S3GitRepo(BaseRepo):
         if not self._initialized:
             await self.initialize()
         return await self._object_store.contains_async(sha)
+
+    async def get_tree_at_path_async(
+        self,
+        path: str,
+        commit_sha: Optional[ObjectID] = None,
+    ) -> Optional[ObjectID]:
+        """Get the tree SHA at a given path.
+
+        Args:
+            path: Path to traverse (e.g., "src/utils" or "")
+            commit_sha: Commit to start from (defaults to HEAD)
+
+        Returns:
+            Tree SHA at the path, or None if not found
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        # Get commit
+        if commit_sha is None:
+            commit_sha = await self.head_async()
+            if commit_sha is None:
+                return None
+
+        # Get the commit object
+        commit = await self.get_object_async(commit_sha)
+        tree_sha = commit.tree
+
+        # If path is empty or root, return the root tree
+        if not path or path == "/" or path == ".":
+            return tree_sha
+
+        # Traverse the path
+        parts = [p for p in path.strip("/").split("/") if p]
+        current_tree_sha = tree_sha
+
+        for part in parts:
+            tree = await self.get_object_async(current_tree_sha)
+
+            # Find the entry matching this path component
+            found = False
+            for entry in tree.items():
+                name, mode, sha = entry
+                if name.decode("utf-8", errors="replace") == part:
+                    current_tree_sha = sha
+                    found = True
+                    break
+
+            if not found:
+                return None
+
+        return current_tree_sha
+
+    async def list_tree_async(
+        self,
+        path: str = "",
+        commit_sha: Optional[ObjectID] = None,
+    ) -> list[dict]:
+        """List files and directories in a tree at the given path.
+
+        Args:
+            path: Path to list (e.g., "src/utils" or "")
+            commit_sha: Commit to start from (defaults to HEAD)
+
+        Returns:
+            List of dicts with name, type (blob/tree), mode, sha, size
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        # Get commit
+        if commit_sha is None:
+            commit_sha = await self.head_async()
+            if commit_sha is None:
+                return []
+
+        # Get the commit object and root tree
+        commit = await self.get_object_async(commit_sha)
+        tree_sha = commit.tree
+
+        # Navigate to the target path
+        if path and path != "/" and path != ".":
+            tree_sha = await self.get_tree_at_path_async(path, commit_sha)
+            if tree_sha is None:
+                return []
+
+        # Get the tree object
+        tree = await self.get_object_async(tree_sha)
+
+        # Check if this is actually a tree
+        from dulwich.objects import Tree
+
+        if not isinstance(tree, Tree):
+            # It's a blob (file), not a tree
+            return []
+
+        result = []
+        for entry in tree.items():
+            name, mode, sha = entry
+            # Determine type based on mode
+            # Mode 40000 is tree (directory)
+            # Mode 100644 is regular file
+            # Mode 100755 is executable
+            # Mode 120000 is symlink
+            # Mode 160000 is gitlink (submodule)
+            if mode == 0o40000:
+                entry_type = "tree"
+                size = None
+            else:
+                entry_type = "blob"
+                # Get blob size
+                blob = await self.get_object_async(sha)
+                size = len(blob.data)
+
+            result.append(
+                {
+                    "name": name.decode("utf-8", errors="replace"),
+                    "type": entry_type,
+                    "mode": oct(mode),
+                    "sha": sha.hex() if isinstance(sha, bytes) else sha,
+                    "size": size,
+                }
+            )
+
+        return result
+
+    async def get_file_content_async(
+        self,
+        path: str,
+        commit_sha: Optional[ObjectID] = None,
+    ) -> Optional[bytes]:
+        """Get the content of a file at the given path.
+
+        Args:
+            path: Path to the file (e.g., "src/main.py")
+            commit_sha: Commit to read from (defaults to HEAD)
+
+        Returns:
+            File content as bytes, or None if not found
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        if not path or path == "/" or path == ".":
+            return None  # Can't read a directory as a file
+
+        # Get commit
+        if commit_sha is None:
+            commit_sha = await self.head_async()
+            if commit_sha is None:
+                return None
+
+        # Get the commit object
+        commit = await self.get_object_async(commit_sha)
+        tree_sha = commit.tree
+
+        # Navigate to the parent directory
+        parts = [p for p in path.strip("/").split("/") if p]
+        current_tree_sha = tree_sha
+
+        # Traverse to the parent of the target
+        for i, part in enumerate(parts[:-1]):
+            tree = await self.get_object_async(current_tree_sha)
+
+            found = False
+            for entry in tree.items():
+                name, mode, sha = entry
+                if name.decode("utf-8", errors="replace") == part:
+                    current_tree_sha = sha
+                    found = True
+                    break
+
+            if not found:
+                return None
+
+        # Get the final tree and find the file
+        tree = await self.get_object_async(current_tree_sha)
+        target_name = parts[-1]
+
+        for entry in tree.items():
+            name, mode, sha = entry
+            if name.decode("utf-8", errors="replace") == target_name:
+                # Check if it's a blob (not a tree)
+                if mode == 0o40000:
+                    return None  # It's a directory
+
+                # Get the blob content
+                blob = await self.get_object_async(sha)
+                return blob.data
+
+        return None
+
+    async def get_file_info_async(
+        self,
+        path: str,
+        commit_sha: Optional[ObjectID] = None,
+    ) -> Optional[dict]:
+        """Get information about a file at the given path.
+
+        Args:
+            path: Path to the file (e.g., "src/main.py")
+            commit_sha: Commit to read from (defaults to HEAD)
+
+        Returns:
+            Dict with name, type, mode, sha, size, or None if not found
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        if not path or path == "/" or path == ".":
+            return None
+
+        # Get commit
+        if commit_sha is None:
+            commit_sha = await self.head_async()
+            if commit_sha is None:
+                return None
+
+        # Get the commit object
+        commit = await self.get_object_async(commit_sha)
+        tree_sha = commit.tree
+
+        # Navigate to the parent directory
+        parts = [p for p in path.strip("/").split("/") if p]
+        current_tree_sha = tree_sha
+
+        # Traverse to the parent of the target
+        for i, part in enumerate(parts[:-1]):
+            tree = await self.get_object_async(current_tree_sha)
+
+            found = False
+            for entry in tree.items():
+                name, mode, sha = entry
+                if name.decode("utf-8", errors="replace") == part:
+                    current_tree_sha = sha
+                    found = True
+                    break
+
+            if not found:
+                return None
+
+        # Get the final tree and find the entry
+        tree = await self.get_object_async(current_tree_sha)
+        target_name = parts[-1]
+
+        for entry in tree.items():
+            name, mode, sha = entry
+            if name.decode("utf-8", errors="replace") == target_name:
+                if mode == 0o40000:
+                    entry_type = "tree"
+                    size = None
+                else:
+                    entry_type = "blob"
+                    blob = await self.get_object_async(sha)
+                    size = len(blob.data)
+
+                return {
+                    "name": name.decode("utf-8", errors="replace"),
+                    "type": entry_type,
+                    "mode": oct(mode),
+                    "sha": sha.hex() if isinstance(sha, bytes) else sha,
+                    "size": size,
+                }

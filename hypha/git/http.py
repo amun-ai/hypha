@@ -925,6 +925,10 @@ def create_git_router(
 
         This is the first endpoint called by git clone/fetch/push.
         """
+        # Strip .git suffix if present (Git clients may add it)
+        if alias.endswith(".git"):
+            alias = alias[:-4]
+
         if service not in ("git-upload-pack", "git-receive-pack"):
             # Dumb protocol fallback
             raise HTTPException(status_code=400, detail="Smart HTTP protocol required")
@@ -958,6 +962,10 @@ def create_git_router(
         user_info=Depends(login_optional_dep),
     ):
         """Handle git fetch/clone requests."""
+        # Strip .git suffix if present (Git clients may add it)
+        if alias.endswith(".git"):
+            alias = alias[:-4]
+
         try:
             repo = await get_repo_callback(workspace, alias, user_info)
         except PermissionError:
@@ -996,6 +1004,10 @@ def create_git_router(
         user_info=Depends(git_basic_auth),
     ):
         """Handle git push requests."""
+        # Strip .git suffix if present (Git clients may add it)
+        if alias.endswith(".git"):
+            alias = alias[:-4]
+
         if not user_info:
             raise HTTPException(
                 status_code=401,

@@ -630,3 +630,233 @@ async def test_lfs_batch_api_via_http(
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
+
+
+# Tests for create-zip-file endpoint on git-storage artifacts
+
+
+async def test_git_create_zip_file(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test creating a ZIP file from a git-storage artifact with pushed content."""
+    import subprocess
+    import uuid
+    import zipfile
+    import io
+    from hypha_rpc import connect_to_server
+
+    # Connect to the server and create a git-storage artifact
+    api = await connect_to_server({
+        "name": "git-zip-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    artifact_alias = f"git-zip-test-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Git Zip Test"},
+        config={"storage": "git"},
+    )
+
+    workspace = api.config.workspace
+    git_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
+
+    import tempfile
+    import os
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Initialize a local repo and push some files
+        local_repo = os.path.join(tmpdir, "repo")
+        os.makedirs(local_repo)
+        subprocess.run(["git", "init"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
+
+        # Create some files
+        with open(os.path.join(local_repo, "README.md"), "w") as f:
+            f.write("# Test Repository\n\nThis is a test.")
+        with open(os.path.join(local_repo, "main.py"), "w") as f:
+            f.write('print("Hello, World!")\n')
+
+        # Create a subdirectory with a file
+        subdir = os.path.join(local_repo, "src")
+        os.makedirs(subdir)
+        with open(os.path.join(subdir, "utils.py"), "w") as f:
+            f.write('def helper():\n    return "help"\n')
+
+        # Add and commit
+        subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=local_repo, check=True, capture_output=True)
+
+        # Configure remote with embedded credentials
+        auth_url = git_url.replace("http://", f"http://git:{test_user_token}@")
+        subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
+
+        # Push to the Hypha git repo
+        result = subprocess.run(
+            ["git", "push", "-u", "origin", "main"],
+            cwd=local_repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"Push failed: {result.stderr}"
+
+    # Now test the create-zip-file endpoint
+    zip_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/create-zip-file"
+
+    # Request ZIP with auth token
+    resp = requests.get(zip_url, params={"token": test_user_token}, timeout=30)
+    assert resp.status_code == 200, f"Create ZIP failed: {resp.text}"
+    assert resp.headers.get("content-type") == "application/zip"
+
+    # Verify ZIP contents
+    zip_buffer = io.BytesIO(resp.content)
+    with zipfile.ZipFile(zip_buffer, "r") as zf:
+        names = set(zf.namelist())
+        assert "README.md" in names
+        assert "main.py" in names
+        assert "src/utils.py" in names
+
+        # Verify content
+        readme_content = zf.read("README.md").decode()
+        assert "Test Repository" in readme_content
+        main_content = zf.read("main.py").decode()
+        assert 'print("Hello, World!")' in main_content
+        utils_content = zf.read("src/utils.py").decode()
+        assert "def helper()" in utils_content
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+
+
+async def test_git_create_zip_file_with_specific_files(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test creating a ZIP file with specific files from a git-storage artifact."""
+    import subprocess
+    import uuid
+    import zipfile
+    import io
+    from hypha_rpc import connect_to_server
+
+    # Connect to the server and create a git-storage artifact
+    api = await connect_to_server({
+        "name": "git-zip-specific-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    artifact_alias = f"git-zip-specific-test-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Git Zip Specific Files Test"},
+        config={"storage": "git"},
+    )
+
+    workspace = api.config.workspace
+    git_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
+
+    import tempfile
+    import os
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Initialize a local repo and push some files
+        local_repo = os.path.join(tmpdir, "repo")
+        os.makedirs(local_repo)
+        subprocess.run(["git", "init"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
+
+        # Create multiple files
+        with open(os.path.join(local_repo, "file1.txt"), "w") as f:
+            f.write("File 1 content")
+        with open(os.path.join(local_repo, "file2.txt"), "w") as f:
+            f.write("File 2 content")
+        with open(os.path.join(local_repo, "file3.txt"), "w") as f:
+            f.write("File 3 content")
+
+        # Add and commit
+        subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Multiple files"], cwd=local_repo, check=True, capture_output=True)
+
+        # Configure remote with embedded credentials
+        auth_url = git_url.replace("http://", f"http://git:{test_user_token}@")
+        subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
+
+        # Push to the Hypha git repo
+        result = subprocess.run(
+            ["git", "push", "-u", "origin", "main"],
+            cwd=local_repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"Push failed: {result.stderr}"
+
+    # Request ZIP with only specific files
+    zip_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/create-zip-file"
+
+    resp = requests.get(
+        zip_url,
+        params={"token": test_user_token, "file": ["file1.txt", "file3.txt"]},
+        timeout=30,
+    )
+    assert resp.status_code == 200, f"Create ZIP failed: {resp.text}"
+
+    # Verify ZIP contains only requested files
+    zip_buffer = io.BytesIO(resp.content)
+    with zipfile.ZipFile(zip_buffer, "r") as zf:
+        names = set(zf.namelist())
+        assert names == {"file1.txt", "file3.txt"}
+
+        assert zf.read("file1.txt").decode() == "File 1 content"
+        assert zf.read("file3.txt").decode() == "File 3 content"
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+
+
+async def test_git_create_zip_file_empty_repo(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test that create-zip-file returns 404 for empty git-storage artifact."""
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    # Connect to the server and create a git-storage artifact
+    api = await connect_to_server({
+        "name": "git-zip-empty-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    artifact_alias = f"git-zip-empty-test-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Git Zip Empty Test"},
+        config={"storage": "git"},
+    )
+
+    workspace = api.config.workspace
+    zip_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/create-zip-file"
+
+    # Request ZIP from empty repo should return 404
+    resp = requests.get(zip_url, params={"token": test_user_token}, timeout=30)
+    assert resp.status_code == 404, f"Expected 404 for empty repo, got {resp.status_code}"
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)

@@ -389,7 +389,6 @@ def create_lfs_router(
             )
         return user_info
 
-    @router.post("/{workspace}/git/{alias}.git/info/lfs/objects/batch")
     @router.post("/{workspace}/git/{alias}/info/lfs/objects/batch")
     async def lfs_batch(
         workspace: str,
@@ -402,6 +401,10 @@ def create_lfs_router(
 
         This is the main entry point for Git LFS operations.
         """
+        # Strip .git suffix if present (Git LFS clients may add it)
+        if alias.endswith(".git"):
+            alias = alias[:-4]
+
         # Validate content type
         content_type = request.headers.get("content-type", "")
         if "application/vnd.git-lfs+json" not in content_type:
@@ -463,7 +466,6 @@ def create_lfs_router(
             media_type=LFS_CONTENT_TYPE,
         )
 
-    @router.post("/{workspace}/git/{alias}.git/info/lfs/objects/verify/{oid}")
     @router.post("/{workspace}/git/{alias}/info/lfs/objects/verify/{oid}")
     async def lfs_verify(
         workspace: str,
@@ -476,6 +478,10 @@ def create_lfs_router(
 
         Called by the client after a successful upload to confirm the object exists.
         """
+        # Strip .git suffix if present (Git LFS clients may add it)
+        if alias.endswith(".git"):
+            alias = alias[:-4]
+
         # Parse request body
         try:
             body = await request.json()
@@ -516,7 +522,6 @@ def create_lfs_router(
 
         return Response(status_code=200)
 
-    @router.get("/{workspace}/git/{alias}.git/info/lfs/objects/{oid}")
     @router.get("/{workspace}/git/{alias}/info/lfs/objects/{oid}")
     async def lfs_download_object(
         workspace: str,
@@ -529,6 +534,10 @@ def create_lfs_router(
         This is a fallback endpoint that redirects to S3.
         Most clients will use the presigned URLs from the batch API.
         """
+        # Strip .git suffix if present (Git LFS clients may add it)
+        if alias.endswith(".git"):
+            alias = alias[:-4]
+
         logger.info(f"LFS download: workspace={workspace}, alias={alias}, oid={oid}")
 
         try:
@@ -547,7 +556,6 @@ def create_lfs_router(
             headers={"Location": download_url},
         )
 
-    @router.put("/{workspace}/git/{alias}.git/info/lfs/objects/{oid}")
     @router.put("/{workspace}/git/{alias}/info/lfs/objects/{oid}")
     async def lfs_upload_object(
         workspace: str,
@@ -564,6 +572,10 @@ def create_lfs_router(
         WARNING: This endpoint loads the entire body into memory.
         For large files, clients should use the presigned URL approach.
         """
+        # Strip .git suffix if present (Git LFS clients may add it)
+        if alias.endswith(".git"):
+            alias = alias[:-4]
+
         logger.info(f"LFS upload: workspace={workspace}, alias={alias}, oid={oid}")
 
         content_length = request.headers.get("content-length")
