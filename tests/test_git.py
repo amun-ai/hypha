@@ -72,6 +72,7 @@ async def test_git_clone_empty_repo(
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
 
 
 async def test_git_ls_remote(
@@ -116,6 +117,7 @@ async def test_git_ls_remote(
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
 
 
 async def test_git_protocol_discovery(
@@ -156,6 +158,7 @@ async def test_git_protocol_discovery(
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
 
 
 async def test_git_clone_add_commit_push(
@@ -277,6 +280,7 @@ async def test_git_clone_add_commit_push(
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
 
 
 async def test_git_receive_pack_requires_auth(
@@ -340,6 +344,7 @@ async def test_git_receive_pack_requires_auth(
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
 
 
 # Git LFS tests
@@ -533,6 +538,7 @@ async def test_git_lfs_push_and_pull(
 
     # Cleanup: delete the artifact
     await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
 
 
 async def test_lfs_batch_api_via_http(
@@ -630,6 +636,7 @@ async def test_lfs_batch_api_via_http(
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
 
 
 # Tests for create-zip-file endpoint on git-storage artifacts
@@ -733,6 +740,7 @@ async def test_git_create_zip_file(
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
 
 
 async def test_git_create_zip_file_with_specific_files(
@@ -824,6 +832,7 @@ async def test_git_create_zip_file_with_specific_files(
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
 
 
 async def test_git_create_zip_file_empty_repo(
@@ -860,6 +869,7 @@ async def test_git_create_zip_file_empty_repo(
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
 
 
 @pytest.mark.asyncio
@@ -983,6 +993,7 @@ async def test_git_lfs_files_endpoint_streaming(
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
 
 
 # Tests for Git Artifact API methods (list_files, get_file, put_file, commit, remove_file)
@@ -1074,6 +1085,7 @@ async def test_git_artifact_list_files(
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
 
 
 async def test_git_artifact_get_file(
@@ -1151,6 +1163,7 @@ async def test_git_artifact_get_file(
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
 
 
 async def test_git_artifact_list_files_empty_repo(
@@ -1183,6 +1196,7 @@ async def test_git_artifact_list_files_empty_repo(
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
 
 
 async def test_git_artifact_put_file_and_commit(
@@ -1238,6 +1252,7 @@ async def test_git_artifact_put_file_and_commit(
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
 
 
 async def test_git_artifact_remove_file(
@@ -1318,6 +1333,7 @@ async def test_git_artifact_remove_file(
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
 
 
 async def test_git_artifact_version_resolution(
@@ -1403,3 +1419,4 @@ async def test_git_artifact_version_resolution(
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
