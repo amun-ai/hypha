@@ -143,7 +143,7 @@ class S3GitObjectStore(BucketBasedObjectStore):
         def s3_client_factory():
             return session.create_client("s3", ...)
 
-        store = S3GitObjectStore(s3_client_factory, "my-bucket", "artifacts/123/git")
+        store = S3GitObjectStore(s3_client_factory, "my-bucket", "artifacts/123/.git")
         await store.initialize()
         # Use store...
     """
@@ -162,7 +162,7 @@ class S3GitObjectStore(BucketBasedObjectStore):
             s3_client_factory: Factory function that returns an async context manager
                                for S3 client (e.g., lambda: session.create_client("s3", ...))
             bucket: S3 bucket name
-            prefix: Prefix path in bucket (e.g., "workspace/artifacts/123/git")
+            prefix: Prefix path in bucket (e.g., "workspace/artifacts/123/.git")
             object_format: Git object format (defaults to SHA1)
             s3_config: S3 config dict with endpoint_url, access_key_id,
                        secret_access_key, region_name for async write operations

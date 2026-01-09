@@ -99,7 +99,7 @@ class GitArtifactManager:
 
                 # Create S3 client factory and repo
                 s3_client_factory = self._create_s3_client_factory(s3_config)
-                prefix = f"{s3_config['prefix']}/{artifact.id}/git"
+                prefix = f"{s3_config['prefix']}/{artifact.id}/.git"
 
                 repo = S3GitRepo(
                     s3_client_factory,
@@ -153,7 +153,7 @@ class GitArtifactManager:
                     # Create S3 client factory for the repo
                     s3_client_factory = self._create_s3_client_factory(s3_config)
 
-                    prefix = f"{s3_config['prefix']}/{artifact.id}/git"
+                    prefix = f"{s3_config['prefix']}/{artifact.id}/.git"
                     repo = S3GitRepo(s3_client_factory, s3_config["bucket"], prefix, s3_config=s3_config)
                     await repo.initialize()
 

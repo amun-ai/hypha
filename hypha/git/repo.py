@@ -57,7 +57,7 @@ class S3GitRepo(BaseRepo):
             s3_client_factory: Factory function that returns an async context manager
                                for S3 client (e.g., lambda: session.create_client("s3", ...))
             bucket: S3 bucket name
-            prefix: Prefix path in bucket (e.g., "workspace/artifacts/123/git")
+            prefix: Prefix path in bucket (e.g., "workspace/artifacts/123/.git")
             object_format: Git object format (defaults to SHA1)
             s3_config: S3 config dict with endpoint_url, access_key_id,
                        secret_access_key, region_name for async write operations

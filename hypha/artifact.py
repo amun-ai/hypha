@@ -2462,7 +2462,7 @@ class ArtifactController:
 
         # Create S3 client factory for the git repo
         s3_client_factory = partial(self._create_client_async, s3_config)
-        prefix = f"{s3_config['prefix']}/{artifact.id}/git"
+        prefix = f"{s3_config['prefix']}/{artifact.id}/.git"
         repo = S3GitRepo(s3_client_factory, s3_config["bucket"], prefix, s3_config=s3_config)
         await repo.initialize()
 
@@ -2744,7 +2744,7 @@ class ArtifactController:
 
         # Create S3 client factory for the git repo
         s3_client_factory = partial(self._create_client_async, s3_config)
-        prefix = f"{s3_config['prefix']}/{artifact.id}/git"
+        prefix = f"{s3_config['prefix']}/{artifact.id}/.git"
         repo = S3GitRepo(s3_client_factory, s3_config["bucket"], prefix, s3_config=s3_config)
         await repo.initialize()
 
@@ -2822,7 +2822,7 @@ class ArtifactController:
 
         # Create S3 client factory for the git repo
         s3_client_factory = partial(self._create_client_async, s3_config)
-        prefix = f"{s3_config['prefix']}/{artifact.id}/git"
+        prefix = f"{s3_config['prefix']}/{artifact.id}/.git"
         repo = S3GitRepo(s3_client_factory, s3_config["bucket"], prefix, s3_config=s3_config)
         await repo.initialize()
 
@@ -3007,7 +3007,7 @@ class ArtifactController:
 
         # Create repo instance
         s3_client_factory = partial(self._create_client_async, s3_config)
-        prefix = f"{s3_config['prefix']}/{artifact.id}/git"
+        prefix = f"{s3_config['prefix']}/{artifact.id}/.git"
         repo = S3GitRepo(s3_client_factory, s3_config["bucket"], prefix, s3_config=s3_config)
         await repo.initialize()
 
@@ -3315,7 +3315,7 @@ class ArtifactController:
 
         # Create S3 client factory for the git repo
         s3_client_factory = partial(self._create_client_async, s3_config)
-        prefix = f"{s3_config['prefix']}/{artifact.id}/git"
+        prefix = f"{s3_config['prefix']}/{artifact.id}/.git"
         repo = S3GitRepo(s3_client_factory, s3_config["bucket"], prefix, s3_config=s3_config)
         await repo.initialize()
 
@@ -4131,7 +4131,7 @@ class ArtifactController:
                     from hypha.git.repo import S3GitRepo
 
                     default_branch = config.get("git_default_branch", "main")
-                    git_prefix = f"{s3_config['prefix']}/{new_artifact.id}/git"
+                    git_prefix = f"{s3_config['prefix']}/{new_artifact.id}/.git"
 
                     # Create S3 client factory for Git repo
                     s3_client_factory = partial(self._create_client_async, s3_config)
