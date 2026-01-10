@@ -276,14 +276,25 @@ class S3GitRepo(BaseRepo):
         return results
 
     async def get_object_async(self, sha: ObjectID):
-        """Get a Git object by SHA."""
+        """Get a Git object by SHA.
+
+        Args:
+            sha: Object SHA - can be 40-char hex bytes or 20-byte binary.
+                 Pack operations handle both formats.
+        """
         if not self._initialized:
             await self.initialize()
 
         type_num, data = await self._object_store.get_raw_async(sha)
         from dulwich.objects import ShaFile
 
-        return ShaFile.from_raw_string(type_num, data, sha=sha)
+        # ShaFile.from_raw_string expects 40-char hex SHA
+        # Convert binary SHA (20 bytes) to hex if needed
+        sha_for_shafile = sha
+        if len(sha) == 20:
+            sha_for_shafile = sha.hex().encode()
+
+        return ShaFile.from_raw_string(type_num, data, sha=sha_for_shafile)
 
     async def has_object_async(self, sha: ObjectID) -> bool:
         """Check if an object exists."""

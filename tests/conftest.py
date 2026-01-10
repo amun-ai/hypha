@@ -49,6 +49,12 @@ from . import (
     POSTGRES_URI,
 )
 os.environ["ACTIVITY_CHECK_INTERVAL"] = "0.3"
+
+# Ensure proxy is not used for localhost connections during tests
+# This is critical for tests that connect to local servers
+os.environ["no_proxy"] = os.environ.get("no_proxy", "") + ",localhost,127.0.0.1"
+os.environ["NO_PROXY"] = os.environ.get("NO_PROXY", "") + ",localhost,127.0.0.1"
+
 test_env = os.environ.copy()
 
 

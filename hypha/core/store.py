@@ -8,7 +8,8 @@ import sys
 import datetime
 from typing import List, Union
 from pydantic import BaseModel
-from fastapi import Header, Cookie, Request
+from fastapi import Header, Cookie, Request, HTTPException
+from jose.exceptions import JWTError, JWTClaimsError, ExpiredSignatureError
 
 from hypha_rpc import RPC
 from hypha_rpc.utils.schema import schema_method
@@ -996,22 +997,27 @@ class RedisStore:
         # Try to extract token using custom function if request is provided
         token = await extract_token_from_scope(request.scope)
         if token:
-            user_info = await self.parse_user_token(token)
-            if user_info.scope.current_workspace is None:
-                user_info.scope.current_workspace = user_info.get_workspace()
-            return user_info
-        else:
-            # Use a fixed anonymous user
-            self._http_anonymous_user = UserInfo(
-                id="anonymouz-http",  # Use anonymouz- prefix for consistency
-                is_anonymous=True,
-                email=None,
-                parent=None,
-                roles=["anonymous"],
-                scope=create_scope("ws-anonymous#r", current_workspace="ws-anonymous"),
-                expires_at=None,
-            )
-            return self._http_anonymous_user
+            try:
+                user_info = await self.parse_user_token(token)
+                if user_info.scope.current_workspace is None:
+                    user_info.scope.current_workspace = user_info.get_workspace()
+                logger.info(f"login_optional: parsed user_info: id={user_info.id}, is_anonymous={user_info.is_anonymous}")
+                return user_info
+            except (HTTPException, JWTError, JWTClaimsError, ExpiredSignatureError, ValueError, AssertionError) as e:
+                # These are expected token validation failures - fall back to anonymous
+                logger.warning(f"login_optional: token parsing failed: {e}")
+                # Fall through to return anonymous user
+        # Use a fixed anonymous user
+        self._http_anonymous_user = UserInfo(
+            id="anonymouz-http",  # Use anonymouz- prefix for consistency
+            is_anonymous=True,
+            email=None,
+            parent=None,
+            roles=["anonymous"],
+            scope=create_scope("ws-anonymous#r", current_workspace="ws-anonymous"),
+            expires_at=None,
+        )
+        return self._http_anonymous_user
 
     async def login_required(
         self,

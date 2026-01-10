@@ -2707,9 +2707,13 @@ class ArtifactController:
         if len(version) >= 7:
             if len(version) == 40:
                 try:
-                    sha_bytes = bytes.fromhex(version)
-                    if await repo.has_object_async(sha_bytes):
-                        return sha_bytes
+                    # Validate it's a valid hex SHA
+                    bytes.fromhex(version)
+                    # Return as hex bytes for consistency with refs
+                    # Pack.object_offset handles both hex and binary formats
+                    sha_hex_bytes = version.encode() if isinstance(version, str) else version
+                    if await repo.has_object_async(sha_hex_bytes):
+                        return sha_hex_bytes
                 except ValueError:
                     pass
             # TODO: Could support partial SHA matching

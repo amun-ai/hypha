@@ -936,8 +936,24 @@ def create_git_router(
         try:
             repo = await get_repo_callback(workspace, alias, user_info)
         except PermissionError:
+            # If anonymous user doesn't have permission, request authentication
+            # This allows git clients to retry with credentials
+            if user_info and getattr(user_info, 'is_anonymous', False):
+                raise HTTPException(
+                    status_code=401,
+                    detail="Authentication required",
+                    headers={"WWW-Authenticate": 'Basic realm="Git Repository"'},
+                )
             raise HTTPException(status_code=403, detail="Permission denied")
-        except KeyError:
+        except KeyError as e:
+            # If anonymous user can't find the artifact, it might be a private repo
+            # Request authentication so git client can retry with credentials
+            if user_info and getattr(user_info, 'is_anonymous', False):
+                raise HTTPException(
+                    status_code=401,
+                    detail="Authentication required",
+                    headers={"WWW-Authenticate": 'Basic realm="Git Repository"'},
+                )
             raise HTTPException(status_code=404, detail="Repository not found")
 
         handler = GitHTTPHandler(repo, read_only=(service == "git-receive-pack" and not user_info))

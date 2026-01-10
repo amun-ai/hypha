@@ -396,14 +396,12 @@ class S3GitObjectStore(BucketBasedObjectStore):
 
         pack_file = io.BytesIO()
 
-        # Write pack
-        def generate_objects():
-            for obj, path in objects:
-                yield obj
+        # Convert to list - write_pack_objects requires len() on objects
+        object_list = [obj for obj, path in objects]
 
         entries, data_sum = write_pack_objects(
             pack_file,
-            generate_objects(),
+            object_list,
             object_format=self.object_format,
         )
 
