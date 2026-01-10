@@ -21,6 +21,17 @@ from . import SERVER_URL, WS_SERVER_URL, SIO_PORT
 pytestmark = pytest.mark.asyncio
 
 
+def get_http_session():
+    """Create an HTTP session that ignores ~/.netrc credentials.
+
+    This prevents stale git credentials from being sent with HTTP requests,
+    which would cause 401 errors when tokens don't match the test JWT_SECRET.
+    """
+    session = requests.Session()
+    session.trust_env = False
+    return session
+
+
 # Server-based Git CLI tests (standalone functions)
 
 
@@ -726,7 +737,8 @@ async def test_git_create_zip_file(
     zip_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/create-zip-file"
 
     # Request ZIP with auth token
-    resp = requests.get(zip_url, params={"token": test_user_token}, timeout=30)
+    http = get_http_session()
+    resp = http.get(zip_url, params={"token": test_user_token}, timeout=30)
     assert resp.status_code == 200, f"Create ZIP failed: {resp.text}"
     assert resp.headers.get("content-type") == "application/zip"
 
@@ -822,7 +834,8 @@ async def test_git_create_zip_file_with_specific_files(
     # Request ZIP with only specific files
     zip_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/create-zip-file"
 
-    resp = requests.get(
+    http = get_http_session()
+    resp = http.get(
         zip_url,
         params={"token": test_user_token, "file": ["file1.txt", "file3.txt"]},
         timeout=30,
@@ -872,7 +885,8 @@ async def test_git_create_zip_file_empty_repo(
     zip_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/create-zip-file"
 
     # Request ZIP from empty repo should return 404
-    resp = requests.get(zip_url, params={"token": test_user_token}, timeout=30)
+    http = get_http_session()
+    resp = http.get(zip_url, params={"token": test_user_token}, timeout=30)
     assert resp.status_code == 404, f"Expected 404 for empty repo, got {resp.status_code}"
 
     # Cleanup
@@ -969,8 +983,9 @@ async def test_git_lfs_files_endpoint_streaming(
         assert result.returncode == 0, f"Push failed: {result.stderr}"
 
     # Test 1: Download LFS file via /files/ endpoint
+    http = get_http_session()
     files_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/files/large_data.bin"
-    resp = requests.get(files_url, params={"token": test_user_token}, timeout=60)
+    resp = http.get(files_url, params={"token": test_user_token}, timeout=60)
     assert resp.status_code == 200, f"Failed to download LFS file: {resp.text}"
 
     # Verify content matches original
@@ -980,13 +995,13 @@ async def test_git_lfs_files_endpoint_streaming(
 
     # Test 2: Download small regular file (should still work)
     small_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/files/README.md"
-    resp = requests.get(small_url, params={"token": test_user_token}, timeout=30)
+    resp = http.get(small_url, params={"token": test_user_token}, timeout=30)
     assert resp.status_code == 200
     assert resp.text == small_content
 
     # Test 3: Create ZIP with LFS file (verify streaming works)
     zip_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/create-zip-file"
-    resp = requests.get(zip_url, params={"token": test_user_token}, timeout=60)
+    resp = http.get(zip_url, params={"token": test_user_token}, timeout=60)
     assert resp.status_code == 200, f"Create ZIP failed: {resp.text}"
 
     # Verify ZIP contents
@@ -1259,7 +1274,8 @@ async def test_git_artifact_put_file_and_commit(
     # Step 5: Get the file content to verify
     workspace = api.config.workspace
     file_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/files/test.txt"
-    resp = requests.get(file_url, params={"token": test_user_token}, timeout=30)
+    http = get_http_session()
+    resp = http.get(file_url, params={"token": test_user_token}, timeout=30)
     assert resp.status_code == 200
     assert resp.content == file_content
 
@@ -1680,7 +1696,8 @@ async def test_git_artifact_nested_directories(
 
     # Get deep file content via files endpoint
     deep_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/files/a/b/c/d/deep_file.txt"
-    resp = requests.get(deep_url, params={"token": test_user_token}, timeout=30)
+    http = get_http_session()
+    resp = http.get(deep_url, params={"token": test_user_token}, timeout=30)
     assert resp.status_code == 200
     assert "Deep nested content" in resp.text
 
@@ -1754,7 +1771,8 @@ async def test_git_artifact_binary_file(
 
     # Download and verify binary content
     file_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/files/data.dat"
-    resp = requests.get(file_url, params={"token": test_user_token}, timeout=30)
+    http = get_http_session()
+    resp = http.get(file_url, params={"token": test_user_token}, timeout=30)
     assert resp.status_code == 200
 
     downloaded_hash = hashlib.sha256(resp.content).hexdigest()

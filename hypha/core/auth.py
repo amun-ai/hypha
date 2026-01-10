@@ -362,7 +362,6 @@ async def extract_token_from_scope(scope: dict) -> str:
         if key.lower() == "authorization":
             # Parse the authorization header to extract the actual token
             token = extract_token_from_authorization(value)
-            logger.debug(f"extract_token_from_scope: authorization header found, extracted token length: {len(token) if token else 0}")
             return token
         # Also check for access_token cookie
         if key.lower() == "cookie":

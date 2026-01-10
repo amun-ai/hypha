@@ -8,8 +8,7 @@ import sys
 import datetime
 from typing import List, Union
 from pydantic import BaseModel
-from fastapi import Header, Cookie, Request, HTTPException
-from jose.exceptions import JWTError, JWTClaimsError, ExpiredSignatureError
+from fastapi import Header, Cookie, Request
 
 from hypha_rpc import RPC
 from hypha_rpc.utils.schema import schema_method
@@ -991,23 +990,19 @@ class RedisStore:
     ):
         """Return user info or create an anonymous user.
 
-        If authorization code is valid the user info is returned,
-        If the code is invalid an anonymous user is created.
+        If a token is provided, it MUST be valid - invalid tokens raise errors.
+        Only if NO token is provided, an anonymous user is returned.
         """
         # Try to extract token using custom function if request is provided
         token = await extract_token_from_scope(request.scope)
         if token:
-            try:
-                user_info = await self.parse_user_token(token)
-                if user_info.scope.current_workspace is None:
-                    user_info.scope.current_workspace = user_info.get_workspace()
-                logger.info(f"login_optional: parsed user_info: id={user_info.id}, is_anonymous={user_info.is_anonymous}")
-                return user_info
-            except (HTTPException, JWTError, JWTClaimsError, ExpiredSignatureError, ValueError, AssertionError) as e:
-                # These are expected token validation failures - fall back to anonymous
-                logger.warning(f"login_optional: token parsing failed: {e}")
-                # Fall through to return anonymous user
-        # Use a fixed anonymous user
+            # Token was provided - it must be valid, no fallback to anonymous
+            user_info = await self.parse_user_token(token)
+            if user_info.scope.current_workspace is None:
+                user_info.scope.current_workspace = user_info.get_workspace()
+            logger.info(f"login_optional: parsed user_info: id={user_info.id}, is_anonymous={user_info.is_anonymous}")
+            return user_info
+        # No token provided - use anonymous user
         self._http_anonymous_user = UserInfo(
             id="anonymouz-http",  # Use anonymouz- prefix for consistency
             is_anonymous=True,
