@@ -2758,7 +2758,7 @@ class ArtifactController:
             dir_path: Directory path to list (None for root)
             limit: Maximum number of files to return
             offset: Number of files to skip
-            version: Git ref/commit to list from
+            version: Git ref/commit to list from ("stage" for staging area)
 
         Returns:
             List of file metadata dictionaries
@@ -2766,6 +2766,12 @@ class ArtifactController:
         from hypha.git.repo import S3GitRepo
 
         s3_config = self._get_s3_config(artifact, parent_artifact)
+
+        # Handle staging version - list from S3 staging area
+        if version == "stage":
+            return await self._list_git_staging_files(
+                artifact, s3_config, dir_path, limit, offset
+            )
 
         # Create S3 client factory for the git repo
         s3_client_factory = partial(self._create_client_async, s3_config)
@@ -2808,6 +2814,56 @@ class ArtifactController:
             result.append(entry)
 
         return result
+
+    async def _list_git_staging_files(
+        self,
+        artifact,
+        s3_config: dict,
+        dir_path: Optional[str],
+        limit: int,
+        offset: int,
+    ) -> List[Dict[str, Any]]:
+        """List files from the git staging area in S3.
+
+        For git storage, staged files are uploaded to:
+        {prefix}/{artifact.id}/staging/{file_path}
+
+        Args:
+            artifact: The artifact model instance
+            s3_config: S3 configuration dict
+            dir_path: Directory path to list (None for root)
+            limit: Maximum number of files to return
+            offset: Number of files to skip
+
+        Returns:
+            List of file metadata dictionaries
+        """
+        # Staging area path: {prefix}/{artifact.id}/staging/
+        if dir_path:
+            staging_prefix = safe_join(
+                s3_config["prefix"],
+                f"{artifact.id}/staging/{dir_path.strip('/')}",
+            ) + "/"
+        else:
+            staging_prefix = safe_join(
+                s3_config["prefix"],
+                f"{artifact.id}/staging",
+            ) + "/"
+
+        async with self._create_client_async(s3_config) as s3_client:
+            items = await list_objects_async(
+                s3_client,
+                s3_config["bucket"],
+                staging_prefix,
+                max_length=limit,
+                offset=offset,
+            )
+
+        # Mark items as staged
+        for item in items:
+            item["staged"] = True
+
+        return items
 
     async def _get_git_file_url(
         self,

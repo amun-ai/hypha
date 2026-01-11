@@ -1281,6 +1281,87 @@ async def test_git_artifact_put_file_and_commit(
     await api.disconnect()
 
 
+async def test_git_artifact_list_staged_files(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test list_files() with stage=True on a git-storage artifact.
+
+    This test verifies that files uploaded to staging can be listed before commit.
+    This is a critical feature for the web UI to show uploaded files before they
+    are committed to the git repository.
+    """
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-list-staged-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    artifact_alias = f"git-list-staged-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Git List Staged Test"},
+        config={"storage": "git"},
+    )
+
+    # Enter staging mode before uploading files
+    await artifact_manager.edit(artifact_id=artifact_alias, stage=True)
+
+    # Upload multiple files to staging
+    put_url1 = await artifact_manager.put_file(artifact_id=artifact_alias, file_path="file1.txt")
+    resp = requests.put(put_url1, data=b"Content of file 1", timeout=30)
+    assert resp.status_code == 200
+
+    put_url2 = await artifact_manager.put_file(artifact_id=artifact_alias, file_path="file2.txt")
+    resp = requests.put(put_url2, data=b"Content of file 2", timeout=30)
+    assert resp.status_code == 200
+
+    # Upload a file in a subdirectory
+    put_url3 = await artifact_manager.put_file(artifact_id=artifact_alias, file_path="subdir/file3.txt")
+    resp = requests.put(put_url3, data=b"Content of file 3 in subdir", timeout=30)
+    assert resp.status_code == 200
+
+    # List staged files (before commit) - this should work!
+    staged_files = await artifact_manager.list_files(artifact_id=artifact_alias, stage=True)
+    staged_names = [f["name"] for f in staged_files]
+
+    # Verify all staged files are listed
+    assert "file1.txt" in staged_names, f"file1.txt not in staged files: {staged_names}"
+    assert "file2.txt" in staged_names, f"file2.txt not in staged files: {staged_names}"
+    # Note: subdir/file3.txt might be listed as "subdir" directory or full path depending on implementation
+    # At root level we should see either "subdir" directory or the files
+
+    # Verify files have the staged marker
+    for f in staged_files:
+        if f["type"] == "file":
+            assert f.get("staged") is True, f"File {f['name']} should have staged=True"
+
+    # List files without stage=True - should be empty since nothing is committed yet
+    committed_files = await artifact_manager.list_files(artifact_id=artifact_alias)
+    # For git storage, an empty repo or no commits means empty list
+    assert len(committed_files) == 0 or committed_files == [], f"Expected empty committed files, got: {committed_files}"
+
+    # Now commit and verify files appear in committed listing
+    result = await artifact_manager.commit(artifact_id=artifact_alias, comment="Add staged files")
+    assert result is not None
+
+    # List files after commit (without stage=True) - should now see files
+    committed_files = await artifact_manager.list_files(artifact_id=artifact_alias)
+    committed_names = [f["name"] for f in committed_files]
+    assert "file1.txt" in committed_names, f"file1.txt not in committed files: {committed_names}"
+    assert "file2.txt" in committed_names, f"file2.txt not in committed files: {committed_names}"
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
+
+
 async def test_git_artifact_remove_file(
     minio_server,
     fastapi_server,
