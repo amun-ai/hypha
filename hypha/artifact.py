@@ -46,6 +46,7 @@ from aiobotocore.session import get_session
 from botocore.config import Config
 from zipfile import ZipFile
 import zlib
+import base64
 from hypha.utils import zip_utils
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -6624,6 +6625,455 @@ class ArtifactController:
             await session.close()
 
     @schema_method
+    async def read_file(
+        self,
+        artifact_id: str = PydanticField(
+            ...,
+            description="Artifact identifier to read file from. Format: 'workspace/alias' or just 'alias' (uses current workspace)."
+        ),
+        file_path: str = PydanticField(
+            ...,
+            description="Path to the file within the artifact. Use forward slashes for nested paths (e.g., 'data/train.csv')."
+        ),
+        format: str = PydanticField(
+            "text",
+            description="Output format: 'text' (decoded string), 'binary' (raw bytes), 'base64' (base64-encoded string), or 'json' (parsed JSON object)."
+        ),
+        encoding: str = PydanticField(
+            "utf-8",
+            description="Text encoding to use when format='text' or 'json'. Common values: 'utf-8', 'ascii', 'latin-1'."
+        ),
+        offset: int = PydanticField(
+            0,
+            description="Byte offset to start reading from. Must be >= 0. Used for partial/chunked reads.",
+            ge=0
+        ),
+        limit: Optional[int] = PydanticField(
+            None,
+            description="Maximum number of bytes to read. Defaults to 64KB. Maximum allowed is 10MB (10485760)."
+        ),
+        version: Optional[str] = PydanticField(
+            None,
+            description="Version to read from (e.g., 'v1.0', 'latest', commit SHA for git). Use 'stage' to read staged changes."
+        ),
+        stage: bool = PydanticField(
+            False,
+            description="Read from staged (uncommitted) storage. Cannot be used with version parameter."
+        ),
+        context: Optional[dict] = PydanticField(
+            None,
+            description="Context containing user info and workspace. Usually provided automatically by the system."
+        ),
+    ) -> Dict[str, Any]:
+        """Read file content from an artifact with flexible encoding options.
+
+        This method reads file content directly without generating presigned URLs,
+        making it convenient for AI agents and programmatic access. Supports both
+        git-based and raw S3-based artifact storage.
+
+        For git storage:
+        - Reads from git commits using version (branch/tag/commit SHA)
+        - Use stage=True to read from git staging area
+        - Supports LFS (Large File Storage) for large files
+
+        For raw storage:
+        - Reads from S3 versioned storage
+        - Use stage=True to read from staging version
+
+        Returns:
+            Dictionary with 'name' (file path) and 'content' (file data).
+            Content type depends on format parameter:
+            - text: decoded string using specified encoding
+            - binary: raw bytes
+            - base64: base64-encoded ASCII string
+            - json: parsed Python dict/list from JSON
+
+        Examples:
+            # Read text file
+            result = await read_file("my-dataset", "README.md")
+            text = result["content"]  # string
+
+            # Read JSON file as parsed object
+            result = await read_file("my-dataset", "config.json", format="json")
+            config = result["content"]  # dict or list
+
+            # Read binary file as base64
+            result = await read_file("my-model", "weights.bin", format="base64")
+            binary_data = base64.b64decode(result["content"])
+
+            # Read specific version
+            result = await read_file("my-dataset", "data.csv", version="v1.0")
+
+            # Partial read (chunked)
+            result = await read_file("my-dataset", "large.txt", offset=1000, limit=5000)
+
+        Raises:
+            ValueError: If artifact_id invalid, format invalid, or limit exceeded
+            PermissionError: If user lacks read permission
+            FileNotFoundError: If file not found (via HTTPException 404)
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.from_context(context)
+
+        if stage:
+            assert version is None or version == "stage", "You cannot specify a version when using stage mode."
+            version = "stage"
+
+        # Validate offset/limit
+        default_limit = 64 * 1024  # 64KB
+        max_limit = 10 * 1024 * 1024  # 10MB
+        read_limit = default_limit if limit is None else int(limit)
+        if read_limit <= 0:
+            raise ValueError("Limit must be a positive integer.")
+        if read_limit > max_limit:
+            raise ValueError(f"Limit cannot exceed 10MB ({max_limit} bytes).")
+
+        session = await self._get_session(read_only=True)
+        try:
+            async with session.begin():
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "get_file", session
+                )
+
+                config = artifact.config or {}
+
+                if config.get("storage") == "git":
+                    # Handle git storage
+                    data_bytes = await self._read_git_file_content(
+                        artifact, parent_artifact, file_path, version, offset, read_limit
+                    )
+                else:
+                    # Handle raw S3 storage
+                    version_index = self._get_version_index(artifact, version)
+                    s3_config = self._get_s3_config(artifact, parent_artifact)
+
+                    async with self._create_client_async(s3_config) as s3_client:
+                        file_key = safe_join(
+                            s3_config["prefix"],
+                            f"{artifact.id}/v{version_index}/{file_path}",
+                        )
+                        # Use ranged read for safety
+                        end_byte = offset + read_limit - 1
+                        try:
+                            response = await s3_client.get_object(
+                                Bucket=s3_config["bucket"],
+                                Key=file_key,
+                                Range=f"bytes={offset}-{end_byte}",
+                            )
+                            data_bytes = await response["Body"].read()
+                        except ClientError as e:
+                            if e.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
+                                raise HTTPException(
+                                    status_code=404,
+                                    detail=f"File '{file_path}' not found in artifact."
+                                )
+                            raise
+
+        finally:
+            await session.close()
+
+        # Format the output
+        fmt = (format or "text").lower()
+        if fmt == "text":
+            content: Any = data_bytes.decode(encoding or "utf-8")
+        elif fmt == "base64":
+            content = base64.b64encode(data_bytes).decode("ascii")
+        elif fmt == "binary":
+            content = data_bytes
+        elif fmt == "json":
+            text_content = data_bytes.decode(encoding or "utf-8")
+            content = json.loads(text_content)
+        else:
+            raise ValueError("Invalid format. Expected 'text', 'binary', 'base64', or 'json'.")
+
+        return {"name": file_path, "content": content}
+
+    async def _read_git_file_content(
+        self,
+        artifact,
+        parent_artifact,
+        file_path: str,
+        version: Optional[str],
+        offset: int,
+        limit: int,
+    ) -> bytes:
+        """Read file content from a git-storage artifact.
+
+        Args:
+            artifact: The artifact model instance
+            parent_artifact: Parent artifact for S3 config inheritance
+            file_path: Path within the git repository
+            version: Git ref/commit (defaults to HEAD), or 'stage' for staging area
+            offset: Byte offset to start reading from
+            limit: Maximum bytes to read
+
+        Returns:
+            File content as bytes (sliced according to offset/limit)
+        """
+        from hypha.git.repo import S3GitRepo
+        from hypha.git.lfs import LFSPointer
+
+        s3_config = self._get_s3_config(artifact, parent_artifact)
+
+        # Check if reading from staging area
+        if version == "stage":
+            # Read from git staging area in S3
+            staging_key = safe_join(
+                s3_config["prefix"],
+                f"{artifact.id}/staging/{file_path}",
+            )
+            async with self._create_client_async(s3_config) as s3_client:
+                try:
+                    end_byte = offset + limit - 1
+                    response = await s3_client.get_object(
+                        Bucket=s3_config["bucket"],
+                        Key=staging_key,
+                        Range=f"bytes={offset}-{end_byte}",
+                    )
+                    return await response["Body"].read()
+                except ClientError as e:
+                    if e.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"Staged file '{file_path}' not found."
+                        )
+                    raise
+
+        # Read from git repository
+        s3_client_factory = partial(self._create_client_async, s3_config)
+        prefix = f"{s3_config['prefix']}/{artifact.id}/.git"
+        repo = S3GitRepo(s3_client_factory, s3_config["bucket"], prefix, s3_config=s3_config)
+        await repo.initialize()
+
+        # Check if repository is empty
+        if await repo.is_empty():
+            raise HTTPException(
+                status_code=404,
+                detail="Repository is empty (no commits)",
+            )
+
+        # Resolve version to commit SHA
+        commit_sha = await self._resolve_git_version(repo, version)
+
+        # Get file content
+        content = await repo.get_file_content_async(file_path.strip("/"), commit_sha)
+        if content is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"File '{file_path}' not found in repository."
+            )
+
+        # Check if this is an LFS pointer
+        lfs_pointer = LFSPointer.parse(content)
+        if lfs_pointer is not None:
+            # Read from S3 LFS storage
+            base_path = f"{s3_config['prefix']}/{artifact.id}"
+            lfs_s3_path = lfs_pointer.get_s3_path(base_path)
+
+            async with self._create_client_async(s3_config) as s3_client:
+                try:
+                    end_byte = offset + limit - 1
+                    response = await s3_client.get_object(
+                        Bucket=s3_config["bucket"],
+                        Key=lfs_s3_path,
+                        Range=f"bytes={offset}-{end_byte}",
+                    )
+                    return await response["Body"].read()
+                except ClientError as e:
+                    if e.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"LFS object not found: {lfs_pointer.oid[:8]}..."
+                        )
+                    raise
+
+        # Regular git blob content - apply offset/limit
+        return content[offset:offset + limit]
+
+    @schema_method
+    async def write_file(
+        self,
+        artifact_id: str = PydanticField(
+            ...,
+            description="Artifact identifier to write file to. Format: 'workspace/alias' or just 'alias' (uses current workspace)."
+        ),
+        file_path: str = PydanticField(
+            ...,
+            description="Path where to store the file within the artifact. Use forward slashes for nested paths (e.g., 'data/output.json')."
+        ),
+        content: Any = PydanticField(
+            ...,
+            description="File content. Interpreted based on 'format': string for text/base64, bytes for binary, dict/list for json."
+        ),
+        format: str = PydanticField(
+            "text",
+            description="Input format: 'text' (string to encode), 'binary' (raw bytes), 'base64' (base64 string to decode), or 'json' (dict/list to serialize)."
+        ),
+        encoding: str = PydanticField(
+            "utf-8",
+            description="Text encoding to use when format='text' or 'json'. Common values: 'utf-8', 'ascii', 'latin-1'."
+        ),
+        context: Optional[dict] = PydanticField(
+            None,
+            description="Context containing user info and workspace. Usually provided automatically by the system."
+        ),
+    ) -> Dict[str, Any]:
+        """Write file content into an artifact with flexible encoding options.
+
+        This method writes file content directly without requiring presigned URLs,
+        making it convenient for AI agents and programmatic access. Supports both
+        git-based and raw S3-based artifact storage.
+
+        IMPORTANT: Requires the artifact to be in staging mode (call edit() with stage=True first).
+        After writing files, call commit() to finalize changes.
+
+        For git storage:
+        - Files are written to the git staging area
+        - Call commit() to add files to git repository
+
+        For raw storage:
+        - Files are written to the staging version in S3
+        - Call commit() to finalize the version
+
+        Returns:
+            Dictionary with 'success' (bool) and 'bytes_written' (int).
+
+        Examples:
+            # Write text file
+            await artifact_manager.edit("my-dataset", stage=True)
+            await write_file("my-dataset", "README.md", "# My Dataset\\n...")
+            await artifact_manager.commit("my-dataset")
+
+            # Write binary file using base64
+            import base64
+            binary_data = b"..."
+            encoded = base64.b64encode(binary_data).decode()
+            await write_file("my-model", "weights.bin", encoded, format="base64")
+
+            # Write JSON data directly (no manual serialization needed)
+            data = {"key": "value", "items": [1, 2, 3]}
+            await write_file("my-dataset", "config.json", data, format="json")
+
+        Raises:
+            ValueError: If artifact_id invalid, format invalid, or artifact not in staging mode
+            PermissionError: If user lacks write permission
+            AssertionError: If artifact is not in staging mode
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.from_context(context)
+
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "put_file", session
+                )
+
+                if artifact.staging is None:
+                    raise ValueError(
+                        "Artifact must be in staging mode. Call edit(artifact_id, stage=True) first."
+                    )
+                artifact.staging = convert_legacy_staging(artifact.staging)
+
+                # Convert content to bytes based on format
+                fmt = (format or "text").lower()
+                if fmt == "text":
+                    if not isinstance(content, str):
+                        raise ValueError("When format='text', content must be a string.")
+                    body = content.encode(encoding or "utf-8")
+                elif fmt == "base64":
+                    if not isinstance(content, str):
+                        raise ValueError("When format='base64', content must be a base64 string.")
+                    body = base64.b64decode(content)
+                elif fmt == "binary":
+                    if isinstance(content, (bytes, bytearray)):
+                        body = bytes(content)
+                    else:
+                        raise ValueError("When format='binary', content must be bytes or bytearray.")
+                elif fmt == "json":
+                    if isinstance(content, str):
+                        # Already serialized JSON string
+                        body = content.encode(encoding or "utf-8")
+                    else:
+                        # Serialize dict/list to JSON
+                        body = json.dumps(content, indent=2, ensure_ascii=False).encode(encoding or "utf-8")
+                else:
+                    raise ValueError("Invalid format. Expected 'text', 'binary', 'base64', or 'json'.")
+
+                config = artifact.config or {}
+                s3_config = self._get_s3_config(artifact, parent_artifact)
+
+                if config.get("storage") == "git":
+                    # For git storage, write to staging area
+                    staging_key = safe_join(
+                        s3_config["prefix"],
+                        f"{artifact.id}/staging/{file_path}",
+                    )
+                    async with self._create_client_async(s3_config) as s3_client:
+                        content_type, _ = mimetypes.guess_type(file_path)
+                        await s3_client.put_object(
+                            Bucket=s3_config["bucket"],
+                            Key=staging_key,
+                            Body=body,
+                            **({"ContentType": content_type} if content_type else {}),
+                        )
+
+                    # Track file in staging manifest
+                    staging_dict = artifact.staging or {}
+                    staged_files = staging_dict.get("files", [])
+                    # Remove existing entry for this path if present
+                    staged_files = [f for f in staged_files if f.get("path") != file_path]
+                    staged_files.append({"path": file_path})
+                    staging_dict["files"] = staged_files
+                    artifact.staging = staging_dict
+                    flag_modified(artifact, "staging")
+
+                else:
+                    # For raw S3 storage, write to staging version
+                    staging_dict = artifact.staging or {}
+                    has_new_version_intent = staging_dict.get("_intent") == "new_version"
+                    if has_new_version_intent:
+                        target_version_index = len(artifact.versions or [])
+                    else:
+                        target_version_index = max(0, len(artifact.versions or []) - 1)
+
+                    async with self._create_client_async(s3_config) as s3_client:
+                        file_key = safe_join(
+                            s3_config["prefix"],
+                            f"{artifact.id}/v{target_version_index}/{file_path}",
+                        )
+                        content_type, _ = mimetypes.guess_type(file_path)
+                        await s3_client.put_object(
+                            Bucket=s3_config["bucket"],
+                            Key=file_key,
+                            Body=body,
+                            **({"ContentType": content_type} if content_type else {}),
+                        )
+
+                    # Track file in staging manifest
+                    staged_files = staging_dict.get("files", [])
+                    if not any(f.get("path") == file_path for f in staged_files):
+                        staged_files.append({"path": file_path})
+                        staging_dict["files"] = staged_files
+                        artifact.staging = staging_dict
+                        flag_modified(artifact, "staging")
+
+                    # Save artifact state to S3
+                    await self._save_version_to_s3(target_version_index, artifact, s3_config)
+
+                session.add(artifact)
+                await session.commit()
+
+                return {"success": True, "bytes_written": len(body)}
+
+        finally:
+            await session.close()
+
+    @schema_method
     async def list_files(
         self,
         artifact_id: str = PydanticField(
@@ -8200,6 +8650,8 @@ class ArtifactController:
             "put_file_complete_multipart": self.put_file_complete_multipart,
             "remove_file": self.remove_file,
             "get_file": self.get_file,
+            "read_file": self.read_file,
+            "write_file": self.write_file,
             "list": self.list_children,
             "list_children": self.list_children,
             "list_files": self.list_files,

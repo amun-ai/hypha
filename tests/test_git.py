@@ -1983,3 +1983,261 @@ async def test_git_file_url_token_cannot_access_other_files(
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
     await api.disconnect()
+
+
+# Tests for read_file and write_file with git storage
+
+
+async def test_git_read_write_file(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test read_file and write_file with git-storage artifact."""
+    import subprocess
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    # Connect to the server and create a git-storage artifact
+    api = await connect_to_server({
+        "name": "git-readwrite-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    artifact_alias = f"git-rw-test-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Git Read Write Test"},
+        config={"storage": "git"},
+    )
+
+    workspace = api.config.workspace
+    port = SIO_PORT
+    auth_url = f"http://git:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
+
+    import tempfile
+    import os
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Initialize local repo and push initial files
+        repo_dir = os.path.join(tmpdir, "repo")
+        subprocess.run(
+            ["git", "clone", auth_url, repo_dir],
+            capture_output=True, check=False, timeout=30
+        )
+
+        os.makedirs(repo_dir, exist_ok=True)
+        os.chdir(repo_dir)
+        subprocess.run(["git", "init"], capture_output=True, check=True)
+
+        # Create test files
+        with open(os.path.join(repo_dir, "readme.txt"), "w") as f:
+            f.write("Hello, this is the initial readme content!")
+
+        with open(os.path.join(repo_dir, "data.json"), "w") as f:
+            f.write('{"key": "initial_value"}')
+
+        # Setup git config and commit
+        subprocess.run(["git", "config", "user.email", "test@test.com"], capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], capture_output=True, check=True)
+        subprocess.run(["git", "add", "."], capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "Initial commit"], capture_output=True, check=True)
+        subprocess.run(["git", "remote", "add", "origin", auth_url], capture_output=True, check=False)
+        subprocess.run(["git", "push", "-u", "origin", "main", "--force"], capture_output=True, check=True, timeout=30)
+
+    # Test 1: Read file as text
+    result = await artifact_manager.read_file(
+        artifact_id=artifact_alias,
+        file_path="readme.txt",
+        format="text"
+    )
+    assert result["name"] == "readme.txt"
+    assert result["content"] == "Hello, this is the initial readme content!"
+
+    # Test 2: Read file as base64
+    result = await artifact_manager.read_file(
+        artifact_id=artifact_alias,
+        file_path="data.json",
+        format="base64"
+    )
+    assert result["name"] == "data.json"
+    import base64
+    decoded = base64.b64decode(result["content"]).decode("utf-8")
+    assert decoded == '{"key": "initial_value"}'
+
+    # Test 3: Read file with partial read (offset/limit)
+    result = await artifact_manager.read_file(
+        artifact_id=artifact_alias,
+        file_path="readme.txt",
+        format="text",
+        offset=7,  # Skip "Hello, "
+        limit=4    # Read "this"
+    )
+    assert result["content"] == "this"
+
+    # Test 4: Write file using staging
+    await artifact_manager.edit(artifact_alias, stage=True)
+
+    write_result = await artifact_manager.write_file(
+        artifact_id=artifact_alias,
+        file_path="new_file.txt",
+        content="This is a new file created via write_file!",
+        format="text"
+    )
+    assert write_result["success"] is True
+    assert write_result["bytes_written"] == len("This is a new file created via write_file!")
+
+    # Test 5: Read from staging before commit
+    staged_result = await artifact_manager.read_file(
+        artifact_id=artifact_alias,
+        file_path="new_file.txt",
+        format="text",
+        stage=True
+    )
+    assert staged_result["content"] == "This is a new file created via write_file!"
+
+    # Test 6: Write file with base64 format
+    import base64
+    binary_content = b"\x00\x01\x02\x03binary data"
+    encoded_content = base64.b64encode(binary_content).decode("ascii")
+
+    write_result = await artifact_manager.write_file(
+        artifact_id=artifact_alias,
+        file_path="binary_file.bin",
+        content=encoded_content,
+        format="base64"
+    )
+    assert write_result["success"] is True
+
+    # Read it back and verify
+    read_result = await artifact_manager.read_file(
+        artifact_id=artifact_alias,
+        file_path="binary_file.bin",
+        format="base64",
+        stage=True
+    )
+    assert base64.b64decode(read_result["content"]) == binary_content
+
+    # Test 7: Commit and verify files are accessible
+    await artifact_manager.commit(artifact_alias, comment="Added new files via write_file")
+
+    # Read the committed file
+    result = await artifact_manager.read_file(
+        artifact_id=artifact_alias,
+        file_path="new_file.txt",
+        format="text"
+    )
+    assert result["content"] == "This is a new file created via write_file!"
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
+
+
+async def test_git_read_file_not_found(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test read_file returns proper error when file doesn't exist."""
+    import subprocess
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-read-notfound-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    artifact_alias = f"git-notfound-test-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Git Not Found Test"},
+        config={"storage": "git"},
+    )
+
+    workspace = api.config.workspace
+    port = SIO_PORT
+    auth_url = f"http://git:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
+
+    import tempfile
+    import os
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        repo_dir = os.path.join(tmpdir, "repo")
+        os.makedirs(repo_dir, exist_ok=True)
+        os.chdir(repo_dir)
+        subprocess.run(["git", "init"], capture_output=True, check=True)
+
+        with open(os.path.join(repo_dir, "exists.txt"), "w") as f:
+            f.write("This file exists")
+
+        subprocess.run(["git", "config", "user.email", "test@test.com"], capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], capture_output=True, check=True)
+        subprocess.run(["git", "add", "."], capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "Initial commit"], capture_output=True, check=True)
+        subprocess.run(["git", "remote", "add", "origin", auth_url], capture_output=True, check=False)
+        subprocess.run(["git", "push", "-u", "origin", "main", "--force"], capture_output=True, check=True, timeout=30)
+
+    # Try to read a file that doesn't exist
+    try:
+        await artifact_manager.read_file(
+            artifact_id=artifact_alias,
+            file_path="nonexistent.txt",
+            format="text"
+        )
+        assert False, "Expected an error when reading nonexistent file"
+    except Exception as e:
+        # The error should mention "not found"
+        assert "not found" in str(e).lower() or "404" in str(e)
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
+
+
+async def test_write_file_requires_staging(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test that write_file requires artifact to be in staging mode."""
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "write-staging-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    artifact_alias = f"write-staging-test-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Write Staging Test"},
+        config={"storage": "git"},
+    )
+
+    # Try to write without entering staging mode - should fail
+    try:
+        await artifact_manager.write_file(
+            artifact_id=artifact_alias,
+            file_path="test.txt",
+            content="test content",
+            format="text"
+        )
+        assert False, "Expected an error when writing without staging mode"
+    except Exception as e:
+        assert "staging" in str(e).lower()
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()

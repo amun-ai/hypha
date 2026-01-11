@@ -10031,3 +10031,350 @@ async def test_list_files_pagination(minio_server, fastapi_server_sqlite, test_u
     # Clean up
     await artifact_manager.delete(dataset.id)
     print("Successfully tested file listing pagination")
+
+
+async def test_read_write_file_raw_storage(
+    minio_server, fastapi_server_sqlite, test_user_token
+):
+    """Test read_file and write_file with raw (S3) storage."""
+    import base64
+
+    api = await connect_to_server(
+        {
+            "name": "read-write-raw-client",
+            "server_url": SERVER_URL_SQLITE,
+            "token": test_user_token,
+        }
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a dataset (uses raw storage by default)
+    dataset = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Read Write Test Dataset"},
+        version="stage",
+    )
+
+    # Test 1: Write and read text file
+    await artifact_manager.write_file(
+        artifact_id=dataset.id,
+        file_path="readme.txt",
+        content="This is the readme content for testing!",
+        format="text"
+    )
+
+    # Read the staged file
+    result = await artifact_manager.read_file(
+        artifact_id=dataset.id,
+        file_path="readme.txt",
+        format="text",
+        stage=True
+    )
+    assert result["name"] == "readme.txt"
+    assert result["content"] == "This is the readme content for testing!"
+
+    # Test 2: Write and read with base64 format
+    binary_data = b"\x00\x01\x02\x03\x04\x05binary content"
+    encoded_data = base64.b64encode(binary_data).decode("ascii")
+
+    await artifact_manager.write_file(
+        artifact_id=dataset.id,
+        file_path="data.bin",
+        content=encoded_data,
+        format="base64"
+    )
+
+    result = await artifact_manager.read_file(
+        artifact_id=dataset.id,
+        file_path="data.bin",
+        format="base64",
+        stage=True
+    )
+    decoded = base64.b64decode(result["content"])
+    assert decoded == binary_data
+
+    # Test 3: Commit and verify files persist
+    await artifact_manager.commit(dataset.id)
+
+    # Read committed file
+    result = await artifact_manager.read_file(
+        artifact_id=dataset.id,
+        file_path="readme.txt",
+        format="text"
+    )
+    assert result["content"] == "This is the readme content for testing!"
+
+    # Test 4: Partial read with offset and limit
+    result = await artifact_manager.read_file(
+        artifact_id=dataset.id,
+        file_path="readme.txt",
+        format="text",
+        offset=12,  # Skip "This is the "
+        limit=6     # Read "readme"
+    )
+    assert result["content"] == "readme"
+
+    # Test 5: Read as base64
+    result = await artifact_manager.read_file(
+        artifact_id=dataset.id,
+        file_path="readme.txt",
+        format="base64"
+    )
+    decoded = base64.b64decode(result["content"]).decode("utf-8")
+    assert "readme content" in decoded
+
+    # Clean up
+    await artifact_manager.delete(dataset.id)
+    await api.disconnect()
+
+
+async def test_read_write_file_json(
+    minio_server, fastapi_server_sqlite, test_user_token
+):
+    """Test read_file and write_file with JSON format."""
+    api = await connect_to_server(
+        {
+            "name": "json-client",
+            "server_url": SERVER_URL_SQLITE,
+            "token": test_user_token,
+        }
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a dataset
+    dataset = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "JSON Test Dataset"},
+        version="stage",
+    )
+
+    # Test 1: Write JSON with dict (auto-serialization)
+    json_data = {"name": "test", "values": [1, 2, 3], "nested": {"key": "value"}}
+    await artifact_manager.write_file(
+        artifact_id=dataset.id,
+        file_path="config.json",
+        content=json_data,
+        format="json"
+    )
+
+    # Read JSON back as parsed object
+    result = await artifact_manager.read_file(
+        artifact_id=dataset.id,
+        file_path="config.json",
+        format="json",
+        stage=True
+    )
+    assert result["name"] == "config.json"
+    assert result["content"] == json_data
+    assert result["content"]["nested"]["key"] == "value"
+
+    # Test 2: Write JSON string (pre-serialized)
+    json_string = '{"pre": "serialized"}'
+    await artifact_manager.write_file(
+        artifact_id=dataset.id,
+        file_path="pre_serialized.json",
+        content=json_string,
+        format="json"
+    )
+
+    result = await artifact_manager.read_file(
+        artifact_id=dataset.id,
+        file_path="pre_serialized.json",
+        format="json",
+        stage=True
+    )
+    assert result["content"]["pre"] == "serialized"
+
+    # Test 3: Commit and verify persistence
+    await artifact_manager.commit(dataset.id)
+
+    # Read committed JSON file
+    result = await artifact_manager.read_file(
+        artifact_id=dataset.id,
+        file_path="config.json",
+        format="json"
+    )
+    assert result["content"] == json_data
+
+    # Test 4: Read JSON as text (raw content)
+    result = await artifact_manager.read_file(
+        artifact_id=dataset.id,
+        file_path="config.json",
+        format="text"
+    )
+    assert '"name": "test"' in result["content"]
+
+    # Clean up
+    await artifact_manager.delete(dataset.id)
+    await api.disconnect()
+
+
+async def test_write_file_without_staging_fails(
+    minio_server, fastapi_server_sqlite, test_user_token
+):
+    """Test that write_file fails if artifact is not in staging mode."""
+    api = await connect_to_server(
+        {
+            "name": "write-no-staging-client",
+            "server_url": SERVER_URL_SQLITE,
+            "token": test_user_token,
+        }
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create and commit a dataset (not in staging mode)
+    dataset = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "No Staging Test"},
+        version="stage",
+    )
+    await artifact_manager.commit(dataset.id)
+
+    # Try to write without staging - should fail
+    try:
+        await artifact_manager.write_file(
+            artifact_id=dataset.id,
+            file_path="test.txt",
+            content="test",
+            format="text"
+        )
+        assert False, "Expected error when writing without staging"
+    except Exception as e:
+        assert "staging" in str(e).lower()
+
+    # Clean up
+    await artifact_manager.delete(dataset.id)
+    await api.disconnect()
+
+
+async def test_read_file_not_found(
+    minio_server, fastapi_server_sqlite, test_user_token
+):
+    """Test that read_file returns error for nonexistent file."""
+    api = await connect_to_server(
+        {
+            "name": "read-notfound-client",
+            "server_url": SERVER_URL_SQLITE,
+            "token": test_user_token,
+        }
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create and commit a dataset with one file
+    dataset = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Not Found Test"},
+        version="stage",
+    )
+
+    await artifact_manager.write_file(
+        artifact_id=dataset.id,
+        file_path="exists.txt",
+        content="I exist",
+        format="text"
+    )
+    await artifact_manager.commit(dataset.id)
+
+    # Try to read a file that doesn't exist
+    try:
+        await artifact_manager.read_file(
+            artifact_id=dataset.id,
+            file_path="does_not_exist.txt",
+            format="text"
+        )
+        assert False, "Expected error when reading nonexistent file"
+    except Exception as e:
+        assert "not found" in str(e).lower() or "404" in str(e)
+
+    # Clean up
+    await artifact_manager.delete(dataset.id)
+    await api.disconnect()
+
+
+async def test_read_file_invalid_format(
+    minio_server, fastapi_server_sqlite, test_user_token
+):
+    """Test that read_file rejects invalid format parameter."""
+    api = await connect_to_server(
+        {
+            "name": "read-invalid-format-client",
+            "server_url": SERVER_URL_SQLITE,
+            "token": test_user_token,
+        }
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create and commit a dataset with one file
+    dataset = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Invalid Format Test"},
+        version="stage",
+    )
+
+    await artifact_manager.write_file(
+        artifact_id=dataset.id,
+        file_path="test.txt",
+        content="test content",
+        format="text"
+    )
+    await artifact_manager.commit(dataset.id)
+
+    # Try to read with invalid format
+    try:
+        await artifact_manager.read_file(
+            artifact_id=dataset.id,
+            file_path="test.txt",
+            format="invalid_format"
+        )
+        assert False, "Expected error for invalid format"
+    except Exception as e:
+        assert "format" in str(e).lower() or "invalid" in str(e).lower()
+
+    # Clean up
+    await artifact_manager.delete(dataset.id)
+    await api.disconnect()
+
+
+async def test_read_file_limit_exceeded(
+    minio_server, fastapi_server_sqlite, test_user_token
+):
+    """Test that read_file rejects limit exceeding maximum."""
+    api = await connect_to_server(
+        {
+            "name": "read-limit-exceeded-client",
+            "server_url": SERVER_URL_SQLITE,
+            "token": test_user_token,
+        }
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create and commit a dataset
+    dataset = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Limit Exceeded Test"},
+        version="stage",
+    )
+
+    await artifact_manager.write_file(
+        artifact_id=dataset.id,
+        file_path="test.txt",
+        content="test content",
+        format="text"
+    )
+    await artifact_manager.commit(dataset.id)
+
+    # Try to read with limit exceeding 10MB
+    try:
+        await artifact_manager.read_file(
+            artifact_id=dataset.id,
+            file_path="test.txt",
+            format="text",
+            limit=15 * 1024 * 1024  # 15MB
+        )
+        assert False, "Expected error for limit exceeding maximum"
+    except Exception as e:
+        assert "limit" in str(e).lower() or "10mb" in str(e).lower() or "exceed" in str(e).lower()
+
+    # Clean up
+    await artifact_manager.delete(dataset.id)
+    await api.disconnect()
