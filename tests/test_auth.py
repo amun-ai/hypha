@@ -1131,6 +1131,25 @@ class TestSpecializedScopeTokens:
         )
         assert not empty_scope.is_specialized()
 
+        # Standard OAuth scopes (without colon) should NOT be treated as specialized
+        # These are commonly added by Auth0 and other OAuth providers
+        oauth_scope = ScopeInfo(
+            workspaces={"ws-test": UserPermission.read_write},
+            extra_scopes=["openid", "profile", "email", "offline_access"],
+        )
+        assert not oauth_scope.is_specialized(), (
+            "Standard OAuth scopes should not be treated as specialized tokens"
+        )
+
+        # Mixed scopes: should be specialized if ANY scope has colon format
+        mixed_scope = ScopeInfo(
+            workspaces={"ws-test": UserPermission.read_write},
+            extra_scopes=["openid", "profile", "file:download"],  # file:download makes it specialized
+        )
+        assert mixed_scope.is_specialized()
+        # get_specialized_scopes should only return the colon-format scope
+        assert mixed_scope.get_specialized_scopes() == ["file:download"]
+
     def test_scope_has_scope(self):
         """Test ScopeInfo.has_scope() method."""
         scope = ScopeInfo(

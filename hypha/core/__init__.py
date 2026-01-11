@@ -229,10 +229,29 @@ class ScopeInfo(BaseModel):
     def is_specialized(self) -> bool:
         """Check if this scope represents a specialized token.
 
-        Specialized tokens have extra_scopes and can only be used for their
-        specific purpose (e.g., file downloads), not for general workspace access.
+        Specialized tokens have extra_scopes with our custom format (resource:action)
+        and can only be used for their specific purpose (e.g., file downloads),
+        not for general workspace access.
+
+        Standard OAuth scopes (like 'openid', 'profile', 'email') don't contain
+        colons and are NOT considered specialized tokens.
+
+        Our specialized scopes follow the format `resource:action` (e.g., `file:download`,
+        `artifact:read`), which always contains a colon.
         """
-        return bool(self.extra_scopes)
+        return bool(self.get_specialized_scopes())
+
+    def get_specialized_scopes(self) -> List[str]:
+        """Get only the specialized scopes (our custom resource:action format).
+
+        Returns:
+            List of scopes that follow our resource:action format (contain colon)
+        """
+        if not self.extra_scopes:
+            return []
+        # Our specialized scopes use resource:action format (contain colon)
+        # Standard OAuth scopes (openid, profile, email, etc.) don't contain colons
+        return [s for s in self.extra_scopes if ":" in s]
 
     def has_scope(self, required_scope: str) -> bool:
         """Check if this scope includes the required specialized scope.
@@ -369,7 +388,9 @@ class UserInfo(BaseModel):
                            for general workspace operations.
         """
         if self.is_specialized_token():
-            scopes = ", ".join(self.scope.extra_scopes)
+            # Only show specialized scopes (not standard OAuth scopes) in the error
+            specialized_scopes = self.scope.get_specialized_scopes()
+            scopes = ", ".join(specialized_scopes)
             raise PermissionError(
                 f"Specialized token with scopes [{scopes}] cannot be used for "
                 f"general workspace access. This token can only be used for its "

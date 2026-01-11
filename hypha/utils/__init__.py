@@ -16,12 +16,10 @@ import logging
 
 import httpx
 from fastapi.routing import APIRoute
-from starlette.datastructures import Headers, MutableHeaders
+from starlette.datastructures import MutableHeaders
 from starlette.middleware.cors import CORSMiddleware
-from starlette.middleware.gzip import GZipResponder
 from starlette.requests import Request
 from starlette.responses import Response
-from starlette.types import ASGIApp, Receive, Scope, Send
 
 _os_alt_seps: List[str] = list(
     sep for sep in [os.path.sep, os.path.altsep] if sep is not None and sep != "/"
@@ -390,42 +388,6 @@ async def remove_objects_async(s3_client, bucket, prefix, delimiter=""):
                 "ResponseMetadata" in delete_response
                 and delete_response["ResponseMetadata"]["HTTPStatusCode"] == 200
             )
-
-
-class GZipMiddleware:
-    """Middleware to gzip responses (fixed to not encoding twice)."""
-
-    def __init__(
-        self, app: ASGIApp, minimum_size: int = 500, compresslevel: int = 9
-    ) -> None:
-        """Initialize the middleware."""
-        self.app = app
-        self.minimum_size = minimum_size
-        self.compresslevel = compresslevel
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Call the middleware."""
-        if scope["type"] == "http":
-            headers = Headers(scope=scope)
-            path = scope.get("path", "")
-            
-            # Skip gzip compression for S3 proxy requests
-            if path.startswith("/s3/"):
-                await self.app(scope, receive, send)
-                return
-
-            # Make sure we're not already gzipping
-            if (
-                "gzip" in headers.get("Accept-Encoding", "")
-                and "text/event-stream" not in headers.get("Accept", "text/html")
-                and "Content-Encoding" not in headers
-            ):
-                responder = GZipResponder(
-                    self.app, self.minimum_size, compresslevel=self.compresslevel
-                )
-                await responder(scope, receive, send)
-                return
-        await self.app(scope, receive, send)
 
 
 class GzipRequest(Request):

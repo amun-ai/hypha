@@ -37,6 +37,7 @@ hrid==0.3.0
 ollama==0.5.1
 fastembed==0.4.2
 stream-zip==0.0.83
+starlette-compress>=1.6.0
 greenlet==3.1.1
 prompt-toolkit==3.0.50
 ptpython==3.0.29

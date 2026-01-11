@@ -47,6 +47,7 @@ REQUIREMENTS = [
     "alembic>=1.14.0",
     "hrid==0.3.0",
     "stream-zip>=0.0.83",
+    "starlette-compress>=1.6.0",
     "prompt-toolkit>=3.0.50",
     "ptpython>=3.0.29",
     "ptyprocess==0.7.0"

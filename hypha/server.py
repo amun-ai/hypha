@@ -18,7 +18,8 @@ from hypha import __version__
 from hypha.core.store import RedisStore
 from hypha.http import HTTPProxy
 from hypha.triton import TritonProxy
-from hypha.utils import GZipMiddleware, GzipRoute, PatchedCORSMiddleware
+from starlette_compress import CompressMiddleware
+from hypha.utils import GzipRoute, PatchedCORSMiddleware
 from hypha.websocket import WebsocketServer
 from hypha.minio import start_minio_server
 from contextlib import asynccontextmanager
@@ -315,7 +316,10 @@ def create_application(args):
     )
     application.router.route_class = GzipRoute
 
-    application.add_middleware(GZipMiddleware, minimum_size=1000)
+    # Use starlette-compress for response compression
+    # It only compresses known-compressible content types (text, json, etc.)
+    # and automatically skips binary formats (images, already-compressed data, etc.)
+    application.add_middleware(CompressMiddleware, minimum_size=1000, gzip_level=5)
     application.add_middleware(
         PatchedCORSMiddleware,
         allow_origins=args.allow_origins,
