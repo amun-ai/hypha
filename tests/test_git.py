@@ -1816,3 +1816,170 @@ async def test_git_artifact_read_returns_git_url(
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
     await api.disconnect()
+
+
+async def test_git_file_url_specialized_token_security(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test that git file URLs use specialized tokens that can't be used for WebSocket.
+
+    This is a critical security test. The token generated for git file URLs should:
+    1. Allow downloading files via the HTTP endpoint
+    2. NOT allow connecting to WebSocket for general workspace access
+
+    This prevents token leakage from file URLs being exploited for workspace access.
+    """
+    from hypha_rpc import connect_to_server
+    import aiohttp
+    import uuid
+    from urllib.parse import urlparse, parse_qs
+
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+    workspace = api.config.workspace
+    artifact_alias = f"git-security-test-{uuid.uuid4().hex[:8]}"
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a git artifact
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Security Test"},
+        config={"storage": "git"},
+    )
+
+    # Enter staging mode and upload a file
+    await artifact_manager.edit(artifact_id=artifact_alias, stage=True)
+    put_url = await artifact_manager.put_file(artifact_id=artifact_alias, file_path="test.txt")
+    async with aiohttp.ClientSession() as session:
+        async with session.put(put_url, data=b"secret content") as resp:
+            assert resp.status == 200
+
+    await artifact_manager.commit(artifact_id=artifact_alias, comment="Add test file")
+
+    # Get the file URL - this contains a specialized token
+    file_url = await artifact_manager.get_file(
+        artifact_id=artifact_alias, file_path="test.txt"
+    )
+
+    # Extract the token from the URL
+    parsed_url = urlparse(file_url)
+    query_params = parse_qs(parsed_url.query)
+    token = query_params.get("token", [None])[0]
+    assert token is not None, "Token should be present in file URL"
+
+    # Verify the token works for file download
+    async with aiohttp.ClientSession() as session:
+        async with session.get(file_url) as response:
+            assert response.status == 200
+            content = await response.read()
+            assert content == b"secret content"
+
+    # Verify the token CANNOT be used for WebSocket connection
+    # This is the critical security check
+    try:
+        api2 = await connect_to_server(
+            {
+                "name": "attacker-client",
+                "server_url": WS_SERVER_URL,
+                "token": token,
+                "workspace": workspace,
+            }
+        )
+        await api2.disconnect()
+        raise AssertionError(
+            "SECURITY FAILURE: Specialized file download token was able to connect to WebSocket!"
+        )
+    except Exception as e:
+        error_msg = str(e)
+        # Should contain error about specialized token or general workspace access
+        assert (
+            "Specialized token" in error_msg
+            or "general workspace access" in error_msg
+        ), f"Expected specialized token rejection error, got: {error_msg}"
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
+
+
+async def test_git_file_url_token_cannot_access_other_files(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test that a file URL token cannot be used to download other files.
+
+    This tests the token hijacking prevention - a token generated for one file
+    should NOT work for downloading a different file, even in the same artifact.
+    """
+    from hypha_rpc import connect_to_server
+    import aiohttp
+    import uuid
+    from urllib.parse import urlparse, parse_qs
+
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+    workspace = api.config.workspace
+    artifact_alias = f"git-hijack-test-{uuid.uuid4().hex[:8]}"
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a git artifact with two files
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Token Hijack Test"},
+        config={"storage": "git"},
+    )
+
+    # Enter staging mode and upload two files
+    await artifact_manager.edit(artifact_id=artifact_alias, stage=True)
+
+    put_url1 = await artifact_manager.put_file(artifact_id=artifact_alias, file_path="file1.txt")
+    async with aiohttp.ClientSession() as session:
+        async with session.put(put_url1, data=b"content of file 1") as resp:
+            assert resp.status == 200
+
+    put_url2 = await artifact_manager.put_file(artifact_id=artifact_alias, file_path="file2.txt")
+    async with aiohttp.ClientSession() as session:
+        async with session.put(put_url2, data=b"secret content of file 2") as resp:
+            assert resp.status == 200
+
+    await artifact_manager.commit(artifact_id=artifact_alias, comment="Add two files")
+
+    # Get the URL for file1 - this contains a specialized token for file1 only
+    file1_url = await artifact_manager.get_file(
+        artifact_id=artifact_alias, file_path="file1.txt"
+    )
+
+    # Extract the token from file1's URL
+    parsed_url = urlparse(file1_url)
+    query_params = parse_qs(parsed_url.query)
+    file1_token = query_params.get("token", [None])[0]
+    assert file1_token is not None
+
+    # Verify file1's token works for file1
+    async with aiohttp.ClientSession() as session:
+        async with session.get(file1_url) as response:
+            assert response.status == 200
+            content = await response.read()
+            assert content == b"content of file 1"
+
+    # Try to use file1's token to download file2 - this should FAIL
+    file2_url_with_file1_token = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/files/file2.txt?token={file1_token}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(file2_url_with_file1_token) as response:
+            # Should get 403 Forbidden or 500 Internal Server Error (permission denied)
+            assert response.status in [403, 500], (
+                f"Expected 403/500, got {response.status}. "
+                f"SECURITY FAILURE: Token for file1 was able to download file2!"
+            )
+            # Verify error message mentions scope mismatch
+            error_text = await response.text()
+            assert "scope" in error_text.lower() or "permission" in error_text.lower(), (
+                f"Expected scope/permission error, got: {error_text}"
+            )
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()

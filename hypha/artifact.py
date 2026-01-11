@@ -820,6 +820,26 @@ class ArtifactController:
                 session = await self._get_session(read_only=True)
                 if token:
                     user_info = await self.store.parse_user_token(token)
+                    # Validate scope for specialized tokens
+                    # For file download, the token must have a scope matching the specific
+                    # artifact and file path: get_file:{artifact_id}:{file_path}
+                    # The workspace is validated via ScopeInfo.workspaces
+                    if user_info.is_specialized_token():
+                        # Get the artifact to validate scope
+                        temp_session = await self._get_session(read_only=True)
+                        async with temp_session.begin():
+                            artifact_for_scope = await self._get_artifact(
+                                temp_session, artifact_id
+                            )
+                            expected_scope = f"get_file:{artifact_for_scope.id}:{path}"
+                            if not user_info.has_scope(expected_scope):
+                                allowed_scopes = ", ".join(user_info.scope.extra_scopes)
+                                raise PermissionError(
+                                    f"Token scope does not match requested file. "
+                                    f"Token has scopes [{allowed_scopes}], but requested "
+                                    f"file requires scope '{expected_scope}'."
+                                )
+                        await temp_session.close()
                 async with session.begin():
                     # Fetch artifact and check permissions
                     (
@@ -2905,8 +2925,24 @@ class ArtifactController:
         if user_info is None:
             raise ValueError("user_info is required to generate download URL for git files")
 
+        # Create a specialized token with get_file scope that is restricted to
+        # this specific artifact and file path. This prevents token hijacking
+        # where a leaked URL token could be used to download other files.
+        # The workspace is already encoded in ScopeInfo.workspaces, so we only need
+        # to include artifact_id and file_path in the extra scope.
+        # Scope format: get_file:{artifact_id}:{file_path}
+        from hypha.core import ScopeInfo
+        specific_scope = f"get_file:{artifact.id}:{file_path}"
+        specialized_scope = ScopeInfo(
+            workspaces=user_info.scope.workspaces.copy() if user_info.scope else {},
+            current_workspace=user_info.scope.current_workspace if user_info.scope else None,
+            client_id=user_info.scope.client_id if user_info.scope else None,
+            extra_scopes=[specific_scope],  # Specialized scope for this specific file only
+        )
+        specialized_user_info = user_info.model_copy(update={"scope": specialized_scope})
+
         # Generate a token for the URL (with same expiry as requested)
-        token = await generate_auth_token(user_info, expires_in)
+        token = await generate_auth_token(specialized_user_info, expires_in)
 
         # Determine base URL
         if use_local_url:
