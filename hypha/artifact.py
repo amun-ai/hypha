@@ -10,6 +10,7 @@ import json
 import math
 import asyncio
 import pickle
+from functools import partial
 from pathlib import Path
 from sqlalchemy import (
     event,
@@ -468,6 +469,21 @@ class ArtifactController:
                 finally:
                     await session.close()
 
+                # Check if this is a git-storage artifact
+                config = artifact.config or {}
+                if config.get("storage") == "git":
+                    # Re-open session for git zip creation
+                    session = await self._get_session(read_only=True)
+                    return await self._create_git_zip_file(
+                        artifact,
+                        parent_artifact,
+                        files,
+                        version,
+                        silent,
+                        artifact_alias,
+                        session,
+                    )
+
                 version_index = self._get_version_index(artifact, version)
                 s3_config = self._get_s3_config(artifact, parent_artifact)
 
@@ -812,6 +828,23 @@ class ArtifactController:
                     ) = await self._get_artifact_with_permission(
                         user_info, artifact_id, "get_file", session
                     )
+
+                    # Check if this is a git-storage artifact
+                    config = artifact.config or {}
+                    if config.get("storage") == "git":
+                        # Handle git-storage artifacts
+                        return await self._get_git_file(
+                            artifact,
+                            parent_artifact,
+                            path,
+                            version,
+                            silent,
+                            limit,
+                            offset,
+                            session,
+                        )
+
+                    # Standard S3-based artifact storage
                     version_index = self._get_version_index(artifact, version)
                     s3_config = self._get_s3_config(artifact, parent_artifact)
                     file_key = safe_join(
@@ -857,7 +890,7 @@ class ArtifactController:
                     # Use proxy based on use_proxy parameter (None means use server config)
                     if use_proxy is None:
                         use_proxy = self.s3_controller.enable_s3_proxy
-                    
+
                     if use_proxy:
                         s3_client = self._create_client_async(s3_config)
                         return FSFileResponse(s3_client, s3_config["bucket"], file_key)
@@ -1887,18 +1920,28 @@ class ArtifactController:
         artifact_data["_id"] = artifact.id
         # Exclude 'secrets' from artifact_data to prevent exposure
         artifact_data.pop("secrets", None)
-        
+
         # Convert dict-based staging back to list format for API backward compatibility
         if artifact_data.get("staging") and isinstance(artifact_data["staging"], dict):
             staging_dict = artifact_data["staging"]
             staging_list = staging_dict.get("files", [])
-            
+
             # Add intent markers as list items for backward compatibility
             if "_intent" in staging_dict:
                 staging_list.append({"_intent": staging_dict["_intent"]})
-            
+
             artifact_data["staging"] = staging_list
-        
+
+        # Add git_url if storage is "git"
+        config = artifact.config or {}
+        if config.get("storage") == "git":
+            from urllib.parse import quote
+            base_url = self.store.public_base_url
+            # URL-encode workspace and alias for safe use in git clone commands
+            encoded_workspace = quote(artifact.workspace, safe='')
+            encoded_alias = quote(artifact.alias, safe='')
+            artifact_data["git_url"] = f"{base_url}/{encoded_workspace}/git/{encoded_alias}"
+
         return artifact_data
 
     def _expand_permission(self, permission):
@@ -2383,6 +2426,1059 @@ class ArtifactController:
             aws_secret_access_key=secret_access_key,
             region_name=region_name,
             config=Config(connect_timeout=60, read_timeout=300),
+        )
+
+    async def _get_git_file(
+        self,
+        artifact,
+        parent_artifact,
+        path: str,
+        version: str,
+        silent: bool,
+        limit: int,
+        offset: int,
+        session,
+    ):
+        """Get file or directory listing from a git-storage artifact.
+
+        Args:
+            artifact: The artifact model instance
+            parent_artifact: Parent artifact for S3 config inheritance
+            path: Path within the git repository
+            version: Git ref/commit (defaults to HEAD)
+            silent: If True, don't increment download count
+            limit: Max items to return for directory listing
+            offset: Offset for pagination
+            session: Database session
+
+        Returns:
+            Response object (file content or directory listing)
+        """
+        from fastapi.responses import Response
+        from hypha.git.repo import S3GitRepo
+        import mimetypes
+
+        s3_config = self._get_s3_config(artifact, parent_artifact)
+
+        # Create S3 client factory for the git repo
+        s3_client_factory = partial(self._create_client_async, s3_config)
+        prefix = f"{s3_config['prefix']}/{artifact.id}/.git"
+        repo = S3GitRepo(s3_client_factory, s3_config["bucket"], prefix, s3_config=s3_config)
+        await repo.initialize()
+
+        # Check if repository is empty
+        if await repo.is_empty():
+            raise HTTPException(
+                status_code=404,
+                detail="Repository is empty (no commits)",
+            )
+
+        # Determine commit SHA from version
+        commit_sha = None
+        if version and version != "stage":
+            # Try to resolve version as a ref or commit SHA
+            refs = await repo.get_refs_async()
+            # Check if it's a branch ref
+            branch_ref = f"refs/heads/{version}".encode()
+            if branch_ref in refs:
+                commit_sha = refs[branch_ref]
+            # Check if it's a tag ref
+            elif f"refs/tags/{version}".encode() in refs:
+                commit_sha = refs[f"refs/tags/{version}".encode()]
+            # Try as a commit SHA
+            elif len(version) >= 7:
+                # Try to find matching commit
+                sha_bytes = bytes.fromhex(version) if len(version) == 40 else None
+                if sha_bytes and await repo.has_object_async(sha_bytes):
+                    commit_sha = sha_bytes
+
+        # Normalize path
+        path = path.strip("/") if path else ""
+
+        # Check if it's a directory listing request
+        if path.endswith("/") or path == "":
+            # List directory contents
+            items = await repo.list_tree_async(path, commit_sha)
+            if not items:
+                # Check if the path exists but is empty or doesn't exist
+                if path:
+                    file_info = await repo.get_file_info_async(path, commit_sha)
+                    if file_info and file_info["type"] == "blob":
+                        # It's a file, not a directory
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"'{path}' is a file, not a directory. Remove trailing slash.",
+                        )
+                raise HTTPException(
+                    status_code=404,
+                    detail="Directory not found or empty",
+                )
+
+            # Apply pagination
+            total = len(items)
+            items = items[offset : offset + limit]
+
+            # Format response similar to S3 listing
+            result = []
+            for item in items:
+                entry = {
+                    "name": item["name"],
+                    "type": "directory" if item["type"] == "tree" else "file",
+                }
+                if item["size"] is not None:
+                    entry["size"] = item["size"]
+                result.append(entry)
+
+            return {
+                "items": result,
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+            }
+
+        # It's a file request
+        content = await repo.get_file_content_async(path, commit_sha)
+        if content is None:
+            # Check if it's a directory
+            items = await repo.list_tree_async(path, commit_sha)
+            if items:
+                # It's a directory, return listing
+                total = len(items)
+                items = items[offset : offset + limit]
+                result = []
+                for item in items:
+                    entry = {
+                        "name": item["name"],
+                        "type": "directory" if item["type"] == "tree" else "file",
+                    }
+                    if item["size"] is not None:
+                        entry["size"] = item["size"]
+                    result.append(entry)
+                return {
+                    "items": result,
+                    "total": total,
+                    "offset": offset,
+                    "limit": limit,
+                }
+            raise HTTPException(
+                status_code=404,
+                detail="File not found",
+            )
+
+        # Check if this is an LFS pointer (large file stored in S3)
+        from hypha.git.lfs import LFSPointer
+        lfs_pointer = LFSPointer.parse(content)
+        if lfs_pointer is not None:
+            # This is an LFS-tracked file - stream from S3 instead
+            base_path = f"{s3_config['prefix']}/{artifact.id}"
+            lfs_s3_path = lfs_pointer.get_s3_path(base_path)
+
+            # Check if the LFS object exists in S3 using a fresh client
+            async with self._create_client_async(s3_config) as s3_client:
+                try:
+                    head_response = await s3_client.head_object(
+                        Bucket=s3_config["bucket"],
+                        Key=lfs_s3_path,
+                    )
+                    lfs_size = head_response["ContentLength"]
+                except Exception as e:
+                    logger.warning(f"LFS object not found in S3: {lfs_s3_path}, error: {e}")
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"LFS object not found: {lfs_pointer.oid[:8]}...",
+                    )
+
+                # Increment download count for LFS files
+                if not silent:
+                    config = artifact.config or {}
+                    download_weights = config.get("download_weights", {})
+                    download_weight = download_weights.get(path) or 0
+                    if download_weight > 0:
+                        await self._increment_stat(
+                            session,
+                            artifact.id,
+                            "download_count",
+                            increment=download_weight,
+                        )
+                        await session.commit()
+
+                # Determine content type
+                content_type, _ = mimetypes.guess_type(path)
+                if content_type is None:
+                    content_type = "application/octet-stream"
+                filename = path.split("/")[-1] if "/" in path else path
+
+                # Stream large files from S3 using StreamingResponse
+                async def stream_lfs_content():
+                    """Stream LFS content from S3 in chunks."""
+                    async with self._create_client_async(s3_config) as client:
+                        response = await client.get_object(
+                            Bucket=s3_config["bucket"],
+                            Key=lfs_s3_path,
+                        )
+                        async for chunk in response["Body"].iter_chunks():
+                            yield chunk
+
+                from fastapi.responses import StreamingResponse
+                return StreamingResponse(
+                    stream_lfs_content(),
+                    media_type=content_type,
+                    headers={
+                        "Content-Disposition": f'attachment; filename="{filename}"',
+                        "Content-Length": str(lfs_size),
+                    },
+                )
+
+        # Regular (non-LFS) file - increment download count unless silent
+        if not silent:
+            config = artifact.config or {}
+            download_weights = config.get("download_weights", {})
+            download_weight = download_weights.get(path) or 0
+            if download_weight > 0:
+                await self._increment_stat(
+                    session,
+                    artifact.id,
+                    "download_count",
+                    increment=download_weight,
+                )
+                await session.commit()
+
+        # Determine content type
+        content_type, _ = mimetypes.guess_type(path)
+        if content_type is None:
+            content_type = "application/octet-stream"
+
+        # Return file content
+        filename = path.split("/")[-1] if "/" in path else path
+        return Response(
+            content=content,
+            media_type=content_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length": str(len(content)),
+            },
+        )
+
+    async def _resolve_git_version(
+        self,
+        repo,
+        version: Optional[str],
+    ) -> Optional[bytes]:
+        """Resolve a version string to a Git commit SHA.
+
+        Args:
+            repo: S3GitRepo instance (must be initialized)
+            version: Version string - can be:
+                - None or "latest" -> HEAD
+                - "stage" -> None (use staging, not yet implemented for git)
+                - Branch name (e.g., "main") -> refs/heads/main
+                - Tag name (e.g., "v1.0") -> refs/tags/v1.0
+                - Commit SHA (full 40 chars or prefix)
+
+        Returns:
+            Commit SHA as bytes, or None if version=="stage" or repo is empty
+
+        Raises:
+            ValueError: If version cannot be resolved
+        """
+        if version == "stage":
+            # For git storage, staging is not yet implemented
+            # Return None to indicate use staging/working tree
+            return None
+
+        if version is None or version == "latest":
+            # Default to HEAD
+            return await repo.head_async()
+
+        # Try to resolve version as a ref or commit SHA
+        refs = await repo.get_refs_async()
+
+        # Check if it's a branch ref
+        branch_ref = f"refs/heads/{version}".encode()
+        if branch_ref in refs:
+            return refs[branch_ref]
+
+        # Check if it's a tag ref
+        tag_ref = f"refs/tags/{version}".encode()
+        if tag_ref in refs:
+            return refs[tag_ref]
+
+        # Try as a commit SHA (full or partial)
+        if len(version) >= 7:
+            if len(version) == 40:
+                try:
+                    # Validate it's a valid hex SHA
+                    bytes.fromhex(version)
+                    # Return as hex bytes for consistency with refs
+                    # Pack.object_offset handles both hex and binary formats
+                    sha_hex_bytes = version.encode() if isinstance(version, str) else version
+                    if await repo.has_object_async(sha_hex_bytes):
+                        return sha_hex_bytes
+                except ValueError:
+                    pass
+            # TODO: Could support partial SHA matching
+
+        raise ValueError(f"Unknown version: {version}")
+
+    async def _list_git_files(
+        self,
+        artifact,
+        parent_artifact,
+        dir_path: Optional[str],
+        limit: int,
+        offset: int,
+        version: Optional[str],
+    ) -> List[Dict[str, Any]]:
+        """List files from a git-storage artifact.
+
+        Args:
+            artifact: The artifact model instance
+            parent_artifact: Parent artifact for S3 config inheritance
+            dir_path: Directory path to list (None for root)
+            limit: Maximum number of files to return
+            offset: Number of files to skip
+            version: Git ref/commit to list from
+
+        Returns:
+            List of file metadata dictionaries
+        """
+        from hypha.git.repo import S3GitRepo
+
+        s3_config = self._get_s3_config(artifact, parent_artifact)
+
+        # Create S3 client factory for the git repo
+        s3_client_factory = partial(self._create_client_async, s3_config)
+        prefix = f"{s3_config['prefix']}/{artifact.id}/.git"
+        repo = S3GitRepo(s3_client_factory, s3_config["bucket"], prefix, s3_config=s3_config)
+        await repo.initialize()
+
+        # Handle empty repository
+        if await repo.is_empty():
+            return []
+
+        # Resolve version to commit SHA
+        try:
+            commit_sha = await self._resolve_git_version(repo, version)
+        except ValueError:
+            # Version not found, return empty
+            return []
+
+        # Normalize path
+        path = dir_path.strip("/") if dir_path else ""
+
+        # List directory contents
+        items = await repo.list_tree_async(path, commit_sha)
+
+        # Apply pagination
+        total = len(items)
+        items = items[offset : offset + limit]
+
+        # Format response similar to S3 listing
+        result = []
+        for item in items:
+            entry = {
+                "name": item["name"],
+                "type": "directory" if item["type"] == "tree" else "file",
+            }
+            if item["size"] is not None:
+                entry["size"] = item["size"]
+            if item.get("sha"):
+                entry["sha"] = item["sha"]
+            result.append(entry)
+
+        return result
+
+    async def _get_git_file_url(
+        self,
+        artifact,
+        parent_artifact,
+        file_path: str,
+        version: Optional[str],
+        expires_in: int,
+        use_proxy: Optional[bool],
+        use_local_url: bool,
+        user_info: UserInfo = None,
+    ) -> str:
+        """Get a URL for a file from git-storage artifact.
+
+        For LFS files, returns a presigned URL directly to S3.
+        For regular git files, returns an HTTP endpoint URL with embedded token
+        that serves the file content.
+
+        Args:
+            artifact: The artifact model instance
+            parent_artifact: Parent artifact for S3 config inheritance
+            file_path: Path to the file
+            version: Git ref/commit to read from
+            expires_in: URL expiration time in seconds
+            use_proxy: Whether to use proxy URL
+            use_local_url: Whether to return localhost URL
+            user_info: User info for generating auth token
+
+        Returns:
+            URL string (either presigned S3 URL for LFS or HTTP endpoint URL)
+
+        Raises:
+            FileNotFoundError: If file not found
+        """
+        from hypha.git.repo import S3GitRepo
+        from hypha.git.lfs import LFSPointer
+        from hypha.core.auth import generate_auth_token
+        from urllib.parse import quote, urlencode
+
+        s3_config = self._get_s3_config(artifact, parent_artifact)
+
+        # Create S3 client factory for the git repo
+        s3_client_factory = partial(self._create_client_async, s3_config)
+        prefix = f"{s3_config['prefix']}/{artifact.id}/.git"
+        repo = S3GitRepo(s3_client_factory, s3_config["bucket"], prefix, s3_config=s3_config)
+        await repo.initialize()
+
+        # Handle empty repository
+        if await repo.is_empty():
+            raise FileNotFoundError(f"Repository is empty, file '{file_path}' not found")
+
+        # Resolve version to commit SHA
+        try:
+            commit_sha = await self._resolve_git_version(repo, version)
+        except ValueError as e:
+            raise FileNotFoundError(f"Version '{version}' not found: {e}")
+
+        # Get file content to check if it exists and if it's LFS
+        content = await repo.get_file_content_async(file_path, commit_sha)
+        if content is None:
+            raise FileNotFoundError(f"File '{file_path}' not found in repository")
+
+        # Check if this is an LFS pointer
+        lfs_pointer = LFSPointer.parse(content)
+        if lfs_pointer is not None:
+            # This is an LFS-tracked file - generate presigned URL to S3
+            base_path = f"{s3_config['prefix']}/{artifact.id}"
+            lfs_s3_path = lfs_pointer.get_s3_path(base_path)
+
+            async with self._create_client_async(s3_config) as s3_client:
+                # Verify the LFS object exists
+                try:
+                    await s3_client.head_object(
+                        Bucket=s3_config["bucket"],
+                        Key=lfs_s3_path,
+                    )
+                except ClientError:
+                    raise FileNotFoundError(
+                        f"LFS object not found: {lfs_pointer.oid[:8]}..."
+                    )
+
+                # Generate presigned URL
+                presigned_url = await s3_client.generate_presigned_url(
+                    "get_object",
+                    Params={"Bucket": s3_config["bucket"], "Key": lfs_s3_path},
+                    ExpiresIn=expires_in,
+                )
+
+                # Handle proxy/local URL replacement
+                if use_proxy is None:
+                    use_proxy_resolved = self.s3_controller.enable_s3_proxy
+                else:
+                    use_proxy_resolved = use_proxy
+
+                if use_proxy_resolved:
+                    if use_local_url:
+                        local_proxy_url = f"{self.store.local_base_url}/s3" if use_local_url is True else f"{use_local_url}/s3"
+                        presigned_url = presigned_url.replace(
+                            s3_config["endpoint_url"], local_proxy_url
+                        )
+                    elif s3_config["public_endpoint_url"]:
+                        presigned_url = presigned_url.replace(
+                            s3_config["endpoint_url"],
+                            s3_config["public_endpoint_url"],
+                        )
+                elif use_local_url and not use_proxy_resolved:
+                    if use_local_url is not True:
+                        presigned_url = presigned_url.replace(
+                            s3_config["endpoint_url"], use_local_url
+                        )
+
+                return presigned_url
+
+        # Regular git file - generate HTTP endpoint URL with token
+        # The HTTP endpoint /{workspace}/artifacts/{alias}/files/{path} handles git files
+        if user_info is None:
+            raise ValueError("user_info is required to generate download URL for git files")
+
+        # Generate a token for the URL (with same expiry as requested)
+        token = await generate_auth_token(user_info, expires_in)
+
+        # Determine base URL
+        if use_local_url:
+            base_url = self.store.local_base_url if use_local_url is True else use_local_url
+        else:
+            base_url = self.store.public_base_url
+
+        # Build the URL to the files endpoint
+        # URL format: {base_url}/{workspace}/artifacts/{alias}/files/{file_path}?token={token}
+        encoded_file_path = quote(file_path, safe='/')
+        url = f"{base_url}/{artifact.workspace}/artifacts/{artifact.alias}/files/{encoded_file_path}"
+
+        # Add query parameters
+        params = {"token": token}
+        if version:
+            params["version"] = version
+
+        url = f"{url}?{urlencode(params)}"
+
+        return url
+
+    async def _put_git_file(
+        self,
+        artifact,
+        parent_artifact,
+        file_path: str,
+        download_weight: float,
+        expires_in: int,
+        use_proxy: Optional[bool],
+        use_local_url: bool,
+    ) -> str:
+        """Stage a file for upload to a git-storage artifact.
+
+        For git storage, files are uploaded to a staging area in S3,
+        then on commit they are added to the git repository.
+
+        Args:
+            artifact: The artifact model instance
+            parent_artifact: Parent artifact for S3 config inheritance
+            file_path: Path where to store the file
+            download_weight: Download weight for statistics
+            expires_in: URL expiration time
+            use_proxy: Whether to use proxy URL
+            use_local_url: Whether to return localhost URL
+
+        Returns:
+            Presigned URL for uploading the file
+        """
+        s3_config = self._get_s3_config(artifact, parent_artifact)
+
+        # For git storage, upload to a staging area
+        # The staging area is: {prefix}/{artifact.id}/staging/{file_path}
+        staging_key = safe_join(
+            s3_config["prefix"],
+            f"{artifact.id}/staging/{file_path}",
+        )
+
+        async with self._create_client_async(s3_config) as s3_client:
+            presigned_url = await s3_client.generate_presigned_url(
+                "put_object",
+                Params={"Bucket": s3_config["bucket"], "Key": staging_key},
+                ExpiresIn=expires_in,
+            )
+
+            # Handle proxy/local URL replacement
+            if use_proxy is None:
+                use_proxy_resolved = self.s3_controller.enable_s3_proxy
+            else:
+                use_proxy_resolved = use_proxy
+
+            if use_proxy_resolved:
+                if use_local_url:
+                    local_proxy_url = f"{self.store.local_base_url}/s3" if use_local_url is True else f"{use_local_url}/s3"
+                    presigned_url = presigned_url.replace(
+                        s3_config["endpoint_url"], local_proxy_url
+                    )
+                elif s3_config["public_endpoint_url"]:
+                    presigned_url = presigned_url.replace(
+                        s3_config["endpoint_url"],
+                        s3_config["public_endpoint_url"],
+                    )
+            elif use_local_url and not use_proxy_resolved:
+                if use_local_url is not True:
+                    presigned_url = presigned_url.replace(
+                        s3_config["endpoint_url"], use_local_url
+                    )
+
+            return presigned_url
+
+    async def _commit_git(
+        self,
+        artifact,
+        parent_artifact,
+        version: Optional[str],
+        comment: Optional[str],
+        user_info,
+        session,
+    ) -> Dict[str, Any]:
+        """Commit staged changes to a git-storage artifact.
+
+        This method:
+        1. Gets staged files from the S3 staging area
+        2. Creates git blob objects for each file
+        3. Builds git tree structure
+        4. Creates a git commit object
+        5. Updates refs (creates tag if version specified)
+        6. Cleans up staging area
+
+        Args:
+            artifact: The artifact model instance
+            parent_artifact: Parent artifact for S3 config inheritance
+            version: Version tag for this commit (creates git tag)
+            comment: Commit message
+            user_info: User info for commit authorship
+            session: Database session
+
+        Returns:
+            Commit result dict with status, version, commit_sha
+        """
+        from hypha.git.repo import S3GitRepo
+        from dulwich.objects import Blob, Tree, Commit
+
+        s3_config = self._get_s3_config(artifact, parent_artifact)
+
+        # Create repo instance
+        s3_client_factory = partial(self._create_client_async, s3_config)
+        prefix = f"{s3_config['prefix']}/{artifact.id}/.git"
+        repo = S3GitRepo(s3_client_factory, s3_config["bucket"], prefix, s3_config=s3_config)
+        await repo.initialize()
+
+        # Get staged files from artifact.staging
+        staging_dict = artifact.staging or {}
+        staged_files = staging_dict.get("files", [])
+
+        if not staged_files:
+            logger.warning("No staged files to commit for git artifact")
+            return {
+                "status": "no_changes",
+                "artifact_id": f"{artifact.workspace}/{artifact.alias}",
+            }
+
+        # Collect file contents from staging area
+        staging_prefix = f"{s3_config['prefix']}/{artifact.id}/staging/"
+        files_to_commit = []
+        files_to_remove = []
+
+        async with self._create_client_async(s3_config) as s3_client:
+            for file_info in staged_files:
+                if file_info.get("_remove"):
+                    files_to_remove.append(file_info["path"])
+                    continue
+
+                file_path = file_info["path"]
+                staging_key = f"{staging_prefix}{file_path}"
+
+                try:
+                    response = await s3_client.get_object(
+                        Bucket=s3_config["bucket"],
+                        Key=staging_key,
+                    )
+                    content = await response["Body"].read()
+                    files_to_commit.append({
+                        "path": file_path,
+                        "content": content,
+                        "download_weight": file_info.get("download_weight", 0),
+                    })
+                except ClientError as e:
+                    if e.response.get("Error", {}).get("Code") == "NoSuchKey":
+                        logger.warning(f"Staged file not found: {file_path}")
+                    else:
+                        raise
+
+        if not files_to_commit and not files_to_remove:
+            return {
+                "status": "no_changes",
+                "artifact_id": f"{artifact.workspace}/{artifact.alias}",
+            }
+
+        # Get current HEAD (if exists)
+        current_head = await repo.head_async()
+
+        # Build the tree structure
+        # We need to merge new files with existing tree if there's a parent commit
+        tree_items = {}
+
+        if current_head:
+            # Get existing tree from parent commit
+            parent_commit = await repo.get_object_async(current_head)
+            parent_tree = await repo.get_object_async(parent_commit.tree)
+
+            # Copy existing tree items (recursively for nested trees)
+            async def copy_tree_items(tree_sha, path_prefix=""):
+                tree = await repo.get_object_async(tree_sha)
+                for entry in tree.items():
+                    name, mode, sha = entry
+                    item_path = f"{path_prefix}{name.decode()}" if path_prefix else name.decode()
+                    if mode == 0o40000:  # Directory
+                        await copy_tree_items(sha, f"{item_path}/")
+                    else:
+                        tree_items[item_path] = {"mode": mode, "sha": sha}
+
+            await copy_tree_items(parent_tree.id)
+
+        # Remove files marked for removal
+        for path in files_to_remove:
+            if path in tree_items:
+                del tree_items[path]
+
+        # Add/update new files
+        blobs_to_add = []
+        for file_data in files_to_commit:
+            blob = Blob.from_string(file_data["content"])
+            blobs_to_add.append((blob, None))
+            tree_items[file_data["path"]] = {
+                "mode": 0o100644,
+                "sha": blob.id,
+            }
+
+        if not tree_items:
+            # Empty tree after removals
+            return {
+                "status": "no_changes",
+                "artifact_id": f"{artifact.workspace}/{artifact.alias}",
+            }
+
+        # Build tree hierarchy from flat paths
+        def build_tree_hierarchy(items):
+            """Build nested tree structure from flat path dict."""
+            root = {}
+            for path, info in items.items():
+                parts = path.split("/")
+                current = root
+                for part in parts[:-1]:
+                    if part not in current:
+                        current[part] = {"_children": {}}
+                    current = current[part]["_children"]
+                current[parts[-1]] = info
+            return root
+
+        def create_tree_object(node):
+            """Recursively create tree objects from hierarchy."""
+            tree = Tree()
+            for name, info in sorted(node.items()):
+                if name == "_children":
+                    continue
+                if "_children" in info:
+                    # Subdirectory
+                    subtree = create_tree_object(info["_children"])
+                    blobs_to_add.append((subtree, None))
+                    tree.add(name.encode(), 0o40000, subtree.id)
+                else:
+                    # File
+                    tree.add(name.encode(), info["mode"], info["sha"])
+            return tree
+
+        tree_hierarchy = build_tree_hierarchy(tree_items)
+        root_tree = create_tree_object(tree_hierarchy)
+        blobs_to_add.append((root_tree, None))
+
+        # Create commit
+        commit = Commit()
+        commit.tree = root_tree.id
+
+        # Set author/committer
+        author_name = getattr(user_info, "name", None) or user_info.id or "Anonymous"
+        author_email = getattr(user_info, "email", None) or "anonymous@hypha"
+        author_string = f"{author_name} <{author_email}>".encode()
+        commit.author = commit.committer = author_string
+
+        # Set commit time
+        import time as time_module
+        commit_time = int(time_module.time())
+        commit.author_time = commit.commit_time = commit_time
+        commit.author_timezone = commit.commit_timezone = 0
+
+        # Set commit message
+        commit.message = (comment or "Update files").encode()
+
+        # Set parent
+        if current_head:
+            commit.parents = [current_head]
+        else:
+            commit.parents = []
+
+        blobs_to_add.append((commit, None))
+
+        # Add all objects to the repository
+        await repo._object_store.add_objects_async(blobs_to_add)
+
+        # Update refs
+        await repo.set_ref_async(b"refs/heads/main", commit.id)
+
+        # Create tag if version specified
+        if version:
+            tag_ref = f"refs/tags/{version}".encode()
+            await repo.set_ref_async(tag_ref, commit.id)
+
+        # Clean up staging area
+        async with self._create_client_async(s3_config) as s3_client:
+            for file_data in files_to_commit:
+                staging_key = f"{staging_prefix}{file_data['path']}"
+                try:
+                    await s3_client.delete_object(
+                        Bucket=s3_config["bucket"],
+                        Key=staging_key,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to clean up staging file {staging_key}: {e}")
+
+        # Update download weights in artifact config if any
+        download_weights = {}
+        for file_data in files_to_commit:
+            if file_data.get("download_weight", 0) > 0:
+                download_weights[file_data["path"]] = file_data["download_weight"]
+
+        if download_weights:
+            if artifact.config is None:
+                artifact.config = {}
+            existing_weights = artifact.config.get("download_weights", {})
+            existing_weights.update(download_weights)
+            artifact.config["download_weights"] = existing_weights
+            flag_modified(artifact, "config")
+
+        # Clear artifact staging
+        artifact.staging = None
+        flag_modified(artifact, "staging")
+
+        # Count files in repository
+        all_items = await repo.list_tree_async("", commit.id)
+        artifact.file_count = len([i for i in all_items if i["type"] == "blob"])
+
+        return {
+            "status": "committed",
+            "version": version or "main",
+            "commit_sha": commit.id.hex() if isinstance(commit.id, bytes) else commit.id,
+            "artifact_id": f"{artifact.workspace}/{artifact.alias}",
+            "files_added": len(files_to_commit),
+            "files_removed": len(files_to_remove),
+        }
+
+    async def _remove_git_file(
+        self,
+        artifact,
+        parent_artifact,
+        file_path: str,
+    ) -> Dict[str, str]:
+        """Mark a file for removal from a git-storage artifact.
+
+        For git storage, file removal is staged and applied on commit.
+
+        Args:
+            artifact: The artifact model instance
+            parent_artifact: Parent artifact for S3 config inheritance
+            file_path: Path to the file to remove
+
+        Returns:
+            Status dict
+        """
+        # Just mark the file for removal in staging
+        # The actual git commit will handle the tree update
+        staging_dict = artifact.staging or {}
+        if artifact.staging is None:
+            artifact.staging = {}
+            staging_dict = artifact.staging
+
+        staging_dict = convert_legacy_staging(staging_dict)
+        staging_files = staging_dict.get("files", [])
+
+        # Check if file was added in this staging session
+        file_in_staging = any(
+            f.get("path") == file_path and not f.get("_remove")
+            for f in staging_files
+        )
+
+        if file_in_staging:
+            # Remove from staging list (file was added but not committed yet)
+            staging_dict["files"] = [
+                f for f in staging_files if f.get("path") != file_path
+            ]
+
+            # Also remove from S3 staging area
+            s3_config = self._get_s3_config(artifact, parent_artifact)
+            staging_key = safe_join(
+                s3_config["prefix"],
+                f"{artifact.id}/staging/{file_path}",
+            )
+            async with self._create_client_async(s3_config) as s3_client:
+                try:
+                    await s3_client.delete_object(
+                        Bucket=s3_config["bucket"],
+                        Key=staging_key,
+                    )
+                except Exception:
+                    pass  # File might not exist in staging
+        else:
+            # Mark for removal (file exists in git repo)
+            staging_files.append({"path": file_path, "_remove": True})
+            staging_dict["files"] = staging_files
+
+        artifact.staging = staging_dict
+        flag_modified(artifact, "staging")
+
+        return {"status": "staged_for_removal", "path": file_path}
+
+    async def _create_git_zip_file(
+        self,
+        artifact,
+        parent_artifact,
+        files: List[str],
+        version: str,
+        silent: bool,
+        artifact_alias: str,
+        session,
+    ):
+        """Create a zip file from a git-storage artifact.
+
+        Args:
+            artifact: The artifact model instance
+            parent_artifact: Parent artifact for S3 config inheritance
+            files: List of file paths to include (None for all files)
+            version: Git ref/commit (defaults to HEAD)
+            silent: If True, don't increment download count
+            artifact_alias: Alias for the zip filename
+            session: Database session
+
+        Returns:
+            StreamingResponse with zip content
+        """
+        from hypha.git.repo import S3GitRepo
+
+        s3_config = self._get_s3_config(artifact, parent_artifact)
+
+        # Create S3 client factory for the git repo
+        s3_client_factory = partial(self._create_client_async, s3_config)
+        prefix = f"{s3_config['prefix']}/{artifact.id}/.git"
+        repo = S3GitRepo(s3_client_factory, s3_config["bucket"], prefix, s3_config=s3_config)
+        await repo.initialize()
+
+        # Check if repository is empty
+        if await repo.is_empty():
+            raise HTTPException(
+                status_code=404,
+                detail="Repository is empty (no commits)",
+            )
+
+        # Determine commit SHA from version
+        commit_sha = None
+        if version and version != "stage":
+            refs = await repo.get_refs_async()
+            branch_ref = f"refs/heads/{version}".encode()
+            if branch_ref in refs:
+                commit_sha = refs[branch_ref]
+            elif f"refs/tags/{version}".encode() in refs:
+                commit_sha = refs[f"refs/tags/{version}".encode()]
+            elif len(version) >= 7:
+                sha_bytes = bytes.fromhex(version) if len(version) == 40 else None
+                if sha_bytes and await repo.has_object_async(sha_bytes):
+                    commit_sha = sha_bytes
+
+        # If no files specified, list all files recursively
+        if files is None:
+            async def list_all_files_recursive(dir_path=""):
+                """Recursively list all files in the git tree."""
+                items = await repo.list_tree_async(dir_path, commit_sha)
+                for item in items:
+                    item_path = f"{dir_path}/{item['name']}".strip("/")
+                    if item["type"] == "tree":
+                        async for sub_path in list_all_files_recursive(item_path):
+                            yield sub_path
+                    else:
+                        yield item_path
+
+            files = [path async for path in list_all_files_recursive()]
+
+        logger.info(f"Creating ZIP file for git artifact: {artifact_alias}")
+
+        # Import LFS pointer parser
+        from hypha.git.lfs import LFSPointer
+
+        # Base path for LFS objects
+        base_path = f"{s3_config['prefix']}/{artifact.id}"
+
+        async def git_file_stream_generator(file_path: str):
+            """Stream file content from git repository in chunks.
+
+            For regular git files, yields content from the git object store.
+            For LFS-tracked files, streams directly from S3.
+            """
+            content = await repo.get_file_content_async(file_path, commit_sha)
+            if content is None:
+                logger.error(f"File not found in git repo: {file_path}")
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"File not found: {file_path}",
+                )
+
+            # Check if this is an LFS pointer
+            lfs_pointer = LFSPointer.parse(content)
+            if lfs_pointer is not None:
+                # Stream from S3 LFS storage instead of git object store
+                lfs_s3_path = lfs_pointer.get_s3_path(base_path)
+                logger.info(f"Streaming LFS file for ZIP: {file_path} (oid={lfs_pointer.oid[:8]}...)")
+
+                async with self._create_client_async(s3_config) as s3_client:
+                    try:
+                        response = await s3_client.get_object(
+                            Bucket=s3_config["bucket"],
+                            Key=lfs_s3_path,
+                        )
+                        async for chunk in response["Body"].iter_chunks():
+                            yield chunk
+                    except Exception as e:
+                        logger.error(f"Failed to stream LFS object {lfs_pointer.oid[:8]}...: {e}")
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"LFS object not found: {lfs_pointer.oid[:8]}...",
+                        )
+            else:
+                # Regular git file - yield in chunks (64KB)
+                chunk_size = 1024 * 64
+                for i in range(0, len(content), chunk_size):
+                    yield content[i : i + chunk_size]
+
+        async def member_files():
+            """Yield file metadata and content for stream_zip."""
+            modified_at = datetime.now()
+            mode = S_IFREG | 0o600
+            total_weight = 0
+
+            config = artifact.config or {}
+            download_weights = config.get("download_weights", {})
+
+            # Check for special "create-zip-file" download weight
+            special_zip_weight = download_weights.get("create-zip-file")
+            if special_zip_weight is not None and not silent:
+                total_weight = special_zip_weight
+                logger.info(f"Using special zip download weight: {total_weight}")
+
+            for path in files:
+                logger.info(f"Adding git file to ZIP: {path}")
+                # Add to total weight unless silent or special zip weight is set
+                if not silent and special_zip_weight is None:
+                    download_weight = download_weights.get(path) or 0
+                    total_weight += download_weight
+
+                yield (
+                    path,
+                    modified_at,
+                    mode,
+                    ZIP_32,
+                    git_file_stream_generator(path),
+                )
+
+            if total_weight > 0 and not silent:
+                logger.info(
+                    f"Bumping download count for git artifact: {artifact_alias} by {total_weight}"
+                )
+                async with session.begin():
+                    await self._increment_stat(
+                        session,
+                        artifact.id,
+                        "download_count",
+                        increment=total_weight,
+                    )
+                    await session.commit()
+
+        return StreamingResponse(
+            async_stream_zip(member_files()),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f"attachment; filename={artifact_alias}.zip"
+            },
         )
 
     async def _count_files_in_prefix(self, s3_client, bucket_name, prefix):
@@ -3054,6 +4150,33 @@ class ArtifactController:
                         config=config,
                     )
 
+                # Initialize Git storage if storage type is "git"
+                storage_type = config.get("storage", "raw")
+                if storage_type == "git":
+                    from functools import partial
+                    from hypha.git.repo import S3GitRepo
+
+                    default_branch = config.get("git_default_branch", "main")
+                    git_prefix = f"{s3_config['prefix']}/{new_artifact.id}/.git"
+
+                    # Create S3 client factory for Git repo
+                    s3_client_factory = partial(self._create_client_async, s3_config)
+
+                    await S3GitRepo.init_bare(
+                        s3_client_factory,
+                        s3_config["bucket"],
+                        git_prefix,
+                        default_branch=default_branch.encode(),
+                        s3_config=s3_config,
+                    )
+
+                    # Store Git configuration
+                    config["storage"] = "git"
+                    config["git_default_branch"] = default_branch
+                    new_artifact.config = config
+
+                    logger.info(f"Initialized Git storage for artifact {new_artifact.workspace}/{new_artifact.alias}")
+
                 await session.commit()
                 await self._save_version_to_s3(
                     version_index,
@@ -3698,17 +4821,48 @@ class ArtifactController:
                 # Convert legacy staging format if needed
                 artifact.staging = convert_legacy_staging(artifact.staging)
 
+                # Check if this is a git-storage artifact
+                config = artifact.config or {}
+                if config.get("storage") == "git":
+                    # Handle git-storage artifacts
+                    result = await self._commit_git(
+                        artifact,
+                        parent_artifact,
+                        version,
+                        comment,
+                        user_info,
+                        session,
+                    )
+
+                    # Update manifest if staged
+                    staging_dict = artifact.staging or {}
+                    staged_manifest = staging_dict.get("manifest")
+                    if staged_manifest is not None:
+                        artifact.manifest = staged_manifest
+                        flag_modified(artifact, "manifest")
+
+                    # Update artifact timestamp
+                    artifact.last_modified = int(time.time())
+
+                    session.add(artifact)
+                    await session.commit()
+
+                    logger.info(
+                        f"Committed git artifact with ID: {artifact_id}, version: {result.get('version')}"
+                    )
+                    return self._generate_artifact_data(artifact, parent_artifact)
+
                 # Extract staged data from staging dict
                 staging_dict = artifact.staging
                 has_new_version_intent = staging_dict.get("_intent") == "new_version"
-                
+
                 # Get staged manifest, config, secrets, type
                 staged_manifest = staging_dict.get("manifest")
                 staged_config = staging_dict.get("config")
                 staged_secrets = staging_dict.get("secrets")
                 staged_type = staging_dict.get("type")
                 staged_files = staging_dict.get("files", [])
-                
+
                 logger.info(
                     f"Committing staged data: has_new_version_intent={has_new_version_intent}"
                 )
@@ -4698,6 +5852,52 @@ class ArtifactController:
                 # Convert legacy staging format if needed
                 artifact.staging = convert_legacy_staging(artifact.staging)
 
+                # Check if this is a git-storage artifact
+                config = artifact.config or {}
+                if config.get("storage") == "git":
+                    # Handle git-storage artifacts
+                    presigned_urls = {}
+                    staging_dict = artifact.staging
+                    staging_files = staging_dict.get("files", [])
+
+                    for fpath, dweight in zip(file_paths, download_weights):
+                        url = await self._put_git_file(
+                            artifact,
+                            parent_artifact,
+                            fpath,
+                            dweight,
+                            expires_in,
+                            use_proxy,
+                            use_local_url,
+                        )
+                        presigned_urls[fpath] = url
+
+                        # Add file to staging dict for tracking
+                        if not any(f.get("path") == fpath for f in staging_files):
+                            file_info = {"path": fpath}
+                            if dweight > 0:
+                                file_info["download_weight"] = dweight
+                            staging_files.append(file_info)
+                            staging_dict["files"] = staging_files
+
+                    flag_modified(artifact, "staging")
+
+                    # Save to S3 for git artifacts
+                    s3_config = self._get_s3_config(artifact, parent_artifact)
+                    await self._save_version_to_s3(0, artifact, s3_config)
+                    session.add(artifact)
+                    await session.commit()
+
+                    logger.info(
+                        f"Put {len(file_paths)} file(s) to git artifact with ID: {artifact_id}"
+                    )
+
+                    # Return single URL or dict based on input type
+                    if is_batch:
+                        return presigned_urls
+                    else:
+                        return presigned_urls[file_paths[0]]
+
                 # Staging mode - files go to staging version
                 staging_dict = artifact.staging
                 has_new_version_intent = staging_dict.get("_intent") == "new_version"
@@ -4786,183 +5986,6 @@ class ArtifactController:
             else:
                 return presigned_urls[file_paths[0]]
 
-        except Exception as e:
-            raise e
-        finally:
-            await session.close()
-
-    @schema_method
-    async def batch_put_file(
-        self,
-        artifact_id: str = PydanticField(
-            ...,
-            description="Artifact identifier to upload files to. Format: 'workspace/alias' or just 'alias' (uses current workspace)."
-        ),
-        file_paths: List[str] = PydanticField(
-            ...,
-            description="List of file paths where to store files within the artifact. Use forward slashes for nested paths."
-        ),
-        download_weights: Optional[List[float]] = PydanticField(
-            None,
-            description="Optional list of download weights for each file. Must match length of file_paths if provided."
-        ),
-        use_proxy: Optional[bool] = PydanticField(
-            None,
-            description="If True, returns proxy URLs that go through Hypha server. If False, returns direct S3 URLs."
-        ),
-        use_local_url: bool = PydanticField(
-            False,
-            description="If True, returns localhost URLs instead of public URLs. Useful for server-side uploads."
-        ),
-        expires_in: int = PydanticField(
-            3600,
-            description="URL expiration time in seconds. Default 1 hour. Maximum 7 days (604800 seconds).",
-            ge=60,
-            le=604800
-        ),
-        context: Optional[dict] = PydanticField(
-            None,
-            description="Context containing user info and workspace. Usually provided automatically by the system."
-        ),
-    ) -> Dict[str, str]:
-        """Generate presigned URLs for uploading multiple files to an artifact in a single call.
-
-        This is a batch version of put_file that significantly improves performance when
-        uploading many files. Instead of making N separate API calls (each with database
-        queries, S3 client creation, and state saving), this method does everything in
-        a single transaction.
-
-        Performance improvement: For 100 files, this can reduce upload preparation time
-        from ~50 seconds to ~2-3 seconds (10-20x faster).
-
-        Returns:
-            Dictionary mapping file paths to their presigned upload URLs
-
-        Examples:
-            # Get upload URLs for multiple files
-            urls = await batch_put_file(
-                "my-dataset",
-                ["data/train.csv", "data/test.csv", "model.pt"]
-            )
-            # Upload each file using the returned URLs
-            for path, url in urls.items():
-                httpx.put(url, content=file_contents[path])
-
-            # With download weights
-            urls = await batch_put_file(
-                "my-dataset",
-                ["important.csv", "optional.txt"],
-                download_weights=[1.0, 0.1]
-            )
-
-        Raises:
-            ValueError: If artifact_id invalid, file_paths empty, or weights length mismatch
-            PermissionError: If user lacks write permission
-            HTTPException: If artifact not found
-        """
-        if context is None or "ws" not in context:
-            raise ValueError("Context must include 'ws' (workspace).")
-
-        if not file_paths:
-            raise ValueError("file_paths must not be empty.")
-
-        if download_weights is not None and len(download_weights) != len(file_paths):
-            raise ValueError("download_weights must have the same length as file_paths.")
-
-        artifact_id = self._validate_artifact_id(artifact_id, context)
-        user_info = UserInfo.from_context(context)
-        session = await self._get_session()
-
-        try:
-            async with session.begin():
-                artifact, parent_artifact = await self._get_artifact_with_permission(
-                    user_info, artifact_id, "put_file", session
-                )
-
-                # Require artifact to be in staging mode
-                assert artifact.staging is not None, "Artifact must be in staging mode."
-
-                # Convert legacy staging format if needed
-                artifact.staging = convert_legacy_staging(artifact.staging)
-
-                # Staging mode - files go to staging version
-                staging_dict = artifact.staging
-                has_new_version_intent = staging_dict.get("_intent") == "new_version"
-
-                if has_new_version_intent:
-                    target_version_index = len(artifact.versions or [])
-                else:
-                    target_version_index = max(0, len(artifact.versions or []) - 1)
-
-                logger.info(
-                    f"Batch uploading {len(file_paths)} files to staging version {target_version_index}"
-                )
-
-                s3_config = self._get_s3_config(artifact, parent_artifact)
-
-                # Use proxy based on use_proxy parameter (None means use server config)
-                if use_proxy is None:
-                    use_proxy = self.s3_controller.enable_s3_proxy
-
-                # Generate all presigned URLs with a single S3 client
-                presigned_urls = {}
-                async with self._create_client_async(s3_config) as s3_client:
-                    staging_files = staging_dict.get("files", [])
-                    files_added = False
-
-                    for i, file_path in enumerate(file_paths):
-                        file_key = safe_join(
-                            s3_config["prefix"],
-                            f"{artifact.id}/v{target_version_index}/{file_path}",
-                        )
-                        presigned_url = await s3_client.generate_presigned_url(
-                            "put_object",
-                            Params={"Bucket": s3_config["bucket"], "Key": file_key},
-                            ExpiresIn=expires_in,
-                        )
-
-                        # Apply URL transformations
-                        if use_proxy:
-                            if use_local_url:
-                                local_proxy_url = f"{self.store.local_base_url}/s3" if use_local_url is True else f"{use_local_url}/s3"
-                                presigned_url = presigned_url.replace(
-                                    s3_config["endpoint_url"], local_proxy_url
-                                )
-                            elif s3_config["public_endpoint_url"]:
-                                presigned_url = presigned_url.replace(
-                                    s3_config["endpoint_url"],
-                                    s3_config["public_endpoint_url"],
-                                )
-                        elif use_local_url and not use_proxy:
-                            if use_local_url is not True:
-                                presigned_url = presigned_url.replace(
-                                    s3_config["endpoint_url"], use_local_url
-                                )
-
-                        presigned_urls[file_path] = presigned_url
-
-                        # Add file to staging dict if not already present
-                        if not any(f["path"] == file_path for f in staging_files):
-                            file_info = {"path": file_path}
-                            if download_weights is not None and download_weights[i] > 0:
-                                file_info["download_weight"] = download_weights[i]
-                            staging_files.append(file_info)
-                            files_added = True
-
-                    if files_added:
-                        staging_dict["files"] = staging_files
-                        flag_modified(artifact, "staging")
-
-                    # Save artifact state to S3 once for all files
-                    await self._save_version_to_s3(target_version_index, artifact, s3_config)
-                    session.add(artifact)
-                    await session.commit()
-
-                    logger.info(
-                        f"Batch put {len(file_paths)} files to artifact {artifact_id}"
-                    )
-
-            return presigned_urls
         except Exception as e:
             raise e
         finally:
@@ -5223,11 +6246,27 @@ class ArtifactController:
                 )
 
                 assert artifact.staging is not None, "Artifact must be in staging mode."
-                
+
                 # Convert legacy staging format if needed
                 if artifact.staging is not None:
                     artifact.staging = convert_legacy_staging(artifact.staging)
-                
+
+                # Check if this is a git-storage artifact
+                config = artifact.config or {}
+                if config.get("storage") == "git":
+                    # Handle git-storage artifacts
+                    result = await self._remove_git_file(
+                        artifact,
+                        parent_artifact,
+                        file_path,
+                    )
+                    session.add(artifact)
+                    await session.commit()
+                    logger.info(
+                        f"Staged removal of file '{file_path}' from git artifact {artifact_id}"
+                    )
+                    return result
+
                 # Check if there's intent to create a new version
                 staging_dict = artifact.staging or {}
                 has_new_version_intent = staging_dict.get("_intent") == "new_version"
@@ -5434,6 +6473,31 @@ class ArtifactController:
                 artifact, parent_artifact = await self._get_artifact_with_permission(
                     user_info, artifact_id, "get_file", session
                 )
+
+                # Check if this is a git-storage artifact
+                config = artifact.config or {}
+                if config.get("storage") == "git":
+                    # Handle git-storage artifacts
+                    presigned_urls = {}
+                    for fpath in file_paths:
+                        url = await self._get_git_file_url(
+                            artifact,
+                            parent_artifact,
+                            fpath,
+                            version,
+                            expires_in,
+                            use_proxy,
+                            use_local_url,
+                            user_info,
+                        )
+                        presigned_urls[fpath] = url
+
+                    # Return single URL or dict based on input type
+                    if is_batch:
+                        return presigned_urls
+                    else:
+                        return presigned_urls[file_paths[0]]
+
                 version_index = self._get_version_index(artifact, version)
                 s3_config = self._get_s3_config(artifact, parent_artifact)
 
@@ -5518,188 +6582,6 @@ class ArtifactController:
             else:
                 return presigned_urls[file_paths[0]]
 
-        except Exception as e:
-            raise e
-        finally:
-            await session.close()
-
-    @schema_method
-    async def batch_get_file(
-        self,
-        artifact_id: str = PydanticField(
-            ...,
-            description="Artifact identifier to download files from. Format: 'workspace/alias' or just 'alias' (uses current workspace)."
-        ),
-        file_paths: List[str] = PydanticField(
-            ...,
-            description="List of file paths within the artifact to download. Use forward slashes for nested paths."
-        ),
-        silent: bool = PydanticField(
-            False,
-            description="If True, does not increment download count statistics."
-        ),
-        version: Optional[str] = PydanticField(
-            None,
-            description="Version to download from (e.g., 'v1.0', 'latest'). If not specified, uses current version."
-        ),
-        stage: bool = PydanticField(
-            False,
-            description="Download from staged (uncommitted) files. Cannot be used with version parameter."
-        ),
-        use_proxy: Optional[bool] = PydanticField(
-            None,
-            description="If True, returns proxy URLs through Hypha server. If False, returns direct S3 URLs. Default auto-selects."
-        ),
-        use_local_url: Union[bool, str] = PydanticField(
-            False,
-            description="If True, returns localhost URLs. If 'absolute', returns absolute file paths."
-        ),
-        expires_in: int = PydanticField(
-            3600,
-            description="URL expiration time in seconds. Default 1 hour. Range: 60-604800 seconds (1 min to 7 days).",
-            ge=60,
-            le=604800
-        ),
-        context: Optional[dict] = PydanticField(
-            None,
-            description="Context containing user info and workspace. Usually provided automatically."
-        ),
-    ) -> Dict[str, str]:
-        """Generate presigned URLs for downloading multiple files in a single call.
-
-        This method is optimized for generating many download URLs at once by:
-        1. Using a single database transaction for all files
-        2. Reusing a single S3 client for all URL generations
-        3. Performing permission checks once upfront
-
-        This is significantly faster than calling get_file multiple times when you need
-        to download many files. For example, generating 1000 URLs takes ~1-2s with
-        batch_get_file vs ~150s with individual get_file calls (75-150x speedup).
-
-        Returns:
-            Dictionary mapping file paths to their presigned download URLs
-
-        Examples:
-            # Download multiple files
-            urls = await batch_get_file(
-                "my-dataset",
-                ["data/train.csv", "data/test.csv", "data/val.csv"]
-            )
-            for path, url in urls.items():
-                # Download using httpx or requests
-                response = httpx.get(url)
-
-            # Download from specific version
-            urls = await batch_get_file(
-                "my-model",
-                ["weights.pt", "config.json", "tokenizer.json"],
-                version="v1.0"
-            )
-
-        Raises:
-            ValueError: If artifact_id invalid, file_paths empty, or stage used with version
-            PermissionError: If user lacks read permission
-            FileNotFoundError: If any requested file doesn't exist
-        """
-        if context is None or "ws" not in context:
-            raise ValueError("Context must include 'ws' (workspace).")
-
-        if not file_paths:
-            raise ValueError("file_paths must contain at least one file path")
-
-        artifact_id = self._validate_artifact_id(artifact_id, context)
-        user_info = UserInfo.from_context(context)
-
-        # Handle stage parameter
-        if stage:
-            assert (
-                version is None or version == "stage"
-            ), "You cannot specify a version when using stage mode."
-            version = "stage"
-
-        session = await self._get_session()
-        try:
-            async with session.begin():
-                artifact, parent_artifact = await self._get_artifact_with_permission(
-                    user_info, artifact_id, "get_file", session
-                )
-                version_index = self._get_version_index(artifact, version)
-                s3_config = self._get_s3_config(artifact, parent_artifact)
-
-                # Use single S3 client for all URL generations
-                async with self._create_client_async(s3_config) as s3_client:
-                    presigned_urls = {}
-
-                    # Generate URLs for all files
-                    for file_path in file_paths:
-                        file_key = safe_join(
-                            s3_config["prefix"],
-                            f"{artifact.id}/v{version_index}/{file_path}",
-                        )
-
-                        # Check if file exists
-                        try:
-                            await s3_client.head_object(
-                                Bucket=s3_config["bucket"], Key=file_key
-                            )
-                        except ClientError:
-                            raise FileNotFoundError(
-                                f"File '{file_path}' does not exist in the artifact."
-                            )
-
-                        # Generate presigned URL
-                        presigned_url = await s3_client.generate_presigned_url(
-                            "get_object",
-                            Params={"Bucket": s3_config["bucket"], "Key": file_key},
-                            ExpiresIn=expires_in,
-                        )
-
-                        # Handle proxy/local URL replacement
-                        if use_proxy is None:
-                            use_proxy = self.s3_controller.enable_s3_proxy
-
-                        if use_proxy:
-                            if use_local_url:
-                                local_proxy_url = f"{self.store.local_base_url}/s3" if use_local_url is True else f"{use_local_url}/s3"
-                                presigned_url = presigned_url.replace(
-                                    s3_config["endpoint_url"], local_proxy_url
-                                )
-                            elif s3_config["public_endpoint_url"]:
-                                presigned_url = presigned_url.replace(
-                                    s3_config["endpoint_url"],
-                                    s3_config["public_endpoint_url"],
-                                )
-                        elif use_local_url and not use_proxy:
-                            if use_local_url is not True:
-                                presigned_url = presigned_url.replace(
-                                    s3_config["endpoint_url"], use_local_url
-                                )
-
-                        presigned_urls[file_path] = presigned_url
-
-                # Increment download counts unless silent
-                if not silent:
-                    if artifact.config and "download_weights" in artifact.config:
-                        download_weights = artifact.config.get("download_weights", {})
-                    else:
-                        download_weights = {}
-
-                    # Calculate total download weight for all files
-                    total_weight = 0
-                    for file_path in file_paths:
-                        download_weight = download_weights.get(file_path) or 0
-                        total_weight += download_weight
-
-                    if total_weight > 0:
-                        await self._increment_stat(
-                            session,
-                            artifact.id,
-                            "download_count",
-                            increment=total_weight,
-                        )
-
-                await session.commit()
-            return presigned_urls
         except Exception as e:
             raise e
         finally:
@@ -5800,6 +6682,20 @@ class ArtifactController:
                 artifact, parent_artifact = await self._get_artifact_with_permission(
                     user_info, artifact_id, "list_files", session
                 )
+
+                # Check if this is a git-storage artifact
+                config = artifact.config or {}
+                if config.get("storage") == "git":
+                    # Handle git-storage artifacts
+                    items = await self._list_git_files(
+                        artifact,
+                        parent_artifact,
+                        dir_path,
+                        limit,
+                        offset,
+                        version,
+                    )
+                    return items
 
                 # Handle staging version - check intent to determine correct index
                 if version == "stage":
@@ -7264,12 +8160,10 @@ class ArtifactController:
             "delete": self.delete,
             "duplicate": self.duplicate,
             "put_file": self.put_file,
-            "batch_put_file": self.batch_put_file,
             "put_file_start_multipart": self.put_file_start_multipart,
             "put_file_complete_multipart": self.put_file_complete_multipart,
             "remove_file": self.remove_file,
             "get_file": self.get_file,
-            "batch_get_file": self.batch_get_file,
             "list": self.list_children,
             "list_children": self.list_children,
             "list_files": self.list_files,

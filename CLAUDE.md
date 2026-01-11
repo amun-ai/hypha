@@ -657,7 +657,7 @@ After changes to the repo, try to run the tests, and ensure it pass locally.
 
 When you create tests, never cheat, no mockup, always make real tests, introduce new fixture in tests/conftest.py file, and always aim for full coverage.
 
-DO NOT use defensive programming pattern, NEVER do try and finally to let the error pass silently, NEVER convert except to warning, just for the sake of passing tests, you should be honest on failures, unable to fix, report the honest results and failure to the user.
+DO NOT use defensive programming pattern, NEVER do try and finally without except, or let the error pass silently, NEVER convert except to warning, just for the sake of passing tests, you should be honest on failures, unable to fix, report the honest results and failure to the user.
 
 Never ignore errors, or warnings, either it's relate to the current tests goal or not, you should always at least warn the user about the failing tests, never ignore them, always aim for full test passes. Otherwise fix them.
 
@@ -674,3 +674,5 @@ Whatever you do, do not cheat, never fix issue by masking out issue, or hide iss
 Commit to git is ok if instructed, but NEVER reset a branch this will cause the lost of commit history.
 
 Never use try/finally pattern, always raise exception!
+
+When you run tests, use pytest and make sure you ran it inside the conda env named 'hypha'.

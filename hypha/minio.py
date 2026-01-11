@@ -189,28 +189,8 @@ def start_minio_server(
         workdir_path = Path(workdir)
         workdir_path.mkdir(parents=True, exist_ok=True)
 
-        # When using file system mode, create the format.json file
-        if file_system_mode:
-            minio_sys_dir = workdir_path / ".minio.sys"
-            # Ensure the .minio.sys directory exists
-            minio_sys_dir.mkdir(exist_ok=True)
-
-            format_file_path = minio_sys_dir / "format.json"
-            format_content = {
-                "version": "1",
-                "format": "fs",
-                "id": "avoid-going-into-snsd-mode-legacy-is-fine-with-me",
-                "fs": {"version": "2"},
-            }
-
-            try:
-                with open(format_file_path, "w", encoding="utf-8") as f:
-                    json.dump(format_content, f, ensure_ascii=False, indent=4)
-                logger.info(
-                    f"Created format.json for legacy FS mode in {minio_sys_dir}"
-                )
-            except Exception as e:
-                logger.warning(f"Failed to create format.json for legacy FS mode: {e}")
+        # Note: Previously created format.json with "format": "fs" but this
+        # conflicts with newer MinIO versions. Let MinIO create its own format.
 
         workdir = str(workdir_path)
 
@@ -226,20 +206,12 @@ def start_minio_server(
     my_env["MINIO_ROOT_PASSWORD"] = root_password
 
     # In file system mode, set additional environment variables
-    # Note: Some of these might be redundant or conflicting with the format.json approach,
-    # but keeping them for now based on previous attempts.
+    # Note: Cache settings were removed because MINIO_CACHE_DRIVES cannot point to the
+    # same directory as the data directory - it causes "Unsupported cache format" errors.
     if file_system_mode:
         my_env["MINIO_STORAGE_CLASS_STANDARD"] = "EC:0"
         my_env["MINIO_DOMAIN"] = "localhost"
         my_env["MINIO_BROWSER"] = "on"
-        my_env["MINIO_VOLUMES"] = workdir
-        my_env["MINIO_CACHE"] = "on"
-        my_env["MINIO_CACHE_DRIVES"] = workdir
-        my_env["MINIO_CACHE_EXCLUDE"] = ""
-        my_env["MINIO_CACHE_QUOTA"] = "80"
-        my_env["MINIO_CACHE_AFTER"] = "0"
-        my_env["MINIO_CACHE_WATERMARK_LOW"] = "70"
-        my_env["MINIO_CACHE_WATERMARK_HIGH"] = "90"
 
     # Start server
     server_url = f"http://127.0.0.1:{port}"
@@ -258,7 +230,15 @@ def start_minio_server(
     cmd.append(workdir)
 
     try:
-        proc = subprocess.Popen(cmd, env=my_env)
+        # Redirect stdout/stderr to prevent output buffer blocking when
+        # pytest captures output. Without this, the subprocess output can
+        # fill up buffers and cause hangs.
+        proc = subprocess.Popen(
+            cmd,
+            env=my_env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
         # Wait for server to be available
         start_time = time.time()
@@ -266,7 +246,11 @@ def start_minio_server(
 
         while time.time() - start_time < timeout:
             try:
-                response = requests.get(f"{server_url}/minio/health/live")
+                # Note: Use trust_env=False to prevent .netrc or environment variables
+                # from injecting auth headers that MinIO doesn't support
+                session = requests.Session()
+                session.trust_env = False
+                response = session.get(f"{server_url}/minio/health/live")
                 if response.ok:
                     logger.info("Minio server started successfully.")
                     return proc, server_url, workdir
@@ -342,8 +326,15 @@ def generate_command(cmd_template, **kwargs):
     return cmd_template.format(**kwargs)
 
 
-def execute_command_sync(cmd_template, mc_executable, **kwargs):
-    """Execute the command synchronously."""
+def execute_command_sync(cmd_template, mc_executable, timeout=30, **kwargs):
+    """Execute the command synchronously.
+
+    Args:
+        cmd_template: Command template string
+        mc_executable: Path to mc executable
+        timeout: Timeout in seconds (default 30)
+        **kwargs: Additional arguments for command template
+    """
     command_string = generate_command(cmd_template, json=True, **kwargs)
     command_string = mc_executable + command_string.lstrip("mc")
     try:
@@ -353,15 +344,19 @@ def execute_command_sync(cmd_template, mc_executable, **kwargs):
                 command_string,
                 stderr=subprocess.STDOUT,
                 shell=True,
+                timeout=timeout,
             )
         else:
             _output = subprocess.check_output(
                 command_string.split(),
                 stderr=subprocess.STDOUT,
+                timeout=timeout,
             )
         success, output = True, _output.decode("utf-8")
     except subprocess.CalledProcessError as err:
         success, output = False, err.output.decode("utf-8")
+    except subprocess.TimeoutExpired:
+        success, output = False, f"Command timed out after {timeout} seconds"
     return parse_output(success, output, command_string)
 
 

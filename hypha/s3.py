@@ -192,7 +192,7 @@ class S3Controller:
             )
         else:
             self.minio_client = None
-    
+
         self.endpoint_url_public = endpoint_url_public or endpoint_url
         self.store = store
         self.workspace_bucket = workspace_bucket
@@ -203,16 +203,15 @@ class S3Controller:
         self._redis = store.get_redis()
         # self.local_log_dir = Path(local_log_dir)
         self.workspace_etc_dir = workspace_etc_dir.rstrip("/")
-        
+
         s3client = self.create_client_sync()
-        
+
         # Try to create bucket with retries for MinIO startup
         max_retries = 10
         retry_delay = 1
         for attempt in range(max_retries):
             try:
                 s3client.create_bucket(Bucket=self.workspace_bucket)
-                logger.info("Bucket created: %s", self.workspace_bucket)
                 break
             except botocore.exceptions.ClientError as e:
                 error_code = e.response['Error']['Code']
@@ -227,7 +226,7 @@ class S3Controller:
                 else:
                     # Other error or max retries reached
                     raise
-        
+
         # Apply CORS policy if not using MinIO
         try:
             if self.s3_admin_type != "minio":
@@ -658,16 +657,29 @@ class S3Controller:
         full_path = safe_join(workspace, path)
         return await self._delete_full_path(full_path)
 
-    def create_client_sync(self):
-        """Create client sync."""
+    def create_client_sync(self, connect_timeout=5, read_timeout=10):
+        """Create client sync.
+
+        Args:
+            connect_timeout: Timeout for establishing connection (seconds)
+            read_timeout: Timeout for read operations (seconds)
+        """
         # Documentation for botocore client:
         # https://botocore.amazonaws.com/v1/documentation/api/latest/reference/services/s3.html
+        from botocore.config import Config
+
+        config = Config(
+            connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
+            retries={'max_attempts': 0}  # We handle retries ourselves
+        )
         return botocore.session.get_session().create_client(
             "s3",
             endpoint_url=self.endpoint_url,
             aws_access_key_id=self.access_key_id,
             aws_secret_access_key=self.secret_access_key,
             region_name=self.region_name,
+            config=config,
         )
 
     def create_client_async(self, public=False):
@@ -779,20 +791,33 @@ class S3Controller:
                 )
 
     async def save_workspace_config(self, workspace: WorkspaceInfo):
-        """Save workspace."""
+        """Save workspace config using synchronous client in thread pool.
+
+        Uses the synchronous botocore client wrapped in run_in_executor to avoid
+        event loop issues with aiobotocore during FastAPI lifespan startup.
+        """
         assert isinstance(workspace, WorkspaceInfo)
         if workspace.read_only:
             return
-        async with self.create_client_async() as s3_client:
-            response = await s3_client.put_object(
-                Body=workspace.model_dump_json().encode("utf-8"),
-                Bucket=self.workspace_bucket,
-                Key=f"{self.workspace_etc_dir}/{workspace.id}/manifest.json",
-            )
-            assert (
-                "ResponseMetadata" in response
-                and response["ResponseMetadata"]["HTTPStatusCode"] == 200
-            ), f"Failed to save workspace ({workspace.id}) manifest: {response}"
+
+        def _sync_put_object():
+            """Synchronous S3 put_object operation."""
+            s3_client = self.create_client_sync()
+            try:
+                return s3_client.put_object(
+                    Body=workspace.model_dump_json().encode("utf-8"),
+                    Bucket=self.workspace_bucket,
+                    Key=f"{self.workspace_etc_dir}/{workspace.id}/manifest.json",
+                )
+            finally:
+                s3_client.close()
+
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(None, _sync_put_object)
+        assert (
+            "ResponseMetadata" in response
+            and response["ResponseMetadata"]["HTTPStatusCode"] == 200
+        ), f"Failed to save workspace ({workspace.id}) manifest: {response}"
 
     @schema_method
     async def generate_credential(
