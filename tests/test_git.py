@@ -1170,21 +1170,18 @@ async def test_git_artifact_get_file(
         )
         assert result.returncode == 0, f"Push failed: {result.stderr}"
 
-    # Test get_file - for git storage, regular files return dict with base64 content
+    # Test get_file - should always return a URL (same interface as raw storage)
     result = await artifact_manager.get_file(artifact_id=artifact_alias, file_path="README.md")
 
-    # For git storage, regular files return a dict with content_base64
-    if isinstance(result, dict) and result.get("_type") == "git_file_content":
-        content = base64.b64decode(result["content_base64"]).decode()
-        assert content == file_content
-    elif isinstance(result, str) and result.startswith("http"):
-        # If it's an LFS file or proxy URL, fetch it
-        resp = requests.get(result, timeout=30)
-        assert resp.status_code == 200
-        assert file_content in resp.text
-    else:
-        # Direct content (shouldn't happen for git, but handle it)
-        assert file_content in str(result)
+    # Result should be a URL string
+    assert isinstance(result, str), f"Expected URL string, got {type(result)}"
+    assert result.startswith("http"), f"Expected URL, got: {result}"
+
+    # Fetch the file content via the URL
+    http = get_http_session()
+    resp = http.get(result, timeout=30)
+    assert resp.status_code == 200
+    assert file_content in resp.text
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
@@ -1526,7 +1523,6 @@ async def test_git_artifact_get_file_by_commit_sha(
     """Test get_file with a specific commit SHA as version."""
     import subprocess
     import uuid
-    import base64
     from hypha_rpc import connect_to_server
 
     api = await connect_to_server({
@@ -1588,14 +1584,13 @@ async def test_git_artifact_get_file_by_commit_sha(
         )
         assert result.returncode == 0, f"Push failed: {result.stderr}"
 
-    # Get file at HEAD (should be v2)
+    # Get file at HEAD (should be v2) - always returns URL
     result_head = await artifact_manager.get_file(artifact_id=artifact_alias, file_path="file.txt")
-    if isinstance(result_head, dict) and result_head.get("_type") == "git_file_content":
-        content_head = base64.b64decode(result_head["content_base64"]).decode()
-    else:
-        resp = requests.get(result_head, timeout=30)
-        content_head = resp.text
-    assert "Version 2" in content_head
+    assert isinstance(result_head, str) and result_head.startswith("http")
+    http = get_http_session()
+    resp = http.get(result_head, timeout=30)
+    assert resp.status_code == 200
+    assert "Version 2" in resp.text
 
     # Get file at first commit SHA (should be v1) - use full 40-character SHA
     # Note: Partial SHA matching is not currently implemented
@@ -1604,12 +1599,10 @@ async def test_git_artifact_get_file_by_commit_sha(
         file_path="file.txt",
         version=first_commit_sha  # Full 40-char SHA
     )
-    if isinstance(result_v1, dict) and result_v1.get("_type") == "git_file_content":
-        content_v1 = base64.b64decode(result_v1["content_base64"]).decode()
-    else:
-        resp = requests.get(result_v1, timeout=30)
-        content_v1 = resp.text
-    assert "Version 1" in content_v1
+    assert isinstance(result_v1, str) and result_v1.startswith("http")
+    resp = http.get(result_v1, timeout=30)
+    assert resp.status_code == 200
+    assert "Version 1" in resp.text
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)

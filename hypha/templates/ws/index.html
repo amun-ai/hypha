@@ -2576,7 +2576,7 @@
         
             const handleDownloadFile = async (filePath) => {
                 try {
-                    const url = await am.getFile(artifact.id, filePath);
+                    const url = await am.getFile(currentArtifact.id, filePath);
                     window.open(url, "_blank");
                 } catch (error) {
                     console.error("Failed to download file:", error);

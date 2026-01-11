@@ -2797,12 +2797,13 @@ class ArtifactController:
         expires_in: int,
         use_proxy: Optional[bool],
         use_local_url: bool,
-    ) -> Optional[str]:
-        """Get a presigned URL for a file from git-storage artifact.
+        user_info: UserInfo = None,
+    ) -> str:
+        """Get a URL for a file from git-storage artifact.
 
-        For regular files stored in git, this returns the actual file content
-        (since git files are not stored directly in S3).
-        For LFS files, this returns a presigned URL to S3.
+        For LFS files, returns a presigned URL directly to S3.
+        For regular git files, returns an HTTP endpoint URL with embedded token
+        that serves the file content.
 
         Args:
             artifact: The artifact model instance
@@ -2812,15 +2813,18 @@ class ArtifactController:
             expires_in: URL expiration time in seconds
             use_proxy: Whether to use proxy URL
             use_local_url: Whether to return localhost URL
+            user_info: User info for generating auth token
 
         Returns:
-            Presigned URL for LFS files, or dict with content for regular files
+            URL string (either presigned S3 URL for LFS or HTTP endpoint URL)
 
         Raises:
             FileNotFoundError: If file not found
         """
         from hypha.git.repo import S3GitRepo
         from hypha.git.lfs import LFSPointer
+        from hypha.core.auth import generate_auth_token
+        from urllib.parse import quote, urlencode
 
         s3_config = self._get_s3_config(artifact, parent_artifact)
 
@@ -2840,7 +2844,7 @@ class ArtifactController:
         except ValueError as e:
             raise FileNotFoundError(f"Version '{version}' not found: {e}")
 
-        # Get file content
+        # Get file content to check if it exists and if it's LFS
         content = await repo.get_file_content_async(file_path, commit_sha)
         if content is None:
             raise FileNotFoundError(f"File '{file_path}' not found in repository")
@@ -2896,15 +2900,33 @@ class ArtifactController:
 
                 return presigned_url
 
-        # Regular file - return content info
-        # For RPC get_file, we can't return raw bytes as URL,
-        # so we return a special dict that indicates embedded content
-        import base64
-        return {
-            "_type": "git_file_content",
-            "content_base64": base64.b64encode(content).decode("utf-8"),
-            "size": len(content),
-        }
+        # Regular git file - generate HTTP endpoint URL with token
+        # The HTTP endpoint /{workspace}/artifacts/{alias}/files/{path} handles git files
+        if user_info is None:
+            raise ValueError("user_info is required to generate download URL for git files")
+
+        # Generate a token for the URL (with same expiry as requested)
+        token = await generate_auth_token(user_info, expires_in)
+
+        # Determine base URL
+        if use_local_url:
+            base_url = self.store.local_base_url if use_local_url is True else use_local_url
+        else:
+            base_url = self.store.public_base_url
+
+        # Build the URL to the files endpoint
+        # URL format: {base_url}/{workspace}/artifacts/{alias}/files/{file_path}?token={token}
+        encoded_file_path = quote(file_path, safe='/')
+        url = f"{base_url}/{artifact.workspace}/artifacts/{artifact.alias}/files/{encoded_file_path}"
+
+        # Add query parameters
+        params = {"token": token}
+        if version:
+            params["version"] = version
+
+        url = f"{url}?{urlencode(params)}"
+
+        return url
 
     async def _put_git_file(
         self,
@@ -6458,7 +6480,7 @@ class ArtifactController:
                     # Handle git-storage artifacts
                     presigned_urls = {}
                     for fpath in file_paths:
-                        url_or_content = await self._get_git_file_url(
+                        url = await self._get_git_file_url(
                             artifact,
                             parent_artifact,
                             fpath,
@@ -6466,8 +6488,9 @@ class ArtifactController:
                             expires_in,
                             use_proxy,
                             use_local_url,
+                            user_info,
                         )
-                        presigned_urls[fpath] = url_or_content
+                        presigned_urls[fpath] = url
 
                     # Return single URL or dict based on input type
                     if is_batch:
