@@ -1362,6 +1362,93 @@ async def test_git_artifact_list_staged_files(
     await api.disconnect()
 
 
+async def test_git_artifact_concurrent_put_file(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test that concurrent put_file calls don't lose files due to race conditions.
+
+    This is a critical test to verify that when multiple put_file calls are made
+    in parallel (as the web UI does), all files are properly tracked in staging
+    and committed to the git repository.
+
+    Previously, this was broken because each put_file call would load the artifact,
+    add its file to staging, and save - without proper locking, later calls would
+    overwrite earlier ones.
+    """
+    import uuid
+    import asyncio
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-concurrent-put-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    artifact_alias = f"git-concurrent-put-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Git Concurrent Put Test"},
+        config={"storage": "git"},
+    )
+
+    # Enter staging mode
+    await artifact_manager.edit(artifact_id=artifact_alias, stage=True)
+
+    # Simulate web UI behavior: call put_file for multiple files concurrently
+    num_files = 5
+    file_names = [f"concurrent_file_{i}.txt" for i in range(num_files)]
+
+    async def upload_file(file_name):
+        """Upload a single file (simulating web UI parallel upload)."""
+        put_url = await artifact_manager.put_file(artifact_id=artifact_alias, file_path=file_name)
+        content = f"Content of {file_name}".encode()
+        resp = requests.put(put_url, data=content, timeout=30)
+        assert resp.status_code == 200, f"Upload failed for {file_name}: {resp.text}"
+        return file_name
+
+    # Run all uploads concurrently (this is what the web UI does)
+    upload_tasks = [upload_file(name) for name in file_names]
+    uploaded = await asyncio.gather(*upload_tasks)
+    assert len(uploaded) == num_files
+
+    # List staged files - all files should be present
+    staged_files = await artifact_manager.list_files(artifact_id=artifact_alias, stage=True)
+    staged_names = [f["name"] for f in staged_files]
+
+    # This is the critical assertion - all files should be in staging
+    for file_name in file_names:
+        assert file_name in staged_names, (
+            f"RACE CONDITION: {file_name} was lost in staging! "
+            f"Only found: {staged_names}"
+        )
+
+    # Commit and verify all files made it to git
+    result = await artifact_manager.commit(artifact_id=artifact_alias, comment="Add concurrent files")
+    assert result is not None
+    assert result.get("file_count") == num_files, (
+        f"Expected {num_files} files committed, got {result.get('file_count')}"
+    )
+
+    # List committed files
+    committed_files = await artifact_manager.list_files(artifact_id=artifact_alias)
+    committed_names = [f["name"] for f in committed_files]
+
+    for file_name in file_names:
+        assert file_name in committed_names, (
+            f"RACE CONDITION: {file_name} was lost during commit! "
+            f"Only found: {committed_names}"
+        )
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
+
+
 async def test_git_artifact_remove_file(
     minio_server,
     fastapi_server,

@@ -3130,37 +3130,55 @@ class ArtifactController:
         repo = S3GitRepo(s3_client_factory, s3_config["bucket"], prefix, s3_config=s3_config)
         await repo.initialize()
 
-        # Get staged files from artifact.staging
+        # Get staged files from artifact.staging (for removal tracking and download weights)
         staging_dict = artifact.staging or {}
-        staged_files = staging_dict.get("files", [])
+        staged_files_manifest = staging_dict.get("files", [])
 
-        if not staged_files:
-            logger.warning("No staged files to commit for git artifact")
-            return {
-                "status": "no_changes",
-                "artifact_id": f"{artifact.workspace}/{artifact.alias}",
-            }
+        # Build lookup for file metadata from manifest
+        manifest_lookup = {}
+        files_to_remove = []
+        for file_info in staged_files_manifest:
+            if file_info.get("_remove"):
+                files_to_remove.append(file_info["path"])
+            elif "path" in file_info:
+                manifest_lookup[file_info["path"]] = file_info
 
-        # Collect file contents from staging area
+        # List all files from S3 staging area directly
+        # This ensures all uploaded files are committed, even if the manifest
+        # is incomplete due to race conditions in concurrent put_file calls
         staging_prefix = f"{s3_config['prefix']}/{artifact.id}/staging/"
         files_to_commit = []
-        files_to_remove = []
 
         async with self._create_client_async(s3_config) as s3_client:
-            for file_info in staged_files:
-                if file_info.get("_remove"):
-                    files_to_remove.append(file_info["path"])
+            # List all files in the staging area
+            staged_s3_files = await list_objects_async(
+                s3_client,
+                s3_config["bucket"],
+                staging_prefix,
+                delimiter="",  # List all files recursively
+            )
+
+            for s3_file in staged_s3_files:
+                if s3_file.get("type") != "file":
                     continue
 
-                file_path = file_info["path"]
-                staging_key = f"{staging_prefix}{file_path}"
+                # When delimiter="" (recursive listing), s3_file["name"] is the full key
+                # We need to extract the relative path by removing the staging_prefix
+                full_key = s3_file["name"]
+                if not full_key.startswith(staging_prefix):
+                    logger.warning(f"Unexpected S3 key format: {full_key}")
+                    continue
+                file_path = full_key[len(staging_prefix):]
 
                 try:
                     response = await s3_client.get_object(
                         Bucket=s3_config["bucket"],
-                        Key=staging_key,
+                        Key=full_key,
                     )
                     content = await response["Body"].read()
+
+                    # Get download_weight from manifest if available
+                    file_info = manifest_lookup.get(file_path, {})
                     files_to_commit.append({
                         "path": file_path,
                         "content": content,
@@ -3168,7 +3186,7 @@ class ArtifactController:
                     })
                 except ClientError as e:
                     if e.response.get("Error", {}).get("Code") == "NoSuchKey":
-                        logger.warning(f"Staged file not found: {file_path}")
+                        logger.warning(f"Staged file not found: {full_key}")
                     else:
                         raise
 
@@ -5949,6 +5967,10 @@ class ArtifactController:
                 config = artifact.config or {}
                 if config.get("storage") == "git":
                     # Handle git-storage artifacts
+                    # Note: We don't need row locking here because:
+                    # 1. File uploads go directly to S3 staging area
+                    # 2. Commit now lists files from S3 directly, not from manifest
+                    # The manifest update below is best-effort for metadata tracking
                     presigned_urls = {}
                     staging_dict = artifact.staging
                     staging_files = staging_dict.get("files", [])

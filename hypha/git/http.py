@@ -469,7 +469,11 @@ class GitHTTPHandler:
 
             if use_side_band:
                 # Send pack data through side-band channel
-                chunk_size = 65519 if b"side-band-64k" in capabilities else 999
+                # pkt-line format: 4 hex chars (length) + data
+                # Max pkt-line length is 65520 (0xfff0)
+                # For side-band: data = 1 byte (channel) + chunk
+                # So max chunk = 65520 - 4 - 1 = 65515 bytes
+                chunk_size = 65515 if b"side-band-64k" in capabilities else 999
 
                 offset = 0
                 while offset < len(pack_data):
