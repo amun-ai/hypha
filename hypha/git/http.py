@@ -88,12 +88,14 @@ RECEIVE_PACK_CAPABILITIES = [
 ]
 
 
-def extract_token_from_basic_auth(authorization: Optional[str]) -> Optional[str]:
-    """Extract the token from HTTP Basic Auth header.
+def extract_credentials_from_basic_auth(
+    authorization: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """Extract username and token from HTTP Basic Auth header.
 
     Git uses HTTP Basic Authentication for push operations.
     The password field is used as the Hypha token.
-    Username can be anything (commonly 'git' or the user's email).
+    The username should match the user ID in the token.
 
     Format: Authorization: Basic base64(username:password)
 
@@ -101,31 +103,50 @@ def extract_token_from_basic_auth(authorization: Optional[str]) -> Optional[str]
         authorization: The Authorization header value
 
     Returns:
-        The token (password) if Basic auth is provided, None otherwise
+        Tuple of (username, token). For Bearer auth, username is None.
     """
     if not authorization:
-        return None
+        return None, None
 
     # Handle both Bearer and Basic auth
     if authorization.lower().startswith("bearer "):
-        # Bearer token - extract directly
-        return authorization[7:].strip()
+        # Bearer token - extract directly, no username
+        return None, authorization[7:].strip()
     elif authorization.lower().startswith("basic "):
-        # Basic auth - decode and extract password
+        # Basic auth - decode and extract username:password
         encoded = authorization[6:].strip()
         try:
             decoded = base64.b64decode(encoded).decode("utf-8")
             if ":" in decoded:
                 # Format: username:password - password is the token
-                _, password = decoded.split(":", 1)
-                return password if password else None
+                username, password = decoded.split(":", 1)
+                return (
+                    username if username else None,
+                    password if password else None,
+                )
         except Exception:
-            return None
+            return None, None
     else:
         # Might be a raw token
-        return authorization.strip() if authorization.strip() else None
+        token = authorization.strip() if authorization.strip() else None
+        return None, token
 
-    return None
+    return None, None
+
+
+def extract_token_from_basic_auth(authorization: Optional[str]) -> Optional[str]:
+    """Extract the token from HTTP Basic Auth header.
+
+    This is a backward-compatible wrapper around extract_credentials_from_basic_auth.
+
+    Args:
+        authorization: The Authorization header value
+
+    Returns:
+        The token (password) if Basic auth is provided, None otherwise
+    """
+    _, token = extract_credentials_from_basic_auth(authorization)
+    return token
 
 
 def pkt_line(data: bytes) -> bytes:
@@ -872,7 +893,8 @@ def create_git_router(
         """Custom auth dependency that handles HTTP Basic Auth for Git.
 
         Git clients send credentials as Basic Auth: base64(username:password)
-        where the password is the Hypha token.
+        where the password is the Hypha token and the username must match
+        the user ID encoded in the token.
         """
         # Debug logging for all headers
         logger.info(f"Git auth request: method={request.method}, path={request.url.path}")
@@ -886,9 +908,9 @@ def create_git_router(
                 headers={"WWW-Authenticate": 'Basic realm="Git Repository"'},
             )
 
-        # Extract token from Basic Auth or Bearer token
-        token = extract_token_from_basic_auth(authorization)
-        logger.debug(f"Git auth: extracted token type={authorization[:10] if authorization else None}...")
+        # Extract username and token from Basic Auth or Bearer token
+        provided_username, token = extract_credentials_from_basic_auth(authorization)
+        logger.debug(f"Git auth: extracted username={provided_username}, token type={authorization[:10] if authorization else None}...")
         if not token:
             logger.warning(f"Git auth: could not extract token from authorization header")
             raise HTTPException(
@@ -904,8 +926,31 @@ def create_git_router(
                 user_info = await parse_user_token(token)
                 if user_info.scope.current_workspace is None:
                     user_info.scope.current_workspace = user_info.get_workspace()
+
+                # Validate that provided username matches the user in the token
+                # This ensures git commits are attributed to the correct user
+                if provided_username is not None:
+                    # Check if username matches user ID or email
+                    valid_usernames = [user_info.id]
+                    if user_info.email:
+                        valid_usernames.append(user_info.email)
+
+                    if provided_username not in valid_usernames:
+                        logger.warning(
+                            f"Git auth: username mismatch. Provided: {provided_username}, "
+                            f"Expected one of: {valid_usernames}"
+                        )
+                        raise HTTPException(
+                            status_code=401,
+                            detail=f"Username '{provided_username}' does not match the token. "
+                                   f"Use your user ID '{user_info.id}' or email as the username.",
+                            headers={"WWW-Authenticate": 'Basic realm="Git Repository"'},
+                        )
+
                 logger.info(f"Git auth successful for user {user_info.id}")
                 return user_info
+            except HTTPException:
+                raise
             except Exception as e:
                 logger.warning(f"Git auth failed: {e}", exc_info=True)
                 raise HTTPException(

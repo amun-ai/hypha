@@ -65,7 +65,8 @@ async def test_git_clone_empty_repo(
     workspace = api.config.workspace
     port = SIO_PORT
     # Use authenticated URL for clone (anonymous users can't access user workspaces)
-    auth_url = f"http://git:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
+    # Username must match the user ID in the token (user-1 for test_user_token)
+    auth_url = f"http://user-1:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
 
     with tempfile.TemporaryDirectory() as tmpdir:
         clone_dir = os.path.join(tmpdir, "clone")
@@ -117,7 +118,7 @@ async def test_git_ls_remote(
     workspace = api.config.workspace
     port = SIO_PORT
     # Use authenticated URL (anonymous users can't access user workspaces)
-    auth_url = f"http://git:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
+    auth_url = f"http://user-1:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
 
     # Run git ls-remote
     result = subprocess.run(
@@ -205,7 +206,7 @@ async def test_git_clone_add_commit_push(
     workspace = api.config.workspace
     port = SIO_PORT
     # Use authenticated URL for all git operations (anonymous users can't access user workspaces)
-    auth_url = f"http://git:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
+    auth_url = f"http://user-1:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
 
     with tempfile.TemporaryDirectory() as tmpdir:
         clone_dir = os.path.join(tmpdir, "repo")
@@ -340,17 +341,28 @@ async def test_git_receive_pack_requires_auth(
     response = requests.post(
         receive_pack_url,
         data=b"",
-        auth=("git", "invalid-token"),
+        auth=("user-1", "invalid-token"),
         timeout=10
     )
     assert response.status_code == 401
 
-    # Test 3: git-receive-pack with valid auth should pass (200 status)
-    # Note: Use auth parameter to avoid netrc overwriting the Authorization header
+    # Test 3: git-receive-pack with wrong username should return 401
+    # Username must match the user ID in the token
     response = requests.post(
         receive_pack_url,
         data=b"",
-        auth=("git", test_user_token),
+        auth=("wrong-user", test_user_token),
+        timeout=5,
+    )
+    assert response.status_code == 401, "Wrong username should be rejected"
+
+    # Test 4: git-receive-pack with valid auth should pass (200 status)
+    # Note: Use auth parameter to avoid netrc overwriting the Authorization header
+    # Username must match the user ID in the token (user-1 for test_user_token)
+    response = requests.post(
+        receive_pack_url,
+        data=b"",
+        auth=("user-1", test_user_token),
         timeout=5,
         stream=True,
     )
@@ -429,7 +441,7 @@ async def test_git_lfs_push_and_pull(
 
     with tempfile.TemporaryDirectory() as tmpdir:
         # Use authenticated URL for all git operations (anonymous users can't access user workspaces)
-        auth_url = f"http://git:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
+        auth_url = f"http://user-1:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
 
         # Step 1: Clone empty repo with authentication
         clone_dir = os.path.join(tmpdir, "repo")
@@ -720,7 +732,7 @@ async def test_git_create_zip_file(
         subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=local_repo, check=True, capture_output=True)
 
         # Configure remote with embedded credentials
-        auth_url = git_url.replace("http://", f"http://git:{test_user_token}@")
+        auth_url = git_url.replace("http://", f"http://user-1:{test_user_token}@")
         subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
 
         # Push to the Hypha git repo
@@ -818,7 +830,7 @@ async def test_git_create_zip_file_with_specific_files(
         subprocess.run(["git", "commit", "-m", "Multiple files"], cwd=local_repo, check=True, capture_output=True)
 
         # Configure remote with embedded credentials
-        auth_url = git_url.replace("http://", f"http://git:{test_user_token}@")
+        auth_url = git_url.replace("http://", f"http://user-1:{test_user_token}@")
         subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
 
         # Push to the Hypha git repo
@@ -970,7 +982,7 @@ async def test_git_lfs_files_endpoint_streaming(
 
         # Push to Hypha
         git_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
-        auth_url = f"http://git:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
+        auth_url = f"http://user-1:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
         subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
 
         result = subprocess.run(
@@ -1077,7 +1089,7 @@ async def test_git_artifact_list_files(
         subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=local_repo, check=True, capture_output=True)
 
         # Configure remote and push
-        auth_url = git_url.replace("http://", f"http://git:{test_user_token}@")
+        auth_url = git_url.replace("http://", f"http://user-1:{test_user_token}@")
         subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
         result = subprocess.run(
             ["git", "push", "-u", "origin", "main"],
@@ -1159,7 +1171,7 @@ async def test_git_artifact_get_file(
         # Add, commit, push
         subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=local_repo, check=True, capture_output=True)
-        auth_url = git_url.replace("http://", f"http://git:{test_user_token}@")
+        auth_url = git_url.replace("http://", f"http://user-1:{test_user_token}@")
         subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
         result = subprocess.run(
             ["git", "push", "-u", "origin", "main"],
@@ -1494,7 +1506,7 @@ async def test_git_artifact_remove_file(
         # Add, commit, push
         subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=local_repo, check=True, capture_output=True)
-        auth_url = git_url.replace("http://", f"http://git:{test_user_token}@")
+        auth_url = git_url.replace("http://", f"http://user-1:{test_user_token}@")
         subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
         result = subprocess.run(
             ["git", "push", "-u", "origin", "main"],
@@ -1561,7 +1573,7 @@ async def test_git_artifact_version_resolution(
     workspace = api.config.workspace
     port = SIO_PORT
     git_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
-    auth_url = f"http://git:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
+    auth_url = f"http://user-1:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
 
     with tempfile.TemporaryDirectory() as tmpdir:
         local_repo = os.path.join(tmpdir, "repo")
@@ -1647,7 +1659,7 @@ async def test_git_artifact_custom_default_branch(
 
     workspace = api.config.workspace
     port = SIO_PORT
-    auth_url = f"http://git:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
+    auth_url = f"http://user-1:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
 
     with tempfile.TemporaryDirectory() as tmpdir:
         local_repo = os.path.join(tmpdir, "repo")
@@ -1710,7 +1722,7 @@ async def test_git_artifact_get_file_by_commit_sha(
 
     workspace = api.config.workspace
     git_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
-    auth_url = git_url.replace("http://", f"http://git:{test_user_token}@")
+    auth_url = git_url.replace("http://", f"http://user-1:{test_user_token}@")
 
     first_commit_sha = None
 
@@ -1804,7 +1816,7 @@ async def test_git_artifact_nested_directories(
 
     workspace = api.config.workspace
     git_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
-    auth_url = git_url.replace("http://", f"http://git:{test_user_token}@")
+    auth_url = git_url.replace("http://", f"http://user-1:{test_user_token}@")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         local_repo = os.path.join(tmpdir, "repo")
@@ -1895,7 +1907,7 @@ async def test_git_artifact_binary_file(
 
     workspace = api.config.workspace
     git_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
-    auth_url = git_url.replace("http://", f"http://git:{test_user_token}@")
+    auth_url = git_url.replace("http://", f"http://user-1:{test_user_token}@")
 
     # Create small binary content (under LFS threshold)
     binary_content = os.urandom(1024)  # 1KB random binary data
@@ -2184,7 +2196,7 @@ async def test_git_read_write_file(
 
     workspace = api.config.workspace
     port = SIO_PORT
-    auth_url = f"http://git:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
+    auth_url = f"http://user-1:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
 
     import tempfile
     import os
@@ -2332,7 +2344,7 @@ async def test_git_read_file_not_found(
 
     workspace = api.config.workspace
     port = SIO_PORT
-    auth_url = f"http://git:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
+    auth_url = f"http://user-1:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
 
     import tempfile
     import os

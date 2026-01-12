@@ -2539,9 +2539,18 @@
                     setGeneratingToken(true);
                     // Generate a token with write permission, valid for 1 hour
                     const token = await ws.generateToken({ expires_in: 3600 });
+                    // Decode the JWT to extract the user ID (sub claim)
+                    // JWT format: header.payload.signature - we need to decode the payload
+                    const payloadBase64 = token.split('.')[1];
+                    // Handle URL-safe base64 and add padding if needed
+                    const payloadBase64Padded = payloadBase64.replace(/-/g, '+').replace(/_/g, '/');
+                    const payloadJson = atob(payloadBase64Padded);
+                    const payload = JSON.parse(payloadJson);
+                    const userId = payload.sub || 'anonymous';
                     // Parse the git URL and insert credentials
+                    // Username must match the user ID in the token for git authentication
                     const gitUrl = new URL(currentArtifact.git_url);
-                    gitUrl.username = 'git';
+                    gitUrl.username = userId;
                     gitUrl.password = token;
                     setGitAuthUrl(gitUrl.toString());
                 } catch (error) {
