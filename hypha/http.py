@@ -224,6 +224,9 @@ class ASGIRoutingMiddleware:
                         path = "/" + path
                     scope["path"] = path
                     scope["raw_path"] = path.encode("latin-1")
+                    # Pass workspace and service_id to the service handlers
+                    scope["workspace"] = workspace
+                    scope["service_id"] = service_id
 
                     # get _mode from query string
                     query = scope.get("query_string", b"").decode("utf-8")

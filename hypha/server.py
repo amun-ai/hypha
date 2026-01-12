@@ -142,6 +142,14 @@ def start_builtin_services(
             disable_ssl=args.disable_ssl,
         )
 
+    # Register agent skills service BEFORE HTTPProxy (must be registered before _ready=True)
+    if not args.disable_agent_skills:
+        from hypha.skills import setup_agent_skills
+
+        agent_skills_service = setup_agent_skills(store)
+        store.register_public_service(agent_skills_service)
+        logger.info("Agent Skills service registered at /{workspace}/apps/agent-skills/")
+
     HTTPProxy(
         store,
         app,
@@ -637,6 +645,11 @@ def get_argparser(add_help=True):
         "--enable-mcp",
         action="store_true",
         help="enable MCP (Model Context Protocol) support",
+    )
+    parser.add_argument(
+        "--disable-agent-skills",
+        action="store_true",
+        help="disable Agent Skills documentation endpoint (enabled by default)",
     )
     parser.add_argument(
         "--enable-k8s-worker",
