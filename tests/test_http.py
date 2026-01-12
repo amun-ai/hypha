@@ -741,7 +741,7 @@ async def test_http_memory_leak_detection(minio_server, fastapi_server, test_use
     # - Connection pool allocation and caching
     # - Previous tests' residual memory when running full suite
     # 150 MB threshold catches real leaks (e.g., 500+ MB from connection leaks)
-    # while allowing for normal runtime memory variations observed in testing (19-103 MB).
+    # while allowing for normal runtime memory variations observed in CI testing (19-103 MB range).
     max_acceptable_memory_growth = 150.0  # MB - Catches real leaks while allowing normal variations
     max_acceptable_connection_growth = 2  # connections - Allow 2 connection variations
     max_acceptable_object_growth = 25     # objects - Allow for failed request cleanup (20 requests)
