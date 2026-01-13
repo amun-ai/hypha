@@ -16,7 +16,7 @@ import numpy as np
 
 from . import SERVER_URL, SERVER_URL_REDIS_1, SERVER_URL_SQLITE, find_item, wait_for_workspace_ready
 from hypha_rpc.rpc import RemoteException
-from .test_pgvector import pgvector_search_engine, pg_engine
+# Note: pgvector_search_engine and pg_engine fixtures are defined in conftest.py
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
