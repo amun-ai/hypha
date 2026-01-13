@@ -222,7 +222,8 @@ async def test_git_clone_add_commit_push(
             assert "empty" in result.stderr.lower() or "warning" in result.stderr.lower(), \
                 f"Clone failed unexpectedly: {result.stderr}"
             os.makedirs(clone_dir, exist_ok=True)
-            subprocess.run(["git", "init"], cwd=clone_dir, check=True)
+            # Use -b main to ensure consistent branch name across platforms
+            subprocess.run(["git", "init", "-b", "main"], cwd=clone_dir, check=True)
             subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=clone_dir, check=True)
 
         # Step 2: Configure git user
