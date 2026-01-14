@@ -293,8 +293,14 @@ async def test_git_clone_add_commit_push(
             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
         )
 
+        push_stdout = result.stdout
+        push_stderr = result.stderr
         assert result.returncode == 0, \
-            f"git push failed: stdout={result.stdout}, stderr={result.stderr}"
+            f"git push failed: stdout={push_stdout}, stderr={push_stderr}"
+
+        # Small delay to ensure S3 writes are fully propagated
+        import time
+        time.sleep(0.5)
 
         # Step 6: Clone again to verify
         clone_dir2 = os.path.join(tmpdir, "repo2")
@@ -333,8 +339,15 @@ async def test_git_clone_add_commit_push(
 
         # Verify the cloned repository has the file
         cloned_file = os.path.join(clone_dir2, "README.md")
-        assert os.path.exists(cloned_file), \
-            f"Cloned repo should contain README.md. Clone dir contents: {clone_contents}, git log: {git_log}, branches: {git_branches}, clone stderr: {result.stderr}"
+        assert os.path.exists(cloned_file), (
+            f"Cloned repo should contain README.md. "
+            f"Clone dir contents: {clone_contents}, "
+            f"git log: {git_log}, "
+            f"branches: {git_branches}, "
+            f"clone stderr: {result.stderr}, "
+            f"push stdout: {push_stdout}, "
+            f"push stderr: {push_stderr}"
+        )
 
         with open(cloned_file, "r") as f:
             content = f.read()
