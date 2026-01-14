@@ -3192,3 +3192,309 @@ async with await artifact.open_file("data/output.txt", "w") as f:
 - **Authentication**: Automatic token management and authentication
 
 For more information and advanced usage examples, see the [hypha-artifact repository](https://github.com/aicell-lab/hypha-artifact/).
+
+---
+
+## Git Storage for Artifacts
+
+Hypha supports Git-based storage for artifacts, enabling version-controlled source code management with full Git protocol compatibility. This is ideal for:
+
+- **AI Agent Code Generation**: Allow AI agents to generate, modify, and commit code via standard Git operations
+- **Collaborative Development**: Multiple contributors can push/pull changes using familiar Git workflows
+- **Large File Support**: Integrated Git LFS (Large File Storage) for binary files like models and datasets
+- **Version History**: Full Git commit history with branch and tag support
+
+### Creating a Git-Enabled Artifact
+
+To create an artifact with Git storage, set `storage: "git"` in the config:
+
+```python
+from hypha_rpc import connect_to_server
+
+server = await connect_to_server({"name": "my-client", "server_url": SERVER_URL})
+artifact_manager = await server.get_service("public/artifact-manager")
+
+# Create a git-storage artifact
+artifact = await artifact_manager.create(
+    alias="my-code-repo",
+    manifest={"name": "My Code Repository", "description": "AI-generated code"},
+    config={"storage": "git"}
+)
+
+# Read the artifact to get the git_url
+info = await artifact_manager.read(artifact_id="my-code-repo")
+print(f"Git URL: {info['git_url']}")
+# Output: Git URL: https://hypha.aicell.io/<workspace>/git/my-code-repo
+```
+
+### Configuration Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `storage` | Set to `"git"` to enable Git storage | `"raw"` |
+| `git_default_branch` | Default branch name | `"main"` |
+
+Example with custom default branch:
+
+```python
+await artifact_manager.create(
+    alias="dev-repo",
+    manifest={"name": "Development Repo"},
+    config={"storage": "git", "git_default_branch": "develop"}
+)
+```
+
+### Cloning and Pushing via Git
+
+Once created, you can interact with the repository using standard Git commands:
+
+```bash
+# Clone the repository (use your Hypha token for authentication)
+git clone http://<your-hypha-server>/<workspace>/git/my-code-repo
+
+# Configure credentials (use "git" as username, token as password)
+git config credential.helper store
+echo "http://git:<your-token>@<your-hypha-server>" >> ~/.git-credentials
+
+# Or use token in URL directly
+git clone http://git:<your-token>@<your-hypha-server>/<workspace>/git/my-code-repo
+
+# Make changes and push
+cd my-code-repo
+echo "# My Project" > README.md
+git add .
+git commit -m "Initial commit"
+git push origin main
+```
+
+### Git LFS for Large Files
+
+Git-storage artifacts automatically support Git LFS for large files. Configure LFS in your repository:
+
+```bash
+# Inside your cloned repository
+git lfs install
+git lfs track "*.bin" "*.h5" "*.pkl" "*.pt"
+git add .gitattributes
+
+# Add large files - they'll be stored via LFS
+git add model.pt
+git commit -m "Add trained model"
+git push origin main
+```
+
+LFS files are stored in S3 and streamed efficiently for download.
+
+### Programmatic File Access
+
+You can access files in git-storage artifacts via the standard Artifact Manager API:
+
+```python
+# List files at repository root
+files = await artifact_manager.list_files(artifact_id="my-code-repo")
+for f in files:
+    print(f"{f['name']} ({f['type']}, {f.get('size', 'N/A')} bytes)")
+
+# List files in a subdirectory
+files = await artifact_manager.list_files(
+    artifact_id="my-code-repo",
+    dir_path="src/components"
+)
+
+# Get file content (returns URL for large files, content for small files)
+file_info = await artifact_manager.get_file(
+    artifact_id="my-code-repo",
+    file_path="src/main.py"
+)
+
+# Access specific version (branch, tag, or commit SHA)
+files = await artifact_manager.list_files(
+    artifact_id="my-code-repo",
+    version="v1.0"  # Can be branch name, tag, or full 40-char commit SHA
+)
+
+# Get file at specific commit
+content = await artifact_manager.get_file(
+    artifact_id="my-code-repo",
+    file_path="config.json",
+    version="abc123def456..."  # Full 40-character commit SHA
+)
+```
+
+### Programmatic File Upload (Staging API)
+
+For AI agents or programmatic workflows, you can use the staging API to upload files without Git:
+
+```python
+import requests
+
+# Enter staging mode
+await artifact_manager.edit(artifact_id="my-code-repo", stage=True)
+
+# Upload a file
+put_url = await artifact_manager.put_file(
+    artifact_id="my-code-repo",
+    file_path="generated/output.py"
+)
+requests.put(put_url, data=b'print("Hello, AI!")')
+
+# Commit the changes
+await artifact_manager.commit(
+    artifact_id="my-code-repo",
+    comment="Add AI-generated output"
+)
+```
+
+### Removing Files
+
+```python
+# Enter staging mode first
+await artifact_manager.edit(artifact_id="my-code-repo", stage=True)
+
+# Mark file for removal
+await artifact_manager.remove_file(
+    artifact_id="my-code-repo",
+    file_path="obsolete_code.py"
+)
+
+# Commit the removal
+await artifact_manager.commit(
+    artifact_id="my-code-repo",
+    comment="Remove obsolete code"
+)
+```
+
+### Creating ZIP Archives
+
+Download all or selected files as a ZIP archive:
+
+```python
+# Download entire repository as ZIP
+zip_url = f"{SERVER_URL}/{workspace}/artifacts/my-code-repo/create-zip"
+response = requests.get(zip_url, params={"token": token})
+with open("repo.zip", "wb") as f:
+    f.write(response.content)
+
+# Download specific files
+zip_url = f"{SERVER_URL}/{workspace}/artifacts/my-code-repo/create-zip"
+response = requests.get(zip_url, params={
+    "token": token,
+    "files": ["src/main.py", "README.md"]
+})
+```
+
+### HTTP File Access
+
+Files can be accessed directly via HTTP endpoints:
+
+```bash
+# Get a file (with authentication)
+curl -H "Authorization: Bearer <token>" \
+  https://<server>/<workspace>/artifacts/my-code-repo/files/src/main.py
+
+# Or use query parameter
+curl "https://<server>/<workspace>/artifacts/my-code-repo/files/src/main.py?token=<token>"
+```
+
+### Permissions
+
+Git-storage artifacts use the same permission system as regular artifacts:
+
+```python
+# Create git repo with specific permissions
+await artifact_manager.create(
+    alias="team-repo",
+    manifest={"name": "Team Repository"},
+    config={
+        "storage": "git",
+        "permissions": {
+            "*": "r",           # Everyone can clone (read)
+            "@": "r+",          # Authenticated users can clone and create branches
+            "team-lead-user-id": "rw+"  # Team lead has full access
+        }
+    }
+)
+```
+
+Permission levels for git operations:
+- `r` (read): Clone and fetch
+- `r+` (read + create): Clone, fetch, and push new branches
+- `rw` (read-write): Clone, fetch, and push to existing branches
+- `rw+` (read-write + create): Full access including creating new branches
+
+### AI Agent Integration Example
+
+Here's a complete example of an AI agent workflow using git-storage:
+
+```python
+import subprocess
+import tempfile
+import os
+
+async def ai_agent_code_generation():
+    """AI agent generates code and pushes to Hypha git artifact."""
+
+    # Connect to Hypha
+    server = await connect_to_server({
+        "name": "ai-code-agent",
+        "server_url": SERVER_URL,
+        "token": AI_AGENT_TOKEN
+    })
+    artifact_manager = await server.get_service("public/artifact-manager")
+
+    # Get or create the code repository
+    try:
+        repo_info = await artifact_manager.read(artifact_id="ai-generated-code")
+    except:
+        await artifact_manager.create(
+            alias="ai-generated-code",
+            manifest={"name": "AI Generated Code"},
+            config={"storage": "git"}
+        )
+        repo_info = await artifact_manager.read(artifact_id="ai-generated-code")
+
+    git_url = repo_info["git_url"]
+    workspace = server.config.workspace
+
+    # Clone, modify, and push
+    with tempfile.TemporaryDirectory() as tmpdir:
+        repo_path = os.path.join(tmpdir, "repo")
+
+        # Clone with token authentication
+        auth_url = git_url.replace("https://", f"https://git:{AI_AGENT_TOKEN}@")
+        subprocess.run(["git", "clone", auth_url, repo_path], check=True)
+
+        # Generate code (AI would do this)
+        code_content = '''
+def hello_world():
+    """AI-generated function."""
+    return "Hello from AI!"
+
+if __name__ == "__main__":
+    print(hello_world())
+'''
+
+        with open(os.path.join(repo_path, "ai_generated.py"), "w") as f:
+            f.write(code_content)
+
+        # Commit and push
+        subprocess.run(["git", "add", "."], cwd=repo_path, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "AI: Add generated code"],
+            cwd=repo_path,
+            check=True,
+            env={**os.environ, "GIT_AUTHOR_NAME": "AI Agent", "GIT_AUTHOR_EMAIL": "ai@example.com"}
+        )
+        subprocess.run(["git", "push", "origin", "main"], cwd=repo_path, check=True)
+
+    print("AI agent successfully pushed generated code!")
+    await server.disconnect()
+```
+
+### Technical Notes
+
+- **Smart HTTP Protocol**: Git operations use the Git Smart HTTP protocol for efficient data transfer
+- **S3 Backend**: All git objects and LFS files are stored in S3 for durability and scalability
+- **Pack Files**: Git objects are stored as pack files for efficient storage
+- **Authentication**: Uses HTTP Basic Auth with `git` as username and Hypha token as password
+- **Version Resolution**: Supports branch names, tag names, and full 40-character commit SHAs
