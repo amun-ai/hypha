@@ -241,6 +241,24 @@ async def test_git_clone_add_commit_push(
             check=True,
         )
 
+        # Step 2.5: Ensure we're on the main branch
+        # Some git versions may create a different default branch even with symref
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=clone_dir,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        current_branch = result.stdout.strip()
+        if current_branch and current_branch != "main":
+            # Rename the branch to main for consistency
+            subprocess.run(
+                ["git", "branch", "-m", current_branch, "main"],
+                cwd=clone_dir,
+                check=True,
+            )
+
         # Step 3: Create a new file
         test_file = os.path.join(clone_dir, "README.md")
         with open(test_file, "w") as f:
@@ -265,9 +283,9 @@ async def test_git_clone_add_commit_push(
         )
         assert result.returncode == 0, f"git commit failed: {result.stderr}"
 
-        # Step 5: Push with authentication
+        # Step 5: Push with authentication (push main to main on remote)
         result = subprocess.run(
-            ["git", "push", auth_url, "main"],
+            ["git", "push", auth_url, "main:main"],
             cwd=clone_dir,
             capture_output=True,
             text=True,
