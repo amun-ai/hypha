@@ -267,6 +267,8 @@ class WebsocketServer:
         try:
             if reconnection_token:
                 user_info = await self.store.parse_user_token(reconnection_token)
+                # Reject specialized tokens - they cannot be used for WebSocket connections
+                user_info.validate_for_general_access()
                 scope = user_info.scope
                 assert (
                     scope and scope.current_workspace
@@ -294,6 +296,10 @@ class WebsocketServer:
                 )
             elif token:
                 user_info = await self.store.parse_user_token(token)
+                # Reject specialized tokens - they cannot be used for WebSocket connections
+                # Specialized tokens (with extra_scopes) are only valid for specific operations
+                # like file downloads, not for general workspace access
+                user_info.validate_for_general_access()
                 # Check if the token has a restricted client_id
                 if user_info.scope and user_info.scope.client_id:
                     # Token is restricted to a specific client_id

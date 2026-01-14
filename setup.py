@@ -14,7 +14,7 @@ REQUIREMENTS = [
     "websockets>=14.0",
     "aiofiles",
     "fastapi>=0.70.0,<=0.115.2",
-    "hypha-rpc>=0.20.85",
+    "hypha-rpc>=0.20.86",
     "msgpack>=1.0.2",
     "numpy",
     "pydantic[email]>=2.6.1",
@@ -47,6 +47,7 @@ REQUIREMENTS = [
     "alembic>=1.14.0",
     "hrid==0.3.0",
     "stream-zip>=0.0.83",
+    "starlette-compress>=1.6.0",
     "prompt-toolkit>=3.0.50",
     "ptpython>=3.0.29",
     "ptyprocess==0.7.0"
@@ -76,6 +77,7 @@ setup(
     extras_require={
         "s3": [
             "aiobotocore>=2.1.0",
+            "dulwich>=0.21.7",  # For Git storage support
         ],
         "server-apps": [
             "redis==5.2.0",

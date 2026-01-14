@@ -293,12 +293,56 @@ async def set_get_token_function(get_token_function: Callable):
     _current_get_token_function = get_token_function
     logger.info("Custom get_token function has been set")
 
+def extract_token_from_authorization(authorization: str) -> str:
+    """Extract the actual token from an Authorization header value.
+
+    Handles multiple formats:
+    - Bearer token: "Bearer eyJhbG..." -> "eyJhbG..."
+    - Basic auth: "Basic base64(username:password)" -> password (used as token)
+    - Raw token: "eyJhbG..." -> "eyJhbG..."
+
+    This is particularly useful for git clients which use HTTP Basic Auth
+    with the password field containing the Hypha token.
+
+    Args:
+        authorization: The Authorization header value
+
+    Returns:
+        The extracted token string or None if extraction fails
+    """
+    import base64
+
+    if not authorization:
+        return None
+
+    authorization = authorization.strip()
+
+    # Handle Bearer token
+    if authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+
+    # Handle Basic auth - git clients use this with token as password
+    if authorization.lower().startswith("basic "):
+        encoded = authorization[6:].strip()
+        try:
+            decoded = base64.b64decode(encoded).decode("utf-8")
+            if ":" in decoded:
+                # Format: username:password - password is the token
+                _, password = decoded.split(":", 1)
+                return password if password else None
+        except Exception:
+            return None
+
+    # Assume it's a raw token (JWT or similar)
+    return authorization if authorization else None
+
+
 async def extract_token_from_scope(scope: dict) -> str:
     """Extract token from a scope object using custom or default logic.
-    
+
     Args:
         scope: The scope object from websocket or request
-        
+
     Returns:
         The extracted token string or None if no token found
     """
@@ -307,7 +351,7 @@ async def extract_token_from_scope(scope: dict) -> str:
         if inspect.isawaitable(token):
             token = await token
         return token
-    
+
     # Default extraction logic - look in headers for Authorization
     headers = scope.get("headers", [])
     for key, value in headers:
@@ -316,7 +360,9 @@ async def extract_token_from_scope(scope: dict) -> str:
         if isinstance(value, bytes):
             value = value.decode("utf-8")
         if key.lower() == "authorization":
-            return value
+            # Parse the authorization header to extract the actual token
+            token = extract_token_from_authorization(value)
+            return token
         # Also check for access_token cookie
         if key.lower() == "cookie":
             cookies = value
@@ -328,7 +374,8 @@ async def extract_token_from_scope(scope: dict) -> str:
                     cookie_dict[k.strip()] = v.strip()
             if "access_token" in cookie_dict:
                 return cookie_dict["access_token"]
-    
+
+    logger.debug("extract_token_from_scope: no authorization found in headers")
     return None
 
 async def parse_auth_token(token: str, expected_workspace: str = None):

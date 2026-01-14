@@ -1092,9 +1092,304 @@ class TestAnonymousUserGeneration:
     def test_generate_anonymous_user_id_format(self):
         """Test that anonymous user IDs have correct format."""
         user_info = generate_anonymous_user()
-        
+
         # Should start with "anonymouz-" (note the 'z')
         assert user_info.id.startswith("anonymouz-")
-        
+
         # Should not contain underscores (uses hyphens instead)
         assert "_" not in user_info.id or user_info.id.count("_") <= 1  # Only in prefix
+
+
+class TestSpecializedScopeTokens:
+    """Test specialized scoped tokens security features.
+
+    These tests verify that tokens with extra_scopes (specialized tokens) are
+    properly restricted and cannot be used for general workspace access.
+    """
+
+    def test_scope_is_specialized(self):
+        """Test ScopeInfo.is_specialized() detection."""
+        # Non-specialized scope (no extra_scopes)
+        regular_scope = ScopeInfo(
+            workspaces={"ws-test": UserPermission.read_write},
+            current_workspace="ws-test",
+        )
+        assert not regular_scope.is_specialized()
+
+        # Specialized scope with extra_scopes
+        specialized_scope = ScopeInfo(
+            workspaces={"ws-test": UserPermission.read_write},
+            current_workspace="ws-test",
+            extra_scopes=["file:download"],
+        )
+        assert specialized_scope.is_specialized()
+
+        # Empty extra_scopes list should not be specialized
+        empty_scope = ScopeInfo(
+            workspaces={"ws-test": UserPermission.read_write},
+            extra_scopes=[],
+        )
+        assert not empty_scope.is_specialized()
+
+        # Standard OAuth scopes (without colon) should NOT be treated as specialized
+        # These are commonly added by Auth0 and other OAuth providers
+        oauth_scope = ScopeInfo(
+            workspaces={"ws-test": UserPermission.read_write},
+            extra_scopes=["openid", "profile", "email", "offline_access"],
+        )
+        assert not oauth_scope.is_specialized(), (
+            "Standard OAuth scopes should not be treated as specialized tokens"
+        )
+
+        # Mixed scopes: should be specialized if ANY scope has colon format
+        mixed_scope = ScopeInfo(
+            workspaces={"ws-test": UserPermission.read_write},
+            extra_scopes=["openid", "profile", "file:download"],  # file:download makes it specialized
+        )
+        assert mixed_scope.is_specialized()
+        # get_specialized_scopes should only return the colon-format scope
+        assert mixed_scope.get_specialized_scopes() == ["file:download"]
+
+    def test_scope_has_scope(self):
+        """Test ScopeInfo.has_scope() method."""
+        scope = ScopeInfo(
+            workspaces={"ws-test": UserPermission.read_write},
+            extra_scopes=["file:download", "artifact:read"],
+        )
+
+        assert scope.has_scope("file:download")
+        assert scope.has_scope("artifact:read")
+        assert not scope.has_scope("websocket:connect")
+        assert not scope.has_scope("file:upload")
+
+    def test_user_info_is_specialized_token(self):
+        """Test UserInfo.is_specialized_token() detection."""
+        # Regular user without specialized scope
+        regular_user = UserInfo(
+            id="test-user",
+            roles=["user"],
+            is_anonymous=False,
+            scope=ScopeInfo(
+                workspaces={"ws-test": UserPermission.read_write},
+            ),
+        )
+        assert not regular_user.is_specialized_token()
+
+        # User with specialized token
+        specialized_user = UserInfo(
+            id="test-user",
+            roles=["user"],
+            is_anonymous=False,
+            scope=ScopeInfo(
+                workspaces={"ws-test": UserPermission.read_write},
+                extra_scopes=["file:download"],
+            ),
+        )
+        assert specialized_user.is_specialized_token()
+
+        # User without scope should not be specialized
+        no_scope_user = UserInfo(
+            id="test-user",
+            roles=["user"],
+            is_anonymous=False,
+            scope=None,
+        )
+        assert not no_scope_user.is_specialized_token()
+
+    def test_validate_for_general_access_rejects_specialized_tokens(self):
+        """Test that specialized tokens are rejected for general access."""
+        specialized_user = UserInfo(
+            id="test-user",
+            roles=["user"],
+            is_anonymous=False,
+            scope=ScopeInfo(
+                workspaces={"ws-test": UserPermission.read_write},
+                extra_scopes=["file:download"],
+            ),
+        )
+
+        # Should raise PermissionError for general access
+        with pytest.raises(PermissionError) as exc_info:
+            specialized_user.validate_for_general_access()
+
+        assert "Specialized token" in str(exc_info.value)
+        assert "file:download" in str(exc_info.value)
+        assert "general workspace access" in str(exc_info.value)
+
+    def test_validate_for_general_access_allows_regular_tokens(self):
+        """Test that regular tokens pass general access validation."""
+        regular_user = UserInfo(
+            id="test-user",
+            roles=["user"],
+            is_anonymous=False,
+            scope=ScopeInfo(
+                workspaces={"ws-test": UserPermission.read_write},
+            ),
+        )
+
+        # Should not raise any exception
+        regular_user.validate_for_general_access()
+
+    def test_validate_scope_for_specialized_tokens(self):
+        """Test scope validation for specialized tokens."""
+        specialized_user = UserInfo(
+            id="test-user",
+            roles=["user"],
+            is_anonymous=False,
+            scope=ScopeInfo(
+                workspaces={"ws-test": UserPermission.read_write},
+                extra_scopes=["file:download"],
+            ),
+        )
+
+        # Should pass for matching scope
+        specialized_user.validate_scope("file:download")
+
+        # Should fail for non-matching scope
+        with pytest.raises(PermissionError) as exc_info:
+            specialized_user.validate_scope("artifact:write")
+
+        assert "file:download" in str(exc_info.value)
+        assert "artifact:write" in str(exc_info.value)
+
+    def test_validate_scope_allows_all_for_regular_tokens(self):
+        """Test that regular tokens pass any scope validation (backwards compatible)."""
+        regular_user = UserInfo(
+            id="test-user",
+            roles=["user"],
+            is_anonymous=False,
+            scope=ScopeInfo(
+                workspaces={"ws-test": UserPermission.read_write},
+            ),
+        )
+
+        # Should pass for any scope (non-specialized tokens are not restricted)
+        regular_user.validate_scope("file:download")
+        regular_user.validate_scope("artifact:write")
+        regular_user.validate_scope("anything:else")
+
+    def test_user_info_has_scope(self):
+        """Test UserInfo.has_scope() method."""
+        user = UserInfo(
+            id="test-user",
+            roles=["user"],
+            is_anonymous=False,
+            scope=ScopeInfo(
+                workspaces={"ws-test": UserPermission.read_write},
+                extra_scopes=["file:download", "artifact:read"],
+            ),
+        )
+
+        assert user.has_scope("file:download")
+        assert user.has_scope("artifact:read")
+        assert not user.has_scope("websocket:connect")
+
+        # User without scope should return False
+        no_scope_user = UserInfo(
+            id="test-user",
+            roles=["user"],
+            is_anonymous=False,
+            scope=None,
+        )
+        assert not no_scope_user.has_scope("file:download")
+
+    @pytest.mark.asyncio
+    async def test_specialized_token_generation_and_parsing(self):
+        """Test generating and parsing specialized tokens preserves scopes."""
+        scope = create_scope(
+            {"ws-test": UserPermission.read_write},
+            current_workspace="ws-test",
+            client_id="test-client",
+            extra_scopes=["file:download"],
+        )
+
+        user_info = UserInfo(
+            id="test-user",
+            roles=["user"],
+            is_anonymous=False,
+            scope=scope,
+        )
+
+        # Generate token
+        token = await generate_auth_token(user_info, expires_in=3600)
+        assert token is not None
+
+        # Parse token
+        parsed_user = await parse_auth_token(token)
+
+        # Verify specialized scope is preserved
+        assert parsed_user.is_specialized_token()
+        assert parsed_user.has_scope("file:download")
+        assert parsed_user.scope.extra_scopes == ["file:download"]
+
+    @pytest.mark.asyncio
+    async def test_specialized_token_with_multiple_scopes(self):
+        """Test specialized token with multiple extra scopes."""
+        scope = create_scope(
+            {"ws-test": UserPermission.read_write},
+            current_workspace="ws-test",
+            extra_scopes=["file:download", "artifact:read", "custom:scope"],
+        )
+
+        user_info = UserInfo(
+            id="test-user",
+            roles=["user"],
+            is_anonymous=False,
+            scope=scope,
+        )
+
+        token = await generate_auth_token(user_info, expires_in=3600)
+        parsed_user = await parse_auth_token(token)
+
+        assert parsed_user.is_specialized_token()
+        assert len(parsed_user.scope.extra_scopes) == 3
+        assert parsed_user.has_scope("file:download")
+        assert parsed_user.has_scope("artifact:read")
+        assert parsed_user.has_scope("custom:scope")
+
+        # Should pass validation for all included scopes
+        parsed_user.validate_scope("file:download")
+        parsed_user.validate_scope("artifact:read")
+        parsed_user.validate_scope("custom:scope")
+
+        # Should fail for non-included scope
+        with pytest.raises(PermissionError):
+            parsed_user.validate_scope("not:included")
+
+    def test_specialized_token_error_messages_are_clear(self):
+        """Test that error messages provide clear information."""
+        user = UserInfo(
+            id="test-user",
+            roles=["user"],
+            is_anonymous=False,
+            scope=ScopeInfo(
+                workspaces={"ws-test": UserPermission.read_write},
+                extra_scopes=["file:download", "artifact:read"],
+            ),
+        )
+
+        # Test general access error message
+        try:
+            user.validate_for_general_access()
+            assert False, "Should have raised PermissionError"
+        except PermissionError as e:
+            error_msg = str(e)
+            # Should mention it's a specialized token
+            assert "Specialized token" in error_msg
+            # Should list the scopes
+            assert "file:download" in error_msg
+            assert "artifact:read" in error_msg
+            # Should mention general access is not allowed
+            assert "general workspace access" in error_msg
+
+        # Test scope validation error message
+        try:
+            user.validate_scope("websocket:connect")
+            assert False, "Should have raised PermissionError"
+        except PermissionError as e:
+            error_msg = str(e)
+            # Should mention what scopes are allowed
+            assert "file:download" in error_msg
+            assert "artifact:read" in error_msg
+            # Should mention the required scope
+            assert "websocket:connect" in error_msg

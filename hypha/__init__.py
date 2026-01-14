@@ -11,7 +11,7 @@ VERSION_INFO = json.loads(
 __version__ = VERSION_INFO["version"]
 parts = __version__.split(".")
 
-hypha_rpc_version = "0.20.85"
+hypha_rpc_version = "0.20.86"
 
 
 __all__ = ["__version__", "hypha_rpc_version"]

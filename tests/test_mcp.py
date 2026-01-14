@@ -1451,6 +1451,7 @@ async def test_mcp_sse_transport(fastapi_server, test_user_token):
     await api.disconnect()
 
 
+@pytest.mark.xfail(reason="External SSE server may be slow or unavailable in CI")
 async def test_mcp_sse_server_connection(fastapi_server, test_user_token):
     """Test MCP proxy worker connecting to public SSE server."""
     # Import the MCP proxy worker

@@ -27,7 +27,9 @@ MINIO_ROOT_PASSWORD = os.environ.get(
 )
 REDIS_PORT = 6338
 
-POSTGRES_PORT = 15432
+# In CI (GitHub Actions), PostgreSQL runs on the default port 5432
+# Locally we use port 15432 to avoid conflicts
+POSTGRES_PORT = 5432 if os.environ.get("GITHUB_ACTIONS") == "true" else 15432
 POSTGRES_USER = "postgres"
 POSTGRES_PASSWORD = "mysecretpassword"
 POSTGRES_DB = "postgres"

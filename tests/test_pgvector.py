@@ -1,97 +1,15 @@
 """Test PgVector Search Engine."""
 
-import asyncio
 import pytest
 import numpy as np
 import random
-import os
-import json
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
-from aiobotocore.session import get_session
-import pytest_asyncio
 
-from hypha.pgvector import PgVectorSearchEngine
-from . import (
-    find_item,
-    MINIO_ROOT_PASSWORD,
-    MINIO_ROOT_USER,
-)
+from . import find_item
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
 
-
-@pytest_asyncio.fixture(name="pg_engine")
-async def pg_engine(postgres_server):
-    """Fixture to set up PostgreSQL async engine."""
-    # Use the test database URL from the postgres_server fixture
-    from . import POSTGRES_URI
-    import asyncpg
-    
-    # Wait for PostgreSQL to be ready
-    max_retries = 20
-    retry_delay = 1.0
-    
-    for attempt in range(max_retries):
-        try:
-            # Connect directly with asyncpg to check if ready
-            conn = await asyncpg.connect(
-                host="127.0.0.1",
-                port=15432,
-                user="postgres",
-                password="mysecretpassword",
-                database="postgres"
-            )
-            try:
-                # Create pgvector extension if not exists
-                await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-                print("pgvector extension ready")
-            except asyncpg.exceptions.DuplicateObjectError:
-                print("pgvector extension already exists")
-            except Exception as e:
-                print(f"Warning: Could not create pgvector extension: {e}")
-            finally:
-                await conn.close()
-            break
-        except (asyncpg.exceptions.InvalidPasswordError, ConnectionRefusedError, OSError) as e:
-            if attempt < max_retries - 1:
-                print(f"Waiting for PostgreSQL to be ready (attempt {attempt + 1}/{max_retries})...")
-                await asyncio.sleep(retry_delay)
-            else:
-                raise Exception(f"Failed to connect to PostgreSQL after {max_retries} attempts: {e}")
-    
-    # Now create the SQLAlchemy engine
-    # Use the imported POSTGRES_URI which has the correct port
-    engine = create_async_engine(
-        POSTGRES_URI,
-        echo=False,
-        pool_pre_ping=True,
-    )
-    
-    yield engine
-    
-    # Cleanup
-    await engine.dispose()
-
-
-@pytest_asyncio.fixture(name="pgvector_search_engine")
-async def pgvector_search_engine(pg_engine):
-    """Fixture to set up PgVectorSearchEngine instance."""
-    # Create a fresh instance for each test
-    search_engine = PgVectorSearchEngine(engine=pg_engine, prefix="test")
-    yield search_engine
-    
-    # Cleanup: Drop all collections created in test
-    try:
-        collections = await search_engine.list_collections()
-        for collection in collections:
-            try:
-                await search_engine.delete_collection(collection["name"])
-            except Exception as e:
-                print(f"Warning: Could not delete collection {collection['name']}: {e}")
-    except Exception as e:
-        print(f"Warning during cleanup: {e}")
+# Note: pg_engine and pgvector_search_engine fixtures are defined in conftest.py
 
 
 async def test_create_and_list_collection(pgvector_search_engine):

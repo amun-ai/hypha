@@ -68,23 +68,36 @@ async def test_revoke_token(fastapi_server):
                 assert "Token has been revoked" in str(e)
 
 
-async def test_generate_token_with_custom_scope(fastapi_server):
-    """Test token with custom scope."""
+async def test_specialized_token_rejected_for_websocket(fastapi_server):
+    """Test that specialized tokens (with extra_scopes) are rejected for WebSocket connections.
+
+    Tokens with extra_scopes are "specialized" tokens that can only be used for their
+    specific purpose (e.g., file downloads), not for general workspace access like
+    WebSocket connections.
+    """
     async with connect_to_server(
         {"name": "my app", "server_url": WS_SERVER_URL, "client_id": "my-app"}
     ) as api1:
+        # Generate a specialized token with extra_scopes
         token = await api1.generate_token({"extra_scopes": ["my-data:read"]})
 
-        async with connect_to_server(
-            {
-                "name": "my app",
-                "server_url": WS_SERVER_URL,
-                "client_id": "my-app-2",
-                "token": token,
-                "workspace": api1.config.workspace,
-            }
-        ) as api2:
-            assert "my-data:read" in api2.config["user"]["scope"]["extra_scopes"]
+        # Attempt to connect via WebSocket with the specialized token should fail
+        try:
+            async with connect_to_server(
+                {
+                    "name": "my app",
+                    "server_url": WS_SERVER_URL,
+                    "client_id": "my-app-2",
+                    "token": token,
+                    "workspace": api1.config.workspace,
+                }
+            ) as api2:
+                assert (
+                    False
+                ), "Should have raised an exception for specialized token"
+        except Exception as e:
+            # Verify the error message indicates specialized token rejection
+            assert "Specialized token" in str(e) or "general workspace access" in str(e)
 
 
 async def test_generate_token_with_client_id_restriction(fastapi_server):

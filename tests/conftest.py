@@ -49,6 +49,12 @@ from . import (
     POSTGRES_URI,
 )
 os.environ["ACTIVITY_CHECK_INTERVAL"] = "0.3"
+
+# Ensure proxy is not used for localhost connections during tests
+# This is critical for tests that connect to local servers
+os.environ["no_proxy"] = os.environ.get("no_proxy", "") + ",localhost,127.0.0.1"
+os.environ["NO_PROXY"] = os.environ.get("NO_PROXY", "") + ",localhost,127.0.0.1"
+
 test_env = os.environ.copy()
 
 
@@ -314,16 +320,32 @@ def triton_server():
 @pytest_asyncio.fixture(name="postgres_server", scope="session")
 def postgres_server():
     """Start a fresh PostgreSQL server as a test fixture and tear down after the test."""
-    # Check if the container is already running
-    existing_container = subprocess.run(
-        ["docker", "ps", "-q", "-f", "name=^hypha-postgres$"],
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    # In GitHub Actions, PostgreSQL is provided as a service container
+    # First try to connect directly - if successful, use that
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print("GitHub Actions detected - checking for PostgreSQL service...")
+        try:
+            engine = create_engine(
+                f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@127.0.0.1:{POSTGRES_PORT}/{POSTGRES_DB}"
+            )
+            with engine.connect() as connection:
+                connection.execute(text("SELECT 1"))
+                connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                connection.commit()
+                print("PostgreSQL service is available with pgvector extension")
+        except Exception as e:
+            raise Exception(f"GitHub Actions PostgreSQL service not available: {e}")
+    else:
+        # Local development: manage our own container
+        # Check if the container is already running
+        existing_container = subprocess.run(
+            ["docker", "ps", "-q", "-f", "name=^hypha-postgres$"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
 
-    # Stop and remove the existing container if it is running
-    if existing_container:
-        if os.environ.get("GITHUB_ACTIONS") != "true":
+        # Stop and remove the existing container if it is running
+        if existing_container:
             print(
                 "Stopping and removing existing PostgreSQL container:",
                 existing_container,
@@ -332,42 +354,6 @@ def postgres_server():
             # Attempt to remove the container, but ignore errors if it does not exist
             subprocess.run(["docker", "rm", existing_container], check=False)
 
-            # Start a new PostgreSQL container with pgvector
-            print("Starting a new PostgreSQL container with pgvector")
-            result = subprocess.run(
-                [
-                    "docker",
-                    "run",
-                    "--name",
-                    "hypha-postgres",
-                    "--rm",
-                    "-e",
-                    f"POSTGRES_PASSWORD={POSTGRES_PASSWORD}",
-                    "-p",
-                    f"{POSTGRES_PORT}:5432",
-                    "-d",
-                    "oeway/postgresql-pgvector:17.6.0-pgvector-0.8.1",
-                ],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            print(f"Started container: {result.stdout.strip()}")
-            time.sleep(8)  # Give more time for pgvector container to initialize
-        else:
-            print("Using existing PostgreSQL container:", existing_container)
-            # In GitHub Actions, ensure pgvector extension is created
-            try:
-                engine = create_engine(
-                    f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@127.0.0.1:{POSTGRES_PORT}/{POSTGRES_DB}"
-                )
-                with engine.connect() as connection:
-                    connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-                    connection.commit()
-                    print("Created pgvector extension in existing container")
-            except Exception as e:
-                print(f"Note: Could not create pgvector extension: {e}")
-    else:
         # Check if the PostgreSQL pgvector image exists locally
         image_exists = subprocess.run(
             ["docker", "images", "-q", "oeway/postgresql-pgvector:17.6.0-pgvector-0.8.1"],
@@ -406,49 +392,52 @@ def postgres_server():
         time.sleep(8)  # Give more time for pgvector container to initialize
 
     # Wait for the PostgreSQL server to become available
-    timeout = 30  # Increase timeout for pgvector container
-    while timeout > 0:
-        try:
-            # First check if container is still running
-            container_check = subprocess.run(
-                ["docker", "ps", "-q", "-f", "name=hypha-postgres"],
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-            
-            if not container_check:
-                print("Container stopped unexpectedly. Checking logs...")
-                logs = subprocess.run(
-                    ["docker", "logs", "hypha-postgres"],
+    # In GitHub Actions, we already verified connection above, so this is mainly for local dev
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        timeout = 30  # Increase timeout for pgvector container
+        while timeout > 0:
+            try:
+                # First check if container is still running
+                container_check = subprocess.run(
+                    ["docker", "ps", "-q", "-f", "name=hypha-postgres"],
                     capture_output=True,
                     text=True,
+                ).stdout.strip()
+
+                if not container_check:
+                    print("Container stopped unexpectedly. Checking logs...")
+                    logs = subprocess.run(
+                        ["docker", "logs", "hypha-postgres"],
+                        capture_output=True,
+                        text=True,
+                    )
+                    print(f"Container logs: {logs.stderr}")
+                    raise Exception("PostgreSQL container failed to start")
+
+                engine = create_engine(
+                    f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@127.0.0.1:{POSTGRES_PORT}/{POSTGRES_DB}"
                 )
-                print(f"Container logs: {logs.stderr}")
-                raise Exception("PostgreSQL container failed to start")
-            
-            engine = create_engine(
-                f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@127.0.0.1:{POSTGRES_PORT}/{POSTGRES_DB}"
-            )
-            with engine.connect() as connection:
-                connection.execute(text("SELECT 1"))
-                # Also create pgvector extension
-                connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-                print("PostgreSQL with pgvector is ready")
-            break
-        except Exception as e:
-            if timeout > 1:
-                timeout -= 1
-                time.sleep(1)
-            else:
-                print(f"Failed to connect to PostgreSQL: {e}")
-                # Try to get container logs for debugging
-                logs = subprocess.run(
-                    ["docker", "logs", "hypha-postgres"],
-                    capture_output=True,
-                    text=True,
-                )
-                print(f"Container logs: {logs.stderr}")
-                raise Exception(f"PostgreSQL server did not become available: {e}")
+                with engine.connect() as connection:
+                    connection.execute(text("SELECT 1"))
+                    # Also create pgvector extension
+                    connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                    connection.commit()
+                    print("PostgreSQL with pgvector is ready")
+                break
+            except Exception as e:
+                if timeout > 1:
+                    timeout -= 1
+                    time.sleep(1)
+                else:
+                    print(f"Failed to connect to PostgreSQL: {e}")
+                    # Try to get container logs for debugging
+                    logs = subprocess.run(
+                        ["docker", "logs", "hypha-postgres"],
+                        capture_output=True,
+                        text=True,
+                    )
+                    print(f"Container logs: {logs.stderr}")
+                    raise Exception(f"PostgreSQL server did not become available: {e}")
 
     yield  # Test code executes here
 
@@ -456,6 +445,79 @@ def postgres_server():
         # Stop the PostgreSQL container
         print("Stopping PostgreSQL container")
         subprocess.run(["docker", "stop", "hypha-postgres"], check=True)
+
+
+@pytest_asyncio.fixture(name="pg_engine")
+async def pg_engine(postgres_server):
+    """Fixture to set up PostgreSQL async engine."""
+    # Import here to avoid circular dependencies
+    from sqlalchemy.ext.asyncio import create_async_engine
+    import asyncpg
+
+    # Wait for PostgreSQL to be ready
+    max_retries = 20
+    retry_delay = 1.0
+
+    for attempt in range(max_retries):
+        try:
+            # Connect directly with asyncpg to check if ready
+            conn = await asyncpg.connect(
+                host="127.0.0.1",
+                port=POSTGRES_PORT,
+                user=POSTGRES_USER,
+                password=POSTGRES_PASSWORD,
+                database=POSTGRES_DB
+            )
+            try:
+                # Create pgvector extension if not exists
+                await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                print("pgvector extension ready")
+            except asyncpg.exceptions.DuplicateObjectError:
+                print("pgvector extension already exists")
+            except Exception as e:
+                print(f"Warning: Could not create pgvector extension: {e}")
+            finally:
+                await conn.close()
+            break
+        except (asyncpg.exceptions.InvalidPasswordError, ConnectionRefusedError, OSError) as e:
+            if attempt < max_retries - 1:
+                print(f"Waiting for PostgreSQL to be ready (attempt {attempt + 1}/{max_retries})...")
+                await asyncio.sleep(retry_delay)
+            else:
+                raise Exception(f"Failed to connect to PostgreSQL after {max_retries} attempts: {e}")
+
+    # Now create the SQLAlchemy engine
+    engine = create_async_engine(
+        POSTGRES_URI,
+        echo=False,
+        pool_pre_ping=True,
+    )
+
+    yield engine
+
+    # Cleanup
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture(name="pgvector_search_engine")
+async def pgvector_search_engine(pg_engine):
+    """Fixture to set up PgVectorSearchEngine instance."""
+    from hypha.pgvector import PgVectorSearchEngine
+
+    # Create a fresh instance for each test
+    search_engine = PgVectorSearchEngine(engine=pg_engine, prefix="test")
+    yield search_engine
+
+    # Cleanup: Drop all collections created in test
+    try:
+        collections = await search_engine.list_collections()
+        for collection in collections:
+            try:
+                await search_engine.delete_collection(collection["name"])
+            except Exception as e:
+                print(f"Warning: Could not delete collection {collection['name']}: {e}")
+    except Exception as e:
+        print(f"Warning during cleanup: {e}")
 
 
 @pytest_asyncio.fixture(name="redis_server", scope="session")

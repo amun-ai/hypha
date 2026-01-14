@@ -18,7 +18,8 @@ from hypha import __version__
 from hypha.core.store import RedisStore
 from hypha.http import HTTPProxy
 from hypha.triton import TritonProxy
-from hypha.utils import GZipMiddleware, GzipRoute, PatchedCORSMiddleware
+from starlette_compress import CompressMiddleware
+from hypha.utils import GzipRoute, PatchedCORSMiddleware
 from hypha.websocket import WebsocketServer
 from hypha.minio import start_minio_server
 from contextlib import asynccontextmanager
@@ -114,6 +115,16 @@ def start_builtin_services(
             s3_controller=s3_controller,
             workspace_bucket=args.workspace_bucket,
         )
+
+        # Mount Git router for artifact Git storage support
+        from hypha.git.artifact_integration import GitArtifactManager
+        git_manager = GitArtifactManager(artifact_manager)
+        git_router = git_manager.get_router()
+        app.include_router(git_router)
+        # Mount Git LFS router for large file support
+        lfs_router = git_manager.get_lfs_router()
+        app.include_router(lfs_router)
+        logger.info("Git artifact storage enabled (with LFS support)")
 
     if args.enable_server_apps:
         assert args.enable_s3, "Server apps require S3 to be enabled"
@@ -305,7 +316,10 @@ def create_application(args):
     )
     application.router.route_class = GzipRoute
 
-    application.add_middleware(GZipMiddleware, minimum_size=1000)
+    # Use starlette-compress for response compression
+    # It only compresses known-compressible content types (text, json, etc.)
+    # and automatically skips binary formats (images, already-compressed data, etc.)
+    application.add_middleware(CompressMiddleware, minimum_size=1000, gzip_level=5)
     application.add_middleware(
         PatchedCORSMiddleware,
         allow_origins=args.allow_origins,

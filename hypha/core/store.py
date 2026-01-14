@@ -990,28 +990,48 @@ class RedisStore:
     ):
         """Return user info or create an anonymous user.
 
-        If authorization code is valid the user info is returned,
-        If the code is invalid an anonymous user is created.
+        If a token is provided, it MUST be valid - invalid tokens raise errors.
+        Only if NO token is provided, an anonymous user is returned.
         """
         # Try to extract token using custom function if request is provided
         token = await extract_token_from_scope(request.scope)
         if token:
+            # Token was provided - it must be valid, no fallback to anonymous
             user_info = await self.parse_user_token(token)
             if user_info.scope.current_workspace is None:
                 user_info.scope.current_workspace = user_info.get_workspace()
+            logger.info(f"login_optional: parsed user_info: id={user_info.id}, is_anonymous={user_info.is_anonymous}")
             return user_info
-        else:
-            # Use a fixed anonymous user
-            self._http_anonymous_user = UserInfo(
-                id="anonymouz-http",  # Use anonymouz- prefix for consistency
-                is_anonymous=True,
-                email=None,
-                parent=None,
-                roles=["anonymous"],
-                scope=create_scope("ws-anonymous#r", current_workspace="ws-anonymous"),
-                expires_at=None,
-            )
-            return self._http_anonymous_user
+        # No token provided - use anonymous user
+        self._http_anonymous_user = UserInfo(
+            id="anonymouz-http",  # Use anonymouz- prefix for consistency
+            is_anonymous=True,
+            email=None,
+            parent=None,
+            roles=["anonymous"],
+            scope=create_scope("ws-anonymous#r", current_workspace="ws-anonymous"),
+            expires_at=None,
+        )
+        return self._http_anonymous_user
+
+    async def login_required(
+        self,
+        request: Request = None,
+    ):
+        """Return user info or raise an error if not authenticated.
+
+        Unlike login_optional, this requires valid authentication.
+        Raises HTTPException 401 if no valid token is provided.
+        """
+        from fastapi import HTTPException
+
+        token = await extract_token_from_scope(request.scope)
+        if not token:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        user_info = await self.parse_user_token(token)
+        if user_info.scope.current_workspace is None:
+            user_info.scope.current_workspace = user_info.get_workspace()
+        return user_info
 
     async def get_all_workspace(self):
         """Get all workspaces."""

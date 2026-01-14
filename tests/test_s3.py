@@ -912,3 +912,113 @@ async def test_s3_batch_get_file(minio_server, fastapi_server, test_user_token):
         assert response.text == f"s3 test data {i}", f"Content mismatch for {path}"
 
     await api.disconnect()
+
+
+async def test_s3_proxy_large_text_file_not_gzip_corrupted(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test that large text files downloaded through S3 proxy are not gzip-corrupted.
+
+    This test verifies that when downloading a text file larger than the compression
+    threshold (1000 bytes) through the S3 proxy (/s3/...), the CompressMiddleware
+    does not incorrectly gzip the content, which would corrupt the file for clients
+    that don't expect compression.
+
+    The bug scenario:
+    - Client downloads a file without sending Accept-Encoding header
+    - Server should NOT compress the response
+    - If server sends gzip-encoded response anyway, the raw bytes are corrupted
+    """
+    import urllib.request
+
+    api = await connect_to_server(
+        {
+            "name": "test-client",
+            "server_url": SERVER_URL,
+            "token": test_user_token,
+        }
+    )
+    s3controller = await api.get_service("public/s3-storage")
+
+    # Create text content larger than compression threshold (1000 bytes)
+    # to ensure CompressMiddleware considers it for compression
+    text_content = "This is a test line for gzip corruption testing.\n" * 50  # ~2500 bytes
+    file_path = "large_text_test.txt"
+
+    # Get upload URL
+    put_url = await s3controller.put_file(file_path)
+    assert "/s3/" in put_url, f"Expected S3 proxy URL, got: {put_url}"
+
+    # Upload the file
+    response = requests.put(put_url, data=text_content.encode("utf-8"))
+    assert response.ok, f"Upload failed: {response.text}"
+
+    # Get download URL
+    get_url = await s3controller.get_file(file_path)
+    assert "/s3/" in get_url, f"Expected S3 proxy URL, got: {get_url}"
+
+    # Use urllib which does NOT auto-decompress gzip (unlike requests library)
+    # This simulates a client that doesn't support compression
+    # Test 1: With NO Accept-Encoding header at all
+    req = urllib.request.Request(get_url)
+    # Remove any default Accept-Encoding header that might be set
+    if "Accept-Encoding" in req.headers:
+        del req.headers["Accept-Encoding"]
+    if "Accept-encoding" in req.headers:
+        del req.headers["Accept-encoding"]
+
+    with urllib.request.urlopen(req) as resp:
+        raw_content = resp.read()
+        content_encoding = resp.headers.get("Content-Encoding", "")
+
+    # Check that response is NOT gzip-encoded when we asked for identity
+    assert content_encoding != "gzip", (
+        f"Response should NOT be gzip-encoded when client requested identity encoding. "
+        f"Got content-encoding: {content_encoding}"
+    )
+
+    # The raw content should match exactly what we uploaded
+    downloaded_text = raw_content.decode("utf-8")
+    assert downloaded_text == text_content, (
+        f"Content mismatch! Expected {len(text_content)} chars, "
+        f"got {len(downloaded_text)} chars. "
+        f"First 100 chars of raw bytes: {raw_content[:100]!r}"
+    )
+
+    # Clean up
+    await s3controller.remove_file(file_path)
+
+    # Test 2: Small file (below compression threshold)
+    small_content = "hello"
+    small_file_path = "small_text_test.txt"
+
+    # Upload small file
+    put_url_small = await s3controller.put_file(small_file_path)
+    response = requests.put(put_url_small, data=small_content.encode("utf-8"))
+    assert response.ok, f"Small file upload failed: {response.text}"
+
+    # Download small file
+    get_url_small = await s3controller.get_file(small_file_path)
+    req_small = urllib.request.Request(get_url_small)
+    if "Accept-Encoding" in req_small.headers:
+        del req_small.headers["Accept-Encoding"]
+    if "Accept-encoding" in req_small.headers:
+        del req_small.headers["Accept-encoding"]
+
+    with urllib.request.urlopen(req_small) as resp:
+        raw_content_small = resp.read()
+        content_encoding_small = resp.headers.get("Content-Encoding", "")
+
+    # Verify small file content
+    assert content_encoding_small != "gzip", (
+        f"Small file should NOT be gzip-encoded. Got content-encoding: {content_encoding_small}"
+    )
+    downloaded_small = raw_content_small.decode("utf-8")
+    assert downloaded_small == small_content, (
+        f"Small file content mismatch! Expected '{small_content}', got '{downloaded_small}'"
+    )
+
+    # Clean up
+    await s3controller.remove_file(small_file_path)
+    await api.disconnect()
+    print("Successfully verified S3 proxy does not corrupt text files (both small and large)")

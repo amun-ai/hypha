@@ -5,7 +5,6 @@ This implementation addresses the problems that cause asgiproxy to become unresp
 1. Session reuse leading to connection exhaustion
 2. Missing connection limits and timeouts
 3. No proper cleanup mechanisms
-4. Content-encoding issues for compressed files
 
 Portions of this code are derived from asgiproxy:
 The MIT License (MIT)
@@ -160,59 +159,6 @@ class ProxyContext:
         pass
 
 
-def _should_remove_gzip_encoding(content_type: str, file_path: str) -> bool:
-    """
-    Determine if gzip content-encoding should be removed for already-compressed content.
-
-    Uses a simple heuristic: if the content type indicates binary/compressed data
-    or the file extension suggests a compressed format, remove gzip encoding.
-    """
-    import mimetypes
-    from pathlib import Path
-
-    # Normalize inputs
-    content_type = (content_type or "").lower().split(";")[0].strip()
-    file_extension = Path(file_path).suffix.lower()
-
-    # Simple heuristic: remove gzip for binary content types that are typically compressed
-    if content_type.startswith(("image/", "video/", "audio/", "application/")):
-        # Allow gzip for text-based application types
-        if content_type.startswith(
-            ("application/json", "application/xml", "application/javascript")
-        ):
-            return False
-        return True
-
-    # Check common compressed file extensions
-    compressed_extensions = {
-        ".jpg",
-        ".jpeg",
-        ".png",
-        ".gif",
-        ".webp",
-        ".mp4",
-        ".avi",
-        ".mov",
-        ".mp3",
-        ".wav",
-        ".pdf",
-        ".zip",
-        ".rar",
-        ".gz",
-        ".bz2",
-        ".7z",
-    }
-    if file_extension in compressed_extensions:
-        return True
-
-    # Use mimetypes as fallback
-    guessed_type, _ = mimetypes.guess_type(file_path)
-    if guessed_type and not guessed_type.startswith("text/"):
-        return True
-
-    return False
-
-
 # Streaming thresholds
 INCOMING_STREAMING_THRESHOLD = 512 * 1024  # 512KB
 OUTGOING_STREAMING_THRESHOLD = 1024 * 1024 * 5  # 5MB
@@ -305,19 +251,7 @@ async def convert_proxy_response_to_user_response(
         for header in ["connection", "transfer-encoding"]:
             headers_to_client.pop(header, None)
 
-        # Handle content-encoding for compressed files
-        original_encoding = proxy_response.headers.get("content-encoding", "").lower()
         path = scope.get("path", "")
-
-        if original_encoding == "gzip" and _should_remove_gzip_encoding(
-            proxy_response.headers.get("content-type", ""), path
-        ):
-            logger.debug(f"Removing incorrect gzip encoding for {path}")
-            headers_to_client.pop("content-encoding", None)
-        elif original_encoding:
-            # Preserve other encodings
-            headers_to_client["content-encoding"] = original_encoding
-
         status_to_client = proxy_response.status
 
         if determine_outgoing_streaming(proxy_response):

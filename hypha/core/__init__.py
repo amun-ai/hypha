@@ -208,14 +208,89 @@ class UserPermission(str, Enum):
 
 
 class ScopeInfo(BaseModel):
-    """Represent scope info."""
+    """Represent scope info.
+
+    Tokens with extra_scopes are treated as "specialized" tokens that can ONLY
+    be used for their intended purpose (indicated by the scopes), NOT for general
+    workspace access like WebSocket connections or service calls.
+
+    Scope naming convention: Use format `resource:action` (e.g., `file:download`,
+    `artifact:read`). These scopes must be validated by the endpoints that handle
+    those specific operations.
+    """
 
     model_config = ConfigDict(extra="allow")
 
     current_workspace: Optional[str] = None
     workspaces: Optional[Dict[str, UserPermission]] = {}
     client_id: Optional[str] = None
-    extra_scopes: Optional[List[str]] = []  # extra scopes
+    extra_scopes: Optional[List[str]] = []  # extra scopes for specialized tokens
+
+    def is_specialized(self) -> bool:
+        """Check if this scope represents a specialized token.
+
+        Specialized tokens have extra_scopes with our custom format (resource:action)
+        and can only be used for their specific purpose (e.g., file downloads),
+        not for general workspace access.
+
+        Standard OAuth scopes (like 'openid', 'profile', 'email') don't contain
+        colons and are NOT considered specialized tokens.
+
+        Our specialized scopes follow the format `resource:action` (e.g., `file:download`,
+        `artifact:read`), which always contains a colon.
+        """
+        return bool(self.get_specialized_scopes())
+
+    def get_specialized_scopes(self) -> List[str]:
+        """Get only the specialized scopes (our custom resource:action format).
+
+        Returns:
+            List of scopes that follow our resource:action format (contain colon)
+        """
+        if not self.extra_scopes:
+            return []
+        # Our specialized scopes use resource:action format (contain colon)
+        # Standard OAuth scopes (openid, profile, email, etc.) don't contain colons
+        return [s for s in self.extra_scopes if ":" in s]
+
+    def has_scope(self, required_scope: str) -> bool:
+        """Check if this scope includes the required specialized scope.
+
+        Args:
+            required_scope: The scope to check for (e.g., "file:download")
+
+        Returns:
+            True if the scope is present in extra_scopes
+        """
+        return required_scope in (self.extra_scopes or [])
+
+    def has_scope_prefix(self, prefix: str) -> bool:
+        """Check if any scope starts with the given prefix.
+
+        Args:
+            prefix: The scope prefix to check for (e.g., "file:download:")
+
+        Returns:
+            True if any scope in extra_scopes starts with the prefix
+        """
+        for scope in (self.extra_scopes or []):
+            if scope.startswith(prefix):
+                return True
+        return False
+
+    def get_scope_with_prefix(self, prefix: str) -> Optional[str]:
+        """Get the first scope that starts with the given prefix.
+
+        Args:
+            prefix: The scope prefix to look for
+
+        Returns:
+            The matching scope string, or None if not found
+        """
+        for scope in (self.extra_scopes or []):
+            if scope.startswith(prefix):
+                return scope
+        return None
 
 
 class UserInfo(BaseModel):
@@ -282,6 +357,65 @@ class UserInfo(BaseModel):
                 return True
 
         return False
+
+    def is_specialized_token(self) -> bool:
+        """Check if this user has a specialized token.
+
+        Specialized tokens have extra_scopes and can only be used for their
+        specific purpose (e.g., file downloads), not for general workspace access
+        like WebSocket connections or service calls.
+        """
+        return self.scope is not None and self.scope.is_specialized()
+
+    def has_scope(self, required_scope: str) -> bool:
+        """Check if the user's token includes the required specialized scope.
+
+        Args:
+            required_scope: The scope to check for (e.g., "file:download")
+
+        Returns:
+            True if the scope is present in the user's extra_scopes
+        """
+        if self.scope is None:
+            return False
+        return self.scope.has_scope(required_scope)
+
+    def validate_for_general_access(self) -> None:
+        """Validate that this token can be used for general workspace access.
+
+        Raises:
+            PermissionError: If this is a specialized token that cannot be used
+                           for general workspace operations.
+        """
+        if self.is_specialized_token():
+            # Only show specialized scopes (not standard OAuth scopes) in the error
+            specialized_scopes = self.scope.get_specialized_scopes()
+            scopes = ", ".join(specialized_scopes)
+            raise PermissionError(
+                f"Specialized token with scopes [{scopes}] cannot be used for "
+                f"general workspace access. This token can only be used for its "
+                f"intended purpose."
+            )
+
+    def validate_scope(self, required_scope: str) -> None:
+        """Validate that this token has the required scope for an operation.
+
+        For specialized tokens, verifies the required scope is present.
+        For non-specialized tokens, allows all operations (backwards compatible).
+
+        Args:
+            required_scope: The scope required for the operation (e.g., "file:download")
+
+        Raises:
+            PermissionError: If this is a specialized token without the required scope
+        """
+        if self.is_specialized_token():
+            if not self.has_scope(required_scope):
+                allowed_scopes = ", ".join(self.scope.extra_scopes)
+                raise PermissionError(
+                    f"Token with scopes [{allowed_scopes}] does not have required "
+                    f"scope '{required_scope}' for this operation."
+                )
 
 
 class ClientInfo(BaseModel):

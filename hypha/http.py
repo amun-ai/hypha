@@ -17,6 +17,8 @@ import psutil
 from fastapi import Depends, Request
 from starlette.routing import Route, Match
 from starlette.types import ASGIApp
+from aiobotocore.session import get_session
+from botocore.config import Config
 from jinja2 import Environment, PackageLoader, select_autoescape
 from prometheus_client import generate_latest
 from fastapi.responses import (
@@ -35,6 +37,7 @@ from hypha.core import UserPermission
 from hypha.core.auth import AUTH0_DOMAIN, extract_token_from_scope
 from hypha.core.store import RedisStore
 from hypha.utils import safe_join, is_safe_path
+from hypha.s3 import FSFileResponse
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
@@ -800,8 +803,12 @@ class HTTPProxy:
             else:
                 key = safe_join(workspace, path)
                 assert self.s3_enabled, "S3 is not enabled."
-                from hypha.s3 import FSFileResponse
-                from aiobotocore.session import get_session
+
+                # Check if proxy should be disabled for S3 operations
+                # Default is to disable proxies to avoid issues with HTTP_PROXY env vars
+                # that can cause put_object to hang with some S3/MinIO configurations
+                disable_proxy = os.environ.get("HYPHA_S3_DISABLE_PROXY", "true").lower() != "false"
+                proxies = {"http": None, "https": None} if disable_proxy else None
 
                 s3_client = get_session().create_client(
                     "s3",
@@ -809,6 +816,11 @@ class HTTPProxy:
                     aws_access_key_id=self.access_key_id,
                     aws_secret_access_key=self.secret_access_key,
                     region_name=self.region_name,
+                    config=Config(
+                        connect_timeout=60,
+                        read_timeout=300,
+                        proxies=proxies,
+                    ),
                 )
                 return FSFileResponse(s3_client, self.workspace_bucket, key)
 
