@@ -176,7 +176,9 @@ class AsyncS3Client:
         """Get or create aiohttp session."""
         if self._session is None or self._session.closed:
             connector = aiohttp.TCPConnector(limit=10, force_close=True)
-            self._session = aiohttp.ClientSession(connector=connector)
+            # Use trust_env=False to ignore HTTP_PROXY environment variables
+            # which can cause issues with S3/MinIO operations
+            self._session = aiohttp.ClientSession(connector=connector, trust_env=False)
         return self._session
 
     async def put_object(self, bucket: str, key: str, body: bytes) -> dict:

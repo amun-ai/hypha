@@ -2440,13 +2440,23 @@ class ArtifactController:
             endpoint_url and access_key_id and secret_access_key and region_name
         ), "S3 credentials are not configured."
 
+        # Check if proxy should be disabled for S3 operations
+        # Default is to disable proxies to avoid issues with HTTP_PROXY env vars
+        # that can cause put_object to hang with some S3/MinIO configurations
+        disable_proxy = os.environ.get("HYPHA_S3_DISABLE_PROXY", "true").lower() != "false"
+        proxies = {"http": None, "https": None} if disable_proxy else None
+
         return get_session().create_client(
             "s3",
             endpoint_url=endpoint_url,
             aws_access_key_id=access_key_id,
             aws_secret_access_key=secret_access_key,
             region_name=region_name,
-            config=Config(connect_timeout=60, read_timeout=300),
+            config=Config(
+                connect_timeout=60,
+                read_timeout=300,
+                proxies=proxies,
+            ),
         )
 
     async def _get_git_file(

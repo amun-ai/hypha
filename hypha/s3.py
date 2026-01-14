@@ -6,7 +6,7 @@ import logging
 import os
 import sys
 import time
-import uuid
+import os
 from datetime import datetime
 from email.utils import formatdate
 from typing import Any, Dict, Union
@@ -14,6 +14,8 @@ from typing import Any, Dict, Union
 import botocore
 from aiobotocore.session import get_session
 from botocore.exceptions import ClientError
+from botocore.config import Config
+
 from fastapi import APIRouter, Depends, Request, Query, Body
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.datastructures import Headers
@@ -684,12 +686,23 @@ class S3Controller:
 
     def create_client_async(self, public=False):
         """Create client async."""
+        # Check if proxy should be disabled for S3 operations
+        # Default is to disable proxies to avoid issues with HTTP_PROXY env vars
+        # that can cause put_object to hang with some S3/MinIO configurations
+        disable_proxy = os.environ.get("HYPHA_S3_DISABLE_PROXY", "true").lower() != "false"
+        proxies = {"http": None, "https": None} if disable_proxy else None
+
         return get_session().create_client(
             "s3",
             endpoint_url=self.endpoint_url_public if public else self.endpoint_url,
             aws_access_key_id=self.access_key_id,
             aws_secret_access_key=self.secret_access_key,
             region_name=self.region_name,
+            config=Config(
+                connect_timeout=60,
+                read_timeout=300,
+                proxies=proxies,
+            ),
         )
 
     async def cleanup_workspace(self, workspace: WorkspaceInfo, force=False):
