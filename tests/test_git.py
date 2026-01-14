@@ -752,7 +752,7 @@ async def test_git_create_zip_file(
         # Initialize a local repo and push some files
         local_repo = os.path.join(tmpdir, "repo")
         os.makedirs(local_repo)
-        subprocess.run(["git", "init"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "init", "-b", "main"], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
 
@@ -854,7 +854,7 @@ async def test_git_create_zip_file_with_specific_files(
         # Initialize a local repo and push some files
         local_repo = os.path.join(tmpdir, "repo")
         os.makedirs(local_repo)
-        subprocess.run(["git", "init"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "init", "-b", "main"], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
 
@@ -994,7 +994,7 @@ async def test_git_lfs_files_endpoint_streaming(
         local_repo = os.path.join(tmpdir, "repo")
         os.makedirs(local_repo)
 
-        subprocess.run(["git", "init"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "init", "-b", "main"], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
 
@@ -1109,7 +1109,7 @@ async def test_git_artifact_list_files(
         # Initialize a local repo and push some files
         local_repo = os.path.join(tmpdir, "repo")
         os.makedirs(local_repo)
-        subprocess.run(["git", "init"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "init", "-b", "main"], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
 
@@ -1201,7 +1201,7 @@ async def test_git_artifact_get_file(
         # Initialize a local repo and push a file
         local_repo = os.path.join(tmpdir, "repo")
         os.makedirs(local_repo)
-        subprocess.run(["git", "init"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "init", "-b", "main"], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
 
@@ -1534,7 +1534,7 @@ async def test_git_artifact_remove_file(
         # Initialize a local repo and push files
         local_repo = os.path.join(tmpdir, "repo")
         os.makedirs(local_repo)
-        subprocess.run(["git", "init"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "init", "-b", "main"], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
 
@@ -1619,7 +1619,7 @@ async def test_git_artifact_version_resolution(
     with tempfile.TemporaryDirectory() as tmpdir:
         local_repo = os.path.join(tmpdir, "repo")
         os.makedirs(local_repo)
-        subprocess.run(["git", "init"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "init", "-b", "main"], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
 
@@ -1770,7 +1770,7 @@ async def test_git_artifact_get_file_by_commit_sha(
     with tempfile.TemporaryDirectory() as tmpdir:
         local_repo = os.path.join(tmpdir, "repo")
         os.makedirs(local_repo)
-        subprocess.run(["git", "init"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "init", "-b", "main"], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
 
@@ -1862,7 +1862,7 @@ async def test_git_artifact_nested_directories(
     with tempfile.TemporaryDirectory() as tmpdir:
         local_repo = os.path.join(tmpdir, "repo")
         os.makedirs(local_repo)
-        subprocess.run(["git", "init"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "init", "-b", "main"], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
 
@@ -1957,7 +1957,7 @@ async def test_git_artifact_binary_file(
     with tempfile.TemporaryDirectory() as tmpdir:
         local_repo = os.path.join(tmpdir, "repo")
         os.makedirs(local_repo)
-        subprocess.run(["git", "init"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "init", "-b", "main"], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
 
@@ -2252,7 +2252,7 @@ async def test_git_read_write_file(
 
         os.makedirs(repo_dir, exist_ok=True)
         os.chdir(repo_dir)
-        subprocess.run(["git", "init"], capture_output=True, check=True)
+        subprocess.run(["git", "init", "-b", "main"], capture_output=True, check=True)
 
         # Create test files
         with open(os.path.join(repo_dir, "readme.txt"), "w") as f:
@@ -2394,7 +2394,7 @@ async def test_git_read_file_not_found(
         repo_dir = os.path.join(tmpdir, "repo")
         os.makedirs(repo_dir, exist_ok=True)
         os.chdir(repo_dir)
-        subprocess.run(["git", "init"], capture_output=True, check=True)
+        subprocess.run(["git", "init", "-b", "main"], capture_output=True, check=True)
 
         with open(os.path.join(repo_dir, "exists.txt"), "w") as f:
             f.write("This file exists")
