@@ -481,8 +481,25 @@ async def test_git_lfs_push_and_pull(
                 f"Clone failed unexpectedly: {result.stderr}"
             # If clone failed due to empty repo, initialize manually
             os.makedirs(clone_dir, exist_ok=True)
-            subprocess.run(["git", "init"], cwd=clone_dir, check=True)
+            # Use -b main to ensure consistent branch name across platforms
+            subprocess.run(["git", "init", "-b", "main"], cwd=clone_dir, check=True)
             subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=clone_dir, check=True)
+
+        # Ensure we're on the main branch (some git versions may use different default)
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=clone_dir,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        current_branch = result.stdout.strip()
+        if current_branch and current_branch != "main":
+            subprocess.run(
+                ["git", "branch", "-m", current_branch, "main"],
+                cwd=clone_dir,
+                check=True,
+            )
 
         # Step 2: Install and configure LFS
         result = subprocess.run(
@@ -544,9 +561,9 @@ async def test_git_lfs_push_and_pull(
         )
         assert result.returncode == 0, f"git commit failed: {result.stderr}"
 
-        # Step 6: Push with authentication
+        # Step 6: Push with authentication (push main to main on remote)
         result = subprocess.run(
-            ["git", "push", auth_url, "main"],
+            ["git", "push", auth_url, "main:main"],
             cwd=clone_dir,
             capture_output=True,
             text=True,
