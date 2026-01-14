@@ -2256,6 +2256,22 @@ async def test_git_read_write_file(
             subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, capture_output=True, check=True)
             subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=repo_dir, capture_output=True, check=True)
 
+        # Setup git config first
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo_dir, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, capture_output=True, check=True)
+
+        # Ensure we're on the main branch (some git versions may use different default)
+        branch_result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        current_branch = branch_result.stdout.strip()
+        if current_branch and current_branch != "main":
+            subprocess.run(["git", "branch", "-m", current_branch, "main"], cwd=repo_dir, check=True)
+
         # Create test files
         with open(os.path.join(repo_dir, "readme.txt"), "w") as f:
             f.write("Hello, this is the initial readme content!")
@@ -2263,12 +2279,10 @@ async def test_git_read_write_file(
         with open(os.path.join(repo_dir, "data.json"), "w") as f:
             f.write('{"key": "initial_value"}')
 
-        # Setup git config and commit
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo_dir, capture_output=True, check=True)
-        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, capture_output=True, check=True)
+        # Add and commit
         subprocess.run(["git", "add", "."], cwd=repo_dir, capture_output=True, check=True)
         subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=repo_dir, capture_output=True, check=True)
-        subprocess.run(["git", "push", "-u", "origin", "main", "--force"], cwd=repo_dir, capture_output=True, check=True, timeout=30)
+        subprocess.run(["git", "push", auth_url, "main:main", "--force"], cwd=repo_dir, capture_output=True, check=True, timeout=30)
 
     # Test 1: Read file as text
     result = await artifact_manager.read_file(
@@ -2396,15 +2410,15 @@ async def test_git_read_file_not_found(
         os.makedirs(repo_dir, exist_ok=True)
         subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, capture_output=True, check=True)
 
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo_dir, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, capture_output=True, check=True)
+
         with open(os.path.join(repo_dir, "exists.txt"), "w") as f:
             f.write("This file exists")
 
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo_dir, capture_output=True, check=True)
-        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, capture_output=True, check=True)
         subprocess.run(["git", "add", "."], cwd=repo_dir, capture_output=True, check=True)
         subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=repo_dir, capture_output=True, check=True)
-        subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=repo_dir, capture_output=True, check=False)
-        subprocess.run(["git", "push", "-u", "origin", "main", "--force"], cwd=repo_dir, capture_output=True, check=True, timeout=30)
+        subprocess.run(["git", "push", auth_url, "main:main", "--force"], cwd=repo_dir, capture_output=True, check=True, timeout=30)
 
     # Try to read a file that doesn't exist
     try:
