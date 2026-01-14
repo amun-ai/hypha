@@ -355,11 +355,26 @@ class GitHTTPHandler:
             if not sha.startswith(b"ref: ")
         }
 
+        # Get symbolic refs for symref capability (e.g., HEAD -> refs/heads/main)
+        # This is crucial for git clients to know the default branch when cloning
+        symrefs = {
+            ref_name: sha[5:]  # Remove "ref: " prefix
+            for ref_name, sha in refs.items()
+            if sha.startswith(b"ref: ")
+        }
+
         # Determine capabilities based on service
         if service == b"git-upload-pack":
-            caps = b" ".join(UPLOAD_PACK_CAPABILITIES)
+            caps_list = list(UPLOAD_PACK_CAPABILITIES)
         else:
-            caps = b" ".join(RECEIVE_PACK_CAPABILITIES)
+            caps_list = list(RECEIVE_PACK_CAPABILITIES)
+
+        # Add symref capabilities (e.g., symref=HEAD:refs/heads/main)
+        # This tells the client what the default branch is
+        for ref_name, target in symrefs.items():
+            caps_list.append(b"symref=" + ref_name + b":" + target)
+
+        caps = b" ".join(caps_list)
 
         if not real_refs:
             # Empty repository (or only symbolic refs) - advertise capabilities with zero-id

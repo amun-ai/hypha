@@ -171,6 +171,9 @@ async def test_git_protocol_discovery(
     assert response.status_code == 200
     assert "application/x-git-upload-pack-advertisement" in response.headers.get("content-type", "")
     assert b"# service=git-upload-pack" in response.content
+    # Verify symref capability is advertised (crucial for git clients to know default branch)
+    assert b"symref=HEAD:refs/heads/main" in response.content, \
+        f"symref capability not found in info/refs response. Content: {response.content[:500]}"
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
