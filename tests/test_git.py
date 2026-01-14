@@ -293,14 +293,8 @@ async def test_git_clone_add_commit_push(
             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
         )
 
-        push_stdout = result.stdout
-        push_stderr = result.stderr
         assert result.returncode == 0, \
-            f"git push failed: stdout={push_stdout}, stderr={push_stderr}"
-
-        # Small delay to ensure S3 writes are fully propagated
-        import time
-        time.sleep(0.5)
+            f"git push failed: stdout={result.stdout}, stderr={result.stderr}"
 
         # Step 6: Clone again to verify
         clone_dir2 = os.path.join(tmpdir, "repo2")
@@ -313,40 +307,11 @@ async def test_git_clone_add_commit_push(
         assert result.returncode == 0, \
             f"git clone (after push) failed: stdout={result.stdout}, stderr={result.stderr}"
 
-        # Debug: List what's in the cloned directory
-        if os.path.exists(clone_dir2):
-            clone_contents = os.listdir(clone_dir2)
-            # Check git log to see commits
-            log_result = subprocess.run(
-                ["git", "log", "--oneline", "-5"],
-                cwd=clone_dir2,
-                capture_output=True,
-                text=True,
-            )
-            git_log = log_result.stdout if log_result.returncode == 0 else f"git log failed: {log_result.stderr}"
-            # Check branch
-            branch_result = subprocess.run(
-                ["git", "branch", "-a"],
-                cwd=clone_dir2,
-                capture_output=True,
-                text=True,
-            )
-            git_branches = branch_result.stdout if branch_result.returncode == 0 else f"git branch failed: {branch_result.stderr}"
-        else:
-            clone_contents = "clone_dir2 does not exist"
-            git_log = "N/A"
-            git_branches = "N/A"
-
         # Verify the cloned repository has the file
         cloned_file = os.path.join(clone_dir2, "README.md")
         assert os.path.exists(cloned_file), (
             f"Cloned repo should contain README.md. "
-            f"Clone dir contents: {clone_contents}, "
-            f"git log: {git_log}, "
-            f"branches: {git_branches}, "
-            f"clone stderr: {result.stderr}, "
-            f"push stdout: {push_stdout}, "
-            f"push stderr: {push_stderr}"
+            f"Clone stderr: {result.stderr}"
         )
 
         with open(cloned_file, "r") as f:

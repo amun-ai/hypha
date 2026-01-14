@@ -363,6 +363,14 @@ class GitHTTPHandler:
             if sha.startswith(b"ref: ")
         }
 
+        # Resolve HEAD to actual SHA if possible
+        # Git clients expect HEAD to be in the refs list with the resolved commit SHA
+        head_sha = None
+        if b"HEAD" in symrefs:
+            target = symrefs[b"HEAD"]
+            if target in real_refs:
+                head_sha = real_refs[target]
+
         # Determine capabilities based on service
         if service == b"git-upload-pack":
             caps_list = list(UPLOAD_PACK_CAPABILITIES)
@@ -383,11 +391,18 @@ class GitHTTPHandler:
             yield pkt_flush()
             return
 
-        # Sort refs for consistent output
-        sorted_refs = sorted(real_refs.items())
-        first = True
+        # Build refs list with HEAD first (if resolvable), then sorted refs
+        refs_to_send = []
+        if head_sha:
+            # HEAD with resolved SHA should be first
+            refs_to_send.append((b"HEAD", head_sha))
 
-        for ref_name, sha in sorted_refs:
+        # Add other refs sorted
+        for ref_name, sha in sorted(real_refs.items()):
+            refs_to_send.append((ref_name, sha))
+
+        first = True
+        for ref_name, sha in refs_to_send:
             line = sha + b" " + ref_name
             if first:
                 # First line includes capabilities
