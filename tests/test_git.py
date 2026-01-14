@@ -307,10 +307,34 @@ async def test_git_clone_add_commit_push(
         assert result.returncode == 0, \
             f"git clone (after push) failed: stdout={result.stdout}, stderr={result.stderr}"
 
+        # Debug: List what's in the cloned directory
+        if os.path.exists(clone_dir2):
+            clone_contents = os.listdir(clone_dir2)
+            # Check git log to see commits
+            log_result = subprocess.run(
+                ["git", "log", "--oneline", "-5"],
+                cwd=clone_dir2,
+                capture_output=True,
+                text=True,
+            )
+            git_log = log_result.stdout if log_result.returncode == 0 else f"git log failed: {log_result.stderr}"
+            # Check branch
+            branch_result = subprocess.run(
+                ["git", "branch", "-a"],
+                cwd=clone_dir2,
+                capture_output=True,
+                text=True,
+            )
+            git_branches = branch_result.stdout if branch_result.returncode == 0 else f"git branch failed: {branch_result.stderr}"
+        else:
+            clone_contents = "clone_dir2 does not exist"
+            git_log = "N/A"
+            git_branches = "N/A"
+
         # Verify the cloned repository has the file
         cloned_file = os.path.join(clone_dir2, "README.md")
         assert os.path.exists(cloned_file), \
-            f"Cloned repo should contain README.md"
+            f"Cloned repo should contain README.md. Clone dir contents: {clone_contents}, git log: {git_log}, branches: {git_branches}, clone stderr: {result.stderr}"
 
         with open(cloned_file, "r") as f:
             content = f.read()
