@@ -124,3 +124,6 @@ venv.bak/
 .vscode/*
 memory_diagnostics/
 .mcp.json
+
+# kiro
+.kiro

@@ -912,6 +912,23 @@ class WorkspaceManager:
             try:
                 existing_workspace = await self.load_workspace_info(config["id"], increment_counter=False)
                 exists = True
+                
+                # Authorization check: verify user can overwrite this workspace
+                if not self._can_overwrite_workspace(user_info, existing_workspace):
+                    logger.warning(
+                        f"Unauthorized overwrite attempt: user={user_info.id}, "
+                        f"workspace={existing_workspace.id}"
+                    )
+                    raise PermissionError(
+                        f"Permission denied: user {user_info.id} cannot overwrite "
+                        f"workspace {existing_workspace.id}"
+                    )
+                
+                logger.info(
+                    f"Authorized overwrite: user={user_info.id}, "
+                    f"workspace={existing_workspace.id}"
+                )
+                
                 # Close the existing workspace to clean up resources (e.g., vector collections)
                 if existing_workspace.persistent and self._artifact_manager:
                     logger.info(f"Closing existing workspace {config['id']} before overwriting")
@@ -2885,6 +2902,38 @@ class WorkspaceManager:
             if cursor == 0:
                 break
         return workspaces
+
+    def _can_overwrite_workspace(
+        self, user_info: UserInfo, existing_workspace: WorkspaceInfo
+    ) -> bool:
+        """
+        Check if user is authorized to overwrite an existing workspace.
+        
+        Authorization is granted if any of these conditions are met:
+        1. User is the root user (user_info.id == "root")
+        2. User owns the workspace (id or email in owners list)
+        3. User has admin permission on the workspace
+        
+        Args:
+            user_info: The user attempting the overwrite
+            existing_workspace: The workspace being overwritten
+            
+        Returns:
+            True if authorized, False otherwise
+        """
+        # Root user can overwrite any workspace
+        if user_info.id == "root":
+            return True
+        
+        # Owner can overwrite their workspace
+        if existing_workspace.owned_by(user_info):
+            return True
+        
+        # User with admin permission can overwrite
+        if user_info.check_permission(existing_workspace.id, UserPermission.admin):
+            return True
+        
+        return False
 
     async def _update_workspace(
         self, workspace: WorkspaceInfo, user_info: UserInfo, overwrite=False
