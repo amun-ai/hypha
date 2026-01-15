@@ -270,6 +270,8 @@ class S3GitObjectStore(BucketBasedObjectStore):
             logger.debug(f"Uploading index file: {idx_key}")
             await async_client.put_object(self._bucket, idx_key, index_data)
             logger.info(f"Uploaded pack {basename} to S3")
+        except Exception:
+            raise
         finally:
             await async_client.close()
 

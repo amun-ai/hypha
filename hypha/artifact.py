@@ -1094,6 +1094,8 @@ class ArtifactController:
                             raise KeyError(f"Artifact not found: {artifact_id}")
                         if artifact.staging is None:
                             raise ValueError("Artifact must be in staging mode to upload files")
+                except Exception:
+                    raise
                 finally:
                     await session.close()
                 
@@ -1670,6 +1672,8 @@ class ArtifactController:
                 if artifact and artifact.config:
                     engine = self._get_or_create_vector_engine(collection_name, artifact.config, artifact=artifact)
                     return engine
+        except Exception:
+            raise
         finally:
             await session.close()
         
@@ -5602,9 +5606,11 @@ class ArtifactController:
                     raise PermissionError(
                         f"Cannot create artifact in a non-persistent workspace `{target_workspace}`."
                     )
+        except Exception:
+            raise
         finally:
             await session.close()
-        
+
         # Create the new artifact with copied manifest and config
         new_config = dict(source_artifact.config) if source_artifact.config else {}
         # Remove source-specific config like zenodo info
@@ -5707,13 +5713,15 @@ class ArtifactController:
                         # Update file count in the new artifact
                         target_artifact.file_count = file_count
                         await session.commit()
-                        
+
                         logger.info(
                             f"Successfully duplicated artifact '{source_artifact_id}' to '{new_artifact_id}' with {file_count} files"
                         )
+        except Exception:
+            raise
         finally:
             await session.close()
-        
+
         # Conditionally commit the new artifact after copying files
         if not stage:
             await self.commit(new_artifact_id, context=context)
@@ -6872,7 +6880,8 @@ class ArtifactController:
                                     detail=f"File '{file_path}' not found in artifact."
                                 )
                             raise
-
+        except Exception:
+            raise
         finally:
             await session.close()
 
@@ -7171,7 +7180,8 @@ class ArtifactController:
                 await session.commit()
 
                 return {"success": True, "bytes_written": len(body)}
-
+        except Exception:
+            raise
         finally:
             await session.close()
 

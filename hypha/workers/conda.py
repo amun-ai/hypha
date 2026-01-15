@@ -159,12 +159,10 @@ class EnvironmentCache:
                 return env_path
             else:
                 # Remove invalid entry
-                try:
-                    if env_path.exists():
-                        shutil.rmtree(env_path, ignore_errors=True)
-                finally:
-                    del self.index[env_hash]
-                    self._save_index()
+                if env_path.exists():
+                    shutil.rmtree(env_path, ignore_errors=True)
+                del self.index[env_hash]
+                self._save_index()
 
         return None
 
@@ -838,11 +836,8 @@ class CondaWorker(BaseWorker):
                     }
                 )
                 # Cleanup incomplete environment
-                try:
-                    if executor and executor.env_path and executor.env_path.exists():
-                        shutil.rmtree(executor.env_path, ignore_errors=True)
-                finally:
-                    pass
+                if executor and executor.env_path and executor.env_path.exists():
+                    shutil.rmtree(executor.env_path, ignore_errors=True)
                 raise
 
             await progress_callback(
@@ -914,12 +909,9 @@ class CondaWorker(BaseWorker):
             )
             # Cleanup incomplete environment if this was a newly created env
             if is_new_env:
-                try:
-                    marker_path = executor.env_path / READY_MARKER
-                    if not marker_path.exists() and executor.env_path.exists():
-                        shutil.rmtree(executor.env_path, ignore_errors=True)
-                finally:
-                    pass
+                marker_path = executor.env_path / READY_MARKER
+                if not marker_path.exists() and executor.env_path.exists():
+                    shutil.rmtree(executor.env_path, ignore_errors=True)
             raise
 
         # Phase 4: Run initialization script in the kernel
@@ -1005,11 +997,8 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
                     logger.info("Cached new conda environment: %s", executor.env_path)
             except Exception:
                 # If marking/cache fails, clean up to avoid half-baked cache
-                try:
-                    if executor.env_path.exists():
-                        shutil.rmtree(executor.env_path, ignore_errors=True)
-                finally:
-                    pass
+                if executor.env_path.exists():
+                    shutil.rmtree(executor.env_path, ignore_errors=True)
                 raise
         else:
             await progress_callback(
@@ -1020,12 +1009,9 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
             )
             # Cleanup incomplete environment if this was a newly created env
             if is_new_env:
-                try:
-                    marker_path = executor.env_path / READY_MARKER
-                    if not marker_path.exists() and executor.env_path.exists():
-                        shutil.rmtree(executor.env_path, ignore_errors=True)
-                finally:
-                    pass
+                marker_path = executor.env_path / READY_MARKER
+                if not marker_path.exists() and executor.env_path.exists():
+                    shutil.rmtree(executor.env_path, ignore_errors=True)
             raise Exception("Initialization script failed: " + result.get("error", {}).get("evalue", "Unknown error"))
 
 

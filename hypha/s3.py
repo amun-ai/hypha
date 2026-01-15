@@ -822,6 +822,8 @@ class S3Controller:
                     Bucket=self.workspace_bucket,
                     Key=f"{self.workspace_etc_dir}/{workspace.id}/manifest.json",
                 )
+            except Exception:
+                raise
             finally:
                 s3_client.close()
 

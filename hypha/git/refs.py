@@ -146,6 +146,8 @@ class S3RefsContainer(RefsContainer):
             await async_client.put_object(self._bucket, key, value + b"\n")
             self._refs_cache[name] = value
             logger.debug(f"Wrote ref {name.decode()} = {value.decode()}")
+        except Exception:
+            raise
         finally:
             await async_client.close()
 
