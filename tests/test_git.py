@@ -399,6 +399,159 @@ async def test_git_receive_pack_requires_auth(
     await api.disconnect()
 
 
+async def test_git_clone_non_public_requires_auth(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test that git clone of non-public repos requires authentication.
+
+    Security test: Verifies that anonymous users cannot clone/fetch
+    from git repositories that don't have public read permissions.
+    """
+    import subprocess
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-security-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a NON-PUBLIC git artifact (no "*" permission)
+    artifact_alias = f"git-private-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Private Git Repo"},
+        config={
+            "storage": "git",
+            # No "*" permission means non-public
+        },
+    )
+
+    workspace = api.config.workspace
+    port = SIO_PORT
+
+    # Test: Anonymous access should be denied
+    base_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
+    info_refs_url = f"{base_url}/info/refs?service=git-upload-pack"
+
+    # Anonymous request should get 401
+    session = get_http_session()  # Don't use netrc
+    response = session.get(info_refs_url, timeout=10)
+    assert response.status_code == 401, \
+        f"Anonymous access to non-public repo should return 401, got {response.status_code}"
+    assert "WWW-Authenticate" in response.headers
+
+    # Verify git clone without auth fails
+    with tempfile.TemporaryDirectory() as tmpdir:
+        git_url = f"http://127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
+        # Create a clean git environment that disables all credential helpers
+        git_env = {
+            **os.environ,
+            "GIT_TERMINAL_PROMPT": "0",  # Disable credential prompt
+            "GIT_ASKPASS": "",  # Disable askpass program
+            "SSH_ASKPASS": "",
+            "GIT_CONFIG_NOSYSTEM": "1",  # Ignore system config
+            "HOME": tmpdir,  # Use temp dir as home to avoid user's .gitconfig and credential store
+            "XDG_CONFIG_HOME": tmpdir,  # Avoid XDG configs
+        }
+        result = subprocess.run(
+            ["git", "-c", "credential.helper=", "clone", git_url, os.path.join(tmpdir, "repo")],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=git_env,
+        )
+        # Clone should fail with authentication error
+        assert result.returncode != 0, \
+            f"Git clone of non-public repo without auth should fail, but succeeded. stderr: {result.stderr}"
+        assert "401" in result.stderr or "authentication" in result.stderr.lower() or "fatal" in result.stderr.lower(), \
+            f"Expected authentication error in stderr: {result.stderr}"
+
+    # Test: Authenticated access should work
+    response = session.get(
+        info_refs_url,
+        auth=("user-1", test_user_token),
+        timeout=10
+    )
+    assert response.status_code == 200, \
+        f"Authenticated access should succeed, got {response.status_code}"
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
+
+
+async def test_git_clone_public_without_auth(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test that git clone of PUBLIC repos works without authentication.
+
+    Verifies that artifacts with "*" read permission can be cloned anonymously.
+    """
+    import subprocess
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-public-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a PUBLIC git artifact with "*" read permission
+    artifact_alias = f"git-public-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Public Git Repo"},
+        config={
+            "storage": "git",
+            "permissions": {
+                "*": "r"  # Public read permission
+            }
+        },
+    )
+
+    workspace = api.config.workspace
+    port = SIO_PORT
+
+    # Test: Anonymous access should work for public repos
+    base_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
+    info_refs_url = f"{base_url}/info/refs?service=git-upload-pack"
+
+    session = get_http_session()  # Don't use netrc
+    response = session.get(info_refs_url, timeout=10)
+    assert response.status_code == 200, \
+        f"Anonymous access to public repo should succeed, got {response.status_code}"
+
+    # Verify anonymous git clone works for public repo
+    with tempfile.TemporaryDirectory() as tmpdir:
+        git_url = f"http://127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
+        result = subprocess.run(
+            ["git", "clone", git_url, os.path.join(tmpdir, "repo")],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+        # Clone should succeed (or show "empty repository" warning which is OK)
+        # Note: An empty repo clone might return 0 or have "warning: You appear to have cloned an empty repository"
+        assert result.returncode == 0 or "empty repository" in result.stderr.lower(), \
+            f"Git clone of public repo should succeed: {result.stderr}"
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
+
+
 # Git LFS tests
 
 
@@ -1315,6 +1468,8 @@ async def test_git_artifact_put_file_and_commit(
     # Step 3: Commit the staged file
     result = await artifact_manager.commit(artifact_id=artifact_alias, comment="Add test.txt via API")
     assert result is not None
+    # Verify staging is None after commit (critical for UI status display)
+    assert result.get("staging") is None, f"Staging should be None after commit, got: {result.get('staging')}"
 
     # Step 4: Verify file is now in the repository
     files = await artifact_manager.list_files(artifact_id=artifact_alias)

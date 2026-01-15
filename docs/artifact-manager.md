@@ -1455,6 +1455,119 @@ page2 = await artifact_manager.list_files(
 
 ---
 
+### `read_file(artifact_id: str, file_path: str, format: str = "text", encoding: str = "utf-8", offset: int = 0, limit: int = None, version: str = None, stage: bool = False) -> dict`
+
+Reads file content directly from an artifact with flexible encoding options. This method reads file content without generating presigned URLs, making it convenient for AI agents and programmatic access. Supports both git-based and raw S3-based artifact storage.
+
+**Parameters:**
+
+- `artifact_id`: The id of the artifact to read the file from. Format: `"workspace/alias"` or just `"alias"` (uses current workspace).
+- `file_path`: Path to the file within the artifact. Use forward slashes for nested paths (e.g., `"data/train.csv"`).
+- `format`: Output format. Options:
+  - `"text"` (default): Returns decoded string using specified encoding
+  - `"binary"`: Returns raw bytes
+  - `"base64"`: Returns base64-encoded ASCII string
+  - `"json"`: Returns parsed Python dict/list from JSON content
+- `encoding`: Text encoding to use when `format="text"` or `"json"`. Default is `"utf-8"`. Common values: `"utf-8"`, `"ascii"`, `"latin-1"`.
+- `offset`: Byte offset to start reading from. Must be >= 0. Used for partial/chunked reads. Default is `0`.
+- `limit`: Maximum number of bytes to read. Default is 64KB. Maximum allowed is 10MB (10485760 bytes).
+- `version`: Version to read from (e.g., `"v1.0"`, `"latest"`, commit SHA for git). Use `"stage"` to read staged changes.
+- `stage`: If `True`, reads from staged (uncommitted) storage. Equivalent to `version="stage"`. Cannot be used with other version values.
+
+**Returns:** A dictionary with:
+- `name`: The file path
+- `content`: File content (type depends on `format` parameter)
+
+**Storage-Specific Behavior:**
+
+- **Git storage**: Reads from git commits using version (branch/tag/commit SHA). Use `stage=True` to read from git staging area. Supports LFS (Large File Storage) for large files.
+- **Raw storage**: Reads from S3 versioned storage. Use `stage=True` to read from staging version.
+
+**Example:**
+
+```python
+# Read text file
+result = await artifact_manager.read_file("my-dataset", "README.md")
+text = result["content"]  # string
+
+# Read JSON file as parsed object
+result = await artifact_manager.read_file("my-dataset", "config.json", format="json")
+config = result["content"]  # dict or list
+
+# Read binary file as base64
+result = await artifact_manager.read_file("my-model", "weights.bin", format="base64")
+import base64
+binary_data = base64.b64decode(result["content"])
+
+# Read specific version
+result = await artifact_manager.read_file("my-dataset", "data.csv", version="v1.0")
+
+# Partial read (chunked) - read 5000 bytes starting at offset 1000
+result = await artifact_manager.read_file("my-dataset", "large.txt", offset=1000, limit=5000)
+
+# Read from staging
+result = await artifact_manager.read_file("my-dataset", "draft.md", stage=True)
+```
+
+---
+
+### `write_file(artifact_id: str, file_path: str, content: Any, format: str = "text", encoding: str = "utf-8") -> dict`
+
+Writes file content directly into an artifact with flexible encoding options. This method writes file content without requiring presigned URLs, making it convenient for AI agents and programmatic access. Supports both git-based and raw S3-based artifact storage.
+
+**Important:** Requires the artifact to be in staging mode. Call `edit(artifact_id, stage=True)` first. After writing files, call `commit()` to finalize changes.
+
+**Parameters:**
+
+- `artifact_id`: The id of the artifact to write the file to. Format: `"workspace/alias"` or just `"alias"` (uses current workspace).
+- `file_path`: Path where to store the file within the artifact. Use forward slashes for nested paths (e.g., `"data/output.json"`).
+- `content`: File content. Interpreted based on `format`:
+  - For `"text"`: Must be a string
+  - For `"binary"`: Must be bytes or bytearray
+  - For `"base64"`: Must be a base64-encoded string
+  - For `"json"`: Can be dict/list (will be serialized) or already-serialized JSON string
+- `format`: Input format. Options:
+  - `"text"` (default): String to encode using specified encoding
+  - `"binary"`: Raw bytes to write directly
+  - `"base64"`: Base64 string to decode before writing
+  - `"json"`: Dict/list to serialize as JSON, or already-serialized JSON string
+- `encoding`: Text encoding to use when `format="text"` or `"json"`. Default is `"utf-8"`.
+
+**Returns:** A dictionary with:
+- `success`: Boolean indicating success
+- `bytes_written`: Number of bytes written
+
+**Storage-Specific Behavior:**
+
+- **Git storage**: Files are written to the git staging area. Call `commit()` to add files to git repository.
+- **Raw storage**: Files are written to the staging version in S3. Call `commit()` to finalize the version.
+
+**Example:**
+
+```python
+# First, put artifact in staging mode
+await artifact_manager.edit("my-dataset", stage=True)
+
+# Write text file
+result = await artifact_manager.write_file("my-dataset", "README.md", "# My Dataset\n\nDescription here...")
+print(f"Wrote {result['bytes_written']} bytes")
+
+# Write JSON data directly (no manual serialization needed)
+data = {"key": "value", "items": [1, 2, 3]}
+await artifact_manager.write_file("my-dataset", "config.json", data, format="json")
+
+# Write binary file using base64
+import base64
+binary_data = b"\x00\x01\x02\x03"
+encoded = base64.b64encode(binary_data).decode()
+await artifact_manager.write_file("my-model", "weights.bin", encoded, format="base64")
+
+# Commit the changes
+await artifact_manager.commit("my-dataset")
+```
+
+---
+
 ### `read(artifact_id: str, version: str = None, silent: bool = False, include_metadata: bool = False) -> dict`
 
 Reads and returns the manifest of an artifact or collection. If in staging mode, reads the staged manifest.

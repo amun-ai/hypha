@@ -810,7 +810,8 @@ class CondaEnvExecutor:
                         total_time=total_time,
                     ),
                 )
-
+        except Exception:
+            raise
         finally:
             # Clean up temporary script file
             if os.path.exists(script_path):

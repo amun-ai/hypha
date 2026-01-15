@@ -992,19 +992,29 @@ class TestLoginService:
             await check_login("invalid-key")
 
     @pytest.mark.asyncio
-    async def test_login_service_report_login(self):
+    @patch('hypha.core.auth.parse_auth_token')
+    async def test_login_service_report_login(self, mock_parse_token):
         """Test report_login functionality."""
         mock_store = MagicMock()
         mock_redis = AsyncMock()
         mock_store.get_redis.return_value = mock_redis
         mock_store.public_base_url = "https://test.example.com"
-        
+
         # Mock Redis key existence
         mock_redis.exists.return_value = True
-        
+
+        # Mock parse_auth_token to return a valid user (V9 security fix validates tokens)
+        mock_user = UserInfo(
+            id="test-user",
+            roles=[],
+            is_anonymous=False,
+            email="test@example.com"
+        )
+        mock_parse_token.return_value = mock_user
+
         service = create_login_service(mock_store)
         report_login = service["report"]
-        
+
         # Test basic report without workspace
         await report_login(
             key="test-key",
@@ -1012,7 +1022,10 @@ class TestLoginService:
             email="test@example.com",
             user_id="test-user"
         )
-        
+
+        # Verify token was validated (V9 security fix)
+        mock_parse_token.assert_called_once_with("test-token")
+
         # Verify Redis was called to store the token info
         mock_redis.setex.assert_called_once()
         call_args = mock_redis.setex.call_args
@@ -1021,18 +1034,25 @@ class TestLoginService:
 
     @pytest.mark.asyncio
     async def test_login_service_report_login_invalid_key(self):
-        """Test report_login with invalid key."""
+        """Test report_login with invalid key.
+
+        Note: This test validates that invalid keys are rejected BEFORE token
+        validation. The key check happens first, so we don't need to mock
+        parse_auth_token here.
+        """
         mock_store = MagicMock()
         mock_redis = AsyncMock()
         mock_store.get_redis.return_value = mock_redis
         mock_store.public_base_url = "https://test.example.com"
-        
+
         # Mock Redis to return False for key existence
         mock_redis.exists.return_value = False
-        
+
         service = create_login_service(mock_store)
         report_login = service["report"]
-        
+
+        # Key validation happens before token validation, so this should fail
+        # with "Invalid key" error before trying to parse the token
         with pytest.raises(AssertionError, match="Invalid key"):
             await report_login("invalid-key", "test-token")
 

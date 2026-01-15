@@ -370,9 +370,9 @@ async def delete_workspace(self, workspace: str, context: dict = None):
 @schema_method
 async def access_resource(self, resource_id: str, context: dict = None):
     """Custom permission validation."""
-    user_info = UserInfo.from_context(context)
-    if not user_info.check_permission(workspace, UserPermission.read_write):
-        raise PermissionError(f"Insufficient permissions")
+user_info = UserInfo.from_context(context)
+if not user_info.check_permission(workspace, UserPermission.read_write):
+    raise PermissionError(f"Insufficient permissions")
     # Method implementation
 ```
 
@@ -420,171 +420,76 @@ async def execute_code(self, code: str, context: dict = None):
 ### Context Structure
 
 Every service method receives a `context` dictionary:
+
 - `ws` - Current workspace ID
 - `from` - Client identifier (format: `workspace/client_id`)
 - `user` - User information including permissions
 
-### Security Patterns
+### Known Vulnerability Patterns
 
-#### 1. Workspace Isolation (Default)
-Services are automatically isolated by workspace through `protected` visibility:
+All vulnerabilities documented with tests in `tests/test_security_vulnerabilities.py`:
+
+| ID | Pattern | Key Lesson |
+| -- | ------- | ---------- |
+| V1 | User-provided ID injection | Reconstruct IDs from authenticated context |
+| V2 | Suffix matching bypass | Use `.startswith()` for prefix matching |
+| V5 | Exception info leakage | Sanitize errors before sending to clients |
+| V6 | Missing ownership check | Verify ownership before destructive ops |
+| V9 | Conditional token validation | ALWAYS validate tokens |
+| V10-V14 | Cross-workspace bypass | Extract workspace from ID, validate permission on TARGET workspace |
+
+**Critical Pattern (V10-V14)**: When an ID contains a workspace prefix (e.g., `workspace/client_id`), always validate permission on the embedded workspace, not just `context["ws"]`.
+
 ```python
-# Check if service is public or user has permission
-if not key.startswith(b"services:public|"):
-    has_permission = user_info.check_permission(workspace, UserPermission.read)
-    if not has_permission:
-        # Check authorized_workspaces for protected services
-        if not (authorized_workspaces and user_workspace in authorized_workspaces):
-            raise PermissionError(f"Permission denied for workspace {workspace}")
+# WRONG: Only validates context workspace
+workspace = context["ws"]
+user_info.check_permission(workspace, UserPermission.read)
+session = get_session(session_id)  # session_id could be "other-workspace/..."
+
+# CORRECT: Validate permission on target workspace
+if "/" in session_id:
+    target_ws = session_id.split("/")[0]
+    if target_ws != workspace:
+        if not user_info.check_permission(target_ws, UserPermission.read):
+            raise PermissionError(f"No permission on {target_ws}")
 ```
 
-#### 2. Authorized Workspaces Pattern
-For controlled cross-workspace access:
-```python
-# Service configuration with authorized workspaces
-config = {
-    "visibility": "protected",
-    "authorized_workspaces": ["workspace-1", "workspace-2"],
-}
-```
+### Security Checklist
 
-#### 3. Event Subscription Security
-Prevent cross-workspace event snooping:
-```python
-def _validate_event_subscription(self, event_type: str, workspace: str):
-    """Validate workspace-safe event subscriptions."""
-    forbidden_patterns = ["ws-", "/", ":"]
-    for pattern in forbidden_patterns:
-        if pattern in event_type and not event_type.startswith(f"{workspace}/"):
-            raise ValueError(f"Cross-workspace subscription forbidden")
-```
+- [ ] Use `protected` visibility unless `public` is required
+- [ ] Validate permissions for all sensitive operations
+- [ ] Sanitize error messages (no internal paths/tracebacks)
+- [ ] Validate workspace from user-provided IDs
+- [ ] Log security events for audit
 
-#### 4. Token Security
-- Tokens scoped to specific workspaces and permissions
-- Admin permission required for token generation
-- Token revocation with Redis expiration
+## Service Documentation for LLM Agents
 
-### Security Checklist for Service Development
-
-When creating new services:
-- [ ] **Choose appropriate visibility** (`protected` for most cases, `public` only when necessary)
-- [ ] **Add permission checks** for sensitive operations beyond basic workspace access
-- [ ] **Use `authorized_workspaces`** for controlled cross-workspace access
-- [ ] **Validate and sanitize** all user inputs to prevent injection attacks
-- [ ] **Log security events** for audit trails
-- [ ] **Handle errors securely** without leaking sensitive information
-- [ ] **Test workspace isolation** to ensure no unauthorized access
-
-### Example: Secure Service Implementation
-```python
-@schema_method
-async def delete_resource(
-    self,
-    resource_id: str = Field(..., description="Resource to delete"),
-    context: Optional[dict] = None,
-):
-    """Delete a resource with proper permission checks."""
-    assert context is not None
-    
-    # 1. Validate basic permissions
-    self.validate_context(context, permission=UserPermission.read_write)
-    
-    # 2. Extract user and workspace info
-    user_info = UserInfo.from_context(context)
-    workspace = context["ws"]
-    
-    # 3. Load resource and verify ownership
-    resource = await self.load_resource(resource_id)
-    if resource.workspace != workspace:
-        raise PermissionError("Cannot delete resources from other workspaces")
-    
-    # 4. Check additional permissions if needed
-    if resource.protected and not user_info.check_permission(workspace, UserPermission.admin):
-        raise PermissionError("Admin permission required for protected resources")
-    
-    # 5. Perform the operation
-    await self._delete_resource(resource_id)
-    
-    # 6. Log the security-relevant event
-    await self.log_event("resource_deleted", {"resource_id": resource_id}, context=context)
-```
-
-### Common Security Vulnerabilities to Avoid
-
-1. **Bypassing Default Protection** - Don't set services to `public` without careful consideration
-2. **Missing Permission Checks** - Validate permissions for sensitive operations
-3. **Information Leakage** - Never reveal details about resources user can't access
-4. **Injection Attacks** - Always sanitize and validate user inputs
-5. **Unauthorized Cross-Workspace Access** - Maintain strict workspace isolation
-6. **Privilege Escalation** - Never allow users to grant themselves higher permissions
-
-### Security Summary
-
-Hypha's security model operates on multiple levels:
-
-1. **Default Protection**: All services are `protected` by default, automatically restricting access to the same workspace
-2. **Additional Validation**: Sensitive operations require explicit permission checks beyond workspace isolation
-3. **Worker Security**: Workers must implement appropriate visibility and use `authorized_workspaces` for controlled access
-4. **Defense in Depth**: Multiple security layers ensure robust protection even if one layer fails
-
-**Key Principle**: Start with the default `protected` visibility for all services. Only expose services as `public` when absolutely necessary, and always implement additional access controls for public services. For workers and shared infrastructure, carefully control access using `authorized_workspaces` and validate all operations based on workspace context.
-
-## Service Documentation and Type Annotations for LLM Agents
-
-Type annotations in Hypha services are crucial for enabling LLM agents to autonomously discover and use services. Hypha uses `@schema_method` and `@schema_function` decorators with Pydantic Field descriptions to provide rich context for AI agents.
-
-### Key Principles
-
-1. **Use @schema_method with Field descriptions** - Every parameter should have a clear, detailed description
-2. **Document limitations and constraints** - Include rate limits, size restrictions, supported formats
-3. **Provide actionable error messages** - Help agents recover from failures
-4. **Keep descriptions concise but complete** - Balance detail with token efficiency
-
-### Hypha Schema Method Pattern
+Use `@schema_method` with Pydantic `Field` descriptions for all public methods:
 
 ```python
 from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
-from typing import Optional, List, Dict
 
 @schema_method
 async def install(
     self,
     source: Optional[str] = Field(
         None,
-        description="The source code of the application, URL to fetch the source, or None if using config. Can be raw HTML content, ImJoy/Hypha plugin code, or a URL to download the source from. URLs must be HTTPS or localhost/127.0.0.1.",
+        description="Source code, URL, or None. URLs must be HTTPS or localhost.",
     ),
     app_id: Optional[str] = Field(
         None,
-        description="The unique identifier of the application to install. This is typically the alias of the application.",
-    ),
-    overwrite: Optional[bool] = Field(
-        False,
-        description="Whether to overwrite existing app with same name. Set to True to replace existing installations.",
-    ),
-    timeout: Optional[float] = Field(
-        None,
-        description="Maximum time to wait for installation completion in seconds. Increase for complex apps that take longer to start.",
+        description="Unique app identifier (typically the alias).",
     ),
     context: Optional[dict] = Field(
         None,
-        description="Additional context information including user and workspace details. Usually provided automatically by the system.",
+        description="Auto-provided by system with user/workspace info.",
     ),
 ) -> str:
     """Install a server application.
-    
-    This method installs an application from source code or manifest:
-    1. Validates user permissions in the workspace
-    2. Compiles the app using appropriate worker type
-    3. Creates an artifact in the applications collection
-    4. Optionally tests the app can start successfully
-    
-    Returns:
-        Application manifest dictionary with installed app details
-        
-    Raises:
-        ValueError: If app_id contains invalid characters or manifest is malformed
-        Exception: If no suitable worker found or installation fails
+
+    Returns: Application manifest dictionary
+    Raises: ValueError if app_id invalid, Exception if no worker found
     """
 ```
 
@@ -676,3 +581,129 @@ Commit to git is ok if instructed, but NEVER reset a branch this will cause the 
 Never use try/finally pattern, always raise exception!
 
 When you run tests, use pytest and make sure you ran it inside the conda env named 'hypha'.
+
+### TDD Requirements
+
+- Write real tests (no mocks), use fixtures in `tests/conftest.py`
+- Run tests with pytest in conda env `hypha`
+- Never use `try/finally` without `except`, never mask errors
+- Never use `pytest.skip` or shallow fixes to pass tests
+- Always find root cause of failures
+
+### Git Workflow
+
+- Commit only task-related files when instructed
+- NEVER reset branches (loses commit history)
+- Wait for CI to pass before merging
+- Use `git diff` to compare with passing branches for debugging
+
+### Error Handling
+
+- Report failures honestly to user
+- Create reproducing test before fixing bugs
+- Do not convert exceptions to warnings
+- Do not use default values to mask multiple-service issues (e.g., don't auto-select when multiple services respond - this hides cleanup issues)
+
+## Compound Engineering
+
+**Philosophy**: Maximize productivity through tight feedback loops and knowledge accumulation.
+
+```text
+Productivity = (Code Velocity) × (Feedback Quality) × (Iteration Frequency)
+```
+
+This means that investing in better feedback mechanisms and faster iteration cycles yields exponential returns over time.
+
+### Compound Engineering Principles
+
+1. **Verification-First Development**
+   - Every change must be verifiable through tests
+   - Write tests BEFORE or alongside implementation, never as an afterthought
+   - Tests serve as executable specifications and guardrails
+   - The feedback loop: Generate → Verify → Refine → Verify
+
+2. **Guardrails and Constraints**
+   - Clear specifications guide development toward correct solutions
+   - Security patterns (documented above) act as guardrails preventing common mistakes
+   - Type annotations and schema definitions constrain valid inputs/outputs
+   - Code review checklists encode institutional knowledge
+
+3. **Knowledge Compounding**
+   - Each bug fixed becomes a documented pattern to prevent future occurrences
+   - Each security vulnerability becomes a lesson in the codebase documentation
+   - Successful patterns are captured and reused systematically
+
+### CRITICAL: Document Learned Knowledge in CLAUDE.md
+
+**Agents MUST update CLAUDE.md** when they discover important patterns, fix bugs, or learn lessons that would benefit future development. This is the primary mechanism for knowledge compounding.
+
+#### What to Document
+
+1. **Security Vulnerability Patterns**: When a security issue is found and fixed, add it to the "Known Vulnerability Patterns and Fixes" section with:
+   - Pattern name and severity
+   - What made it vulnerable
+   - How it was fixed
+   - Location in codebase
+
+2. **Bug Patterns**: When a non-trivial bug is found, document:
+   - The root cause (not just symptoms)
+   - Why it was hard to find
+   - How to prevent similar bugs
+
+3. **Architecture Decisions**: When significant design choices are made:
+   - What alternatives were considered
+   - Why this approach was chosen
+   - Trade-offs involved
+
+4. **Testing Strategies**: When new testing patterns prove useful:
+   - What the pattern tests
+   - How to apply it to similar code
+   - Example usage
+
+#### How to Document
+
+```markdown
+#### VX: Short Descriptive Name (SEVERITY)
+
+- **Pattern**: What makes code vulnerable to this issue
+- **Root Cause**: Why this happens
+- **Fix**: How to prevent/fix it
+- **Location**: File path and function/line
+- **Key Lesson**: What future developers should remember
+```
+
+### Feedback Loop Integration
+
+The compound engineering approach integrates with the existing TDD workflow:
+
+1. **Before Implementation**:
+   - Read relevant CLAUDE.md sections for context and known patterns
+   - Check existing tests for similar functionality
+   - Review security checklist for applicable concerns
+
+2. **During Implementation**:
+   - Write failing tests first (verification mechanism)
+   - Implement with guardrails in mind (security patterns, type constraints)
+   - Run tests frequently (tight feedback loop)
+
+3. **After Implementation**:
+   - All tests must pass
+   - Document any new patterns or lessons learned in CLAUDE.md
+   - Update security documentation if applicable
+
+### Why This Matters
+
+Traditional development loses knowledge through:
+
+- Undocumented bug fixes
+- Verbal-only knowledge transfer
+- Context switching between tasks
+- Developer turnover
+
+Compound engineering preserves and amplifies knowledge by:
+
+- Making documentation a first-class development activity
+- Creating executable specifications (tests) that encode expected behavior
+- Building a living knowledge base that grows with the project
+
+**The goal**: Each development session leaves the codebase not just with new features, but with accumulated wisdom that makes future development faster and more reliable.

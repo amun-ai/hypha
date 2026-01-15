@@ -1012,8 +1012,21 @@ def create_git_router(
             # Dumb protocol fallback
             raise HTTPException(status_code=400, detail="Smart HTTP protocol required")
 
+        # For git-receive-pack (push), require authentication at discovery stage
+        # This provides a better user experience - git client will prompt for credentials
+        # BEFORE starting the push, rather than failing mid-push with a confusing error
+        if service == "git-receive-pack":
+            if not user_info or getattr(user_info, 'is_anonymous', False):
+                raise HTTPException(
+                    status_code=401,
+                    detail="Authentication required for push. Please provide credentials.",
+                    headers={"WWW-Authenticate": 'Basic realm="Git Repository - Push requires authentication"'},
+                )
+
         try:
-            repo = await get_repo_callback(workspace, alias, user_info)
+            # For push operations, check write permission at discovery phase
+            write_access = service == "git-receive-pack"
+            repo = await get_repo_callback(workspace, alias, user_info, write=write_access)
         except PermissionError:
             # If anonymous user doesn't have permission, request authentication
             # This allows git clients to retry with credentials
@@ -1035,7 +1048,7 @@ def create_git_router(
                 )
             raise HTTPException(status_code=404, detail="Repository not found")
 
-        handler = GitHTTPHandler(repo, read_only=(service == "git-receive-pack" and not user_info))
+        handler = GitHTTPHandler(repo, read_only=False)  # Already checked write permission if needed
 
         media_type = f"application/x-{service}-advertisement"
 

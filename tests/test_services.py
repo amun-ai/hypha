@@ -113,8 +113,12 @@ async def test_typed_service(fastapi_server):
         assert svc_info2["service_schema"]
 
 
-async def test_login_service(fastapi_server):
-    """Test login to the server."""
+async def test_login_service(fastapi_server, test_user_token):
+    """Test login to the server.
+
+    Note: After V9 security fix, report_login validates all tokens via parse_auth_token.
+    We must use a valid JWT token instead of arbitrary strings like 'test'.
+    """
     async with connect_to_server(
         {"name": "test client", "server_url": SERVER_URL}
     ) as api:
@@ -124,18 +128,20 @@ async def test_login_service(fastapi_server):
         key = info["key"]
         data = await svc.check(key, timeout=-1)
         assert data is None
-        await svc.report(key, "test")
+        # Use valid JWT token (V9 security fix requires token validation)
+        await svc.report(key, test_user_token)
         token = await svc.check(key, timeout=1)
-        assert token == "test"
+        assert token == test_user_token
 
         # with user info
         info = await svc.start()
         key = info["key"]
         data = await svc.check(key, timeout=-1)
         assert data is None
-        await svc.report(key, "test", email="abc@example.com")
+        # Use valid JWT token (V9 security fix requires token validation)
+        await svc.report(key, test_user_token, email="abc@example.com")
         user_profile = await svc.check(key, timeout=1, profile=True)
-        assert user_profile["token"] == "test"
+        assert user_profile["token"] == test_user_token
         assert user_profile["email"] == "abc@example.com"
 
 
@@ -151,46 +157,45 @@ async def test_cleanup_workspace(fastapi_server, root_user_token):
         assert len(summary) == 0
 
 
-async def test_login(fastapi_server):
-    """Test login to the server."""
-    async with connect_to_server(
-        {"name": "test client", "server_url": SERVER_URL}
-    ) as api:
-        svc = await api.get_service("public/hypha-login")
-        assert svc and callable(svc.start)
+async def test_login(fastapi_server, test_user_token):
+    """Test login to the server.
 
-        TOKEN = "sf31df234"
+    Note: After V9 security fix, report_login validates all tokens via parse_auth_token.
+    We must use a valid JWT token instead of arbitrary strings.
+    """
+    # Use valid JWT token (V9 security fix requires token validation)
+    TOKEN = test_user_token
 
-        async def callback(context):
-            print(f"By passing login: {context['login_url']}")
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                resp = await client.get(context["login_url"])
-                assert resp.status_code == 200, resp.text
-                assert "Hypha Account" in resp.text
-                assert "{{ report_url }}" not in resp.text
-                resp = await client.get(
-                    context["report_url"] + "?key=" + context["key"] + "&token=" + TOKEN
-                )
-                assert resp.status_code == 200, resp.text
+    async def callback(context):
+        print(f"By passing login: {context['login_url']}")
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(context["login_url"])
+            assert resp.status_code == 200, resp.text
+            assert "Hypha Account" in resp.text
+            assert "{{ report_url }}" not in resp.text
+            resp = await client.get(
+                context["report_url"] + "?key=" + context["key"] + "&token=" + TOKEN
+            )
+            assert resp.status_code == 200, resp.text
 
-        token = await login(
-            {
-                "server_url": SERVER_URL,
-                "login_callback": callback,
-                "login_timeout": 3,
-            }
-        )
-        assert token == TOKEN
+    token = await login(
+        {
+            "server_url": SERVER_URL,
+            "login_callback": callback,
+            "login_timeout": 3,
+        }
+    )
+    assert token == TOKEN
 
-        user_profile = await login(
-            {
-                "server_url": SERVER_URL,
-                "login_callback": callback,
-                "login_timeout": 3,
-                "profile": True,
-            }
-        )
-        assert user_profile["token"] == TOKEN
+    user_profile = await login(
+        {
+            "server_url": SERVER_URL,
+            "login_callback": callback,
+            "login_timeout": 3,
+            "profile": True,
+        }
+    )
+    assert user_profile["token"] == TOKEN
 
 
 async def test_register_service_type(fastapi_server):

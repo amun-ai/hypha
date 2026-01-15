@@ -142,6 +142,8 @@ class S3GitRepo(BaseRepo):
         async_client = create_async_s3_client(s3_config)
         try:
             await async_client.put_object(bucket, pack_dir_key, b"")
+        except Exception:
+            raise
         finally:
             await async_client.close()
 

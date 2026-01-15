@@ -1014,6 +1014,18 @@ class ServerAppController:
         # Ensure worker_id is a full ID - if not, prepend the workspace
         if "/" not in worker_id:
             worker_id = f"{workspace}/{worker_id}"
+
+        # SECURITY FIX (V14): Validate permission on the TARGET workspace
+        # The worker_id contains the workspace it belongs to. We must verify
+        # the user has permission on that workspace, not just context["ws"].
+        target_workspace = worker_id.split("/")[0]
+        if target_workspace != workspace:
+            # User is trying to operate on a different workspace
+            if not user_info.check_permission(target_workspace, UserPermission.read_write):
+                raise PermissionError(
+                    f"User {user_info.id} does not have permission to edit worker in workspace {target_workspace}."
+                )
+
         await self.disable_worker(worker_id, disabled)
 
         if disabled:
@@ -2723,6 +2735,20 @@ class ServerAppController:
                 f"User {user_info.id} does not have permission"
                 f" to stop app {session_id} in workspace {workspace}."
             )
+
+        # SECURITY FIX (V10): Validate that session_id belongs to the context workspace
+        # or that user has permission on the session's workspace.
+        # Session IDs are in format "workspace/client_id"
+        if "/" in session_id:
+            session_workspace = session_id.split("/")[0]
+            if session_workspace != workspace:
+                # User is trying to stop a session in a different workspace
+                if not user_info.check_permission(session_workspace, UserPermission.read):
+                    raise PermissionError(
+                        f"User {user_info.id} does not have permission"
+                        f" to stop session in workspace {session_workspace}."
+                    )
+
         await self._stop(session_id, raise_exception=raise_exception, context=context)
 
     async def _stop(
@@ -2794,13 +2820,13 @@ class ServerAppController:
         ),
     ) -> Dict[str, Any]:
         """Get server app session logs.
-        
+
         Returns a dictionary with:
         - items: List of log events, each with 'type' and 'content' fields
         - total: Total number of log items (before filtering/pagination)
         - offset: The offset used for pagination
         - limit: The limit used for pagination
-        
+
         If type is specified, only items matching that type will be returned.
         """
         user_info = UserInfo.from_context(context)
@@ -2810,6 +2836,18 @@ class ServerAppController:
                 f"User {user_info.id} does not have permission"
                 f" to get log for app {session_id} in workspace {workspace}."
             )
+        # SECURITY FIX (V11): Validate that session_id belongs to the context workspace
+        # or that user has permission on the session's workspace.
+        # Session IDs are in format "workspace/client_id"
+        if "/" in session_id:
+            session_workspace = session_id.split("/")[0]
+            if session_workspace != workspace:
+                # User is trying to get logs from a different workspace
+                if not user_info.check_permission(session_workspace, UserPermission.read):
+                    raise PermissionError(
+                        f"User {user_info.id} does not have permission"
+                        f" to get logs for session in workspace {session_workspace}."
+                    )
         session_data = await self._get_session_from_redis(session_id)
         if session_data:
             worker = await self.get_worker_by_id(session_data["worker_id"])
@@ -2941,6 +2979,18 @@ class ServerAppController:
                 f"User {user_info.id} does not have permission"
                 f" to get session info for {session_id} in workspace {workspace}."
             )
+        # SECURITY FIX (V12): Validate that session_id belongs to the context workspace
+        # or that user has permission on the session's workspace.
+        # Session IDs are in format "workspace/client_id"
+        if "/" in session_id:
+            session_workspace = session_id.split("/")[0]
+            if session_workspace != workspace:
+                # User is trying to get session info from a different workspace
+                if not user_info.check_permission(session_workspace, UserPermission.read):
+                    raise PermissionError(
+                        f"User {user_info.id} does not have permission"
+                        f" to get session info for session in workspace {session_workspace}."
+                    )
         session_data = await self._get_session_from_redis(session_id)
         if session_data:
             return session_data
