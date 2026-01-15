@@ -1255,6 +1255,10 @@ class WorkspaceManager:
         assert context is not None
         cws = context["ws"]
         workspace = workspace or cws
+        # SECURITY FIX (V15): Validate that user has permission on the target workspace
+        user_info = UserInfo.from_context(context)
+        if not user_info.check_permission(workspace, UserPermission.read):
+            raise PermissionError(f"Permission denied for workspace {workspace}")
         pattern = f"services:*|*:{workspace}/*:built-in@*"
         # Use SCAN to avoid blocking Redis in large deployments
         keys = []

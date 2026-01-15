@@ -17,6 +17,7 @@ Vulnerability List:
 - V11: get_logs cross-workspace information disclosure (MEDIUM) - Tests added
 - V12: get_session_info cross-workspace information disclosure (MEDIUM) - Tests added
 - V14: edit_worker cross-workspace manipulation (MEDIUM) - Tests added
+- V15: list_clients cross-workspace client enumeration (MEDIUM) - FIXED
 """
 
 import pytest
@@ -1436,5 +1437,87 @@ class TestV14EditWorkerCrossWorkspace:
                 except Exception as e:
                     # Some workers may not be editable, that's OK for this test
                     pass
+
+        await api.disconnect()
+
+
+class TestV15ListClientsCrossWorkspace:
+    """
+    V15: list_clients Cross-Workspace Information Disclosure (MEDIUM SEVERITY)
+
+    Location: hypha/core/workspace.py:1249-1281
+
+    Issue: The `list_clients` method does NOT validate that the user has permission
+    to list clients in the requested workspace. An attacker can enumerate clients
+    in ANY workspace by providing the workspace parameter.
+
+    Expected behavior: The list_clients method should validate that the user has
+    at least read permission on the target workspace.
+    """
+
+    async def test_cannot_list_clients_in_other_workspace(
+        self, fastapi_server, test_user_token
+    ):
+        """Test that users cannot list clients in workspaces they don't have access to."""
+        api1 = await connect_to_server({
+            "client_id": "v15-user1",
+            "server_url": WS_SERVER_URL,
+            "token": test_user_token,
+        })
+
+        # Create workspace 1 (attacker's workspace)
+        ws1_info = await api1.create_workspace({
+            "name": f"v15-attacker-ws-{uuid.uuid4().hex[:8]}",
+            "description": "Attacker's workspace",
+        })
+
+        # Create workspace 2 (victim's workspace)
+        ws2_info = await api1.create_workspace({
+            "name": f"v15-victim-ws-{uuid.uuid4().hex[:8]}",
+            "description": "Victim's workspace",
+        })
+
+        # Generate token for attacker workspace only
+        attacker_token = await api1.generate_token({"workspace": ws1_info["id"]})
+
+        # Connect as attacker (only has access to ws1)
+        api_attacker = await connect_to_server({
+            "client_id": "v15-attacker",
+            "workspace": ws1_info["id"],
+            "server_url": WS_SERVER_URL,
+            "token": attacker_token,
+        })
+
+        # Get workspace manager
+        ws_manager = await api_attacker.get_service("~")
+
+        # Attempt to list clients in victim's workspace
+        # This should fail with permission denied
+        with pytest.raises(Exception) as exc_info:
+            await ws_manager.list_clients(workspace=ws2_info["id"])
+
+        error_msg = str(exc_info.value).lower()
+        assert "permission" in error_msg or "denied" in error_msg, \
+            f"Expected permission denied error, got: {exc_info.value}"
+
+        await api1.disconnect()
+        await api_attacker.disconnect()
+
+    async def test_list_clients_in_own_workspace_succeeds(
+        self, fastapi_server, test_user_token
+    ):
+        """Test that users can list clients in their own workspace."""
+        api = await connect_to_server({
+            "client_id": "v15-owner-test",
+            "server_url": WS_SERVER_URL,
+            "token": test_user_token,
+        })
+
+        ws_manager = await api.get_service("~")
+        user_workspace = api.config.workspace
+
+        # Should be able to list clients in own workspace
+        clients = await ws_manager.list_clients(workspace=user_workspace)
+        assert isinstance(clients, list), "Should return a list of clients"
 
         await api.disconnect()
