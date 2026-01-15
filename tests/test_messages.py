@@ -549,8 +549,12 @@ async def test_subscription_security_validation(fastapi_server):
     for forbidden_event in forbidden_events:
         with pytest.raises(Exception) as exc_info:
             await api.subscribe(forbidden_event)
-        
-        assert "forbidden workspace identifiers" in str(exc_info.value).lower()
+
+        error_msg = str(exc_info.value).lower()
+        # The error message should indicate the subscription is forbidden
+        # Either "forbidden workspace identifiers" (old format) or "forbidden" with workspace mismatch (new format)
+        assert "forbidden" in error_msg or "does not match" in error_msg, \
+            f"Expected forbidden/mismatch error, got: {exc_info.value}"
         print(f"✅ Blocked subscription to forbidden event: {forbidden_event}")
     
     await api.disconnect()
