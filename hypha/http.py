@@ -44,6 +44,55 @@ logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("http")
 logger.setLevel(LOGLEVEL)
 
+# SECURITY: Check if detailed errors should be exposed (only in development)
+_EXPOSE_DETAILED_ERRORS = os.environ.get("HYPHA_EXPOSE_DETAILED_ERRORS", "false").lower() in ("true", "1", "yes")
+
+
+def _sanitize_traceback(tb_str: str) -> str:
+    """Sanitize traceback to remove internal paths and sensitive information.
+
+    This function removes file paths and other potentially sensitive information
+    from tracebacks before sending them to clients.
+
+    In development mode (HYPHA_EXPOSE_DETAILED_ERRORS=true), returns full traceback.
+    In production mode, returns only the exception type and message.
+    """
+    if _EXPOSE_DETAILED_ERRORS:
+        return tb_str
+
+    # In production, only return the last line (exception type and message)
+    lines = tb_str.strip().split('\n')
+    if lines:
+        # Get the last non-empty line which typically contains the exception
+        for line in reversed(lines):
+            line = line.strip()
+            if line and not line.startswith('File ') and not line.startswith('^'):
+                return line
+    return "An internal error occurred"
+
+
+def _get_safe_error_detail(exc: Exception) -> str:
+    """Get a safe error detail string from an exception.
+
+    Returns the exception message without internal paths.
+    Handles RemoteException from hypha_rpc which may embed full tracebacks in messages.
+    """
+    if _EXPOSE_DETAILED_ERRORS:
+        return traceback.format_exc()
+
+    # Get the exception message
+    exc_msg = str(exc)
+
+    # Check if the message contains traceback-like content (from RemoteException)
+    # These often start with "Traceback (most recent call last):" or "RemoteError:"
+    if "Traceback" in exc_msg or 'File "/' in exc_msg or "RemoteError:" in exc_msg:
+        # Use the sanitize function to extract just the error line
+        sanitized = _sanitize_traceback(exc_msg)
+        return f"{type(exc).__name__}: {sanitized}"
+
+    # Return just the exception type and message
+    return f"{type(exc).__name__}: {exc_msg}"
+
 
 class MsgpackResponse(Response):
     """Response class for msgpack encoding."""
@@ -423,11 +472,13 @@ class ASGIRoutingMiddleware:
                         ],
                     }
                 )
+                # SECURITY: Log full traceback server-side, send sanitized message to client
+                logger.error(f"Internal Server Error: {traceback.format_exc()}")
                 await send(
                     {
                         "type": "http.response.body",
                         "body": b"Internal Server Error: "
-                        + traceback.format_exc().encode(),
+                        + _sanitize_traceback(traceback.format_exc()).encode(),
                         "more_body": False,
                     }
                 )
@@ -669,11 +720,11 @@ class HTTPProxy:
                                 encoded_item = _rpc.encode(item)
                                 yield msgpack.dumps(encoded_item)
                     except Exception as e:
-                        logger.error(f"Error in msgpack streaming: {e}")
-                        # Send error as final chunk
+                        logger.error(f"Error in msgpack streaming: {e}\n{traceback.format_exc()}")
+                        # SECURITY: Send sanitized error to client
                         error_data = {
                             "error": str(e),
-                            "traceback": traceback.format_exc(),
+                            "traceback": _sanitize_traceback(traceback.format_exc()),
                         }
                         yield msgpack.dumps(error_data)
 
@@ -704,11 +755,11 @@ class HTTPProxy:
                         # Send end marker
                         yield "data: [DONE]\n\n"
                     except Exception as e:
-                        logger.error(f"Error in JSON streaming: {e}")
-                        # Send error as final event
+                        logger.error(f"Error in JSON streaming: {e}\n{traceback.format_exc()}")
+                        # SECURITY: Send sanitized error to client
                         error_data = {
                             "error": str(e),
-                            "traceback": traceback.format_exc(),
+                            "traceback": _sanitize_traceback(traceback.format_exc()),
                         }
                         json_data = json.dumps(error_data)
                         yield f"data: {json_data}\n\n"
@@ -908,10 +959,12 @@ class HTTPProxy:
                     user_info,
                     _mode=_mode,
                 )
-            except Exception:
+            except Exception as e:
+                # SECURITY: Log full traceback server-side, send sanitized message to client
+                logger.error(f"Error in get service function: {e}\n{traceback.format_exc()}")
                 return JSONResponse(
                     status_code=400,
-                    content={"success": False, "detail": traceback.format_exc()},
+                    content={"success": False, "detail": _get_safe_error_detail(e)},
                 )
 
         async def service_function(
@@ -953,12 +1006,14 @@ class HTTPProxy:
 
                     try:
                         results = await _call_service_function(func, function_kwargs)
-                    except Exception:
+                    except Exception as e:
+                        # SECURITY: Log full traceback server-side, send sanitized message to client
+                        logger.error(f"Error calling service function: {e}\n{traceback.format_exc()}")
                         return JSONResponse(
                             status_code=400,
                             content={
                                 "success": False,
-                                "detail": traceback.format_exc(),
+                                "detail": _get_safe_error_detail(e),
                             },
                         )
 
@@ -977,10 +1032,12 @@ class HTTPProxy:
                         content=results,
                     )
 
-            except Exception:
+            except Exception as e:
+                # SECURITY: Log full traceback server-side, send sanitized message to client
+                logger.error(f"Error in service function endpoint: {e}\n{traceback.format_exc()}")
                 return JSONResponse(
                     status_code=500,
-                    content={"success": False, "detail": traceback.format_exc()},
+                    content={"success": False, "detail": _get_safe_error_detail(e)},
                 )
 
         @app.get(norm_url("/health"))
@@ -1146,13 +1203,14 @@ class HTTPProxy:
                 )
                 
             except Exception as e:
-                logger.error(f"Health diagnostics failed: {str(e)}")
+                # SECURITY: Log full traceback server-side, send sanitized message to client
+                logger.error(f"Health diagnostics failed: {str(e)}\n{traceback.format_exc()}")
                 return JSONResponse(
                     {
                         "timestamp": datetime.utcnow().isoformat() + "Z",
                         "status": "ERROR",
                         "error": str(e),
-                        "traceback": traceback.format_exc()
+                        "traceback": _sanitize_traceback(traceback.format_exc())
                     },
                     status_code=500
                 )

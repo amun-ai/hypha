@@ -596,37 +596,57 @@ class WorkspaceManager:
     @schema_method
     def _validate_event_subscription(self, event_type: str, workspace: str):
         """Validate that clients can only subscribe to workspace-safe event types."""
-        # Block events that contain workspace identifiers for other workspaces
-        forbidden_patterns = [
-            f"ws-",  # Other workspace identifiers
-            "/",     # Path separators indicating cross-workspace access
-            ":",     # Namespace separators that could indicate workspace targeting
-        ]
-        
         # Allow system events and custom events within own workspace
         allowed_system_events = [
             "service_added", "service_removed", "service_updated",
-            "client_connected", "client_disconnected", "client_updated", 
+            "client_connected", "client_disconnected", "client_updated",
             "workspace_loaded", "workspace_deleted", "workspace_changed",
             "workspace_ready", "workspace_unloaded", "workspace_status_changed"
         ]
-        
+
         # If it's a system event, it's allowed
         if event_type in allowed_system_events:
             return True
-            
-        # Check for forbidden patterns that could indicate cross-workspace access
-        for pattern in forbidden_patterns:
-            if pattern in event_type:
-                # Special case: allow events that explicitly reference current workspace
-                if event_type.startswith(f"{workspace}/") or event_type.startswith(f"ws-{workspace.split('-')[-1]}/"):
-                    continue
+
+        # SECURITY: Use exact workspace matching instead of suffix-based matching
+        # to prevent cross-workspace event snooping via workspace names with similar suffixes
+
+        # Check if event contains workspace-like patterns
+        # Pattern: events that start with "ws-" or contain "/" (workspace/event format)
+        if "/" in event_type:
+            # Extract the workspace part from "workspace/event" format
+            event_workspace = event_type.split("/")[0]
+            # SECURITY: Exact match only - no suffix matching
+            if event_workspace != workspace:
+                raise ValueError(
+                    f"Subscription to event '{event_type}' is forbidden. "
+                    f"Event workspace '{event_workspace}' does not match your workspace '{workspace}'. "
+                    f"Clients can only subscribe to events within their own workspace or system events."
+                )
+            return True
+
+        # Check for workspace identifier patterns that could indicate cross-workspace targeting
+        if event_type.startswith("ws-"):
+            # SECURITY: Exact match only for workspace-prefixed events
+            if not event_type.startswith(f"{workspace}/") and event_type != workspace:
+                # This looks like a workspace identifier but doesn't match current workspace
                 raise ValueError(
                     f"Subscription to event '{event_type}' is forbidden as it contains "
-                    f"forbidden workspace identifiers. Clients can only subscribe to events "
+                    f"workspace identifiers. Clients can only subscribe to events "
                     f"within their own workspace ({workspace}) or system events."
                 )
-        
+
+        # Check for colon-based namespace separators that could indicate workspace targeting
+        if ":" in event_type:
+            # Allow "workspace:event" format only for current workspace
+            parts = event_type.split(":")
+            if len(parts) >= 2 and parts[0].startswith("ws-"):
+                if parts[0] != workspace:
+                    raise ValueError(
+                        f"Subscription to event '{event_type}' is forbidden. "
+                        f"Workspace '{parts[0]}' does not match your workspace '{workspace}'."
+                    )
+
         return True
 
     @schema_method
@@ -1998,6 +2018,14 @@ class WorkspaceManager:
 
         # Get workspace from service id for validation
         workspace = service.id.split("/")[0]
+
+        # SECURITY: Validate that service ID workspace prefix matches context workspace
+        # This prevents attackers from registering services that appear to belong to other workspaces
+        if workspace != ws:
+            raise PermissionError(
+                f"Service ID workspace prefix '{workspace}' does not match the current workspace '{ws}'. "
+                f"Cannot register services in other workspaces."
+            )
         service_name = service.id.split(":")[1]
         service.name = service.name or service_name
 
