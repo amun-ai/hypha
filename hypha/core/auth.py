@@ -653,7 +653,15 @@ def create_login_service(store):
         # SECURITY FIX (V9): Always validate the token, regardless of whether
         # workspace is provided. This prevents attackers from injecting forged
         # tokens into login sessions.
-        user_info = await parse_auth_token(token)
+        try:
+            user_info = await parse_auth_token(token)
+        except Exception as e:
+            raise ValueError(
+                f"Invalid token provided to report_login: {str(e)}. "
+                "The token must be a valid JWT token signed by this server or "
+                "an external authentication provider (e.g., Auth0). "
+                "Arbitrary strings are not accepted for security reasons."
+            ) from e
 
         kwargs = {
             "token": token,
