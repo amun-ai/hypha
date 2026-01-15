@@ -1942,26 +1942,35 @@ class ArtifactController:
         # Exclude 'secrets' from artifact_data to prevent exposure
         artifact_data.pop("secrets", None)
 
-        # Convert dict-based staging back to list format for API backward compatibility
-        if artifact_data.get("staging") and isinstance(artifact_data["staging"], dict):
+        # Staging field handling:
+        # - Internally we use dict format: {"files": [], "_intent": "...", "manifest": {...}, ...}
+        # - For backward compatibility in API responses, convert dict to list format
+        # - Committed artifacts have staging = None (returned as-is)
+        if artifact_data.get("staging") is not None and isinstance(artifact_data["staging"], dict):
             staging_dict = artifact_data["staging"]
             staging_list = staging_dict.get("files", [])
+            if staging_dict.get("_intent"):
+                staging_list = staging_list + [{"_intent": staging_dict["_intent"]}]
+            artifact_data["staging"] = staging_list if staging_list else None
 
-            # Add intent markers as list items for backward compatibility
-            if "_intent" in staging_dict:
-                staging_list.append({"_intent": staging_dict["_intent"]})
-
-            artifact_data["staging"] = staging_list
+        # Expand permissions for each key in the permissions config
+        # This allows the frontend to check permissions without needing to know the expansion logic
+        config = artifact.config or {}
+        permissions = config.get("permissions", {})
+        expanded_permissions = {}
+        for key, perm in permissions.items():
+            expanded_permissions[key] = self._expand_permission(perm)
+        artifact_data["_permissions"] = expanded_permissions
 
         # Add git_url if storage is "git"
-        config = artifact.config or {}
         if config.get("storage") == "git":
             from urllib.parse import quote
             base_url = self.store.public_base_url
             # URL-encode workspace and alias for safe use in git clone commands
             encoded_workspace = quote(artifact.workspace, safe='')
             encoded_alias = quote(artifact.alias, safe='')
-            artifact_data["git_url"] = f"{base_url}/{encoded_workspace}/git/{encoded_alias}"
+            git_url = f"{base_url}/{encoded_workspace}/git/{encoded_alias}"
+            artifact_data["git_url"] = git_url
 
         return artifact_data
 
@@ -4169,13 +4178,14 @@ class ArtifactController:
                 if stage:
                     # When staging on create, save manifest/config in both database and staging
                     # The database version is for listing/searching, staging is for the draft
+                    # Use "new_version" intent so commit creates version 0
                     staging_dict = {
                         "manifest": manifest,
                         "config": config,
                         "secrets": secrets,
                         "type": type,
                         "files": [],
-                        "_intent": "new_artifact"  # New artifact in staging mode
+                        "_intent": "new_version"
                     }
                     
                     new_artifact = ArtifactModel(
@@ -4961,6 +4971,10 @@ class ArtifactController:
                     if staged_manifest is not None:
                         artifact.manifest = staged_manifest
                         flag_modified(artifact, "manifest")
+
+                    # Clear staging after successful commit
+                    artifact.staging = None
+                    flag_modified(artifact, "staging")
 
                     # Update artifact timestamp
                     artifact.last_modified = int(time.time())
