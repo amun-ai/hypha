@@ -154,12 +154,16 @@ def _cleanup_server_process(proc, server_name):
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=5)
+        # Add a small delay to ensure ports are fully released
+        time.sleep(0.5)
     except Exception as e:
         print(f"Error during {server_name} cleanup: {e}")
         try:
             proc.kill()
         except Exception:
             pass
+        # Still add delay even on error to allow OS to release resources
+        time.sleep(0.5)
 
 
 @pytest_asyncio.fixture
@@ -725,8 +729,13 @@ def fastapi_server_redis_1(redis_server, minio_server):
 
 
 @pytest_asyncio.fixture(name="fastapi_server_redis_2", scope="session")
-def fastapi_server_redis_2(redis_server, minio_server, fastapi_server):
-    """Start a backup server as test fixture and tear down after test."""
+def fastapi_server_redis_2(redis_server, minio_server):
+    """Start a backup server as test fixture and tear down after test.
+
+    This fixture is used for testing horizontal scalability (multiple Hypha servers
+    sharing the same Redis instance). It does NOT depend on fastapi_server to avoid
+    port conflicts during cleanup - both fixtures manage independent server instances.
+    """
     # Add a small delay to ensure the first server is fully initialized
     time.sleep(1)
 
