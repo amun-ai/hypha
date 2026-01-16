@@ -2094,23 +2094,25 @@
             isExpanded,
             children,
             fullPath,
+            parentPath = "",
             onMoreInfo,
             onDelete,
             onUploadFile,
             onCreateFolder,
             onCreateChildArtifact,
             onDragOver,
-            onDragEnter, 
+            onDragEnter,
             onDragLeave,
             onDrop,
             isLoading
         }) => {
             const isCollection = artifact.type === "collection";
             const [isHovered, setIsHovered] = React.useState(false);
-        
+            const isChild = parentPath.length > 0;
+
             return (
-                <div 
-                    className="artifact-card flex flex-col justify-between items-start p-3 bg-gray-700 shadow-md transition-colors duration-200"
+                <div
+                    className="artifact-card flex flex-col transition-colors duration-200"
                     onDragOver={isCollection ? onDragOver : undefined}
                     onDragEnter={isCollection ? onDragEnter : undefined}
                     onDragLeave={isCollection ? onDragLeave : undefined}
@@ -2118,78 +2120,111 @@
                     onMouseEnter={() => setIsHovered(true)}
                     onMouseLeave={() => setIsHovered(false)}
                 >
-                    <div className="artifact-item flex items-center w-full justify-between relative">
-                        <div className="flex items-center p-6 bg-gray-800 rounded-lg shadow-lg mb-6 w-full">
+                    <div className={`
+                        flex items-start p-4 rounded-lg mb-3 w-full transition-all duration-200
+                        ${isChild
+                            ? 'bg-gray-800/60 border-l-3 border-blue-500 ml-1'
+                            : 'bg-gray-800 hover:bg-gray-750 shadow-lg'
+                        }
+                        ${isHovered ? 'ring-1 ring-gray-600' : ''}
+                    `}>
+                        {/* Left side: Icon and expand button */}
+                        <div className="flex-shrink-0 mr-4">
+                            <div className={`
+                                w-10 h-10 rounded-lg flex items-center justify-center
+                                ${isCollection ? 'bg-yellow-500/20 text-yellow-400' : 'bg-blue-500/20 text-blue-400'}
+                            `}>
+                                <i className={`fas ${isCollection ? "fa-folder" : "fa-file-alt"} text-lg`}></i>
+                            </div>
                             {isCollection && (
-                                <button 
-                                    className="mr-2 min-w-[20px] text-center" 
+                                <button
+                                    className="w-10 mt-2 text-center text-gray-400 hover:text-white transition-colors"
                                     onClick={() => onToggle(fullPath)}
                                     disabled={isLoading}
-                                    style={{ opacity: isLoading ? 0.7 : 1 }}
+                                    title={isExpanded ? "Collapse" : "Expand"}
                                 >
                                     {isLoading ? (
-                                        <i className="fas fa-spinner fa-spin text-blue-400"></i>
+                                        <i className="fas fa-spinner fa-spin text-sm"></i>
                                     ) : (
-                                        isExpanded ? "-" : "+"
+                                        <i className={`fas fa-chevron-${isExpanded ? 'down' : 'right'} text-sm`}></i>
                                     )}
                                 </button>
                             )}
-                            <i
-                                className={`fas ${
-                                    isCollection ? "fa-folder" : "fa-file-alt"
-                                } mr-2`}
-                            ></i>
-                            <div className="w-full overflow-hidden">
-                                <h4 className="text-xl font-bold truncate">{artifact.manifest?.name || artifact.id}</h4>
-                                <p className="text-gray-400 truncate">{artifact.manifest?.description || "No description"}</p>
-                                <p className="text-gray-400">Type: {artifact.type}</p>
-                                <code className="text-gray-400 text-xs break-all">
-                                    ID: {artifact.id}
-                                </code>
-                                {/* Action buttons */}
-                                <div className="flex justify-between items-center w-full mt-3">
-                                    <div className="flex gap-2">
-                                        <button
-                                            className="bg-blue-500 hover:bg-blue-400 text-white font-bold py-1 px-3 rounded text-sm transition duration-300"
-                                            onClick={() => onMoreInfo(artifact)}
-                                        >
-                                            <i className="fas fa-edit mr-1"></i> Info & Edit
-                                        </button>
-                                        <button
-                                            className="bg-green-600 hover:bg-green-500 text-white font-bold py-1 px-3 rounded text-sm transition duration-300"
-                                            onClick={() => {
-                                                // Navigate to the view page for this artifact
-                                                window.location.href = `../${artifact.id.split('/')[0]}/view/${artifact.alias}`;
-                                            }}
-                                            title="View artifact"
-                                        >
-                                            <i className="fas fa-eye mr-1"></i> View Page
-                                        </button>
-                                        {isCollection && (
-                                            <button
-                                                className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-1 px-3 rounded text-sm transition duration-300"
-                                                onClick={() => onCreateChildArtifact(artifact.id)}
-                                                title="Create child artifact in this collection"
-                                            >
-                                                <i className="fas fa-plus"></i>
-                                            </button>
-                                        )}
-                                    </div>
-                                        <button
-                                        className="bg-red-500 hover:bg-red-400 text-white font-bold py-1 px-3 rounded text-sm transition duration-300"
-                                            onClick={() => onDelete(artifact.id)}
-                                        >
-                                        <i className="fas fa-trash mr-1"></i> Delete
-                                        </button>
-                                    </div>
-                                </div>                                
+                        </div>
+
+                        {/* Main content */}
+                        <div className="flex-1 min-w-0">
+                            {/* Header row */}
+                            <div className="flex items-start justify-between gap-4 mb-2">
+                                <div className="min-w-0 flex-1">
+                                    <h4 className="text-lg font-semibold text-white truncate leading-tight">
+                                        {artifact.manifest?.name || artifact.alias || artifact.id}
+                                    </h4>
+                                    <p className="text-gray-400 text-sm mt-0.5 line-clamp-2">
+                                        {artifact.manifest?.description || "No description"}
+                                    </p>
+                                </div>
+                                {/* Type badge */}
+                                <span className={`
+                                    flex-shrink-0 px-2 py-0.5 rounded text-xs font-medium
+                                    ${isCollection ? 'bg-yellow-500/20 text-yellow-300' : 'bg-gray-700 text-gray-300'}
+                                `}>
+                                    {artifact.type}
+                                </span>
                             </div>
+
+                            {/* ID row */}
+                            <div className="text-xs text-gray-500 mb-3 font-mono truncate">
+                                {artifact.id}
+                            </div>
+
+                            {/* Action buttons */}
+                            <div className="flex items-center justify-between gap-2 pt-2 border-t border-gray-700/50">
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        className="inline-flex items-center px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded transition-colors"
+                                        onClick={() => onMoreInfo(artifact)}
+                                    >
+                                        <i className="fas fa-info-circle mr-1.5"></i>Details
+                                    </button>
+                                    <button
+                                        className="inline-flex items-center px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs font-medium rounded transition-colors"
+                                        onClick={() => {
+                                            window.location.href = `../${artifact.id.split('/')[0]}/view/${artifact.alias}`;
+                                        }}
+                                        title="View artifact page"
+                                    >
+                                        <i className="fas fa-external-link-alt mr-1.5"></i>View
+                                    </button>
+                                    {isCollection && (
+                                        <button
+                                            className="inline-flex items-center px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded transition-colors"
+                                            onClick={() => onCreateChildArtifact(artifact.id)}
+                                            title="Add child artifact"
+                                        >
+                                            <i className="fas fa-plus"></i>
+                                        </button>
+                                    )}
+                                </div>
+                                <button
+                                    className="inline-flex items-center px-2.5 py-1.5 text-red-400 hover:text-red-300 hover:bg-red-500/10 text-xs font-medium rounded transition-colors"
+                                    onClick={() => onDelete(artifact.id)}
+                                    title="Delete artifact"
+                                >
+                                    <i className="fas fa-trash"></i>
+                                </button>
+                            </div>
+                        </div>
                     </div>
-                    {isExpanded && <div className="w-full mt-3 ml-3">{children}</div>}
+                    {isExpanded && (
+                        <div className="pl-6 ml-4 border-l-2 border-gray-700 mb-2">
+                            {children}
+                        </div>
+                    )}
                 </div>
             );
         };
-        
+
         // Enhanced Artifact Tree with drag & drop and loading states
         const ArtifactTree = ({
             artifacts,
@@ -2244,8 +2279,9 @@
                                 isExpanded={!!expandedArtifacts[fullPath]}
                                 isLoading={!!loadingArtifacts[fullPath]}
                                 fullPath={fullPath}
+                                parentPath={parentPath}
                                 onMoreInfo={onMoreInfo}
-                                onDelete={(id) => onDelete(id, parentPath || null)} // Pass parent ID to onDelete
+                                onDelete={(id) => onDelete(id, parentPath || null)}
                                 onUploadFile={onUploadFile}
                                 onCreateFolder={onCreateFolder}
                                 onCreateChildArtifact={onCreateChildArtifact}
@@ -3995,20 +4031,72 @@ license: "MIT"`);
             // Drag and drop state
             const [dragCounter, setDragCounter] = React.useState(0);
             const [isDragOver, setIsDragOver] = React.useState(false);
-        
+
+            // Search, filter, sort, and pagination state
+            const [searchQuery, setSearchQuery] = React.useState('');
+            const [debouncedSearchQuery, setDebouncedSearchQuery] = React.useState('');
+            const [sortBy, setSortBy] = React.useState('-created_at'); // Default: newest first
+            const [itemsPerPage, setItemsPerPage] = React.useState(25);
+            const [currentPage, setCurrentPage] = React.useState(1);
+            const [totalItems, setTotalItems] = React.useState(0);
+            const [showFilters, setShowFilters] = React.useState(false);
+            const [filters, setFilters] = React.useState({});
+            const [filterKey, setFilterKey] = React.useState('');
+            const [filterValue, setFilterValue] = React.useState('');
+
+            // Debounce search query
+            React.useEffect(() => {
+                const timer = setTimeout(() => {
+                    setDebouncedSearchQuery(searchQuery);
+                    setCurrentPage(1); // Reset to first page on search
+                }, 300);
+                return () => clearTimeout(timer);
+            }, [searchQuery]);
+
             const refreshArtifacts = React.useCallback(async () => {
                 if (am) {
                     setLoading(true);
                     try {
-                        const topLevelArtifacts = await am.list({stage: 'all', _rkwargs: true});
-                        setArtifacts(topLevelArtifacts);
+                        const offset = (currentPage - 1) * itemsPerPage;
+                        const params = {
+                            stage: 'all',
+                            offset: offset,
+                            limit: itemsPerPage,
+                            order_by: sortBy,
+                            pagination: true,
+                            _rkwargs: true
+                        };
+
+                        // Add search keywords if present
+                        if (debouncedSearchQuery.trim()) {
+                            params.keywords = debouncedSearchQuery.trim().split(/\s+/);
+                        }
+
+                        // Add filters if present
+                        if (Object.keys(filters).length > 0) {
+                            params.filters = filters;
+                        }
+
+                        const result = await am.list(params);
+
+                        // Handle pagination response
+                        if (result && typeof result === 'object' && 'items' in result) {
+                            setArtifacts(result.items);
+                            setTotalItems(result.total || 0);
+                        } else {
+                            // Fallback for non-paginated response
+                            setArtifacts(Array.isArray(result) ? result : []);
+                            setTotalItems(Array.isArray(result) ? result.length : 0);
+                        }
                     } catch (error) {
                         console.error("Failed to fetch artifacts:", error);
+                        setArtifacts([]);
+                        setTotalItems(0);
                     } finally {
                         setLoading(false);
                     }
                 }
-            }, [am]);
+            }, [am, currentPage, itemsPerPage, sortBy, debouncedSearchQuery, filters]);
 
             React.useEffect(() => {
                 refreshArtifacts();
@@ -4022,6 +4110,90 @@ license: "MIT"`);
                     console.error("Failed to list artifacts:", error);
                     return [];
                 }
+            };
+
+            // Pagination helpers
+            const totalPages = Math.ceil(totalItems / itemsPerPage);
+            const hasNextPage = currentPage < totalPages;
+            const hasPrevPage = currentPage > 1;
+
+            const goToPage = (page) => {
+                if (page >= 1 && page <= totalPages) {
+                    setCurrentPage(page);
+                }
+            };
+
+            // Generate smart pagination with first/last pages and ellipsis
+            const getPaginationItems = () => {
+                if (totalPages <= 9) {
+                    // Show all pages if 9 or fewer
+                    return Array.from({ length: totalPages }, (_, i) => i + 1);
+                }
+
+                const items = [];
+                const siblings = 2; // Pages on each side of current (shows 5 middle pages)
+
+                // Always show first page
+                items.push(1);
+
+                // Calculate middle section bounds
+                const leftBound = Math.max(2, currentPage - siblings);
+                const rightBound = Math.min(totalPages - 1, currentPage + siblings);
+
+                // Left ellipsis if there's a gap after page 1
+                if (leftBound > 2) {
+                    items.push('left-ellipsis');
+                }
+
+                // Middle section (pages around current)
+                for (let i = leftBound; i <= rightBound; i++) {
+                    items.push(i);
+                }
+
+                // Right ellipsis if there's a gap before last page
+                if (rightBound < totalPages - 1) {
+                    items.push('right-ellipsis');
+                }
+
+                // Always show last page
+                items.push(totalPages);
+
+                return items;
+            };
+
+            // Format large numbers nicely
+            const formatNumber = (num) => {
+                if (num >= 1000000) return (num / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+                if (num >= 1000) return (num / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+                return num.toLocaleString();
+            };
+
+            // Filter management
+            const addFilter = () => {
+                if (filterKey.trim() && filterValue.trim()) {
+                    setFilters(prev => ({
+                        ...prev,
+                        [filterKey.trim()]: filterValue.trim()
+                    }));
+                    setFilterKey('');
+                    setFilterValue('');
+                    setCurrentPage(1);
+                }
+            };
+
+            const removeFilter = (key) => {
+                setFilters(prev => {
+                    const newFilters = { ...prev };
+                    delete newFilters[key];
+                    return newFilters;
+                });
+                setCurrentPage(1);
+            };
+
+            const clearAllFilters = () => {
+                setFilters({});
+                setSearchQuery('');
+                setCurrentPage(1);
             };
         
             const listFiles = async (artifactId, dir, useStaging = null) => {
@@ -4174,87 +4346,304 @@ license: "MIT"`);
         
             return (
                 <div className="main-content">
-                    {/* Header with actions */}
-                    <div className="flex justify-between items-center mb-6">
-                        <div>
-                            <h1 className="text-4xl font-bold capitalize mb-2">Artifacts</h1>
-                            <p className="text-gray-400">
-                                Manage datasets, models, applications and other artifacts
-                            </p>
-                        </div>
-                        <div className="flex gap-3">
-                            <button
-                                className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-full transition duration-300 flex items-center"
-                                onClick={refreshArtifacts}
-                                disabled={loading}
-                            >
-                                <i className="fas fa-sync mr-2"></i>
-                                {loading ? 'Loading...' : 'Refresh'}
-                            </button>
-                            <button
-                                className="bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-4 rounded-full transition duration-300 flex items-center"
-                                onClick={() => setShowCreateModal(true)}
-                            >
-                                <i className="fas fa-plus mr-2"></i>
-                                Create Artifact
-                            </button>
-                        </div>
+                    {/* Header Row - Compact */}
+                    <div className="flex justify-between items-center mb-4">
+                        <h1 className="text-2xl font-semibold">Artifacts</h1>
+                        <button
+                            className="bg-green-600 hover:bg-green-500 text-white text-sm font-medium py-1.5 px-3 rounded transition flex items-center"
+                            onClick={() => setShowCreateModal(true)}
+                        >
+                            <i className="fas fa-plus mr-1.5 text-xs"></i>
+                            New
+                        </button>
                     </div>
 
-                    {/* Artifacts content */}
+                    {/* Toolbar - Single compact row */}
+                    <div className="flex flex-wrap items-center gap-2 mb-3 text-sm">
+                        {/* Search */}
+                        <div className="relative flex-1 min-w-[180px] max-w-md">
+                            <i className="fas fa-search absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500 text-xs"></i>
+                            <input
+                                type="text"
+                                placeholder="Search..."
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                className="w-full bg-gray-800 text-white text-sm pl-8 pr-7 py-1.5 rounded border border-gray-700 focus:border-blue-500 focus:outline-none"
+                            />
+                            {searchQuery && (
+                                <button
+                                    onClick={() => setSearchQuery('')}
+                                    className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white text-xs"
+                                >
+                                    <i className="fas fa-times"></i>
+                                </button>
+                            )}
+                        </div>
+
+                        {/* Sort */}
+                        <select
+                            value={sortBy}
+                            onChange={(e) => { setSortBy(e.target.value); setCurrentPage(1); }}
+                            className="bg-gray-800 text-white text-sm px-2 py-1.5 rounded border border-gray-700 focus:border-blue-500 focus:outline-none"
+                            title="Sort by"
+                        >
+                            <option value="-created_at">Newest</option>
+                            <option value="created_at">Oldest</option>
+                            <option value="manifest.name">Name A-Z</option>
+                            <option value="-manifest.name">Name Z-A</option>
+                            <option value="-download_count">Downloads</option>
+                            <option value="-view_count">Views</option>
+                        </select>
+
+                        {/* Per Page */}
+                        <select
+                            value={itemsPerPage}
+                            onChange={(e) => { setItemsPerPage(Number(e.target.value)); setCurrentPage(1); }}
+                            className="bg-gray-800 text-white text-sm px-2 py-1.5 rounded border border-gray-700 focus:border-blue-500 focus:outline-none"
+                            title="Items per page"
+                        >
+                            <option value={25}>25</option>
+                            <option value={50}>50</option>
+                            <option value={100}>100</option>
+                        </select>
+
+                        {/* Filter Toggle */}
+                        <button
+                            onClick={() => setShowFilters(!showFilters)}
+                            className={`px-2 py-1.5 rounded flex items-center gap-1.5 transition text-sm ${
+                                showFilters || Object.keys(filters).length > 0
+                                    ? 'bg-blue-600 text-white'
+                                    : 'bg-gray-800 text-gray-400 hover:text-white border border-gray-700'
+                            }`}
+                            title="Toggle filters"
+                        >
+                            <i className="fas fa-filter text-xs"></i>
+                            {Object.keys(filters).length > 0 && (
+                                <span className="bg-blue-800 text-xs px-1.5 rounded">{Object.keys(filters).length}</span>
+                            )}
+                        </button>
+
+                        {/* Refresh */}
+                        <button
+                            onClick={refreshArtifacts}
+                            disabled={loading}
+                            className="bg-gray-800 text-gray-400 hover:text-white px-2 py-1.5 rounded border border-gray-700 transition text-sm"
+                            title="Refresh"
+                        >
+                            <i className={`fas fa-sync text-xs ${loading ? 'fa-spin' : ''}`}></i>
+                        </button>
+                    </div>
+
+                    {/* Filter Panel - Compact */}
+                    {showFilters && (
+                        <div className="bg-gray-800 rounded p-2.5 mb-3 text-sm">
+                            <div className="flex flex-wrap items-center gap-2">
+                                <input
+                                    type="text"
+                                    placeholder="Property"
+                                    value={filterKey}
+                                    onChange={(e) => setFilterKey(e.target.value)}
+                                    className="bg-gray-900 text-white text-sm px-2 py-1 rounded border border-gray-700 focus:border-blue-500 focus:outline-none w-32"
+                                />
+                                <input
+                                    type="text"
+                                    placeholder="Value"
+                                    value={filterValue}
+                                    onChange={(e) => setFilterValue(e.target.value)}
+                                    onKeyPress={(e) => e.key === 'Enter' && addFilter()}
+                                    className="bg-gray-900 text-white text-sm px-2 py-1 rounded border border-gray-700 focus:border-blue-500 focus:outline-none w-32"
+                                />
+                                <button
+                                    onClick={addFilter}
+                                    disabled={!filterKey.trim() || !filterValue.trim()}
+                                    className="bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm px-2 py-1 rounded transition"
+                                >
+                                    Add
+                                </button>
+                                {(Object.keys(filters).length > 0 || searchQuery) && (
+                                    <button onClick={clearAllFilters} className="text-gray-500 hover:text-red-400 text-sm px-1">
+                                        Clear all
+                                    </button>
+                                )}
+                                {/* Active filters inline */}
+                                {Object.entries(filters).map(([key, value]) => (
+                                    <span key={key} className="inline-flex items-center gap-1 bg-blue-900/50 text-blue-300 px-2 py-0.5 rounded text-xs">
+                                        {key}={value}
+                                        <button onClick={() => removeFilter(key)} className="hover:text-white ml-0.5">
+                                            <i className="fas fa-times text-[10px]"></i>
+                                        </button>
+                                    </span>
+                                ))}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1.5">
+                                Examples: type, manifest.status, created_by
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Results info + Pagination - Professional compact design */}
+                    {totalItems > 0 && (
+                        <div className="flex items-center justify-between text-xs mb-3 bg-gray-800/50 rounded px-3 py-2">
+                            <span className="text-gray-400">
+                                <span className="text-gray-300 font-medium">{formatNumber(((currentPage - 1) * itemsPerPage) + 1)}</span>
+                                <span className="mx-1">-</span>
+                                <span className="text-gray-300 font-medium">{formatNumber(Math.min(currentPage * itemsPerPage, totalItems))}</span>
+                                <span className="mx-1">of</span>
+                                <span className="text-gray-300 font-medium">{formatNumber(totalItems)}</span>
+                                {debouncedSearchQuery && <span className="ml-1 text-blue-400">for "{debouncedSearchQuery}"</span>}
+                            </span>
+                            {totalPages > 1 && (
+                                <div className="flex items-center gap-0.5">
+                                    {/* Prev button */}
+                                    <button
+                                        onClick={() => goToPage(currentPage - 1)}
+                                        disabled={!hasPrevPage}
+                                        className={`px-2 py-1 rounded text-xs transition ${hasPrevPage ? 'hover:bg-gray-700 text-gray-300' : 'text-gray-600 cursor-not-allowed'}`}
+                                    >
+                                        <i className="fas fa-chevron-left text-[9px]"></i>
+                                    </button>
+
+                                    {/* Page numbers with ellipsis */}
+                                    {getPaginationItems().map((item) => (
+                                        typeof item === 'string' ? (
+                                            <span key={item} className="px-1.5 text-gray-500">...</span>
+                                        ) : (
+                                            <button
+                                                key={`page-${item}`}
+                                                onClick={() => goToPage(item)}
+                                                className={`min-w-[26px] h-[26px] rounded text-xs transition ${
+                                                    item === currentPage
+                                                        ? 'bg-blue-600 text-white font-medium'
+                                                        : 'hover:bg-gray-700 text-gray-400'
+                                                }`}
+                                            >
+                                                {item}
+                                            </button>
+                                        )
+                                    ))}
+
+                                    {/* Next button */}
+                                    <button
+                                        onClick={() => goToPage(currentPage + 1)}
+                                        disabled={!hasNextPage}
+                                        className={`px-2 py-1 rounded text-xs transition ${hasNextPage ? 'hover:bg-gray-700 text-gray-300' : 'text-gray-600 cursor-not-allowed'}`}
+                                    >
+                                        <i className="fas fa-chevron-right text-[9px]"></i>
+                                    </button>
+
+                                    {/* Jump to page - only show for many pages */}
+                                    {totalPages > 10 && (
+                                        <div className="flex items-center ml-2 pl-2 border-l border-gray-700">
+                                            <span className="text-gray-500 mr-1">Go:</span>
+                                            <input
+                                                type="number"
+                                                min={1}
+                                                max={totalPages}
+                                                placeholder={currentPage}
+                                                onKeyDown={(e) => {
+                                                    if (e.key === 'Enter') {
+                                                        const page = parseInt(e.target.value);
+                                                        if (page >= 1 && page <= totalPages) {
+                                                            goToPage(page);
+                                                            e.target.value = '';
+                                                        }
+                                                    }
+                                                }}
+                                                className="w-12 bg-gray-900 text-center text-gray-300 text-xs px-1 py-0.5 rounded border border-gray-700 focus:border-blue-500 focus:outline-none"
+                                            />
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Content */}
                     {loading && artifacts.length === 0 ? (
                         <div className="text-center py-8">
-                            <i className="fas fa-spinner fa-spin text-4xl text-gray-400 mb-4"></i>
-                            <p className="text-gray-400">Loading artifacts...</p>
+                            <i className="fas fa-spinner fa-spin text-2xl text-gray-500 mb-2"></i>
+                            <p className="text-gray-500 text-sm">Loading...</p>
+                        </div>
+                    ) : artifacts.length === 0 && (debouncedSearchQuery || Object.keys(filters).length > 0) ? (
+                        <div className="text-center py-10">
+                            <i className="fas fa-search text-4xl text-gray-600 mb-3"></i>
+                            <p className="text-gray-400 mb-3">No results found</p>
+                            <button
+                                onClick={clearAllFilters}
+                                className="text-blue-400 hover:text-blue-300 text-sm"
+                            >
+                                Clear filters
+                            </button>
                         </div>
                     ) : artifacts.length === 0 ? (
-                        <div className="text-center py-12">
-                            <i className="fas fa-archive text-6xl text-gray-600 mb-6"></i>
-                            <h3 className="text-2xl font-bold text-gray-400 mb-4">No Artifacts Found</h3>
-                            <p className="text-gray-500 mb-6">
-                                Get started by creating your first artifact. You can store datasets, models, applications, and more.
-                            </p>
+                        <div className="text-center py-10">
+                            <i className="fas fa-archive text-4xl text-gray-600 mb-3"></i>
+                            <p className="text-gray-400 mb-3">No artifacts yet</p>
                             <button
-                                className="bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-6 rounded-full transition duration-300 flex items-center mx-auto"
+                                className="bg-green-600 hover:bg-green-500 text-white text-sm py-1.5 px-4 rounded transition"
                                 onClick={() => setShowCreateModal(true)}
                             >
-                                <i className="fas fa-plus mr-2"></i>
-                                Create Your First Artifact
+                                Create first artifact
                             </button>
                         </div>
                     ) : (
                         <>
-                            {/* Info box for artifact management */}
-                            <div className="bg-blue-900 bg-opacity-30 border border-blue-700 rounded-lg p-4 mb-6">
-                                <div className="flex items-start">
-                                    <i className="fas fa-info-circle text-blue-400 mr-3 mt-1"></i>
-                                    <div className="text-sm text-blue-200">
-                                        <p className="font-medium mb-2">Artifact Management Tips:</p>
-                                        <ul className="list-disc list-inside space-y-1 text-blue-300">
-                                            <li>Collections can contain other artifacts and support drag & drop file uploads</li>
-                                            <li>Click "More Info" on any artifact to view and manage its files with full tree functionality</li>
-                                            <li>Only staged artifacts allow file uploads - committed artifacts are read-only</li>
-                                            <li>Use the artifact manager API for programmatic access and advanced operations</li>
-                                        </ul>
-                                    </div>
-                                </div>
-                            </div>
+                            <ArtifactTree
+                                artifacts={artifacts}
+                                expandedArtifacts={expandedArtifacts}
+                                setExpandedArtifacts={setExpandedArtifacts}
+                                listArtifacts={listArtifacts}
+                                onMoreInfo={setSelectedArtifact}
+                                onDelete={handleDelete}
+                                onUploadFile={handleUploadFile}
+                                onCreateFolder={handleCreateSubArtifact}
+                                onCreateChildArtifact={handleCreateChildArtifact}
+                                onDragOver={handleDragOver}
+                                onDragEnter={handleDragEnter}
+                                onDragLeave={handleDragLeave}
+                                onDrop={handleDrop}
+                            />
 
-                        <ArtifactTree
-                            artifacts={artifacts}
-                            expandedArtifacts={expandedArtifacts}
-                            setExpandedArtifacts={setExpandedArtifacts}
-                            listArtifacts={listArtifacts}
-                            onMoreInfo={setSelectedArtifact}
-                            onDelete={handleDelete}
-                            onUploadFile={handleUploadFile}
-                            onCreateFolder={handleCreateSubArtifact}
-                            onCreateChildArtifact={handleCreateChildArtifact}
-                            onDragOver={handleDragOver}
-                            onDragEnter={handleDragEnter}
-                            onDragLeave={handleDragLeave}
-                            onDrop={handleDrop}
-                        />
+                            {/* Bottom Pagination - Professional design */}
+                            {totalPages > 1 && (
+                                <div className="flex justify-center items-center gap-1 mt-4 py-3 border-t border-gray-800">
+                                    <button
+                                        onClick={() => goToPage(currentPage - 1)}
+                                        disabled={!hasPrevPage}
+                                        className={`px-3 py-1.5 rounded text-xs font-medium transition ${hasPrevPage ? 'bg-gray-800 hover:bg-gray-700 text-gray-300' : 'text-gray-600 cursor-not-allowed'}`}
+                                    >
+                                        <i className="fas fa-chevron-left mr-1 text-[9px]"></i>Prev
+                                    </button>
+
+                                    <div className="flex items-center gap-0.5 mx-2">
+                                        {getPaginationItems().map((item) => (
+                                            typeof item === 'string' ? (
+                                                <span key={`bottom-${item}`} className="px-2 text-gray-500 text-xs">...</span>
+                                            ) : (
+                                                <button
+                                                    key={`bottom-page-${item}`}
+                                                    onClick={() => goToPage(item)}
+                                                    className={`min-w-[28px] h-7 rounded text-xs transition ${
+                                                        item === currentPage
+                                                            ? 'bg-blue-600 text-white font-medium'
+                                                            : 'bg-gray-800 hover:bg-gray-700 text-gray-400'
+                                                    }`}
+                                                >
+                                                    {item}
+                                                </button>
+                                            )
+                                        ))}
+                                    </div>
+
+                                    <button
+                                        onClick={() => goToPage(currentPage + 1)}
+                                        disabled={!hasNextPage}
+                                        className={`px-3 py-1.5 rounded text-xs font-medium transition ${hasNextPage ? 'bg-gray-800 hover:bg-gray-700 text-gray-300' : 'text-gray-600 cursor-not-allowed'}`}
+                                    >
+                                        Next<i className="fas fa-chevron-right ml-1 text-[9px]"></i>
+                                    </button>
+                                </div>
+                            )}
                         </>
                     )}
 

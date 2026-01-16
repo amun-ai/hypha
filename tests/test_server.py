@@ -328,7 +328,18 @@ async def test_workspace_owners(
 async def test_server_scalability(
     fastapi_server_redis_1, fastapi_server_redis_2, test_user_token
 ):
-    """Test services."""
+    """Test horizontal scalability with two Redis-backed Hypha servers.
+
+    This test verifies that:
+    1. Multiple Hypha instances can connect to the same Redis server
+    2. Clients can connect to different server instances
+    3. Services registered on one server are discoverable from another
+    4. RPC calls work across server instances via Redis event bus
+
+    Note: Previously this test was intermittently failing with 'address already in use'
+    errors. This was caused by an unnecessary dependency on the fastapi_server fixture,
+    which created port conflicts during fixture cleanup. The fix removed this dependency.
+    """
     api = await connect_to_server(
         {
             "client_id": "my-app-99",
