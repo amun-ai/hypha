@@ -3995,20 +3995,72 @@ license: "MIT"`);
             // Drag and drop state
             const [dragCounter, setDragCounter] = React.useState(0);
             const [isDragOver, setIsDragOver] = React.useState(false);
-        
+
+            // Search, filter, sort, and pagination state
+            const [searchQuery, setSearchQuery] = React.useState('');
+            const [debouncedSearchQuery, setDebouncedSearchQuery] = React.useState('');
+            const [sortBy, setSortBy] = React.useState('-created_at'); // Default: newest first
+            const [itemsPerPage, setItemsPerPage] = React.useState(25);
+            const [currentPage, setCurrentPage] = React.useState(1);
+            const [totalItems, setTotalItems] = React.useState(0);
+            const [showFilters, setShowFilters] = React.useState(false);
+            const [filters, setFilters] = React.useState({});
+            const [filterKey, setFilterKey] = React.useState('');
+            const [filterValue, setFilterValue] = React.useState('');
+
+            // Debounce search query
+            React.useEffect(() => {
+                const timer = setTimeout(() => {
+                    setDebouncedSearchQuery(searchQuery);
+                    setCurrentPage(1); // Reset to first page on search
+                }, 300);
+                return () => clearTimeout(timer);
+            }, [searchQuery]);
+
             const refreshArtifacts = React.useCallback(async () => {
                 if (am) {
                     setLoading(true);
                     try {
-                        const topLevelArtifacts = await am.list({stage: 'all', _rkwargs: true});
-                        setArtifacts(topLevelArtifacts);
+                        const offset = (currentPage - 1) * itemsPerPage;
+                        const params = {
+                            stage: 'all',
+                            offset: offset,
+                            limit: itemsPerPage,
+                            order_by: sortBy,
+                            pagination: true,
+                            _rkwargs: true
+                        };
+
+                        // Add search keywords if present
+                        if (debouncedSearchQuery.trim()) {
+                            params.keywords = debouncedSearchQuery.trim().split(/\s+/);
+                        }
+
+                        // Add filters if present
+                        if (Object.keys(filters).length > 0) {
+                            params.filters = filters;
+                        }
+
+                        const result = await am.list(params);
+
+                        // Handle pagination response
+                        if (result && typeof result === 'object' && 'items' in result) {
+                            setArtifacts(result.items);
+                            setTotalItems(result.total || 0);
+                        } else {
+                            // Fallback for non-paginated response
+                            setArtifacts(Array.isArray(result) ? result : []);
+                            setTotalItems(Array.isArray(result) ? result.length : 0);
+                        }
                     } catch (error) {
                         console.error("Failed to fetch artifacts:", error);
+                        setArtifacts([]);
+                        setTotalItems(0);
                     } finally {
                         setLoading(false);
                     }
                 }
-            }, [am]);
+            }, [am, currentPage, itemsPerPage, sortBy, debouncedSearchQuery, filters]);
 
             React.useEffect(() => {
                 refreshArtifacts();
@@ -4022,6 +4074,62 @@ license: "MIT"`);
                     console.error("Failed to list artifacts:", error);
                     return [];
                 }
+            };
+
+            // Pagination helpers
+            const totalPages = Math.ceil(totalItems / itemsPerPage);
+            const hasNextPage = currentPage < totalPages;
+            const hasPrevPage = currentPage > 1;
+
+            const goToPage = (page) => {
+                if (page >= 1 && page <= totalPages) {
+                    setCurrentPage(page);
+                }
+            };
+
+            // Generate page numbers to display
+            const getPageNumbers = () => {
+                const pages = [];
+                const maxVisiblePages = 5;
+                let startPage = Math.max(1, currentPage - Math.floor(maxVisiblePages / 2));
+                let endPage = Math.min(totalPages, startPage + maxVisiblePages - 1);
+
+                if (endPage - startPage + 1 < maxVisiblePages) {
+                    startPage = Math.max(1, endPage - maxVisiblePages + 1);
+                }
+
+                for (let i = startPage; i <= endPage; i++) {
+                    pages.push(i);
+                }
+                return pages;
+            };
+
+            // Filter management
+            const addFilter = () => {
+                if (filterKey.trim() && filterValue.trim()) {
+                    setFilters(prev => ({
+                        ...prev,
+                        [filterKey.trim()]: filterValue.trim()
+                    }));
+                    setFilterKey('');
+                    setFilterValue('');
+                    setCurrentPage(1);
+                }
+            };
+
+            const removeFilter = (key) => {
+                setFilters(prev => {
+                    const newFilters = { ...prev };
+                    delete newFilters[key];
+                    return newFilters;
+                });
+                setCurrentPage(1);
+            };
+
+            const clearAllFilters = () => {
+                setFilters({});
+                setSearchQuery('');
+                setCurrentPage(1);
             };
         
             const listFiles = async (artifactId, dir, useStaging = null) => {
@@ -4188,7 +4296,7 @@ license: "MIT"`);
                                 onClick={refreshArtifacts}
                                 disabled={loading}
                             >
-                                <i className="fas fa-sync mr-2"></i>
+                                <i className={`fas fa-sync mr-2 ${loading ? 'fa-spin' : ''}`}></i>
                                 {loading ? 'Loading...' : 'Refresh'}
                             </button>
                             <button
@@ -4201,11 +4309,195 @@ license: "MIT"`);
                         </div>
                     </div>
 
+                    {/* Search, Sort, and Filter Controls */}
+                    <div className="bg-gray-800 rounded-lg p-4 mb-6">
+                        {/* Search and Sort Row */}
+                        <div className="flex flex-wrap gap-4 items-center mb-4">
+                            {/* Search Input */}
+                            <div className="flex-1 min-w-[200px]">
+                                <div className="relative">
+                                    <i className="fas fa-search absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400"></i>
+                                    <input
+                                        type="text"
+                                        placeholder="Search artifacts by name, description..."
+                                        value={searchQuery}
+                                        onChange={(e) => setSearchQuery(e.target.value)}
+                                        className="w-full bg-gray-700 text-white pl-10 pr-4 py-2 rounded-lg border border-gray-600 focus:border-blue-500 focus:outline-none"
+                                    />
+                                    {searchQuery && (
+                                        <button
+                                            onClick={() => setSearchQuery('')}
+                                            className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-white"
+                                        >
+                                            <i className="fas fa-times"></i>
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Sort Dropdown */}
+                            <div className="flex items-center gap-2">
+                                <label className="text-gray-400 text-sm">Sort by:</label>
+                                <select
+                                    value={sortBy}
+                                    onChange={(e) => {
+                                        setSortBy(e.target.value);
+                                        setCurrentPage(1);
+                                    }}
+                                    className="bg-gray-700 text-white px-3 py-2 rounded-lg border border-gray-600 focus:border-blue-500 focus:outline-none"
+                                >
+                                    <option value="-created_at">Newest First</option>
+                                    <option value="created_at">Oldest First</option>
+                                    <option value="manifest.name">Name (A-Z)</option>
+                                    <option value="-manifest.name">Name (Z-A)</option>
+                                    <option value="-download_count">Most Downloads</option>
+                                    <option value="-view_count">Most Views</option>
+                                    <option value="-last_modified">Recently Modified</option>
+                                </select>
+                            </div>
+
+                            {/* Items Per Page */}
+                            <div className="flex items-center gap-2">
+                                <label className="text-gray-400 text-sm">Show:</label>
+                                <select
+                                    value={itemsPerPage}
+                                    onChange={(e) => {
+                                        setItemsPerPage(Number(e.target.value));
+                                        setCurrentPage(1);
+                                    }}
+                                    className="bg-gray-700 text-white px-3 py-2 rounded-lg border border-gray-600 focus:border-blue-500 focus:outline-none"
+                                >
+                                    <option value={25}>25</option>
+                                    <option value={50}>50</option>
+                                    <option value={100}>100</option>
+                                </select>
+                            </div>
+
+                            {/* Filter Toggle Button */}
+                            <button
+                                onClick={() => setShowFilters(!showFilters)}
+                                className={`px-4 py-2 rounded-lg flex items-center gap-2 transition ${
+                                    showFilters || Object.keys(filters).length > 0
+                                        ? 'bg-blue-600 text-white'
+                                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                                }`}
+                            >
+                                <i className="fas fa-filter"></i>
+                                Filters
+                                {Object.keys(filters).length > 0 && (
+                                    <span className="bg-blue-800 text-xs px-2 py-0.5 rounded-full">
+                                        {Object.keys(filters).length}
+                                    </span>
+                                )}
+                            </button>
+                        </div>
+
+                        {/* Filter Panel (Collapsible) */}
+                        {showFilters && (
+                            <div className="border-t border-gray-700 pt-4">
+                                <div className="flex flex-wrap gap-4 items-end">
+                                    {/* Add Filter */}
+                                    <div className="flex gap-2 items-end">
+                                        <div>
+                                            <label className="block text-gray-400 text-xs mb-1">Property</label>
+                                            <input
+                                                type="text"
+                                                placeholder="e.g., type, manifest.status"
+                                                value={filterKey}
+                                                onChange={(e) => setFilterKey(e.target.value)}
+                                                className="bg-gray-700 text-white px-3 py-2 rounded-lg border border-gray-600 focus:border-blue-500 focus:outline-none w-48"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-gray-400 text-xs mb-1">Value</label>
+                                            <input
+                                                type="text"
+                                                placeholder="e.g., dataset, published"
+                                                value={filterValue}
+                                                onChange={(e) => setFilterValue(e.target.value)}
+                                                onKeyPress={(e) => e.key === 'Enter' && addFilter()}
+                                                className="bg-gray-700 text-white px-3 py-2 rounded-lg border border-gray-600 focus:border-blue-500 focus:outline-none w-48"
+                                            />
+                                        </div>
+                                        <button
+                                            onClick={addFilter}
+                                            disabled={!filterKey.trim() || !filterValue.trim()}
+                                            className="bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg transition"
+                                        >
+                                            <i className="fas fa-plus mr-1"></i> Add
+                                        </button>
+                                    </div>
+
+                                    {/* Clear All Button */}
+                                    {(Object.keys(filters).length > 0 || searchQuery) && (
+                                        <button
+                                            onClick={clearAllFilters}
+                                            className="text-red-400 hover:text-red-300 px-3 py-2 transition"
+                                        >
+                                            <i className="fas fa-times-circle mr-1"></i> Clear All
+                                        </button>
+                                    )}
+                                </div>
+
+                                {/* Active Filters */}
+                                {Object.keys(filters).length > 0 && (
+                                    <div className="flex flex-wrap gap-2 mt-3">
+                                        {Object.entries(filters).map(([key, value]) => (
+                                            <span
+                                                key={key}
+                                                className="inline-flex items-center gap-2 bg-blue-900 text-blue-200 px-3 py-1 rounded-full text-sm"
+                                            >
+                                                <span className="font-medium">{key}:</span> {value}
+                                                <button
+                                                    onClick={() => removeFilter(key)}
+                                                    className="hover:text-white transition"
+                                                >
+                                                    <i className="fas fa-times"></i>
+                                                </button>
+                                            </span>
+                                        ))}
+                                    </div>
+                                )}
+
+                                {/* Filter Examples */}
+                                <div className="mt-3 text-xs text-gray-500">
+                                    <span className="font-medium">Common filters:</span>{' '}
+                                    <span className="text-gray-400">type</span> (collection, dataset, model),{' '}
+                                    <span className="text-gray-400">manifest.status</span>,{' '}
+                                    <span className="text-gray-400">created_by</span>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Results Summary */}
+                    {totalItems > 0 && (
+                        <div className="text-gray-400 text-sm mb-4">
+                            Showing {((currentPage - 1) * itemsPerPage) + 1}-{Math.min(currentPage * itemsPerPage, totalItems)} of {totalItems} artifacts
+                            {debouncedSearchQuery && <span className="ml-2">for "{debouncedSearchQuery}"</span>}
+                        </div>
+                    )}
+
                     {/* Artifacts content */}
                     {loading && artifacts.length === 0 ? (
                         <div className="text-center py-8">
                             <i className="fas fa-spinner fa-spin text-4xl text-gray-400 mb-4"></i>
                             <p className="text-gray-400">Loading artifacts...</p>
+                        </div>
+                    ) : artifacts.length === 0 && (debouncedSearchQuery || Object.keys(filters).length > 0) ? (
+                        <div className="text-center py-12">
+                            <i className="fas fa-search text-6xl text-gray-600 mb-6"></i>
+                            <h3 className="text-2xl font-bold text-gray-400 mb-4">No Results Found</h3>
+                            <p className="text-gray-500 mb-6">
+                                No artifacts match your search criteria. Try adjusting your search or filters.
+                            </p>
+                            <button
+                                onClick={clearAllFilters}
+                                className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-6 rounded-full transition duration-300"
+                            >
+                                <i className="fas fa-times mr-2"></i>
+                                Clear Search & Filters
+                            </button>
                         </div>
                     ) : artifacts.length === 0 ? (
                         <div className="text-center py-12">
@@ -4240,21 +4532,122 @@ license: "MIT"`);
                                 </div>
                             </div>
 
-                        <ArtifactTree
-                            artifacts={artifacts}
-                            expandedArtifacts={expandedArtifacts}
-                            setExpandedArtifacts={setExpandedArtifacts}
-                            listArtifacts={listArtifacts}
-                            onMoreInfo={setSelectedArtifact}
-                            onDelete={handleDelete}
-                            onUploadFile={handleUploadFile}
-                            onCreateFolder={handleCreateSubArtifact}
-                            onCreateChildArtifact={handleCreateChildArtifact}
-                            onDragOver={handleDragOver}
-                            onDragEnter={handleDragEnter}
-                            onDragLeave={handleDragLeave}
-                            onDrop={handleDrop}
-                        />
+                            <ArtifactTree
+                                artifacts={artifacts}
+                                expandedArtifacts={expandedArtifacts}
+                                setExpandedArtifacts={setExpandedArtifacts}
+                                listArtifacts={listArtifacts}
+                                onMoreInfo={setSelectedArtifact}
+                                onDelete={handleDelete}
+                                onUploadFile={handleUploadFile}
+                                onCreateFolder={handleCreateSubArtifact}
+                                onCreateChildArtifact={handleCreateChildArtifact}
+                                onDragOver={handleDragOver}
+                                onDragEnter={handleDragEnter}
+                                onDragLeave={handleDragLeave}
+                                onDrop={handleDrop}
+                            />
+
+                            {/* Pagination Controls */}
+                            {totalPages > 1 && (
+                                <div className="flex justify-center items-center gap-2 mt-6 flex-wrap">
+                                    {/* First Page */}
+                                    <button
+                                        onClick={() => goToPage(1)}
+                                        disabled={!hasPrevPage}
+                                        className={`px-3 py-2 rounded-lg transition ${
+                                            hasPrevPage
+                                                ? 'bg-gray-700 hover:bg-gray-600 text-white'
+                                                : 'bg-gray-800 text-gray-500 cursor-not-allowed'
+                                        }`}
+                                        title="First page"
+                                    >
+                                        <i className="fas fa-angle-double-left"></i>
+                                    </button>
+
+                                    {/* Previous Page */}
+                                    <button
+                                        onClick={() => goToPage(currentPage - 1)}
+                                        disabled={!hasPrevPage}
+                                        className={`px-3 py-2 rounded-lg transition ${
+                                            hasPrevPage
+                                                ? 'bg-gray-700 hover:bg-gray-600 text-white'
+                                                : 'bg-gray-800 text-gray-500 cursor-not-allowed'
+                                        }`}
+                                        title="Previous page"
+                                    >
+                                        <i className="fas fa-angle-left"></i>
+                                    </button>
+
+                                    {/* Page Numbers */}
+                                    {getPageNumbers()[0] > 1 && (
+                                        <span className="text-gray-500 px-2">...</span>
+                                    )}
+                                    {getPageNumbers().map(page => (
+                                        <button
+                                            key={page}
+                                            onClick={() => goToPage(page)}
+                                            className={`px-4 py-2 rounded-lg transition ${
+                                                page === currentPage
+                                                    ? 'bg-blue-600 text-white'
+                                                    : 'bg-gray-700 hover:bg-gray-600 text-white'
+                                            }`}
+                                        >
+                                            {page}
+                                        </button>
+                                    ))}
+                                    {getPageNumbers()[getPageNumbers().length - 1] < totalPages && (
+                                        <span className="text-gray-500 px-2">...</span>
+                                    )}
+
+                                    {/* Next Page */}
+                                    <button
+                                        onClick={() => goToPage(currentPage + 1)}
+                                        disabled={!hasNextPage}
+                                        className={`px-3 py-2 rounded-lg transition ${
+                                            hasNextPage
+                                                ? 'bg-gray-700 hover:bg-gray-600 text-white'
+                                                : 'bg-gray-800 text-gray-500 cursor-not-allowed'
+                                        }`}
+                                        title="Next page"
+                                    >
+                                        <i className="fas fa-angle-right"></i>
+                                    </button>
+
+                                    {/* Last Page */}
+                                    <button
+                                        onClick={() => goToPage(totalPages)}
+                                        disabled={!hasNextPage}
+                                        className={`px-3 py-2 rounded-lg transition ${
+                                            hasNextPage
+                                                ? 'bg-gray-700 hover:bg-gray-600 text-white'
+                                                : 'bg-gray-800 text-gray-500 cursor-not-allowed'
+                                        }`}
+                                        title="Last page"
+                                    >
+                                        <i className="fas fa-angle-double-right"></i>
+                                    </button>
+
+                                    {/* Page Jump */}
+                                    <div className="flex items-center gap-2 ml-4">
+                                        <span className="text-gray-400 text-sm">Go to:</span>
+                                        <input
+                                            type="number"
+                                            min={1}
+                                            max={totalPages}
+                                            value={currentPage}
+                                            onChange={(e) => {
+                                                const page = parseInt(e.target.value);
+                                                if (page >= 1 && page <= totalPages) {
+                                                    goToPage(page);
+                                                }
+                                            }}
+                                            className="w-16 bg-gray-700 text-white text-center px-2 py-2 rounded-lg border border-gray-600 focus:border-blue-500 focus:outline-none"
+                                        />
+                                        <span className="text-gray-400 text-sm">of {totalPages}</span>
+                                    </div>
+                                </div>
+                            )}
                         </>
                     )}
 
