@@ -12,6 +12,7 @@ import asyncio
 import pickle
 from functools import partial
 from pathlib import Path
+from urllib.parse import quote
 from sqlalchemy import (
     event,
     Column,
@@ -63,6 +64,7 @@ from hypha.core import (
     Artifact,
     CollectionArtifact,
 )
+from hypha.core import ScopeInfo
 from hypha_rpc.utils import ObjectProxy
 from hypha_rpc.utils.schema import schema_method
 from jsonschema import validate
@@ -832,7 +834,8 @@ class ArtifactController:
                             artifact_for_scope = await self._get_artifact(
                                 temp_session, artifact_id
                             )
-                            expected_scope = f"get_file:{artifact_for_scope.id}:{path}"
+                            # Path must be URL-encoded to match the scope format (scopes are space-delimited in JWT)
+                            expected_scope = f"get_file:{artifact_for_scope.id}:{quote(path, safe='')}"
                             if not user_info.has_scope(expected_scope):
                                 allowed_scopes = ", ".join(user_info.scope.extra_scopes)
                                 raise PermissionError(
@@ -2178,9 +2181,9 @@ class ArtifactController:
     ):
         """
         Check whether a user has the required permission to perform an operation on an artifact.
-        
+
         This function checks permissions on both the artifact and its parent collection independently.
-        
+
         Args:
             user_info: User information
             artifact_id: ID of the artifact to check
@@ -2188,7 +2191,7 @@ class ArtifactController:
             session: Database session
             artifact_permissions: Specific permissions to check on the artifact itself
             parent_permissions: Specific permissions to check on the parent collection
-        
+
         If artifact_permissions or parent_permissions are not specified, the function will
         determine them based on the operation type for backward compatibility.
         """
@@ -3010,16 +3013,19 @@ class ArtifactController:
         # where a leaked URL token could be used to download other files.
         # The workspace is already encoded in ScopeInfo.workspaces, so we only need
         # to include artifact_id and file_path in the extra scope.
-        # Scope format: get_file:{artifact_id}:{file_path}
-        from hypha.core import ScopeInfo
-        specific_scope = f"get_file:{artifact.id}:{file_path}"
+        # Scope format: get_file:{artifact_id}:{url_encoded_file_path}
+        # Note: file_path must be URL-encoded because scopes are space-delimited in JWT
+        specific_scope = f"get_file:{artifact.id}:{quote(file_path, safe='')}"
         specialized_scope = ScopeInfo(
             workspaces=user_info.scope.workspaces.copy() if user_info.scope else {},
             current_workspace=user_info.scope.current_workspace if user_info.scope else None,
             client_id=user_info.scope.client_id if user_info.scope else None,
             extra_scopes=[specific_scope],  # Specialized scope for this specific file only
         )
-        specialized_user_info = user_info.model_copy(update={"scope": specialized_scope})
+        specialized_user_info = user_info.model_copy(update={
+            "scope": specialized_scope,
+            "current_workspace": specialized_scope.current_workspace
+        })
 
         # Generate a token for the URL (with same expiry as requested)
         token = await generate_auth_token(specialized_user_info, expires_in)

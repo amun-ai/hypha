@@ -4,6 +4,8 @@ import pytest
 import requests
 import os
 import time
+import tempfile
+import uuid
 from hypha_rpc import connect_to_server
 from io import BytesIO
 from zipfile import ZipFile
@@ -14,7 +16,7 @@ import zipfile
 import random
 import numpy as np
 
-from . import SERVER_URL, SERVER_URL_REDIS_1, SERVER_URL_SQLITE, find_item, wait_for_workspace_ready
+from . import SERVER_URL, SERVER_URL_REDIS_1, SERVER_URL_SQLITE, WS_SERVER_URL, find_item, wait_for_workspace_ready
 from hypha_rpc.rpc import RemoteException
 # Note: pgvector_search_engine and pg_engine fixtures are defined in conftest.py
 
@@ -10377,4 +10379,165 @@ async def test_read_file_limit_exceeded(
 
     # Clean up
     await artifact_manager.delete(dataset.id)
+    await api.disconnect()
+
+@pytest.mark.asyncio
+async def test_git_private_artifact_presigned_url(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test get_file() presigned URL for a private git-storage artifact.
+
+    This test creates a private git-storage artifact (default behavior),
+    generates a presigned URL with get_file(), and verifies that the URL
+    can be accessed with the embedded token. This test specifically validates
+    that file paths with spaces are properly URL-encoded in the specialized scope.
+    """
+    import subprocess
+    import requests
+
+    # Connect as the artifact owner
+    api = await connect_to_server({
+        "name": "git-private-url-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+    workspace = api.config.workspace
+
+    # Create a private git-storage artifact (default is private)
+    artifact_alias = f"private-git-test-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Private Git Storage Test"},
+        config={
+            "storage": "git",
+            # No permissions specified - this makes it private (default)
+        },
+    )
+
+    git_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
+    file_content = "# Private File\n\nThis is private test content."
+
+    # Push a file to the git repository
+    with tempfile.TemporaryDirectory() as tmpdir:
+        local_repo = os.path.join(tmpdir, "repo")
+        os.makedirs(local_repo)
+        subprocess.run(["git", "init", "-b", "main"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
+
+        # Create a file with spaces in the name to test URL encoding
+        test_file_name = "conversation (2).ndjson"
+        with open(os.path.join(local_repo, test_file_name), "w") as f:
+            f.write(file_content)
+
+        # Add, commit, push
+        subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Add private file"], cwd=local_repo, check=True, capture_output=True)
+        auth_url = git_url.replace("http://", f"http://user-1:{test_user_token}@")
+        subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
+        result = subprocess.run(
+            ["git", "push", "-u", "origin", "main"],
+            cwd=local_repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"Push failed: {result.stderr}"
+
+    # Generate presigned URL for the private file
+    presigned_url = await artifact_manager.get_file(
+        artifact_id=artifact_alias,
+        file_path=test_file_name
+    )
+
+    # Verify the URL is properly formatted
+    assert isinstance(presigned_url, str), f"Expected URL string, got {type(presigned_url)}"
+    assert presigned_url.startswith("http"), f"Expected URL, got: {presigned_url}"
+    assert "token=" in presigned_url, "Expected token parameter in URL"
+    # The file name is URL encoded, so we just check that the base name is there
+    assert "conversation" in presigned_url, "Expected file path in URL"
+
+    # Try to access the presigned URL WITHOUT additional auth headers
+    # The token in the URL should be sufficient
+    response = requests.get(presigned_url, timeout=30)
+
+    assert response.status_code == 200, (
+        f"Expected 200 OK, got {response.status_code}. "
+        f"Response: {response.text}. "
+        f"This indicates the presigned URL token is not being properly validated."
+    )
+    assert file_content in response.text, "Expected file content in response"
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_git_private_artifact_direct_access_denied(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test that accessing a private artifact file without token is denied.
+
+    This verifies that the artifact is indeed private and requires authentication.
+    """
+    import subprocess
+    import requests
+
+    # Connect as the artifact owner
+    api = await connect_to_server({
+        "name": "git-private-direct-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+    workspace = api.config.workspace
+
+    # Create a private git-storage artifact
+    artifact_alias = f"private-direct-test-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Private Direct Test"},
+        config={"storage": "git"},
+    )
+
+    git_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
+    file_content = "# Private Content"
+
+    # Push a file
+    with tempfile.TemporaryDirectory() as tmpdir:
+        local_repo = os.path.join(tmpdir, "repo")
+        os.makedirs(local_repo)
+        subprocess.run(["git", "init", "-b", "main"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
+
+        with open(os.path.join(local_repo, "test.txt"), "w") as f:
+            f.write(file_content)
+
+        subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Add file"], cwd=local_repo, check=True, capture_output=True)
+        auth_url = git_url.replace("http://", f"http://user-1:{test_user_token}@")
+        subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "push", "-u", "origin", "main"], cwd=local_repo, check=True, capture_output=True, timeout=30)
+
+    # Try to access the file endpoint WITHOUT any token - should fail
+    file_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/files/test.txt"
+    response = requests.get(file_url, timeout=30)
+
+    # This should be denied (401 or 403)
+    assert response.status_code in [401, 403], (
+        f"Expected 401/403 when accessing private artifact without token, "
+        f"got {response.status_code}"
+    )
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
     await api.disconnect()
