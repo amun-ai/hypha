@@ -2621,7 +2621,17 @@
         
             const handleDownloadFile = async (filePath) => {
                 try {
-                    const url = await am.getFile(currentArtifact.id, filePath);
+                    // For staged artifacts, use version='stage' to download from staging area
+                    const useStaging = currentArtifact.staging !== null;
+                    const params = {
+                        artifact_id: currentArtifact.id,
+                        file_path: filePath,
+                        _rkwargs: true
+                    };
+                    if (useStaging) {
+                        params.version = "stage";
+                    }
+                    const url = await am.getFile(params);
                     window.open(url, "_blank");
                 } catch (error) {
                     console.error("Failed to download file:", error);

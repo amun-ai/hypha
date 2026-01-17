@@ -2492,7 +2492,7 @@ class ArtifactController:
             artifact: The artifact model instance
             parent_artifact: Parent artifact for S3 config inheritance
             path: Path within the git repository
-            version: Git ref/commit (defaults to HEAD)
+            version: Git ref/commit (defaults to HEAD), or 'stage' for staging area
             silent: If True, don't increment download count
             limit: Max items to return for directory listing
             offset: Offset for pagination
@@ -2501,11 +2501,17 @@ class ArtifactController:
         Returns:
             Response object (file content or directory listing)
         """
-        from fastapi.responses import Response
+        from fastapi.responses import Response, StreamingResponse
         from hypha.git.repo import S3GitRepo
         import mimetypes
 
         s3_config = self._get_s3_config(artifact, parent_artifact)
+
+        # Handle staging version - files are in S3 staging area, not in git
+        if version == "stage":
+            return await self._get_git_staging_file_response(
+                artifact, s3_config, path, limit, offset
+            )
 
         # Create S3 client factory for the git repo
         s3_client_factory = partial(self._create_client_async, s3_config)
@@ -2891,6 +2897,218 @@ class ArtifactController:
 
         return items
 
+    async def _get_git_staging_file_url(
+        self,
+        artifact,
+        s3_config: dict,
+        file_path: str,
+        expires_in: int,
+        use_proxy: Optional[bool],
+        use_local_url: bool,
+    ) -> str:
+        """Get a presigned URL for a staged file in git-storage artifact.
+
+        For git storage, staged files are uploaded to:
+        {prefix}/{artifact.id}/staging/{file_path}
+
+        Args:
+            artifact: The artifact model instance
+            s3_config: S3 configuration dict
+            file_path: Path to the file within staging area
+            expires_in: URL expiration time in seconds
+            use_proxy: Whether to use proxy URL
+            use_local_url: Whether to return localhost URL
+
+        Returns:
+            Presigned URL for downloading the staged file
+
+        Raises:
+            FileNotFoundError: If the staged file does not exist
+        """
+        # Staging area path: {prefix}/{artifact.id}/staging/{file_path}
+        staging_key = safe_join(
+            s3_config["prefix"],
+            f"{artifact.id}/staging/{file_path}",
+        )
+
+        async with self._create_client_async(s3_config) as s3_client:
+            # Check if the file exists
+            try:
+                await s3_client.head_object(
+                    Bucket=s3_config["bucket"],
+                    Key=staging_key,
+                )
+            except ClientError:
+                raise FileNotFoundError(
+                    f"Staged file '{file_path}' not found"
+                )
+
+            # Generate presigned URL
+            presigned_url = await s3_client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": s3_config["bucket"], "Key": staging_key},
+                ExpiresIn=expires_in,
+            )
+
+            # Handle proxy/local URL replacement
+            if use_proxy is None:
+                use_proxy_resolved = self.s3_controller.enable_s3_proxy
+            else:
+                use_proxy_resolved = use_proxy
+
+            if use_proxy_resolved:
+                if use_local_url:
+                    local_proxy_url = f"{self.store.local_base_url}/s3" if use_local_url is True else f"{use_local_url}/s3"
+                    presigned_url = presigned_url.replace(
+                        s3_config["endpoint_url"], local_proxy_url
+                    )
+                elif s3_config["public_endpoint_url"]:
+                    presigned_url = presigned_url.replace(
+                        s3_config["endpoint_url"],
+                        s3_config["public_endpoint_url"],
+                    )
+            elif use_local_url and not use_proxy_resolved:
+                if use_local_url is not True:
+                    presigned_url = presigned_url.replace(
+                        s3_config["endpoint_url"], use_local_url
+                    )
+
+            return presigned_url
+
+    async def _get_git_staging_file_response(
+        self,
+        artifact,
+        s3_config: dict,
+        path: str,
+        limit: int,
+        offset: int,
+    ):
+        """Get file content or directory listing from git staging area.
+
+        For git storage, staged files are uploaded to:
+        {prefix}/{artifact.id}/staging/{file_path}
+
+        Args:
+            artifact: The artifact model instance
+            s3_config: S3 configuration dict
+            path: Path within staging area
+            limit: Max items to return for directory listing
+            offset: Offset for pagination
+
+        Returns:
+            Response object (file content or directory listing)
+
+        Raises:
+            HTTPException: If file/directory not found
+        """
+        from fastapi.responses import Response, StreamingResponse
+        import mimetypes
+
+        # Normalize path
+        path = path.strip("/") if path else ""
+
+        # Check if it's a directory listing request
+        if path.endswith("/") or path == "":
+            # List directory contents from staging
+            items = await self._list_git_staging_files(
+                artifact, s3_config, path if path else None, limit, offset
+            )
+            if not items and path:
+                # Check if it might be a file
+                staging_key = safe_join(
+                    s3_config["prefix"],
+                    f"{artifact.id}/staging/{path}",
+                )
+                async with self._create_client_async(s3_config) as s3_client:
+                    try:
+                        await s3_client.head_object(
+                            Bucket=s3_config["bucket"],
+                            Key=staging_key,
+                        )
+                        # It's a file, not a directory
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"'{path}' is a file, not a directory. Remove trailing slash.",
+                        )
+                    except ClientError:
+                        pass
+                raise HTTPException(
+                    status_code=404,
+                    detail="Directory not found or empty",
+                )
+
+            # Format response similar to S3 listing
+            result = []
+            for item in items:
+                entry = {
+                    "name": item["name"],
+                    "type": item.get("type", "file"),
+                }
+                if item.get("size") is not None:
+                    entry["size"] = item["size"]
+                result.append(entry)
+
+            return {
+                "items": result,
+                "total": len(items),
+                "offset": offset,
+                "limit": limit,
+            }
+
+        # It's a file request - get file from staging area
+        staging_key = safe_join(
+            s3_config["prefix"],
+            f"{artifact.id}/staging/{path}",
+        )
+
+        async with self._create_client_async(s3_config) as s3_client:
+            try:
+                response = await s3_client.get_object(
+                    Bucket=s3_config["bucket"],
+                    Key=staging_key,
+                )
+                content = await response["Body"].read()
+                content_length = response.get("ContentLength", len(content))
+            except ClientError as e:
+                if "NoSuchKey" in str(e) or "404" in str(e):
+                    # Check if it's a directory (has children)
+                    items = await self._list_git_staging_files(
+                        artifact, s3_config, path, limit, offset
+                    )
+                    if items:
+                        # It's a directory, return listing
+                        result = []
+                        for item in items:
+                            entry = {
+                                "name": item["name"],
+                                "type": item.get("type", "file"),
+                            }
+                            if item.get("size") is not None:
+                                entry["size"] = item["size"]
+                            result.append(entry)
+                        return {
+                            "items": result,
+                            "total": len(items),
+                            "offset": offset,
+                            "limit": limit,
+                        }
+                    raise HTTPException(
+                        status_code=404,
+                        detail="File not found in staging area",
+                    )
+                raise
+
+        # Determine content type
+        content_type, _ = mimetypes.guess_type(path)
+        if content_type is None:
+            content_type = "application/octet-stream"
+
+        return Response(
+            content=content,
+            media_type=content_type,
+            headers={"Content-Length": str(content_length)},
+        )
+
     async def _get_git_file_url(
         self,
         artifact,
@@ -2907,12 +3125,13 @@ class ArtifactController:
         For LFS files, returns a presigned URL directly to S3.
         For regular git files, returns an HTTP endpoint URL with embedded token
         that serves the file content.
+        For staged files (version='stage'), returns presigned URL to S3 staging area.
 
         Args:
             artifact: The artifact model instance
             parent_artifact: Parent artifact for S3 config inheritance
             file_path: Path to the file
-            version: Git ref/commit to read from
+            version: Git ref/commit to read from, or 'stage' for staging area
             expires_in: URL expiration time in seconds
             use_proxy: Whether to use proxy URL
             use_local_url: Whether to return localhost URL
@@ -2930,6 +3149,17 @@ class ArtifactController:
         from urllib.parse import quote, urlencode
 
         s3_config = self._get_s3_config(artifact, parent_artifact)
+
+        # Handle staging version - files are in S3 staging area, not in git
+        if version == "stage":
+            return await self._get_git_staging_file_url(
+                artifact,
+                s3_config,
+                file_path,
+                expires_in,
+                use_proxy,
+                use_local_url,
+            )
 
         # Create S3 client factory for the git repo
         s3_client_factory = partial(self._create_client_async, s3_config)

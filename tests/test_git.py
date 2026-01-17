@@ -2631,3 +2631,146 @@ async def test_write_file_requires_staging(
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
     await api.disconnect()
+
+
+async def test_git_storage_get_staged_file(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test downloading staged files from git-storage artifacts before commit.
+
+    This tests the scenario where:
+    1. A git-storage artifact is created
+    2. The artifact is put into staging mode
+    3. A file is uploaded to staging
+    4. get_file is called with version='stage' to download the staged file
+
+    Before the fix, this would fail with "Repository is empty (no commits)" because
+    _get_git_file_url didn't handle version='stage' properly.
+    """
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-staged-file-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    artifact_alias = f"git-staged-test-{uuid.uuid4().hex[:8]}"
+
+    # Create a git-storage artifact
+    artifact = await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Git Staged File Test"},
+        config={"storage": "git"},
+    )
+
+    # Put artifact into staging mode
+    await artifact_manager.edit(artifact_id=artifact_alias, stage=True)
+
+    # Upload a file to staging using put_file
+    file_content = "Hello from staging!"
+    put_url = await artifact_manager.put_file(
+        artifact_id=artifact_alias,
+        file_path="test.txt",
+    )
+    response = requests.put(put_url, data=file_content)
+    assert response.ok, f"Failed to upload file: {response.status_code}"
+
+    # Verify the file appears in staged file list
+    staged_files = await artifact_manager.list_files(
+        artifact_id=artifact_alias,
+        version="stage"
+    )
+    assert len(staged_files) >= 1, f"Expected at least 1 staged file, got {len(staged_files)}"
+    file_names = [f["name"] for f in staged_files]
+    assert "test.txt" in file_names, f"Expected 'test.txt' in staged files, got: {file_names}"
+
+    # This is the key test: get_file with version='stage' should return a valid URL
+    # Before the fix, this would fail with "Repository is empty"
+    staged_file_url = await artifact_manager.get_file(
+        artifact_id=artifact_alias,
+        file_path="test.txt",
+        version="stage"
+    )
+
+    # Download and verify the file content
+    response = requests.get(staged_file_url)
+    assert response.ok, f"Failed to download staged file: {response.status_code} - {response.text}"
+    assert response.text == file_content, f"Expected '{file_content}', got '{response.text}'"
+
+    # Now commit and verify we can still access the file
+    await artifact_manager.commit(artifact_id=artifact_alias)
+
+    # After commit, file should be accessible without version='stage'
+    committed_file_url = await artifact_manager.get_file(
+        artifact_id=artifact_alias,
+        file_path="test.txt"
+    )
+    response = requests.get(committed_file_url)
+    assert response.ok, f"Failed to download committed file: {response.status_code}"
+    assert response.text == file_content
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
+
+
+async def test_git_storage_get_staged_file_http_endpoint(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test the HTTP endpoint for staged files in git-storage artifacts.
+
+    This tests the /files/{path} HTTP endpoint with stage=true parameter.
+    """
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-staged-http-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+    workspace = api.config.workspace
+
+    artifact_alias = f"git-staged-http-{uuid.uuid4().hex[:8]}"
+
+    # Create a git-storage artifact
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Git Staged HTTP Test"},
+        config={"storage": "git"},
+    )
+
+    # Put artifact into staging mode
+    await artifact_manager.edit(artifact_id=artifact_alias, stage=True)
+
+    # Upload a file to staging
+    file_content = "HTTP endpoint test content"
+    put_url = await artifact_manager.put_file(
+        artifact_id=artifact_alias,
+        file_path="http_test.txt",
+    )
+    response = requests.put(put_url, data=file_content)
+    assert response.ok, f"Failed to upload file: {response.status_code}"
+
+    # Test the HTTP endpoint directly with stage=true
+    http_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/files/http_test.txt?stage=true"
+    response = requests.get(
+        http_url,
+        headers={"Authorization": f"Bearer {test_user_token}"}
+    )
+    assert response.ok, f"HTTP endpoint failed: {response.status_code} - {response.text}"
+    assert response.text == file_content
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
