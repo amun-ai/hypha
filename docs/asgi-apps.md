@@ -178,16 +178,16 @@ async def serve_fastapi(args, context=None):
 async def main():
     # Connect to Hypha server
     server = await connect_to_server({"server_url": "https://hypha.aicell.io"})
-    
+        
     svc_info = await server.register_service({
         "id": "cat",
         "name": "cat",
         "type": "asgi",
         "serve": serve_fastapi,
-        "config": {"visibility": "public", , "require_context": True}
+        "config": {"visibility": "public", "require_context": True}
     })
 
-    print(f"Access your app at:  {server.config.public_base_url}/{server.config.workspace}/apps/{svc_info['id'].split(':')[1]}")
+    print(f"Access your app at: {server.config.public_base_url}/{server.config.workspace}/apps/{svc_info['id'].split(':')[1]}")
     await server.serve()
 
 asyncio.run(main())
