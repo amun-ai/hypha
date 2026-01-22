@@ -2774,3 +2774,122 @@ async def test_git_storage_get_staged_file_http_endpoint(
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
     await api.disconnect()
+
+
+async def test_git_artifact_appears_in_list(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test that git-storage artifacts appear in list() with default stage=False.
+
+    This is a regression test for the bug where git-storage artifacts were not
+    appearing in list() results because they lacked entries in the versions array.
+    The list() method filters by json_array_length(versions) > 0 when stage=False,
+    so git artifacts need a "git" version entry to be visible.
+
+    Tests both:
+    1. Git artifact created without staging (should have "git" version immediately)
+    2. Git artifact created with staging then committed (should have "git" version after commit)
+    """
+    import subprocess
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-list-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+    workspace = api.config.workspace
+
+    # Test 1: Create EMPTY git artifact without staging - should appear in list immediately
+    # This is the key regression test: empty git artifacts must be visible in list()
+    artifact_alias_1 = f"git-list-test-1-{uuid.uuid4().hex[:8]}"
+    result = await artifact_manager.create(
+        alias=artifact_alias_1,
+        manifest={"name": "Git List Test 1"},
+        config={"storage": "git"},
+    )
+
+    # Verify the artifact has at least one version to be visible in list
+    assert result.get("versions"), f"Git artifact should have versions array, got: {result}"
+    assert len(result["versions"]) > 0, f"Git artifact should have at least one version to be visible in list"
+
+    # Verify artifact is empty (no files pushed yet)
+    assert result.get("file_count", 0) == 0, f"Newly created git artifact should be empty, got file_count: {result.get('file_count')}"
+
+    # Verify EMPTY artifact appears in list with default stage=False
+    children = await artifact_manager.list_children()
+    child_aliases = [c.get("alias") for c in children]
+    assert artifact_alias_1 in child_aliases, \
+        f"Empty git artifact should appear in list() with default stage=False. Got aliases: {child_aliases}"
+
+    # Test 2: Create git artifact with staging, commit, then check listing
+    artifact_alias_2 = f"git-list-test-2-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias_2,
+        manifest={"name": "Git List Test 2"},
+        config={"storage": "git"},
+        stage=True,  # Create in staging mode
+    )
+
+    # Before commit, artifact should NOT appear with stage=False
+    children_before = await artifact_manager.list_children(stage=False)
+    child_aliases_before = [c.get("alias") for c in children_before]
+    assert artifact_alias_2 not in child_aliases_before, \
+        f"Staged git artifact should NOT appear in list() with stage=False before commit"
+
+    # Artifact should appear with stage=True
+    children_staged = await artifact_manager.list_children(stage=True)
+    child_aliases_staged = [c.get("alias") for c in children_staged]
+    assert artifact_alias_2 in child_aliases_staged, \
+        f"Staged git artifact should appear in list() with stage=True"
+
+    # Push a file using git and commit
+    port = SIO_PORT
+    auth_url = f"http://user-1:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias_2}"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        local_repo = os.path.join(tmpdir, "repo")
+        os.makedirs(local_repo)
+        subprocess.run(["git", "init", "-b", "main"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
+
+        # Create a file
+        with open(os.path.join(local_repo, "README.md"), "w") as f:
+            f.write("# Test\n")
+
+        subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
+        result = subprocess.run(
+            ["git", "push", "-u", "origin", "main"],
+            cwd=local_repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"Push failed: {result.stderr}"
+
+    # Commit the artifact
+    commit_result = await artifact_manager.commit(artifact_id=artifact_alias_2)
+
+    # Verify the committed artifact has "v0" version
+    assert commit_result.get("versions"), f"Committed git artifact should have versions array"
+    version_names_2 = [v.get("version") for v in commit_result["versions"]]
+    assert "v0" in version_names_2, f"Committed git artifact should have 'v0' version, got: {version_names_2}"
+
+    # After commit, artifact should appear with stage=False
+    children_after = await artifact_manager.list_children(stage=False)
+    child_aliases_after = [c.get("alias") for c in children_after]
+    assert artifact_alias_2 in child_aliases_after, \
+        f"Committed git artifact should appear in list() with stage=False. Got aliases: {child_aliases_after}"
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias_1)
+    await artifact_manager.delete(artifact_id=artifact_alias_2)
+    await api.disconnect()

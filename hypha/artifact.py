@@ -3450,6 +3450,29 @@ class ArtifactController:
                         raise
 
         if not files_to_commit and not files_to_remove:
+            # Even with no staged files, we need to ensure the artifact has a version
+            # to be visible in list() when stage=False (which filters by versions > 0).
+            # This handles the case where files were pushed via git directly.
+            versions = artifact.versions or []
+            if not versions:
+                versions.append({
+                    "version": "v0",
+                    "comment": comment or "Initial version",
+                    "created_at": int(time.time()),
+                })
+                artifact.versions = versions
+                flag_modified(artifact, "versions")
+
+            # Clear staging
+            artifact.staging = None
+            flag_modified(artifact, "staging")
+
+            # Count files in repository from HEAD if available
+            current_head = await repo.head_async()
+            if current_head:
+                all_items = await repo.list_tree_async("", current_head)
+                artifact.file_count = len([i for i in all_items if i["type"] == "blob"])
+
             return {
                 "status": "no_changes",
                 "artifact_id": f"{artifact.workspace}/{artifact.alias}",
@@ -3607,6 +3630,18 @@ class ArtifactController:
         # Count files in repository
         all_items = await repo.list_tree_async("", commit.id)
         artifact.file_count = len([i for i in all_items if i["type"] == "blob"])
+
+        # Ensure git artifact has a version entry to be visible in list()
+        # when stage=False (which filters by json_array_length(versions) > 0)
+        versions = artifact.versions or []
+        if not versions:
+            versions.append({
+                "version": "v0",
+                "comment": comment or "Initial version",
+                "created_at": int(time_module.time()),
+            })
+            artifact.versions = versions
+            flag_modified(artifact, "versions")
 
         return {
             "status": "committed",
