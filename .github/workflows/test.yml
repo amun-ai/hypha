@@ -56,6 +56,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install tox tox-gh-actions
         shell: bash -l {0}
+      - name: Check hypha-rpc static assets version
+        run: |
+          pip install httpx
+          python scripts/upgrade_rpc_assets.py --check
+        shell: bash -l {0}
       - name: Verify conda setup
         run: |
           which conda

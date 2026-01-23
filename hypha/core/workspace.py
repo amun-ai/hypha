@@ -1233,7 +1233,10 @@ class WorkspaceManager:
         permission = config.permission
         permission = UserPermission[permission]
 
-        # make it a child
+        # make it a child - preserve parent chain for tracking
+        # If current user already has a parent, propagate that; otherwise use current user's ID
+        parent_user_id = user_info.parent if user_info.parent else user_info.id
+        user_info.parent = parent_user_id
         user_info.id = random_id(readable=True)
         user_info.scope = create_scope(
             {allowed_workspace: permission},

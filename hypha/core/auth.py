@@ -83,6 +83,7 @@ def get_user_info(credentials):
         id=credentials.get("sub"),
         is_anonymous="anonymous" in roles,
         email=credentials.get(AUTH0_NAMESPACE + "email"),
+        parent=credentials.get(AUTH0_NAMESPACE + "parent"),
         roles=roles,
         scope=scope,
         expires_at=expires_at,
@@ -417,21 +418,22 @@ def _generate_presigned_token(
     current_time = datetime.datetime.now(datetime.timezone.utc)
     expires_at = current_time + datetime.timedelta(seconds=expires_in)
 
-    token = jwt.encode(
-        {
-            "iss": AUTH0_ISSUER,
-            "sub": user_info.id,  # user_id
-            "aud": AUTH0_AUDIENCE,
-            "iat": current_time,
-            "exp": expires_at,
-            "scope": generate_jwt_scope(user_info.scope),
-            "gty": "client-credentials",
-            AUTH0_NAMESPACE + "roles": roles,
-            AUTH0_NAMESPACE + "email": email,
-        },
-        JWT_SECRET,
-        algorithm="HS256",
-    )
+    payload = {
+        "iss": AUTH0_ISSUER,
+        "sub": user_info.id,  # user_id
+        "aud": AUTH0_AUDIENCE,
+        "iat": current_time,
+        "exp": expires_at,
+        "scope": generate_jwt_scope(user_info.scope),
+        "gty": "client-credentials",
+        AUTH0_NAMESPACE + "roles": roles,
+        AUTH0_NAMESPACE + "email": email,
+    }
+    # Include parent user ID for tracking actual user identity
+    if user_info.parent:
+        payload[AUTH0_NAMESPACE + "parent"] = user_info.parent
+
+    token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
     return token
 
 _generate_token_function = _generate_presigned_token

@@ -95,9 +95,10 @@ def extract_credentials_from_basic_auth(
 
     Git uses HTTP Basic Authentication for push operations.
     The password field is used as the Hypha token.
-    The username should match the user ID in the token.
+    The username must be 'git' - authorization is determined solely
+    by the token.
 
-    Format: Authorization: Basic base64(username:password)
+    Format: Authorization: Basic base64(git:token)
 
     Args:
         authorization: The Authorization header value
@@ -916,15 +917,61 @@ def create_git_router(
     """
     router = APIRouter()
 
+    def _validate_git_username(provided_username: Optional[str]) -> None:
+        """Validate that username is 'git' for Basic Auth.
+
+        Raises HTTPException if username is provided but not 'git'.
+        """
+        if provided_username is not None and provided_username != "git":
+            logger.warning(f"Git auth: invalid username '{provided_username}', expected 'git'")
+            raise HTTPException(
+                status_code=401,
+                detail="Username must be 'git'. Use 'git' as username and your token as password.",
+                headers={"WWW-Authenticate": 'Basic realm="Git Repository"'},
+            )
+
+    async def git_optional_auth(
+        request: Request,
+        authorization: Optional[str] = Header(None),
+    ):
+        """Optional auth for Git read operations (clone/fetch).
+
+        If credentials are provided, validates username is 'git'.
+        Returns user_info if authenticated, None if anonymous.
+        """
+        if not authorization:
+            # No auth provided, fall back to optional dep
+            return await login_optional_dep(request)
+
+        # Auth provided - validate username and parse token
+        provided_username, token = extract_credentials_from_basic_auth(authorization)
+        _validate_git_username(provided_username)
+
+        if not token:
+            # Invalid auth format - fall back to optional dep
+            return await login_optional_dep(request)
+
+        if parse_user_token:
+            try:
+                user_info = await parse_user_token(token)
+                if user_info.scope.current_workspace is None:
+                    user_info.scope.current_workspace = user_info.get_workspace()
+                return user_info
+            except Exception:
+                # Token parsing failed - fall back to optional dep
+                return await login_optional_dep(request)
+        else:
+            return await login_optional_dep(request)
+
     async def git_basic_auth(
         request: Request,
         authorization: Optional[str] = Header(None),
     ):
         """Custom auth dependency that handles HTTP Basic Auth for Git.
 
-        Git clients send credentials as Basic Auth: base64(username:password)
-        where the password is the Hypha token and the username must match
-        the user ID encoded in the token.
+        Git clients send credentials as Basic Auth: base64(git:token)
+        where username must be 'git' and password is the Hypha token.
+        Authorization is determined solely by the token.
         """
         # Debug logging for all headers
         logger.info(f"Git auth request: method={request.method}, path={request.url.path}")
@@ -949,6 +996,9 @@ def create_git_router(
                 headers={"WWW-Authenticate": 'Basic realm="Git Repository"'},
             )
 
+        # Validate username is 'git'
+        _validate_git_username(provided_username)
+
         # Parse the token to get user info
         if parse_user_token:
             try:
@@ -956,26 +1006,6 @@ def create_git_router(
                 user_info = await parse_user_token(token)
                 if user_info.scope.current_workspace is None:
                     user_info.scope.current_workspace = user_info.get_workspace()
-
-                # Validate that provided username matches the user in the token
-                # This ensures git commits are attributed to the correct user
-                if provided_username is not None:
-                    # Check if username matches user ID or email
-                    valid_usernames = [user_info.id]
-                    if user_info.email:
-                        valid_usernames.append(user_info.email)
-
-                    if provided_username not in valid_usernames:
-                        logger.warning(
-                            f"Git auth: username mismatch. Provided: {provided_username}, "
-                            f"Expected one of: {valid_usernames}"
-                        )
-                        raise HTTPException(
-                            status_code=401,
-                            detail=f"Username '{provided_username}' does not match the token. "
-                                   f"Use your user ID '{user_info.id}' or email as the username.",
-                            headers={"WWW-Authenticate": 'Basic realm="Git Repository"'},
-                        )
 
                 logger.info(f"Git auth successful for user {user_info.id}")
                 return user_info
@@ -998,7 +1028,7 @@ def create_git_router(
         workspace: str,
         alias: str,
         service: str = Query(None),
-        user_info=Depends(login_optional_dep),
+        user_info=Depends(git_optional_auth),
     ):
         """Git reference discovery endpoint.
 
@@ -1067,7 +1097,7 @@ def create_git_router(
         workspace: str,
         alias: str,
         request: Request,
-        user_info=Depends(login_optional_dep),
+        user_info=Depends(git_optional_auth),
     ):
         """Handle git fetch/clone requests."""
         # Strip .git suffix if present (Git clients may add it)

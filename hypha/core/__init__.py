@@ -310,6 +310,15 @@ class UserInfo(BaseModel):
 
     def get_workspace(self):
         return f"ws-user-{self.id}"
+
+    def get_effective_user_id(self) -> str:
+        """Get the effective user ID for tracking/attribution purposes.
+
+        Returns the parent user ID if this is a child token (generated via
+        generate_token), otherwise returns the token's own user ID.
+        This ensures consistent attribution in git history and activity logs.
+        """
+        return self.parent if self.parent else self.id
     
     @classmethod
     def from_context(cls, context: Dict[str, Any]):

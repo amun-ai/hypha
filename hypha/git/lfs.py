@@ -487,15 +487,29 @@ def create_lfs_router(
         """Handle Git LFS authentication.
 
         Git LFS uses the same Basic Auth as Git itself.
+        Username must be 'git', token is the password.
         """
-        from hypha.git.http import extract_token_from_basic_auth
+        from hypha.git.http import extract_credentials_from_basic_auth
 
         logger.debug(f"LFS auth request: method={request.method}, path={request.url.path}")
 
         if not authorization:
             return None
 
-        token = extract_token_from_basic_auth(authorization)
+        provided_username, token = extract_credentials_from_basic_auth(authorization)
+
+        # Validate username is 'git'
+        if provided_username is not None and provided_username != "git":
+            logger.warning(f"LFS auth: invalid username '{provided_username}', expected 'git'")
+            raise HTTPException(
+                status_code=401,
+                detail="Username must be 'git'. Use 'git' as username and your token as password.",
+                headers={
+                    "WWW-Authenticate": 'Basic realm="Git LFS"',
+                    "LFS-Authenticate": 'Basic realm="Git LFS"',
+                },
+            )
+
         if not token:
             return None
 

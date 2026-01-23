@@ -538,33 +538,52 @@ class HTTPProxy:
         def norm_url(url):
             return base_path.rstrip("/") + url
 
-        # download the hypha-rpc-websocket.js file from the CDN
-        self.rpc_lib_esm_content = None
-        self.rpc_lib_umd_content = None
+        # Serve hypha-rpc-websocket files from static_files folder
+        # To update these files, run: python scripts/upgrade_rpc_assets.py
+        self.static_files_dir = Path(__file__).parent / "static_files"
+
+        # Check if static RPC files version matches the expected version
+        # Note: Version enforcement happens at development/build time via scripts/upgrade_rpc_assets.py
+        rpc_version_file = self.static_files_dir / "hypha-rpc-version.txt"
+        if rpc_version_file.exists():
+            static_rpc_version = rpc_version_file.read_text().strip()
+            if static_rpc_version != hypha_rpc_version:
+                logger.warning(
+                    f"Static hypha-rpc files version mismatch: "
+                    f"found {static_rpc_version}, expected {hypha_rpc_version}. "
+                    f"Run 'python scripts/upgrade_rpc_assets.py' to update."
+                )
+        else:
+            logger.warning(
+                f"Static hypha-rpc files not found. "
+                f"Run 'python scripts/upgrade_rpc_assets.py' to fetch them."
+            )
 
         @app.get(norm_url("/assets/hypha-rpc-websocket.mjs"))
         async def hypha_rpc_websocket_mjs(request: Request):
-            if not self.rpc_lib_esm_content:
-                _rpc_lib_script = f"https://cdn.jsdelivr.net/npm/hypha-rpc@{hypha_rpc_version}/dist/hypha-rpc-websocket.mjs"
-                async with httpx.AsyncClient(timeout=10) as client:
-                    response = await client.get(_rpc_lib_script)
-                    response.raise_for_status()
-                    self.rpc_lib_esm_content = response.content
-            return Response(
-                content=self.rpc_lib_esm_content, media_type="application/javascript"
-            )
+            file_path = self.static_files_dir / "hypha-rpc-websocket.mjs"
+            if not file_path.exists():
+                return JSONResponse(
+                    status_code=404,
+                    content={
+                        "success": False,
+                        "detail": "hypha-rpc-websocket.mjs not found. Run 'python scripts/upgrade_rpc_assets.py' to fetch the file.",
+                    },
+                )
+            return FileResponse(file_path, media_type="application/javascript")
 
         @app.get(norm_url("/assets/hypha-rpc-websocket.js"))
         async def hypha_rpc_websocket_js(request: Request):
-            if not self.rpc_lib_umd_content:
-                _rpc_lib_script = f"https://cdn.jsdelivr.net/npm/hypha-rpc@{hypha_rpc_version}/dist/hypha-rpc-websocket.js"
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(_rpc_lib_script)
-                    response.raise_for_status()
-                    self.rpc_lib_umd_content = response.content
-            return Response(
-                content=self.rpc_lib_umd_content, media_type="application/javascript"
-            )
+            file_path = self.static_files_dir / "hypha-rpc-websocket.js"
+            if not file_path.exists():
+                return JSONResponse(
+                    status_code=404,
+                    content={
+                        "success": False,
+                        "detail": "hypha-rpc-websocket.js not found. Run 'python scripts/upgrade_rpc_assets.py' to fetch the file.",
+                    },
+                )
+            return FileResponse(file_path, media_type="application/javascript")
 
         @app.get(norm_url("/assets/config.json"))
         async def get_config(
