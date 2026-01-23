@@ -28,6 +28,18 @@ serviceAccount:
 podAnnotations: {}
 podLabels: {}
 
+# hostAliases allows you to add entries to the pod's /etc/hosts file
+# This is useful for resolving domains that may be blocked or slow in certain regions
+# Example: Use CDN mirrors in China by pointing cdn.jsdelivr.net to its IP
+# hostAliases:
+#   - ip: "151.101.1.229"
+#     hostnames:
+#       - "cdn.jsdelivr.net"
+#   - ip: "104.16.89.20"
+#     hostnames:
+#       - "cdnjs.cloudflare.com"
+hostAliases: []
+
 podSecurityContext:
   seccompProfile:
     type: RuntimeDefault
@@ -256,6 +268,14 @@ env:
   # Housekeeping configuration
   # - name: HYPHA_HOUSEKEEPING_INTERVAL
   #   value: "300"
+
+  # CDN configuration (for China or offline deployments)
+  # Override the default CDN base URL (e.g., for China-accessible mirrors)
+  # - name: HYPHA_CDN_BASE_URL
+  #   value: "https://fastly.jsdelivr.net"
+  # Serve CDN assets from bundled local files (requires download_cdn_assets.py first)
+  # - name: HYPHA_SERVE_LOCAL_CDN
+  #   value: "true"
 
 # Define command-line arguments here
 startupCommand:

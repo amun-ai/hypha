@@ -30,6 +30,10 @@ spec:
       serviceAccountName: {{ if .Values.k8sWorker.enabled }}{{ include "hypha-server.serviceAccountName" . }}-k8s-worker{{ else }}{{ include "hypha-server.serviceAccountName" . }}{{ end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           securityContext:
