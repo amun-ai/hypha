@@ -10437,7 +10437,7 @@ async def test_git_private_artifact_presigned_url(
         # Add, commit, push
         subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "commit", "-m", "Add private file"], cwd=local_repo, check=True, capture_output=True)
-        auth_url = git_url.replace("http://", f"http://user-1:{test_user_token}@")
+        auth_url = git_url.replace("http://", f"http://git:{test_user_token}@")
         subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
         result = subprocess.run(
             ["git", "push", "-u", "origin", "main"],
@@ -10524,7 +10524,7 @@ async def test_git_private_artifact_direct_access_denied(
 
         subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "commit", "-m", "Add file"], cwd=local_repo, check=True, capture_output=True)
-        auth_url = git_url.replace("http://", f"http://user-1:{test_user_token}@")
+        auth_url = git_url.replace("http://", f"http://git:{test_user_token}@")
         subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
         subprocess.run(["git", "push", "-u", "origin", "main"], cwd=local_repo, check=True, capture_output=True, timeout=30)
 
