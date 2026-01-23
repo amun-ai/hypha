@@ -13,15 +13,29 @@ The script will automatically use the hypha_rpc_version from hypha/__init__.py.
 
 import argparse
 import asyncio
+import re
 import sys
 from pathlib import Path
 
 import httpx
 
-# Add the parent directory to the path so we can import hypha
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hypha import hypha_rpc_version
+def get_hypha_rpc_version() -> str:
+    """Extract hypha_rpc_version from hypha/__init__.py without importing.
+
+    This avoids importing hypha which would require hypha_rpc to be installed.
+    """
+    init_file = Path(__file__).parent.parent / "hypha" / "__init__.py"
+    content = init_file.read_text()
+    match = re.search(r'hypha_rpc_version\s*=\s*["\']([^"\']+)["\']', content)
+    if not match:
+        raise RuntimeError(
+            f"Could not find hypha_rpc_version in {init_file}"
+        )
+    return match.group(1)
+
+
+hypha_rpc_version = get_hypha_rpc_version()
 
 # Static files directory relative to this script
 STATIC_FILES_DIR = Path(__file__).parent.parent / "hypha" / "static_files"
