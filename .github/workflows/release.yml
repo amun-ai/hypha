@@ -1,30 +1,25 @@
 name: Release
 
 on:
-  workflow_run:
-    workflows: ["Test"]
-    types:
-      - completed
-    branches:
-      - main
-      - master
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual release'
+        required: false
+        default: 'Manual release trigger'
 
 jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    # Only run if tests passed
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 2
 
       - name: Upload docs to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
-        if: github.event.workflow_run.head_branch == 'main'
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./docs
@@ -34,13 +29,13 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5.1.1
         with:
-          python-version: "3.8"
+          python-version: "3.10"
 
       - name: Set up Conda
         uses: conda-incubator/setup-miniconda@v3
         with:
           auto-update-conda: true
-          python-version: "3.8"
+          python-version: "3.10"
           channels: conda-forge,defaults
           channel-priority: true
 
@@ -87,4 +82,3 @@ jobs:
           tag: "${{ steps.check-version.outputs.tag }}"
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-
