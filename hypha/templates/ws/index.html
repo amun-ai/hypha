@@ -19,7 +19,8 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
-    <script src="https://nextapps-de.github.io/winbox/dist/js/winbox.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/winbox@0.2.82/dist/css/winbox.min.css" />
+    <script src="https://cdn.jsdelivr.net/npm/winbox@0.2.82/dist/js/winbox.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.7.7/axios.min.js"></script>
     <!-- Favicon and Icons -->
     <script>
@@ -2568,6 +2569,104 @@
 
             const canUpload = currentArtifact.staging !== null; // Can only upload to staged artifacts
 
+            // Static hosting state
+            const [staticHostingEnabled, setStaticHostingEnabled] = React.useState(
+                !!(currentArtifact.config?.view_config)
+            );
+            const [staticHostingRootDir, setStaticHostingRootDir] = React.useState(
+                currentArtifact.config?.view_config?.root_directory || '/'
+            );
+            const [staticHostingBranch, setStaticHostingBranch] = React.useState(
+                currentArtifact.config?.view_config?.branch || 'main'
+            );
+            const [staticHostingHeaders, setStaticHostingHeaders] = React.useState(
+                JSON.stringify(currentArtifact.config?.view_config?.headers || {}, null, 2)
+            );
+            const [savingStaticHosting, setSavingStaticHosting] = React.useState(false);
+            const [staticHostingSaved, setStaticHostingSaved] = React.useState(false);
+
+            // Git versions (branches and tags) - from artifact.versions for git-storage artifacts
+            const [gitVersions, setGitVersions] = React.useState(
+                currentArtifact.versions || []
+            );
+            const [loadingGitVersions, setLoadingGitVersions] = React.useState(false);
+            const [gitVersionsError, setGitVersionsError] = React.useState(null);
+
+            // Refresh git versions by re-reading the artifact
+            const fetchGitVersions = React.useCallback(async () => {
+                if (!currentArtifact.git_url || !am) return;
+                try {
+                    setLoadingGitVersions(true);
+                    setGitVersionsError(null);
+                    // Re-read the artifact to get fresh versions
+                    const updatedArtifact = await am.read(currentArtifact.id, { _rkwargs: true });
+                    setGitVersions(updatedArtifact.versions || []);
+                    setCurrentArtifact(updatedArtifact);
+                } catch (error) {
+                    console.error('Failed to fetch git versions:', error);
+                    setGitVersionsError(error.message || 'Failed to fetch versions');
+                } finally {
+                    setLoadingGitVersions(false);
+                }
+            }, [currentArtifact.git_url, currentArtifact.id, am]);
+
+            // Update gitVersions when currentArtifact changes
+            React.useEffect(() => {
+                if (currentArtifact.versions) {
+                    setGitVersions(currentArtifact.versions);
+                }
+            }, [currentArtifact.versions]);
+
+            // Save static hosting settings
+            const handleSaveStaticHosting = async () => {
+                if (savingStaticHosting) return;
+                try {
+                    setSavingStaticHosting(true);
+                    setStaticHostingSaved(false);
+
+                    let newConfig = { ...(currentArtifact.config || {}) };
+
+                    if (staticHostingEnabled) {
+                        // Parse headers JSON
+                        let parsedHeaders = {};
+                        if (staticHostingHeaders.trim()) {
+                            try {
+                                parsedHeaders = JSON.parse(staticHostingHeaders);
+                            } catch (e) {
+                                alert('Invalid JSON in headers field: ' + e.message);
+                                setSavingStaticHosting(false);
+                                return;
+                            }
+                        }
+
+                        newConfig.view_config = {
+                            branch: staticHostingBranch || 'main',
+                            root_directory: staticHostingRootDir || '/',
+                            headers: parsedHeaders,
+                            index: 'index.html',
+                        };
+                    } else {
+                        // Remove view_config when disabled
+                        delete newConfig.view_config;
+                    }
+
+                    await am.edit(currentArtifact.id, { config: newConfig, _rkwargs: true });
+
+                    // Refresh artifact state
+                    const updatedArtifact = await am.read(currentArtifact.id, { _rkwargs: true });
+                    setCurrentArtifact(updatedArtifact);
+
+                    // Show saved state briefly
+                    setStaticHostingSaved(true);
+                    setTimeout(() => setStaticHostingSaved(false), 2000);
+                } catch (error) {
+                    console.error('Failed to save static hosting settings:', error);
+                    alert(`Failed to save settings: ${error.message || error}`);
+                } finally {
+                    setSavingStaticHosting(false);
+                }
+            };
+
             // Generate git URL with embedded token (works for both clone and push)
             const generateGitAuthUrl = async () => {
                 if (!ws || !currentArtifact.git_url) return;
@@ -3343,31 +3442,33 @@
                                             </div>
                                         </div>
                                     )}
+                                </div>
+                            </div>
 
-                                    {/* Git Repository URL - shown when storage is 'git' */}
-                                    {currentArtifact.git_url && (() => {
-                                        // Check if artifact is publicly readable using _permissions
-                                        const expandedPerms = currentArtifact._permissions || {};
-                                        const publicOps = expandedPerms['*'] || [];
-                                        const isPublicRead = publicOps.includes('read') || publicOps.includes('get_file');
+                            {/* Git Repository Section - Full width, shown when storage is 'git' */}
+                            {currentArtifact.git_url && (() => {
+                                // Check if artifact is publicly readable using _permissions
+                                const expandedPerms = currentArtifact._permissions || {};
+                                const publicOps = expandedPerms['*'] || [];
+                                const isPublicRead = publicOps.includes('read') || publicOps.includes('get_file');
 
-                                        return (
-                                        <div className="mt-4 pt-3 border-t border-gray-700">
-                                            <div className="flex items-center gap-2 mb-2">
-                                                <i className="fab fa-git-alt text-orange-400"></i>
-                                                <span className="text-gray-300 font-medium">Git Repository</span>
-                                                {isPublicRead ? (
-                                                    <span className="px-2 py-0.5 bg-green-900 text-green-200 rounded text-xs">
-                                                        <i className="fas fa-globe mr-1"></i>Public
-                                                    </span>
-                                                ) : (
-                                                    <span className="px-2 py-0.5 bg-yellow-900 text-yellow-200 rounded text-xs">
-                                                        <i className="fas fa-lock mr-1"></i>Private
-                                                    </span>
-                                                )}
-                                            </div>
+                                return (
+                                <div className="bg-gray-800 rounded-lg p-4 border border-gray-700 mb-6">
+                                    <div className="flex items-center gap-2 mb-3">
+                                        <i className="fab fa-git-alt text-orange-400 text-lg"></i>
+                                        <h3 className="text-lg font-semibold text-white">Git Repository</h3>
+                                        {isPublicRead ? (
+                                            <span className="px-2 py-0.5 bg-green-900 text-green-200 rounded text-xs">
+                                                <i className="fas fa-globe mr-1"></i>Public
+                                            </span>
+                                        ) : (
+                                            <span className="px-2 py-0.5 bg-yellow-900 text-yellow-200 rounded text-xs">
+                                                <i className="fas fa-lock mr-1"></i>Private
+                                            </span>
+                                        )}
+                                    </div>
 
-                                            {/* For public artifacts: show read-only URL by default */}
+                                    {/* For public artifacts: show read-only URL by default */}
                                             {isPublicRead && !gitAuthUrl && (
                                                 <div className="mb-3">
                                                     <div className="flex items-center gap-2 mb-1">
@@ -3375,12 +3476,12 @@
                                                             <i className="fas fa-eye mr-1"></i>Read-Only URL (Public)
                                                         </span>
                                                     </div>
-                                                    <div className="flex items-center gap-2">
-                                                        <code className="flex-1 bg-gray-900 px-3 py-2 rounded text-sm font-mono overflow-x-auto text-green-400">
+                                                    <div className="flex items-stretch gap-2">
+                                                        <code className="flex-1 bg-gray-900 px-3 py-2 rounded text-sm font-mono overflow-x-auto text-green-400 flex items-center">
                                                             {currentArtifact.git_url}
                                                         </code>
                                                         <button
-                                                            className={`${gitUrlCopied ? 'bg-green-600' : 'bg-gray-600 hover:bg-gray-500'} text-white px-3 py-2 rounded transition duration-200`}
+                                                            className={`${gitUrlCopied ? 'bg-green-600' : 'bg-gray-600 hover:bg-gray-500'} text-white px-3 rounded transition duration-200 flex items-center`}
                                                             onClick={() => copyGitUrl(currentArtifact.git_url)}
                                                             title={gitUrlCopied ? 'Copied!' : 'Copy clone command'}
                                                         >
@@ -3404,12 +3505,12 @@
                                                     </div>
                                                     {gitAuthUrl ? (
                                                         <>
-                                                            <div className="flex items-center gap-2">
-                                                                <code className="flex-1 bg-gray-900 px-3 py-2 rounded text-sm font-mono overflow-x-auto text-yellow-400">
+                                                            <div className="flex items-stretch gap-2">
+                                                                <code className="flex-1 bg-gray-900 px-3 py-2 rounded text-sm font-mono overflow-x-auto text-yellow-400 flex items-center">
                                                                     {gitAuthUrl}
                                                                 </code>
                                                                 <button
-                                                                    className={`${gitUrlCopied ? 'bg-green-600' : 'bg-gray-600 hover:bg-gray-500'} text-white px-3 py-2 rounded transition duration-200`}
+                                                                    className={`${gitUrlCopied ? 'bg-green-600' : 'bg-gray-600 hover:bg-gray-500'} text-white px-3 rounded transition duration-200 flex items-center`}
                                                                     onClick={() => copyGitUrl(gitAuthUrl)}
                                                                     title={gitUrlCopied ? 'Copied!' : 'Copy clone command'}
                                                                 >
@@ -3422,18 +3523,18 @@
                                                         </>
                                                     ) : (
                                                         <>
-                                                            <div className="flex items-center gap-2">
-                                                                <code className="flex-1 bg-gray-900 px-3 py-2 rounded text-sm font-mono overflow-x-auto text-gray-500">
+                                                            <div className="flex items-stretch gap-2">
+                                                                <code className="flex-1 bg-gray-900 px-3 py-2 rounded text-sm font-mono overflow-x-auto text-gray-500 flex items-center">
                                                                     {currentArtifact.git_url}
                                                                 </code>
                                                                 <button
-                                                                    className="bg-orange-600 hover:bg-orange-500 text-white px-3 py-2 rounded transition duration-200 flex items-center gap-2"
+                                                                    className="bg-orange-600 hover:bg-orange-500 text-white px-4 rounded transition duration-200 flex items-center gap-2 whitespace-nowrap"
                                                                     onClick={generateGitAuthUrl}
                                                                     disabled={generatingToken}
                                                                     title="Generate authenticated URL for clone and push access"
                                                                 >
-                                                                    <i className={`fas ${generatingToken ? 'fa-spinner fa-spin' : 'fa-key'} mr-1`}></i>
-                                                                    Generate Auth URL
+                                                                    <i className={`fas ${generatingToken ? 'fa-spinner fa-spin' : 'fa-key'}`}></i>
+                                                                    <span className="text-sm">Generate Auth URL</span>
                                                                 </button>
                                                             </div>
                                                             <p className="text-xs text-yellow-500 mt-1">
@@ -3462,6 +3563,83 @@
                                                     </p>
                                                 </div>
                                             )}
+                                            {/* Git Versions (Branches & Tags) */}
+                                            <div className="mt-3 p-3 bg-gray-900 rounded border border-gray-700">
+                                                <div className="flex items-center justify-between mb-2">
+                                                    <span className="text-gray-300 text-sm font-medium">
+                                                        <i className="fas fa-code-branch text-purple-400 mr-2"></i>
+                                                        Branches & Tags
+                                                    </span>
+                                                    <button
+                                                        onClick={fetchGitVersions}
+                                                        disabled={loadingGitVersions}
+                                                        className="text-gray-400 hover:text-white text-xs px-2 py-1 rounded transition-colors"
+                                                        title="Refresh versions"
+                                                    >
+                                                        <i className={`fas fa-sync-alt ${loadingGitVersions ? 'fa-spin' : ''}`}></i>
+                                                    </button>
+                                                </div>
+                                                {loadingGitVersions ? (
+                                                    <div className="text-gray-500 text-xs flex items-center">
+                                                        <i className="fas fa-spinner fa-spin mr-2"></i>
+                                                        Loading versions...
+                                                    </div>
+                                                ) : gitVersionsError ? (
+                                                    <div className="text-red-400 text-xs">
+                                                        <i className="fas fa-exclamation-circle mr-1"></i>
+                                                        {gitVersionsError}
+                                                    </div>
+                                                ) : gitVersions.length === 0 ? (
+                                                    <div className="text-gray-500 text-xs">
+                                                        No branches or tags yet. Push some commits first.
+                                                    </div>
+                                                ) : (
+                                                    <div className="space-y-2">
+                                                        {/* Branches */}
+                                                        {gitVersions.filter(v => v.type === 'branch').length > 0 && (
+                                                            <div>
+                                                                <div className="text-gray-500 text-xs mb-1">Branches:</div>
+                                                                <div className="flex flex-wrap gap-1">
+                                                                    {gitVersions.filter(v => v.type === 'branch').map(branch => (
+                                                                        <span
+                                                                            key={branch.name}
+                                                                            className={`px-2 py-0.5 rounded text-xs ${
+                                                                                branch.default
+                                                                                    ? 'bg-purple-900 text-purple-200 border border-purple-700'
+                                                                                    : 'bg-gray-700 text-gray-300'
+                                                                            }`}
+                                                                            title={`SHA: ${branch.sha?.substring(0, 7) || 'N/A'}`}
+                                                                        >
+                                                                            <i className="fas fa-code-branch mr-1"></i>
+                                                                            {branch.name}
+                                                                            {branch.default && <span className="ml-1 text-purple-400">*</span>}
+                                                                        </span>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                        {/* Tags */}
+                                                        {gitVersions.filter(v => v.type === 'tag').length > 0 && (
+                                                            <div>
+                                                                <div className="text-gray-500 text-xs mb-1">Tags:</div>
+                                                                <div className="flex flex-wrap gap-1">
+                                                                    {gitVersions.filter(v => v.type === 'tag').map(tag => (
+                                                                        <span
+                                                                            key={tag.name}
+                                                                            className="px-2 py-0.5 bg-blue-900 text-blue-200 rounded text-xs"
+                                                                            title={`SHA: ${tag.sha?.substring(0, 7) || 'N/A'}`}
+                                                                        >
+                                                                            <i className="fas fa-tag mr-1"></i>
+                                                                            {tag.name}
+                                                                        </span>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </div>
+
                                             {/* Git LFS Note */}
                                             <div className="mt-3 p-2 bg-gray-900 rounded border border-gray-700">
                                                 <div className="flex items-start gap-2">
@@ -3481,10 +3659,8 @@
                                                 </div>
                                             </div>
                                         </div>
-                                        );
-                                    })()}
-                                </div>
-                            </div>
+                                    );
+                                })()}
 
                             {/* File Management Section */}
                             <div className="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
@@ -3659,6 +3835,163 @@
                                 </div>
                             </div>
                             
+                            {/* Static Site Hosting Section */}
+                            <div className="bg-gray-800 rounded-lg border border-gray-700 mt-6">
+                                <details className="group" open={staticHostingEnabled}>
+                                    <summary className="cursor-pointer p-4 flex items-center justify-between text-gray-300 hover:text-white transition-colors">
+                                        <div className="flex items-center">
+                                            <i className="fas fa-globe text-green-400 mr-2"></i>
+                                            <span className="font-medium">Static Site Hosting</span>
+                                            {staticHostingEnabled && (
+                                                <span className="ml-2 px-2 py-0.5 bg-green-900 text-green-200 rounded text-xs">
+                                                    Enabled
+                                                </span>
+                                            )}
+                                        </div>
+                                        <i className="fas fa-chevron-down group-open:rotate-180 transition-transform duration-200"></i>
+                                    </summary>
+                                    <div className="border-t border-gray-700 p-4 space-y-4">
+                                        {/* Enable Toggle */}
+                                        <div className="flex items-center justify-between">
+                                            <div>
+                                                <label className="text-gray-300 font-medium">Enable Static Hosting</label>
+                                                <p className="text-gray-500 text-xs mt-0.5">Serve files like GitHub Pages</p>
+                                            </div>
+                                            <label className="relative inline-flex items-center cursor-pointer">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={staticHostingEnabled}
+                                                    onChange={(e) => setStaticHostingEnabled(e.target.checked)}
+                                                    className="sr-only peer"
+                                                />
+                                                <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-600"></div>
+                                            </label>
+                                        </div>
+
+                                        {/* Settings (shown when enabled) */}
+                                        {staticHostingEnabled && (
+                                            <>
+                                                {/* Root Directory */}
+                                                <div>
+                                                    <label className="text-gray-400 text-sm block mb-1">Root Directory</label>
+                                                    <input
+                                                        type="text"
+                                                        value={staticHostingRootDir}
+                                                        onChange={(e) => setStaticHostingRootDir(e.target.value)}
+                                                        placeholder="/"
+                                                        className="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-white text-sm focus:border-blue-500 focus:outline-none"
+                                                    />
+                                                    <p className="text-gray-500 text-xs mt-1">Subdirectory to serve (e.g., "/docs" or "/")</p>
+                                                </div>
+
+                                                {/* Branch Selector (only for git-storage) */}
+                                                {currentArtifact.git_url && (
+                                                    <div>
+                                                        <label className="text-gray-400 text-sm block mb-1">Source Branch</label>
+                                                        <div className="flex items-center gap-2">
+                                                            <select
+                                                                value={staticHostingBranch}
+                                                                onChange={(e) => setStaticHostingBranch(e.target.value)}
+                                                                className="flex-1 bg-gray-900 border border-gray-600 rounded px-3 py-2 text-white text-sm focus:border-blue-500 focus:outline-none"
+                                                            >
+                                                                {gitVersions.filter(v => v.type === 'branch').length > 0 ? (
+                                                                    gitVersions
+                                                                        .filter(v => v.type === 'branch')
+                                                                        .map(branch => (
+                                                                            <option key={branch.name} value={branch.name}>
+                                                                                {branch.name}{branch.default ? ' (default)' : ''}
+                                                                            </option>
+                                                                        ))
+                                                                ) : (
+                                                                    <option value="main">main</option>
+                                                                )}
+                                                            </select>
+                                                            <button
+                                                                onClick={fetchGitVersions}
+                                                                disabled={loadingGitVersions}
+                                                                className="bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 text-white px-3 py-2 rounded transition duration-200"
+                                                                title="Refresh branches"
+                                                            >
+                                                                <i className={`fas fa-sync-alt ${loadingGitVersions ? 'fa-spin' : ''}`}></i>
+                                                            </button>
+                                                        </div>
+                                                        <p className="text-gray-500 text-xs mt-1">Branch to serve (e.g., "main" or "gh-pages")</p>
+                                                    </div>
+                                                )}
+
+                                                {/* Headers */}
+                                                <div>
+                                                    <label className="text-gray-400 text-sm block mb-1">Custom Headers (JSON)</label>
+                                                    <textarea
+                                                        value={staticHostingHeaders}
+                                                        onChange={(e) => setStaticHostingHeaders(e.target.value)}
+                                                        placeholder='{"Access-Control-Allow-Origin": "*"}'
+                                                        rows={3}
+                                                        className="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-white text-sm font-mono focus:border-blue-500 focus:outline-none resize-none"
+                                                    />
+                                                    <p className="text-gray-500 text-xs mt-1">Optional HTTP headers (CORS, caching, etc.)</p>
+                                                </div>
+
+                                                {/* View URL */}
+                                                {currentArtifact.id && (
+                                                    <div className="bg-gray-900 rounded p-3">
+                                                        <label className="text-gray-400 text-xs block mb-1">Site URL</label>
+                                                        <div className="flex items-center gap-2">
+                                                            <code className="flex-1 text-green-400 text-sm break-all">
+                                                                {window.location.origin}/{currentArtifact.id.split('/')[0]}/view/{currentArtifact.id.split('/')[1]}/
+                                                            </code>
+                                                            <button
+                                                                onClick={() => {
+                                                                    const url = `${window.location.origin}/${currentArtifact.id.split('/')[0]}/view/${currentArtifact.id.split('/')[1]}/`;
+                                                                    navigator.clipboard.writeText(url);
+                                                                }}
+                                                                className="text-gray-400 hover:text-white p-1"
+                                                                title="Copy URL"
+                                                            >
+                                                                <i className="fas fa-copy"></i>
+                                                            </button>
+                                                            <a
+                                                                href={`${window.location.origin}/${currentArtifact.id.split('/')[0]}/view/${currentArtifact.id.split('/')[1]}/`}
+                                                                target="_blank"
+                                                                rel="noopener noreferrer"
+                                                                className="text-gray-400 hover:text-white p-1"
+                                                                title="Open site"
+                                                            >
+                                                                <i className="fas fa-external-link-alt"></i>
+                                                            </a>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </>
+                                        )}
+
+                                        {/* Save Button */}
+                                        <button
+                                            onClick={handleSaveStaticHosting}
+                                            disabled={savingStaticHosting || staticHostingSaved}
+                                            className={`w-full ${staticHostingSaved ? 'bg-green-700' : 'bg-green-600 hover:bg-green-500'} disabled:bg-gray-600 text-white font-medium py-2 px-4 rounded transition duration-200 flex items-center justify-center`}
+                                        >
+                                            {savingStaticHosting ? (
+                                                <>
+                                                    <i className="fas fa-spinner fa-spin mr-2"></i>
+                                                    Saving...
+                                                </>
+                                            ) : staticHostingSaved ? (
+                                                <>
+                                                    <i className="fas fa-check mr-2"></i>
+                                                    Saved!
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <i className="fas fa-save mr-2"></i>
+                                                    Save Settings
+                                                </>
+                                            )}
+                                        </button>
+                                    </div>
+                                </details>
+                            </div>
+
                             {/* Advanced Section */}
                             <div className="bg-gray-800 rounded-lg border border-gray-700 mt-6">
                                 <details className="group">

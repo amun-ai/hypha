@@ -43,6 +43,8 @@ The RPC system is integrated with the WebSocket server and uses the `hypha-rpc` 
 - Method invocation with JSON Schema validation
 - Bidirectional communication with callback support
 
+A local copy of the hypha-rpc is located at ../hypha-rpc.
+
 ### Authentication Systems
 
 **Location**: `hypha/core/auth.py`

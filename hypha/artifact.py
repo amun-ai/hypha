@@ -1279,6 +1279,20 @@ class ArtifactController:
 
                     # Get artifact configuration
                     config = artifact.config or {}
+
+                    # Check if this is a git-storage artifact
+                    if config.get("storage") == "git":
+                        # Handle git-storage static site serving
+                        custom_headers = view_config.get("headers", {}) if isinstance(view_config, dict) else {}
+                        return await self._serve_git_static_site_file(
+                            artifact=artifact,
+                            parent_artifact=parent_artifact,
+                            file_path=file_path,
+                            view_config=view_config if isinstance(view_config, dict) else {},
+                            version=version,
+                            custom_headers=custom_headers,
+                        )
+
                     root_directory = view_config.get("root_directory", config.get("root_directory", "/"))
                     templates = view_config.get("templates", [])
                     template_engine = view_config.get("template_engine", "jinja2")
@@ -2712,6 +2726,89 @@ class ArtifactController:
             },
         )
 
+    async def _get_git_versions(
+        self,
+        artifact,
+        parent_artifact,
+    ) -> List[Dict[str, Any]]:
+        """Get available versions (branches and tags) from a git-storage artifact.
+
+        This method queries the git repository to get all branches and tags,
+        returning them in a format compatible with the versions field.
+
+        Args:
+            artifact: The artifact model instance
+            parent_artifact: Parent artifact for S3 config inheritance
+
+        Returns:
+            List of version dictionaries with structure:
+            [
+                {"type": "branch", "name": "main", "sha": "abc123...", "default": True},
+                {"type": "branch", "name": "feature-x", "sha": "def456..."},
+                {"type": "tag", "name": "v1.0", "sha": "789abc..."},
+            ]
+        """
+        from hypha.git.repo import S3GitRepo
+
+        s3_config = self._get_s3_config(artifact, parent_artifact)
+
+        # Create S3 client factory for the git repo
+        s3_client_factory = partial(self._create_client_async, s3_config)
+        prefix = f"{s3_config['prefix']}/{artifact.id}/.git"
+        repo = S3GitRepo(s3_client_factory, s3_config["bucket"], prefix, s3_config=s3_config)
+        await repo.initialize()
+
+        # Handle empty repository
+        if await repo.is_empty():
+            return []
+
+        # Get all refs
+        refs = await repo.get_refs_async()
+
+        # Determine the default branch (what HEAD points to)
+        default_branch = None
+        head_value = refs.get(b"HEAD")
+        if head_value and head_value.startswith(b"ref: refs/heads/"):
+            default_branch = head_value[16:].decode("utf-8")  # Remove "ref: refs/heads/" prefix
+
+        versions = []
+
+        # Process branches (refs/heads/*)
+        for ref_name, sha in sorted(refs.items()):
+            if ref_name.startswith(b"refs/heads/"):
+                branch_name = ref_name[11:].decode("utf-8")  # Remove "refs/heads/" prefix
+                # Skip symbolic refs
+                if sha.startswith(b"ref: "):
+                    continue
+                sha_hex = sha.decode("utf-8") if isinstance(sha, bytes) else sha
+                version_entry = {
+                    "type": "branch",
+                    "name": branch_name,
+                    "sha": sha_hex,
+                }
+                if branch_name == default_branch:
+                    version_entry["default"] = True
+                versions.append(version_entry)
+
+        # Process tags (refs/tags/*)
+        for ref_name, sha in sorted(refs.items()):
+            if ref_name.startswith(b"refs/tags/"):
+                tag_name = ref_name[10:].decode("utf-8")  # Remove "refs/tags/" prefix
+                # Skip peeled tags (they end with ^{})
+                if tag_name.endswith("^{}"):
+                    continue
+                # Skip symbolic refs
+                if sha.startswith(b"ref: "):
+                    continue
+                sha_hex = sha.decode("utf-8") if isinstance(sha, bytes) else sha
+                versions.append({
+                    "type": "tag",
+                    "name": tag_name,
+                    "sha": sha_hex,
+                })
+
+        return versions
+
     async def _resolve_git_version(
         self,
         repo,
@@ -2772,6 +2869,253 @@ class ArtifactController:
             # TODO: Could support partial SHA matching
 
         raise ValueError(f"Unknown version: {version}")
+
+    async def _serve_git_static_site_file(
+        self,
+        artifact,
+        parent_artifact,
+        file_path: str,
+        view_config: dict,
+        version: Optional[str],
+        custom_headers: Optional[dict] = None,
+    ) -> Response:
+        """Serve a file from a git-storage artifact as part of a static site.
+        
+        This implements a hybrid serving model:
+        1. First checks if file is already published to S3 sites/ folder
+        2. If not, reads from git repository, publishes to S3 (lazy publish), and serves
+        
+        The lazy publish approach ensures:
+        - Fast subsequent requests (served directly from S3)
+        - No upfront storage cost (only accessed files are copied)
+        - Automatic cache invalidation on commit via cache key invalidation
+        
+        Args:
+            artifact: The artifact model instance
+            parent_artifact: Parent artifact for S3 config inheritance
+            file_path: Path to the file within the git repository
+            view_config: View configuration containing branch, root, etc.
+            version: Optional version override (branch/tag/commit)
+            custom_headers: Optional custom headers to include in response
+            
+        Returns:
+            Response object with file content
+            
+        Raises:
+            HTTPException: If file not found or repository is empty
+        """
+        from hypha.git.repo import S3GitRepo
+        from hypha.git.lfs import LFSPointer
+        
+        s3_config = self._get_s3_config(artifact, parent_artifact)
+        
+        # Get branch from view_config or use provided version
+        branch = version or view_config.get("branch", "main")
+        root_directory = view_config.get("root_directory", view_config.get("root", "/"))
+        
+        # Build full file path within repository
+        if root_directory and root_directory != "/":
+            full_file_path = safe_join(root_directory.strip("/"), file_path)
+        else:
+            full_file_path = file_path
+        
+        # Initialize git repository
+        s3_client_factory = partial(self._create_client_async, s3_config)
+        prefix = f"{s3_config['prefix']}/{artifact.id}/.git"
+        repo = S3GitRepo(s3_client_factory, s3_config["bucket"], prefix, s3_config=s3_config)
+        await repo.initialize()
+        
+        # Check if repository is empty
+        if await repo.is_empty():
+            raise HTTPException(
+                status_code=404,
+                detail="Repository is empty (no commits)",
+            )
+        
+        # Resolve branch/version to commit SHA
+        try:
+            commit_sha = await self._resolve_git_version(repo, branch)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Branch or version not found: {branch}",
+            )
+        
+        if commit_sha is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Could not resolve version: {branch}",
+            )
+        
+        # Get short SHA for S3 site path (7 chars like git)
+        if isinstance(commit_sha, bytes):
+            sha_hex = commit_sha.hex() if len(commit_sha) == 20 else commit_sha.decode()
+        else:
+            sha_hex = commit_sha
+        short_sha = sha_hex[:7]
+        
+        # Check if file is already published to S3 sites folder
+        published_key = safe_join(
+            s3_config["prefix"],
+            f"{artifact.id}/sites/{short_sha}",
+            full_file_path,
+        )
+        
+        content = None
+        content_length = None
+        is_lfs = False
+        lfs_s3_path = None
+        
+        async with self._create_client_async(s3_config) as s3_client:
+            # Try to get from published location first (fast path)
+            try:
+                response = await s3_client.get_object(
+                    Bucket=s3_config["bucket"],
+                    Key=published_key,
+                )
+                content = await response["Body"].read()
+                content_length = response.get("ContentLength", len(content))
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") not in ("NoSuchKey", "404"):
+                    raise
+                # File not in published location, need to read from git
+        
+        if content is None:
+            # Read from git repository (slow path)
+            git_content = await repo.get_file_content_async(full_file_path.strip("/"), commit_sha)
+            
+            if git_content is None:
+                # Try index file for directory requests
+                index_file = view_config.get("index", "index.html")
+                if not file_path or file_path.endswith("/"):
+                    index_path = safe_join(full_file_path.rstrip("/"), index_file)
+                    git_content = await repo.get_file_content_async(index_path.strip("/"), commit_sha)
+                    if git_content is not None:
+                        full_file_path = index_path
+                        file_path = safe_join(file_path.rstrip("/"), index_file) if file_path else index_file
+                        # Update published key for the index file
+                        published_key = safe_join(
+                            s3_config["prefix"],
+                            f"{artifact.id}/sites/{short_sha}",
+                            full_file_path,
+                        )
+                
+                if git_content is None:
+                    # Check for custom error page
+                    error_page = view_config.get("error_page")
+                    if error_page:
+                        error_path = safe_join(root_directory.strip("/"), error_page) if root_directory and root_directory != "/" else error_page
+                        error_content = await repo.get_file_content_async(error_path.strip("/"), commit_sha)
+                        if error_content is not None:
+                            mime_type, _ = mimetypes.guess_type(error_page)
+                            return Response(
+                                content=error_content,
+                                status_code=404,
+                                media_type=mime_type or "text/html",
+                                headers=custom_headers or {},
+                            )
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"File not found: {file_path}",
+                    )
+            
+            # Check if this is an LFS pointer
+            lfs_pointer = LFSPointer.parse(git_content)
+            if lfs_pointer is not None:
+                is_lfs = True
+                base_path = f"{s3_config['prefix']}/{artifact.id}"
+                lfs_s3_path = lfs_pointer.get_s3_path(base_path)
+                content_length = lfs_pointer.size
+            else:
+                content = git_content
+                content_length = len(content)
+            
+            # Lazy publish to S3 sites folder (don't wait, fire and forget for non-LFS)
+            # For LFS files, we don't copy - just serve from LFS storage
+            if not is_lfs and content is not None:
+                async with self._create_client_async(s3_config) as s3_client:
+                    try:
+                        await s3_client.put_object(
+                            Bucket=s3_config["bucket"],
+                            Key=published_key,
+                            Body=content,
+                        )
+                    except ClientError:
+                        # Failed to publish, but we can still serve the content
+                        logger.warning(f"Failed to lazy-publish file to S3: {published_key}")
+        
+        # Determine MIME type
+        mime_type, _ = mimetypes.guess_type(file_path)
+        mime_type = mime_type or "application/octet-stream"
+        
+        # Prepare response headers
+        response_headers = dict(custom_headers) if custom_headers else {}
+        response_headers["Content-Type"] = mime_type
+        
+        # For LFS files, use streaming response from LFS storage
+        if is_lfs and lfs_s3_path:
+            s3_client = self._create_client_async(s3_config)
+            return FSFileResponse(
+                s3_client,
+                s3_config["bucket"],
+                lfs_s3_path,
+                media_type=mime_type,
+                headers=response_headers,
+            )
+        
+        # Return regular response for non-LFS files
+        return Response(
+            content=content,
+            media_type=mime_type,
+            headers=response_headers,
+        )
+
+    async def _invalidate_static_site_cache(
+        self,
+        artifact,
+        branch: str,
+    ) -> None:
+        """Invalidate Redis cache for a static site when its source branch is updated.
+        
+        This is called after a git commit to ensure fresh content is served.
+        
+        Args:
+            artifact: The artifact model instance
+            branch: The branch that was updated
+        """
+        if not self._cache:
+            return
+            
+        # Check if this artifact has a static site view_config
+        config = artifact.config or {}
+        view_config = config.get("view_config")
+        if not view_config or not isinstance(view_config, dict):
+            return
+            
+        # Check if the updated branch is the site's source branch
+        site_branch = view_config.get("branch", "main")
+        if branch != site_branch and branch != "main":
+            return
+        
+        # Invalidate cache by pattern
+        # Cache key pattern: artifact:view:{workspace}:{alias}:*
+        cache_pattern = f"artifact:view:{artifact.workspace}:{artifact.alias}:*"
+        
+        try:
+            # Use Redis SCAN to find and delete matching keys
+            # Note: This requires Redis (not fakeredis) for pattern-based deletion
+            if hasattr(self._cache, 'delete_pattern'):
+                await self._cache.delete_pattern(cache_pattern)
+            elif hasattr(self._cache, 'keys'):
+                # Fallback: get all matching keys and delete them
+                keys = await self._cache.keys(cache_pattern)
+                if keys:
+                    await self._cache.delete(*keys)
+            else:
+                # Basic fallback: can't do pattern-based deletion
+                logger.debug(f"Cache doesn't support pattern deletion, skipping cache invalidation")
+        except Exception as e:
+            logger.warning(f"Failed to invalidate static site cache: {e}")
 
     async def _list_git_files(
         self,
@@ -3642,6 +3986,10 @@ class ArtifactController:
             })
             artifact.versions = versions
             flag_modified(artifact, "versions")
+
+        # Invalidate static site cache if this artifact is configured as a static site
+        target_branch = version or "main"
+        await self._invalidate_static_site_cache(artifact, target_branch)
 
         return {
             "status": "committed",
@@ -5112,6 +5460,18 @@ class ArtifactController:
                             version_artifact.config = version_data.get("config")
                             version_artifact.secrets = version_data.get("secrets")
                             artifact_data = self._generate_artifact_data(version_artifact, parent_artifact)
+
+                # For git-storage artifacts, populate versions from git refs (branches and tags)
+                config = artifact.config or {}
+                if config.get("storage") == "git":
+                    try:
+                        artifact_data["versions"] = await self._get_git_versions(
+                            artifact, parent_artifact
+                        )
+                    except Exception as e:
+                        # If we can't fetch git versions (e.g., empty repo), use empty list
+                        logger.warning(f"Failed to fetch git versions for {artifact_id}: {e}")
+                        artifact_data["versions"] = []
 
                 if artifact.type == "collection":
                     # Use with_only_columns to optimize the count query

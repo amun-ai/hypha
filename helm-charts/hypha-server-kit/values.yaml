@@ -29,7 +29,7 @@ hypha-server:
   image:
     repository: ghcr.io/amun-ai/hypha
     pullPolicy: IfNotPresent
-    tag: "0.21.36"
+    tag: "0.21.38"
   
   ingress:
     enabled: true

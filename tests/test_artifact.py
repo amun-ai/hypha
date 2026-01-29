@@ -10541,3 +10541,558 @@ async def test_git_private_artifact_direct_access_denied(
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
     await api.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_git_artifact_versions_from_branches_and_tags(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test that read() returns branches and tags in the versions field for git artifacts.
+
+    This test creates a git-storage artifact, pushes commits to multiple branches
+    and creates tags, then verifies that read() returns all branches and tags
+    in the versions field with proper structure.
+    """
+    import subprocess
+
+    # Connect as the artifact owner
+    api = await connect_to_server({
+        "name": "git-versions-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+    workspace = api.config.workspace
+
+    # Create a git-storage artifact
+    artifact_alias = f"git-versions-test-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Git Versions Test"},
+        config={"storage": "git"},
+    )
+
+    git_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
+
+    # Push commits with multiple branches and tags
+    with tempfile.TemporaryDirectory() as tmpdir:
+        local_repo = os.path.join(tmpdir, "repo")
+        os.makedirs(local_repo)
+        subprocess.run(["git", "init", "-b", "main"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
+
+        # Create initial commit on main
+        with open(os.path.join(local_repo, "README.md"), "w") as f:
+            f.write("# Initial commit\n")
+        subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=local_repo, check=True, capture_output=True)
+
+        # Create a tag v1.0
+        subprocess.run(["git", "tag", "v1.0"], cwd=local_repo, check=True, capture_output=True)
+
+        # Create feature branch
+        subprocess.run(["git", "checkout", "-b", "feature-x"], cwd=local_repo, check=True, capture_output=True)
+        with open(os.path.join(local_repo, "feature.txt"), "w") as f:
+            f.write("Feature content\n")
+        subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Add feature"], cwd=local_repo, check=True, capture_output=True)
+
+        # Go back to main and add another commit
+        subprocess.run(["git", "checkout", "main"], cwd=local_repo, check=True, capture_output=True)
+        with open(os.path.join(local_repo, "README.md"), "w") as f:
+            f.write("# Updated README\n")
+        subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Update README"], cwd=local_repo, check=True, capture_output=True)
+
+        # Create another tag v2.0
+        subprocess.run(["git", "tag", "v2.0"], cwd=local_repo, check=True, capture_output=True)
+
+        # Push all branches and tags
+        auth_url = git_url.replace("http://", f"http://git:{test_user_token}@")
+        subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
+
+        # Push main branch
+        result = subprocess.run(
+            ["git", "push", "-u", "origin", "main"],
+            cwd=local_repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"Push main failed: {result.stderr}"
+
+        # Push feature branch
+        result = subprocess.run(
+            ["git", "push", "-u", "origin", "feature-x"],
+            cwd=local_repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"Push feature-x failed: {result.stderr}"
+
+        # Push tags
+        result = subprocess.run(
+            ["git", "push", "origin", "--tags"],
+            cwd=local_repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"Push tags failed: {result.stderr}"
+
+    # Read the artifact and check versions
+    artifact_data = await artifact_manager.read(artifact_id=artifact_alias)
+
+    # Verify versions field exists and has content
+    assert "versions" in artifact_data, "Expected 'versions' field in artifact data"
+    versions = artifact_data["versions"]
+    assert isinstance(versions, list), f"Expected versions to be a list, got {type(versions)}"
+    assert len(versions) >= 4, f"Expected at least 4 versions (2 branches + 2 tags), got {len(versions)}"
+
+    # Extract branches and tags
+    branches = [v for v in versions if v.get("type") == "branch"]
+    tags = [v for v in versions if v.get("type") == "tag"]
+
+    # Verify branches
+    branch_names = [b["name"] for b in branches]
+    assert "main" in branch_names, f"Expected 'main' branch, got branches: {branch_names}"
+    assert "feature-x" in branch_names, f"Expected 'feature-x' branch, got branches: {branch_names}"
+
+    # Verify tags
+    tag_names = [t["name"] for t in tags]
+    assert "v1.0" in tag_names, f"Expected 'v1.0' tag, got tags: {tag_names}"
+    assert "v2.0" in tag_names, f"Expected 'v2.0' tag, got tags: {tag_names}"
+
+    # Verify structure of version entries
+    for version in versions:
+        assert "type" in version, "Expected 'type' field in version"
+        assert version["type"] in ["branch", "tag"], f"Unexpected type: {version['type']}"
+        assert "name" in version, "Expected 'name' field in version"
+        assert "sha" in version, "Expected 'sha' field in version"
+        assert len(version["sha"]) == 40, f"Expected 40-char SHA, got: {version['sha']}"
+
+    # Verify default branch is marked
+    main_branch = [b for b in branches if b["name"] == "main"][0]
+    assert main_branch.get("default") is True, "Expected 'main' branch to be marked as default"
+
+    # Verify we can use branch names with list_files
+    # Note: for git-storage artifacts, list_files returns a list directly
+    files_main = await artifact_manager.list_files(artifact_id=artifact_alias, version="main")
+    assert files_main is not None, "Expected to list files from 'main' branch"
+    assert isinstance(files_main, list), f"Expected list from list_files, got {type(files_main)}"
+    file_names_main = [f["name"] for f in files_main]
+    assert "README.md" in file_names_main, f"Expected README.md in main, got: {file_names_main}"
+
+    files_feature = await artifact_manager.list_files(artifact_id=artifact_alias, version="feature-x")
+    assert files_feature is not None, "Expected to list files from 'feature-x' branch"
+    file_names_feature = [f["name"] for f in files_feature]
+    assert "feature.txt" in file_names_feature, f"Expected feature.txt in feature-x, got: {file_names_feature}"
+
+    # Verify we can use tag names with list_files
+    files_v1 = await artifact_manager.list_files(artifact_id=artifact_alias, version="v1.0")
+    assert files_v1 is not None, "Expected to list files from 'v1.0' tag"
+    assert isinstance(files_v1, list), f"Expected list from list_files for tag, got {type(files_v1)}"
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_git_static_site_hosting(
+    minio_server,
+    fastapi_server_sqlite,
+    test_user_token,
+):
+    """Test static site hosting from a git-storage artifact.
+
+    This test creates a git-storage artifact configured as a static site,
+    pushes HTML/CSS/JS files to it, and verifies that the view endpoint
+    serves the files correctly with proper MIME types.
+
+    Key features tested:
+    1. Static site view_config with branch and root_directory settings
+    2. File serving from git repository via view endpoint
+    3. Default index.html handling for directory requests
+    4. Custom error page (404.html) handling
+    5. Proper MIME type detection
+    6. Lazy publishing to S3 sites folder
+    """
+    import subprocess
+    import requests
+
+    # Connect as the artifact owner
+    api = await connect_to_server({
+        "name": "git-static-site-test-client",
+        "server_url": SERVER_URL_SQLITE,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+    workspace = api.config.workspace
+
+    # Create a git-storage artifact configured as a static site
+    artifact_alias = f"static-site-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Static Site Test"},
+        config={
+            "storage": "git",
+            "permissions": {"*": "r"},  # Public read access
+            "view_config": {
+                "branch": "main",
+                "root_directory": "/",
+                "index": "index.html",
+                "error_page": "404.html",
+            },
+        },
+    )
+
+    git_url = f"{SERVER_URL_SQLITE}/{workspace}/git/{artifact_alias}"
+
+    # Create static site files
+    index_html = """<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Static Site</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <h1>Welcome to the Static Site</h1>
+    <p>This is a test page served from git storage.</p>
+    <script src="app.js"></script>
+</body>
+</html>"""
+
+    styles_css = """body {
+    font-family: Arial, sans-serif;
+    margin: 40px;
+    background-color: #f5f5f5;
+}
+h1 {
+    color: #333;
+}"""
+
+    app_js = """console.log('Static site loaded from git!');
+document.addEventListener('DOMContentLoaded', function() {
+    console.log('DOM ready');
+});"""
+
+    error_html = """<!DOCTYPE html>
+<html>
+<head><title>404 - Not Found</title></head>
+<body>
+    <h1>404 - Page Not Found</h1>
+    <p>The requested page does not exist.</p>
+</body>
+</html>"""
+
+    nested_page_html = """<!DOCTYPE html>
+<html>
+<head><title>Nested Page</title></head>
+<body>
+    <h1>Nested Page</h1>
+    <p>This is a page in a subdirectory.</p>
+</body>
+</html>"""
+
+    # Push files to the git repository
+    with tempfile.TemporaryDirectory() as tmpdir:
+        local_repo = os.path.join(tmpdir, "repo")
+        os.makedirs(local_repo)
+        subprocess.run(["git", "init", "-b", "main"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
+
+        # Create files
+        with open(os.path.join(local_repo, "index.html"), "w") as f:
+            f.write(index_html)
+        with open(os.path.join(local_repo, "styles.css"), "w") as f:
+            f.write(styles_css)
+        with open(os.path.join(local_repo, "app.js"), "w") as f:
+            f.write(app_js)
+        with open(os.path.join(local_repo, "404.html"), "w") as f:
+            f.write(error_html)
+
+        # Create nested directory
+        os.makedirs(os.path.join(local_repo, "pages"))
+        with open(os.path.join(local_repo, "pages", "about.html"), "w") as f:
+            f.write(nested_page_html)
+        with open(os.path.join(local_repo, "pages", "index.html"), "w") as f:
+            f.write("<html><body><h1>Pages Index</h1></body></html>")
+
+        # Add, commit, push
+        subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Add static site files"], cwd=local_repo, check=True, capture_output=True)
+        auth_url = git_url.replace("http://", f"http://git:{test_user_token}@")
+        subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
+        result = subprocess.run(
+            ["git", "push", "-u", "origin", "main"],
+            cwd=local_repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"Push failed: {result.stderr}"
+
+    # Test 1: Access the root (should serve index.html)
+    view_url = f"{SERVER_URL_SQLITE}/{workspace}/view/{artifact_alias}"
+    response = requests.get(view_url, timeout=30)
+    assert response.status_code == 200, f"Expected 200 for root, got {response.status_code}: {response.text}"
+    assert "Welcome to the Static Site" in response.text, "Expected index.html content"
+    assert response.headers.get("Content-Type", "").startswith("text/html"), f"Expected text/html, got {response.headers.get('Content-Type')}"
+
+    # Test 2: Access index.html explicitly
+    response = requests.get(f"{view_url}/index.html", timeout=30)
+    assert response.status_code == 200, f"Expected 200 for index.html, got {response.status_code}"
+    assert "Welcome to the Static Site" in response.text
+
+    # Test 3: Access CSS file with correct MIME type
+    response = requests.get(f"{view_url}/styles.css", timeout=30)
+    assert response.status_code == 200, f"Expected 200 for styles.css, got {response.status_code}"
+    assert "font-family" in response.text, "Expected CSS content"
+    content_type = response.headers.get("Content-Type", "")
+    assert "text/css" in content_type, f"Expected text/css, got {content_type}"
+
+    # Test 4: Access JS file with correct MIME type
+    response = requests.get(f"{view_url}/app.js", timeout=30)
+    assert response.status_code == 200, f"Expected 200 for app.js, got {response.status_code}"
+    assert "console.log" in response.text, "Expected JS content"
+    content_type = response.headers.get("Content-Type", "")
+    assert "javascript" in content_type.lower() or "text/javascript" in content_type, f"Expected javascript MIME type, got {content_type}"
+
+    # Test 5: Access nested file
+    response = requests.get(f"{view_url}/pages/about.html", timeout=30)
+    assert response.status_code == 200, f"Expected 200 for nested page, got {response.status_code}"
+    assert "Nested Page" in response.text, "Expected nested page content"
+
+    # Test 6: Access non-existent file (should get 404 with custom error page)
+    response = requests.get(f"{view_url}/nonexistent.html", timeout=30)
+    assert response.status_code == 404, f"Expected 404 for non-existent file, got {response.status_code}"
+    assert "Page Not Found" in response.text, "Expected custom 404 page content"
+
+    # Test 7: Second request should be faster (served from S3 sites folder)
+    # This is a functional test - we just verify it still works
+    response = requests.get(f"{view_url}/index.html", timeout=30)
+    assert response.status_code == 200, "Expected cached/published file to still work"
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_git_static_site_with_subdirectory_root(
+    minio_server,
+    fastapi_server_sqlite,
+    test_user_token,
+):
+    """Test static site hosting with root_directory pointing to a subdirectory.
+
+    This simulates a common use case where the built site is in a 'dist' or 'build'
+    folder within the repository.
+    """
+    import subprocess
+    import requests
+
+    api = await connect_to_server({
+        "name": "git-static-site-subdir-test",
+        "server_url": SERVER_URL_SQLITE,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+    workspace = api.config.workspace
+
+    # Create artifact with root_directory set to 'dist'
+    artifact_alias = f"static-site-subdir-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Static Site Subdirectory Test"},
+        config={
+            "storage": "git",
+            "permissions": {"*": "r"},
+            "view_config": {
+                "branch": "main",
+                "root_directory": "/dist",  # Serve from dist folder
+                "index": "index.html",
+            },
+        },
+    )
+
+    git_url = f"{SERVER_URL_SQLITE}/{workspace}/git/{artifact_alias}"
+
+    # Create files with 'dist' subdirectory
+    with tempfile.TemporaryDirectory() as tmpdir:
+        local_repo = os.path.join(tmpdir, "repo")
+        os.makedirs(local_repo)
+        subprocess.run(["git", "init", "-b", "main"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
+
+        # Create README at root (should NOT be served)
+        with open(os.path.join(local_repo, "README.md"), "w") as f:
+            f.write("# Project Root - Not Served")
+
+        # Create dist folder with site files
+        os.makedirs(os.path.join(local_repo, "dist"))
+        with open(os.path.join(local_repo, "dist", "index.html"), "w") as f:
+            f.write("<html><body><h1>Built Site from Dist</h1></body></html>")
+        with open(os.path.join(local_repo, "dist", "bundle.js"), "w") as f:
+            f.write("// Bundled JavaScript")
+
+        subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Add dist folder"], cwd=local_repo, check=True, capture_output=True)
+        auth_url = git_url.replace("http://", f"http://git:{test_user_token}@")
+        subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
+        result = subprocess.run(
+            ["git", "push", "-u", "origin", "main"],
+            cwd=local_repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"Push failed: {result.stderr}"
+
+    view_url = f"{SERVER_URL_SQLITE}/{workspace}/view/{artifact_alias}"
+
+    # Test: Root should serve dist/index.html
+    response = requests.get(view_url, timeout=30)
+    assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
+    assert "Built Site from Dist" in response.text, "Expected dist/index.html content"
+
+    # Test: bundle.js should be accessible
+    response = requests.get(f"{view_url}/bundle.js", timeout=30)
+    assert response.status_code == 200, f"Expected 200 for bundle.js, got {response.status_code}"
+    assert "Bundled JavaScript" in response.text
+
+    # Test: README.md at root should NOT be accessible (it's outside root_directory)
+    response = requests.get(f"{view_url}/README.md", timeout=30)
+    assert response.status_code == 404, f"Expected 404 for README.md (outside root), got {response.status_code}"
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_git_static_site_branch_selection(
+    minio_server,
+    fastapi_server_sqlite,
+    test_user_token,
+):
+    """Test static site serving from a specific branch (e.g., gh-pages).
+
+    This simulates GitHub Pages style deployment where the site is on a
+    dedicated branch separate from main development.
+    """
+    import subprocess
+    import requests
+
+    api = await connect_to_server({
+        "name": "git-static-site-branch-test",
+        "server_url": SERVER_URL_SQLITE,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+    workspace = api.config.workspace
+
+    # Create artifact with branch set to 'gh-pages'
+    artifact_alias = f"static-site-branch-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Static Site Branch Test"},
+        config={
+            "storage": "git",
+            "permissions": {"*": "r"},
+            "view_config": {
+                "branch": "gh-pages",  # Serve from gh-pages branch
+                "index": "index.html",
+            },
+        },
+    )
+
+    git_url = f"{SERVER_URL_SQLITE}/{workspace}/git/{artifact_alias}"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        local_repo = os.path.join(tmpdir, "repo")
+        os.makedirs(local_repo)
+        subprocess.run(["git", "init", "-b", "main"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
+
+        # Create main branch with source code
+        with open(os.path.join(local_repo, "README.md"), "w") as f:
+            f.write("# Source Code - Main Branch")
+        with open(os.path.join(local_repo, "src.py"), "w") as f:
+            f.write("print('source code')")
+
+        subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial main branch"], cwd=local_repo, check=True, capture_output=True)
+
+        # Create gh-pages branch with built site
+        subprocess.run(["git", "checkout", "-b", "gh-pages"], cwd=local_repo, check=True, capture_output=True)
+        # Remove source files
+        os.remove(os.path.join(local_repo, "README.md"))
+        os.remove(os.path.join(local_repo, "src.py"))
+        # Add site files
+        with open(os.path.join(local_repo, "index.html"), "w") as f:
+            f.write("<html><body><h1>GH-Pages Site</h1></body></html>")
+        with open(os.path.join(local_repo, "style.css"), "w") as f:
+            f.write("body { color: blue; }")
+
+        subprocess.run(["git", "add", "-A"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Add gh-pages site"], cwd=local_repo, check=True, capture_output=True)
+
+        # Push both branches
+        auth_url = git_url.replace("http://", f"http://git:{test_user_token}@")
+        subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
+
+        # Push main first
+        subprocess.run(["git", "checkout", "main"], cwd=local_repo, check=True, capture_output=True)
+        result = subprocess.run(
+            ["git", "push", "-u", "origin", "main"],
+            cwd=local_repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"Main push failed: {result.stderr}"
+
+        # Push gh-pages
+        subprocess.run(["git", "checkout", "gh-pages"], cwd=local_repo, check=True, capture_output=True)
+        result = subprocess.run(
+            ["git", "push", "-u", "origin", "gh-pages"],
+            cwd=local_repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"gh-pages push failed: {result.stderr}"
+
+    view_url = f"{SERVER_URL_SQLITE}/{workspace}/view/{artifact_alias}"
+
+    # Test: Should serve from gh-pages branch, NOT main
+    response = requests.get(view_url, timeout=30)
+    assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
+    assert "GH-Pages Site" in response.text, "Expected gh-pages content, not main branch"
+    assert "Source Code" not in response.text, "Should NOT serve main branch README"
+
+    # Test: CSS file from gh-pages
+    response = requests.get(f"{view_url}/style.css", timeout=30)
+    assert response.status_code == 200
+    assert "color: blue" in response.text
+
+    # Test: Source files from main should NOT be accessible
+    response = requests.get(f"{view_url}/src.py", timeout=30)
+    assert response.status_code == 404, "Source files from main branch should not be accessible"
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
