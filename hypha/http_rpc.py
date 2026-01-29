@@ -124,6 +124,47 @@ class HTTPStreamingRPCServer:
         except Exception as e:
             logger.warning(f"Error disconnecting: {e}")
 
+    async def _authenticate_with_reconnection_token(
+        self, reconnection_token: str, client_id: str, workspace: str
+    ) -> tuple[UserInfo, str]:
+        """Authenticate using a reconnection token.
+
+        Similar to WebSocket reconnection, this validates the reconnection token
+        and ensures the client_id and workspace match the token's scope.
+
+        Returns:
+            tuple of (user_info, workspace)
+        """
+        user_info = await self.store.parse_user_token(reconnection_token)
+        # Reject specialized tokens - they cannot be used for reconnection
+        user_info.validate_for_general_access()
+
+        scope = user_info.scope
+        if not scope or not scope.current_workspace:
+            raise ValueError("Invalid scope, current_workspace is required")
+
+        # Validate workspace matches
+        if workspace and workspace != scope.current_workspace:
+            raise ValueError(
+                f"Workspace mismatch: requested {workspace}, token has {scope.current_workspace}"
+            )
+        workspace = scope.current_workspace
+
+        # Validate client_id matches
+        if not scope.client_id:
+            raise ValueError("Invalid scope, client_id is required")
+        if scope.client_id != client_id:
+            raise ValueError(
+                f"Client ID mismatch: requested {client_id}, token has {scope.client_id}"
+            )
+
+        # Validate permissions
+        if not user_info.check_permission(workspace, UserPermission.read):
+            raise PermissionError(f"Permission denied for workspace: {workspace}")
+
+        logger.info(f"HTTP client reconnected: {workspace}/{client_id} using reconnection token")
+        return user_info, workspace
+
     def register_routes(self, app):
         """Register HTTP streaming RPC routes."""
 
@@ -133,6 +174,7 @@ class HTTPStreamingRPCServer:
             request: Request,
             client_id: str = None,
             format: str = None,  # Optional format parameter: "json" or "msgpack"
+            reconnection_token: str = None,  # Token for reconnecting to existing session
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
             """Streaming endpoint for server-to-client messages.
@@ -146,12 +188,17 @@ class HTTPStreamingRPCServer:
             - Use `Accept: application/x-ndjson` header for JSON (default)
             - Use `Accept: application/x-msgpack-stream` header for msgpack
 
+            Reconnection:
+            - Use `reconnection_token` query parameter to reconnect with same client_id
+            - The token contains the original workspace and client_id
+            - On reconnection, the server validates the token and re-uses the client identity
+
             The client should:
             1. Connect to this endpoint with a GET request
             2. Read messages continuously (lines for JSON, frames for msgpack)
             3. Parse each message
             4. Handle the message (method call, response, event)
-            5. Reconnect if the connection is lost
+            5. Reconnect if the connection is lost (using reconnection_token)
             """
             # Determine format from query param or Accept header
             accept_header = request.headers.get("accept", "")
@@ -164,33 +211,54 @@ class HTTPStreamingRPCServer:
                 if not client_id:
                     client_id = shortuuid.uuid()
 
+                # Handle reconnection with token (takes priority over regular auth)
+                is_reconnection = False
+                if reconnection_token:
+                    try:
+                        user_info, workspace = await self._authenticate_with_reconnection_token(
+                            reconnection_token, client_id, workspace
+                        )
+                        is_reconnection = True
+                    except Exception as e:
+                        logger.warning(f"Reconnection token validation failed: {e}")
+                        # Fall back to regular authentication if reconnection fails
+                        return JSONResponse(
+                            status_code=401,
+                            content={
+                                "success": False,
+                                "detail": f"Invalid reconnection token: {str(e)}",
+                            },
+                        )
+
                 # Handle anonymous users - determine if they need their own workspace
                 # Default anonymous users (without token) get redirected to their own workspace
                 # Anonymous users WITH tokens (child users) use the token's workspace permissions
-                user_workspace = user_info.get_workspace()
-                has_token_permissions = (
-                    user_info.scope.workspaces
-                    and any(
-                        ws != "ws-anonymous" and ws.startswith("ws-user-")
-                        for ws in user_info.scope.workspaces
+                if not is_reconnection:
+                    user_workspace = user_info.get_workspace()
+                    has_token_permissions = (
+                        user_info.scope.workspaces
+                        and any(
+                            ws != "ws-anonymous" and ws.startswith("ws-user-")
+                            for ws in user_info.scope.workspaces
+                        )
                     )
-                )
-                if user_info.is_anonymous and not has_token_permissions:
-                    # Redirect to user's own workspace
-                    workspace = workspace if workspace and workspace != "public" else user_workspace
-                    user_info.scope = create_scope(
-                        current_workspace=workspace,
-                        workspaces={user_workspace: UserPermission.admin},
-                        client_id=client_id,
-                    )
+                    if user_info.is_anonymous and not has_token_permissions:
+                        # Redirect to user's own workspace
+                        workspace = workspace if workspace and workspace != "public" else user_workspace
+                        user_info.scope = create_scope(
+                            current_workspace=workspace,
+                            workspaces={user_workspace: UserPermission.admin},
+                            client_id=client_id,
+                        )
 
-                # Load or create workspace
+                # Load or create workspace (for both new connections and reconnections)
                 workspace_info = await self.store.load_or_create_workspace(
                     user_info, workspace
                 )
                 workspace = workspace_info.id
 
                 # Update user scope with workspace info (critical for permission checks)
+                # For reconnections, this ensures the scope is properly updated
                 user_info.scope = update_user_scope(
                     user_info, workspace_info, client_id
                 )
@@ -210,8 +278,9 @@ class HTTPStreamingRPCServer:
                     workspace, client_id, user_info
                 )
 
-                # Generate reconnection token
-                reconnection_token = await generate_auth_token(
+                # Generate new reconnection token for this session
+                # This refreshes the token on each connection/reconnection
+                new_reconnection_token = await generate_auth_token(
                     user_info, expires_in=self.store.reconnection_token_life_time
                 )
 
@@ -228,6 +297,7 @@ class HTTPStreamingRPCServer:
 
                 async def stream_messages():
                     """Generator that yields messages in the requested format."""
+                    nonlocal new_reconnection_token
                     try:
                         # Send connection info as first message
                         conn_info = {
@@ -235,7 +305,7 @@ class HTTPStreamingRPCServer:
                             "workspace": workspace,
                             "client_id": client_id,
                             "manager_id": self.store.get_manager_id(),
-                            "reconnection_token": reconnection_token,
+                            "reconnection_token": new_reconnection_token,
                             "reconnection_token_life_time": self.store.reconnection_token_life_time,
                             "public_base_url": self.store.public_base_url,
                         }
@@ -381,12 +451,41 @@ class HTTPStreamingRPCServer:
                     async with self._lock:
                         conn_info = self._connection_info.get(connection_key, {})
                         stored_user_info = conn_info.get("user_info", user_info)
+                        queue = self._connections.get(connection_key)
 
-                    # Parse the message to add context
+                    # Parse the message to check for control messages
                     unpacker = msgpack.Unpacker(io.BytesIO(body))
                     message = unpacker.unpack()
                     pos = unpacker.tell()
 
+                    # Handle control messages (similar to WebSocket)
+                    msg_type = message.get("type")
+                    if msg_type == "refresh_token":
+                        # Generate new reconnection token and send via stream
+                        new_token = await generate_auth_token(
+                            stored_user_info,
+                            expires_in=self.store.reconnection_token_life_time,
+                        )
+                        token_msg = {
+                            "type": "reconnection_token",
+                            "reconnection_token": new_token,
+                        }
+                        if queue:
+                            await queue.put(token_msg)
+                        return JSONResponse(
+                            status_code=200,
+                            content={"success": True, "detail": "Token refresh requested"},
+                        )
+                    elif msg_type == "ping":
+                        # Respond with pong via stream
+                        if queue:
+                            await queue.put({"type": "pong"})
+                        return JSONResponse(
+                            status_code=200,
+                            content={"success": True, "detail": "Pong sent"},
+                        )
+
+                    # Regular RPC message - add context
                     target_id = message.get("to")
                     source_id = f"{workspace}/{client_id}"
 

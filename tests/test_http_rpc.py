@@ -431,3 +431,213 @@ class TestHTTPStreamingPerformance:
             assert server is not None
             await server.disconnect()
             await asyncio.sleep(0.1)  # Small delay between cycles
+
+
+class TestHTTPReconnectionToken:
+    """Test HTTP reconnection token functionality."""
+
+    @pytest.mark.asyncio
+    async def test_http_reconnection_token_received(self, fastapi_server):
+        """Test that HTTP client receives reconnection token in connection info."""
+        server = await connect_to_server({
+            "server_url": SERVER_URL,
+            "client_id": "test-reconnect-token-client",
+            "transport": "http",
+        })
+
+        try:
+            # Check that connection info contains reconnection token
+            assert server.config.get("reconnection_token") is not None, \
+                "reconnection_token should be in connection info"
+            assert server.config.get("reconnection_token_life_time") is not None, \
+                "reconnection_token_life_time should be in connection info"
+        finally:
+            await server.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_http_reconnection_with_token(self, fastapi_server):
+        """Test HTTP client can reconnect using reconnection_token."""
+        # Connect first time
+        server1 = await connect_to_server({
+            "server_url": SERVER_URL,
+            "client_id": "test-token-reconnect",
+            "transport": "http",
+        })
+
+        workspace = server1.config["workspace"]
+        client_id = server1.config["client_id"]
+        reconnection_token = server1.config.get("reconnection_token")
+
+        assert reconnection_token is not None, "Should have received reconnection token"
+
+        await server1.disconnect()
+
+        # Wait a moment for cleanup
+        await asyncio.sleep(0.2)
+
+        # Reconnect using the reconnection_token
+        # Import HTTP client directly to use reconnection_token
+        from hypha_rpc.http_client import connect_to_server_http
+
+        server2 = await connect_to_server_http({
+            "server_url": SERVER_URL,
+            "workspace": workspace,
+            "client_id": client_id,
+            "reconnection_token": reconnection_token,
+        })
+
+        try:
+            # Should have connected to same workspace with same client_id
+            assert server2.config.get("workspace") == workspace, \
+                "Should reconnect to same workspace"
+            assert server2.config.get("client_id") == client_id, \
+                "Should reconnect with same client_id"
+            # Should have received a new reconnection token
+            new_token = server2.config.get("reconnection_token")
+            assert new_token is not None, "Should receive new reconnection token"
+        finally:
+            await server2.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_http_reconnection_token_validation(self, fastapi_server):
+        """Test that invalid reconnection token is rejected."""
+        # Try to connect with invalid token
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{SERVER_URL}/public/rpc",
+                params={
+                    "client_id": "invalid-token-client",
+                    "reconnection_token": "invalid-token-value",
+                },
+                timeout=5.0,
+            )
+            # Should fail with 401 Unauthorized
+            assert response.status_code == 401, \
+                f"Invalid reconnection token should be rejected, got {response.status_code}"
+
+    @pytest.mark.asyncio
+    async def test_http_reconnection_token_workspace_mismatch(self, fastapi_server):
+        """Test that reconnection token with wrong workspace is rejected."""
+        # Connect first time
+        server1 = await connect_to_server({
+            "server_url": SERVER_URL,
+            "client_id": "test-ws-mismatch",
+            "transport": "http",
+        })
+
+        workspace = server1.config["workspace"]
+        client_id = server1.config["client_id"]
+        reconnection_token = server1.config.get("reconnection_token")
+
+        await server1.disconnect()
+        await asyncio.sleep(0.2)
+
+        # Try to connect with token but different workspace
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{SERVER_URL}/different-workspace/rpc",
+                params={
+                    "client_id": client_id,
+                    "reconnection_token": reconnection_token,
+                },
+                timeout=5.0,
+            )
+            # Should fail because workspace doesn't match token
+            assert response.status_code in [401, 403], \
+                f"Workspace mismatch should be rejected, got {response.status_code}"
+
+    @pytest.mark.asyncio
+    async def test_http_reconnection_token_client_id_mismatch(self, fastapi_server):
+        """Test that reconnection token with wrong client_id is rejected."""
+        # Connect first time
+        server1 = await connect_to_server({
+            "server_url": SERVER_URL,
+            "client_id": "test-client-mismatch",
+            "transport": "http",
+        })
+
+        workspace = server1.config["workspace"]
+        reconnection_token = server1.config.get("reconnection_token")
+
+        await server1.disconnect()
+        await asyncio.sleep(0.2)
+
+        # Try to connect with token but different client_id
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{SERVER_URL}/{workspace}/rpc",
+                params={
+                    "client_id": "different-client-id",
+                    "reconnection_token": reconnection_token,
+                },
+                timeout=5.0,
+            )
+            # Should fail because client_id doesn't match token
+            assert response.status_code == 401, \
+                f"Client ID mismatch should be rejected, got {response.status_code}"
+
+    @pytest.mark.asyncio
+    async def test_http_service_survives_reconnection(self, fastapi_server):
+        """Test that services can still be called after reconnection."""
+        # Provider connects via WebSocket
+        ws_server = await connect_to_server({
+            "server_url": SERVER_URL,
+            "client_id": "service-provider-ws",
+        })
+
+        try:
+            workspace = ws_server.config["workspace"]
+
+            # Register a service
+            await ws_server.register_service({
+                "id": "reconnect-test-service",
+                "name": "Reconnect Test Service",
+                "config": {"visibility": "public"},
+                "add": lambda a, b: a + b,
+            })
+
+            # Generate token for HTTP client
+            token = await ws_server.generate_token()
+
+            # HTTP client connects
+            http_server1 = await connect_to_server({
+                "server_url": SERVER_URL,
+                "workspace": workspace,
+                "client_id": "http-consumer-1",
+                "transport": "http",
+                "token": token,
+            })
+
+            # Get reconnection token
+            reconnection_token = http_server1.config.get("reconnection_token")
+            client_id = http_server1.config["client_id"]
+
+            # Call service before disconnect
+            service = await http_server1.get_service("service-provider-ws:reconnect-test-service")
+            result1 = await service.add(1, 2)
+            assert result1 == 3
+
+            # Disconnect
+            await http_server1.disconnect()
+            await asyncio.sleep(0.3)
+
+            # Reconnect with token
+            from hypha_rpc.http_client import connect_to_server_http
+
+            http_server2 = await connect_to_server_http({
+                "server_url": SERVER_URL,
+                "workspace": workspace,
+                "client_id": client_id,
+                "reconnection_token": reconnection_token,
+            })
+
+            try:
+                # Call service after reconnect
+                service2 = await http_server2.get_service("service-provider-ws:reconnect-test-service")
+                result2 = await service2.add(4, 5)
+                assert result2 == 9
+            finally:
+                await http_server2.disconnect()
+
+        finally:
+            await ws_server.disconnect()
