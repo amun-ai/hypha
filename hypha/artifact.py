@@ -306,7 +306,7 @@ class ArtifactController:
                         f"HTTP workspace artifacts endpoint: stage={stage}, converted to stage_param={stage_param}"
                     )
 
-                    results = await self.list_children(
+                    results = await self.list(
                         parent_id=None,
                         keywords=keywords,
                         filters=filters,
@@ -407,7 +407,7 @@ class ArtifactController:
                     f"HTTP list_children endpoint: stage={stage}, converted to stage_param={stage_param}"
                 )
 
-                results = await self.list_children(
+                results = await self.list(
                     parent_id=parent_id,
                     offset=offset,
                     limit=limit,
@@ -6069,7 +6069,7 @@ class ArtifactController:
                 # Delete all versions and the entire artifact
                 # Handle recursive deletion first
                 if recursive:
-                    children = await self.list_children(artifact_id, context=context)
+                    children = await self.list(artifact_id, context=context)
                     for child in children:
                         await self.delete(
                             child["id"], delete_files=delete_files, context=context
@@ -8622,7 +8622,7 @@ class ArtifactController:
                     result = await self._execute_with_retry(
                         session,
                         count_query,
-                        description=f"list_children count query for '{parent_id or context['ws']}'",
+                        description=f"search count query for '{parent_id or context['ws']}'",
                     )
                     total_count = result.scalar()
                 else:
@@ -8749,7 +8749,7 @@ class ArtifactController:
             await session.close()
 
     @schema_method
-    async def list_children(
+    async def list(
         self,
         parent_id: Optional[str] = PydanticField(
             None,
@@ -8815,13 +8815,13 @@ class ArtifactController:
 
         Examples:
             # List root artifacts (no parent)
-            items = await list_children()
+            items = await list()
 
             # List children of a specific collection
-            items = await list_children("public/datasets")
+            items = await list("public/datasets")
 
             # Filter root artifacts by type
-            items = await list_children(filters={"type": "dataset"})
+            items = await list(filters={"type": "dataset"})
         """
         # If no parent_id specified, list root artifacts only (parent_id=None)
         if parent_id is None:
@@ -9616,8 +9616,7 @@ class ArtifactController:
             "get_file": self.get_file,
             "read_file": self.read_file,
             "write_file": self.write_file,
-            "list": self.list_children,
-            "list_children": self.list_children,
+            "list": self.list,
             "search": self.search,
             "list_files": self.list_files,
             "add_vectors": self.add_vectors,

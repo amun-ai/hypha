@@ -2028,7 +2028,7 @@ async def test_artifact_workspace_search(
     for item in dataset_results:
         assert item["type"] == "dataset"
 
-    # Test 4: Search with parent_id filter (like list_children but through search)
+    # Test 4: Search with parent_id filter (like list but through search)
     collection_children = await artifact_manager.search(
         filters={"parent_id": collection.id}
     )

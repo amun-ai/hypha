@@ -4379,6 +4379,7 @@ license: "MIT"`);
             const [filters, setFilters] = React.useState({});
             const [filterKey, setFilterKey] = React.useState('');
             const [filterValue, setFilterValue] = React.useState('');
+            const [searchScope, setSearchScope] = React.useState('root'); // 'root' = root artifacts only, 'all' = workspace-wide search
 
             // Debounce search query
             React.useEffect(() => {
@@ -4408,12 +4409,22 @@ license: "MIT"`);
                             params.keywords = debouncedSearchQuery.trim().split(/\s+/);
                         }
 
-                        // Add filters if present
-                        if (Object.keys(filters).length > 0) {
-                            params.filters = filters;
+                        // Build filters - start with user filters
+                        const searchFilters = { ...filters };
+
+                        // In 'root' mode, only show root artifacts (no parent)
+                        // In 'all' mode, search across all artifacts in workspace
+                        if (searchScope === 'root') {
+                            searchFilters.parent_id = null;
                         }
 
-                        const result = await am.list(params);
+                        // Add filters if present
+                        if (Object.keys(searchFilters).length > 0) {
+                            params.filters = searchFilters;
+                        }
+
+                        // Use search() for workspace-wide search capability
+                        const result = await am.search(params);
 
                         // Handle pagination response
                         if (result && typeof result === 'object' && 'items' in result) {
@@ -4432,7 +4443,7 @@ license: "MIT"`);
                         setLoading(false);
                     }
                 }
-            }, [am, currentPage, itemsPerPage, sortBy, debouncedSearchQuery, filters]);
+            }, [am, currentPage, itemsPerPage, sortBy, debouncedSearchQuery, filters, searchScope]);
 
             React.useEffect(() => {
                 refreshArtifacts();
@@ -4440,6 +4451,7 @@ license: "MIT"`);
 
             const listArtifacts = async (parentId) => {
                 try {
+                    // Use list for listing collection children (increments view count)
                     const children = await am.list({"parent_id": parentId, "stage": 'all', "_rkwargs": true});
                     return children;
                 } catch (error) {
@@ -4701,7 +4713,7 @@ license: "MIT"`);
                             <i className="fas fa-search absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500 text-xs"></i>
                             <input
                                 type="text"
-                                placeholder="Search..."
+                                placeholder={searchScope === 'all' ? "Search all artifacts..." : "Search root artifacts..."}
                                 value={searchQuery}
                                 onChange={(e) => setSearchQuery(e.target.value)}
                                 className="w-full bg-gray-800 text-white text-sm pl-8 pr-7 py-1.5 rounded border border-gray-700 focus:border-blue-500 focus:outline-none"
@@ -4715,6 +4727,20 @@ license: "MIT"`);
                                 </button>
                             )}
                         </div>
+
+                        {/* Search Scope Toggle */}
+                        <button
+                            onClick={() => { setSearchScope(searchScope === 'root' ? 'all' : 'root'); setCurrentPage(1); }}
+                            className={`px-2 py-1.5 rounded flex items-center gap-1.5 transition text-sm ${
+                                searchScope === 'all'
+                                    ? 'bg-purple-600 text-white'
+                                    : 'bg-gray-800 text-gray-400 hover:text-white border border-gray-700'
+                            }`}
+                            title={searchScope === 'all' ? "Showing all artifacts (click to show root only)" : "Showing root artifacts only (click to search all)"}
+                        >
+                            <i className={`fas ${searchScope === 'all' ? 'fa-layer-group' : 'fa-folder'} text-xs`}></i>
+                            <span className="hidden sm:inline">{searchScope === 'all' ? 'All' : 'Root'}</span>
+                        </button>
 
                         {/* Sort */}
                         <select
@@ -4903,13 +4929,25 @@ license: "MIT"`);
                     ) : artifacts.length === 0 && (debouncedSearchQuery || Object.keys(filters).length > 0) ? (
                         <div className="text-center py-10">
                             <i className="fas fa-search text-4xl text-gray-600 mb-3"></i>
-                            <p className="text-gray-400 mb-3">No results found</p>
-                            <button
-                                onClick={clearAllFilters}
-                                className="text-blue-400 hover:text-blue-300 text-sm"
-                            >
-                                Clear filters
-                            </button>
+                            <p className="text-gray-400 mb-3">
+                                No results found {searchScope === 'root' ? 'in root artifacts' : 'in workspace'}
+                            </p>
+                            <div className="flex justify-center gap-3">
+                                <button
+                                    onClick={clearAllFilters}
+                                    className="text-blue-400 hover:text-blue-300 text-sm"
+                                >
+                                    Clear filters
+                                </button>
+                                {searchScope === 'root' && (
+                                    <button
+                                        onClick={() => setSearchScope('all')}
+                                        className="text-purple-400 hover:text-purple-300 text-sm"
+                                    >
+                                        Search all artifacts
+                                    </button>
+                                )}
+                            </div>
                         </div>
                     ) : artifacts.length === 0 ? (
                         <div className="text-center py-10">

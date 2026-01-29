@@ -2883,7 +2883,7 @@ async def test_git_artifact_appears_in_list(
     assert result.get("file_count", 0) == 0, f"Newly created git artifact should be empty, got file_count: {result.get('file_count')}"
 
     # Verify EMPTY artifact appears in list with default stage=False
-    children = await artifact_manager.list_children()
+    children = await artifact_manager.list()
     child_aliases = [c.get("alias") for c in children]
     assert artifact_alias_1 in child_aliases, \
         f"Empty git artifact should appear in list() with default stage=False. Got aliases: {child_aliases}"
@@ -2898,13 +2898,13 @@ async def test_git_artifact_appears_in_list(
     )
 
     # Before commit, artifact should NOT appear with stage=False
-    children_before = await artifact_manager.list_children(stage=False)
+    children_before = await artifact_manager.list(stage=False)
     child_aliases_before = [c.get("alias") for c in children_before]
     assert artifact_alias_2 not in child_aliases_before, \
         f"Staged git artifact should NOT appear in list() with stage=False before commit"
 
     # Artifact should appear with stage=True
-    children_staged = await artifact_manager.list_children(stage=True)
+    children_staged = await artifact_manager.list(stage=True)
     child_aliases_staged = [c.get("alias") for c in children_staged]
     assert artifact_alias_2 in child_aliases_staged, \
         f"Staged git artifact should appear in list() with stage=True"
@@ -2945,7 +2945,7 @@ async def test_git_artifact_appears_in_list(
     assert "v0" in version_names_2, f"Committed git artifact should have 'v0' version, got: {version_names_2}"
 
     # After commit, artifact should appear with stage=False
-    children_after = await artifact_manager.list_children(stage=False)
+    children_after = await artifact_manager.list(stage=False)
     child_aliases_after = [c.get("alias") for c in children_after]
     assert artifact_alias_2 in child_aliases_after, \
         f"Committed git artifact should appear in list() with stage=False. Got aliases: {child_aliases_after}"
