@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from hypha import __version__
+from hypha.http_rpc import setup_http_rpc
 from hypha.core.store import RedisStore
 from hypha.http import HTTPProxy
 from hypha.triton import TritonProxy
@@ -141,6 +142,10 @@ def start_builtin_services(
             artifact_manager=artifact_manager,
             disable_ssl=args.disable_ssl,
         )
+
+    # Set up HTTP Streaming RPC (always enabled)
+    setup_http_rpc(store, app, base_path=args.base_path)
+    logger.info("HTTP Streaming RPC enabled")
 
     HTTPProxy(
         store,
