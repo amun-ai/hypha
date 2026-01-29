@@ -50,7 +50,8 @@ REQUIREMENTS = [
     "starlette-compress>=1.6.0",
     "prompt-toolkit>=3.0.50",
     "ptpython>=3.0.29",
-    "ptyprocess==0.7.0"
+    "ptyprocess==0.7.0",
+    "psutil>=5.9.0",
 ]
 
 ROOT_DIR = Path(__file__).parent.resolve()
