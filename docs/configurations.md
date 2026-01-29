@@ -880,7 +880,7 @@ async def hypha_startup(server):
 For JavaScript workers, you can create a simple standalone script:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.88/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.90/dist/hypha-rpc-websocket.min.js"></script>
 ```
     
 ```javascript
@@ -1015,7 +1015,7 @@ For containerized deployments, see the Dockerfile in the repository root and the
 ## Compatibility and Versions
 
 - If you use Hypha older than 0.15.x, use `imjoy-rpc` instead of `hypha-rpc`.
-- JavaScript CDN examples reference `hypha-rpc@0.20.88`. For the latest, prefer npm and pin versions per your policy.
+- JavaScript CDN examples reference `hypha-rpc@0.20.90`. For the latest, prefer npm and pin versions per your policy.
 - When mixing async and sync Python code, prefer async; use `hypha_rpc.sync` wrappers only when necessary.
 - Server apps require Playwright setup: `pip install -U "hypha[server-apps]" && playwright install`.
 
