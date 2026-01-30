@@ -40,6 +40,11 @@ logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("http-rpc")
 logger.setLevel(LOGLEVEL)
 
+# SECURITY: Limits to prevent DoS attacks
+MAX_REQUEST_BODY_SIZE = 100 * 1024 * 1024  # 100 MB max request size
+MAX_CONNECTIONS_PER_WORKSPACE = 1000  # Max concurrent connections per workspace
+MESSAGE_QUEUE_SIZE = 100  # Max messages buffered per connection
+
 
 class HTTPStreamingRPCServer:
     """HTTP Streaming RPC Server.
@@ -86,8 +91,10 @@ class HTTPStreamingRPCServer:
             readonly=is_readonly,
         )
 
-        # Create message queue for this connection
-        queue = asyncio.Queue()
+        # Create message queue for this connection with bounded size
+        # SECURITY: Prevent unbounded memory growth from malicious clients
+        # maxsize=100 limits buffered messages to prevent DoS attacks
+        queue = asyncio.Queue(maxsize=100)
         connection_key = f"{workspace}/{client_id}"
 
         async with self._lock:
@@ -104,7 +111,12 @@ class HTTPStreamingRPCServer:
             try:
                 if isinstance(data, dict):
                     data = msgpack.packb(data)
-                await queue.put(data)
+                # SECURITY: Use put_nowait to prevent blocking event bus
+                # If queue is full (slow/malicious client), drop messages
+                try:
+                    queue.put_nowait(data)
+                except asyncio.QueueFull:
+                    logger.warning(f"Message queue full for {connection_key}, dropping message")
             except Exception as e:
                 logger.error(f"Failed to queue message: {e}")
 
