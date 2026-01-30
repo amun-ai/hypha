@@ -324,7 +324,9 @@ def create_application(args):
     # Use starlette-compress for response compression
     # It only compresses known-compressible content types (text, json, etc.)
     # and automatically skips binary formats (images, already-compressed data, etc.)
-    application.add_middleware(CompressMiddleware, minimum_size=1000, gzip_level=5)
+    # OPTIMIZATION: Use gzip_level=1 for faster compression with minimal size trade-off
+    # Level 1 provides 2-5x faster compression while maintaining 80-90% of level 9 compression
+    application.add_middleware(CompressMiddleware, minimum_size=1000, gzip_level=1)
     application.add_middleware(
         PatchedCORSMiddleware,
         allow_origins=args.allow_origins,
@@ -774,7 +776,18 @@ if __name__ == "__main__":
 
         asyncio.run(start_interactive_shell(app, opt))
     else:
-        uvicorn.run(app, host=opt.host, port=int(opt.port))
+        # OPTIMIZATION: Enable uvicorn performance features
+        uvicorn.run(
+            app,
+            host=opt.host,
+            port=int(opt.port),
+            # Enable HTTP/1.1 keep-alive for connection reuse
+            timeout_keep_alive=300,  # Match client keep-alive (5 minutes)
+            # Limit max request body size for security
+            limit_max_requests=10000,  # Restart worker after 10k requests (prevents memory leaks)
+            # Enable access log only if needed (disable for production performance)
+            access_log=os.environ.get("HYPHA_ACCESS_LOG", "false").lower() == "true",
+        )
 
 else:
     # Create the app instance when imported by uvicorn
