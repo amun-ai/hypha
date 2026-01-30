@@ -1143,21 +1143,31 @@ async def test_set_parent_artifact(minio_server, fastapi_server, test_user_token
     )
     assert with_parent["parent_id"] == collection1["id"]
     
-    # Test 4: Error case - try to set non-collection as parent
+    # Test 4: Any artifact can now become a parent (is_collection is set automatically)
+    # Create a non-collection artifact and verify it becomes is_collection when used as parent
     non_collection = await artifact_manager.create(
         type="dataset",
         alias="non-collection",
         manifest={"name": "Not a collection"},
     )
-    
-    try:
-        await artifact_manager.set_parent(
-            artifact["id"],
-            new_parent_id=non_collection["id"]
-        )
-        assert False, "Should have raised error for non-collection parent"
-    except Exception as e:
-        assert "must be a collection" in str(e)
+
+    # Verify it doesn't have is_collection initially
+    non_collection_data = await artifact_manager.read(non_collection["id"])
+    assert not non_collection_data.get("config", {}).get("is_collection", False)
+
+    # Set it as a parent - this should automatically set is_collection=True
+    await artifact_manager.set_parent(
+        artifact["id"],
+        new_parent_id=non_collection["id"]
+    )
+
+    # Verify the artifact was moved
+    artifact_data = await artifact_manager.read(artifact["id"])
+    assert artifact_data["parent_id"] == non_collection["id"]
+
+    # Verify the parent now has is_collection=True
+    non_collection_data = await artifact_manager.read(non_collection["id"])
+    assert non_collection_data.get("config", {}).get("is_collection") == True
     
     # Test 5: Error case - circular dependency
     sub_collection = await artifact_manager.create(
@@ -1942,6 +1952,145 @@ async def test_artifact_manager_with_collection(
 
     # Clean up by deleting the collection
     await artifact_manager.delete(artifact_id=collection.id)
+
+
+async def test_artifact_workspace_search(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test the workspace-wide search functionality."""
+
+    # Connect to the server and set up the artifact manager
+    api = await connect_to_server(
+        {
+            "name": "test search client",
+            "server_url": SERVER_URL,
+            "token": test_user_token,
+        }
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a collection
+    collection = await artifact_manager.create(
+        type="collection",
+        alias="search-test-collection",
+        manifest={
+            "name": "Search Test Collection",
+            "description": "Collection for search testing",
+        },
+        config={"permissions": {"*": "r", "@": "rw+"}},
+    )
+
+    # Create datasets inside the collection
+    dataset1 = await artifact_manager.create(
+        type="dataset",
+        alias="search-dataset-1",
+        parent_id=collection.id,
+        manifest={
+            "name": "Neural Network Dataset",
+            "description": "Training data for neural networks",
+            "tags": ["ml", "training"],
+        },
+    )
+
+    dataset2 = await artifact_manager.create(
+        type="dataset",
+        alias="search-dataset-2",
+        parent_id=collection.id,
+        manifest={
+            "name": "Image Classification Dataset",
+            "description": "Images for classification tasks",
+            "tags": ["images", "classification"],
+        },
+    )
+
+    # Create a root-level artifact (not in any collection)
+    root_artifact = await artifact_manager.create(
+        type="model",
+        alias="search-root-model",
+        manifest={
+            "name": "Pre-trained Neural Model",
+            "description": "A pre-trained model",
+        },
+    )
+
+    # Test 1: Search all artifacts in workspace (no filters)
+    all_results = await artifact_manager.search()
+    assert len(all_results) >= 4  # At least our 4 created artifacts
+
+    # Test 2: Search by keyword
+    neural_results = await artifact_manager.search(keywords=["Neural"])
+    assert len(neural_results) >= 2  # dataset1 and root_artifact
+    for item in neural_results:
+        assert "neural" in item["manifest"]["name"].lower() or "neural" in item["manifest"].get("description", "").lower()
+
+    # Test 3: Search by type filter
+    dataset_results = await artifact_manager.search(filters={"type": "dataset"})
+    for item in dataset_results:
+        assert item["type"] == "dataset"
+
+    # Test 4: Search with parent_id filter (like list but through search)
+    collection_children = await artifact_manager.search(
+        filters={"parent_id": collection.id}
+    )
+    assert len(collection_children) == 2
+    child_ids = [item["id"] for item in collection_children]
+    assert dataset1.id in child_ids
+    assert dataset2.id in child_ids
+
+    # Test 5: Search root artifacts only (parent_id=None)
+    root_results = await artifact_manager.search(filters={"parent_id": None})
+    root_ids = [item["id"] for item in root_results]
+    assert root_artifact.id in root_ids
+    assert collection.id in root_ids
+    assert dataset1.id not in root_ids  # datasets are children, not root
+
+    # Test 6: Combined search - keywords + type filter
+    combined_results = await artifact_manager.search(
+        keywords=["classification"],
+        filters={"type": "dataset"}
+    )
+    assert len(combined_results) >= 1
+    assert any(item["id"] == dataset2.id for item in combined_results)
+
+    # Test 7: Pagination
+    paginated_results = await artifact_manager.search(
+        pagination=True,
+        limit=2
+    )
+    assert "items" in paginated_results
+    assert "total" in paginated_results
+    assert paginated_results["total"] >= 4
+    assert len(paginated_results["items"]) <= 2
+
+    # Test 8: HTTP endpoint for search
+    import httpx
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/-/search",
+            params={"keywords": "Neural", "limit": 10},
+            headers={"Authorization": f"Bearer {test_user_token}"}
+        )
+        assert response.status_code == 200
+        http_results = response.json()
+        assert len(http_results) >= 2
+
+    # Test 9: Reserved alias names should be rejected
+    for reserved_alias in ["-", "~", "_"]:
+        try:
+            await artifact_manager.create(
+                type="dataset",
+                alias=reserved_alias,
+                manifest={"name": "Should fail"},
+            )
+            assert False, f"Should have rejected reserved alias '{reserved_alias}'"
+        except Exception as e:
+            assert "reserved" in str(e).lower()
+
+    # Clean up
+    await artifact_manager.delete(dataset1.id)
+    await artifact_manager.delete(dataset2.id)
+    await artifact_manager.delete(collection.id)
+    await artifact_manager.delete(root_artifact.id)
 
 
 async def test_artifact_edge_cases_with_collection(
@@ -6222,8 +6371,8 @@ async def test_overwrite_collection_with_children_fails(
     # Verify the error message contains information about children
     error_message = str(exc_info.value)
     assert (
-        "Cannot overwrite collection" in error_message
-    ), f"Expected collection overwrite error, got: {error_message}"
+        "Cannot overwrite artifact" in error_message
+    ), f"Expected artifact overwrite error, got: {error_message}"
     assert (
         "child artifacts" in error_message
     ), f"Expected children count in error, got: {error_message}"

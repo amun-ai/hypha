@@ -47,32 +47,33 @@ async def test_local_client_tracking(enhanced_event_bus):
 
 @pytest.mark.asyncio
 async def test_smart_routing_optimization(enhanced_event_bus):
-    """Test that smart routing prefers local delivery for targeted messages."""
-    local_messages = []
-    redis_messages = []
-    
-    def local_handler(data):
-        local_messages.append(data)
-    
-    def redis_handler(data):
-        redis_messages.append(data)
-    
-    # Register handlers for both local and Redis events
-    enhanced_event_bus.on_local("workspace1/client1:msg", local_handler)
-    enhanced_event_bus.on("workspace1/client1:msg", redis_handler)
-    
+    """Test that smart routing delivers to local clients without Redis pub/sub.
+
+    The optimization skips Redis pub/sub for messages to local clients,
+    but still delivers via the _redis_event_bus internally (where RPC handlers
+    are registered via .on()). This is different from _local_event_bus which
+    is only used for purely local events via .on_local().
+    """
+    messages_received = []
+
+    def handler(data):
+        messages_received.append(data)
+
+    # Register handler using .on() - this is how RPC message handlers work
+    # Handlers registered with .on() listen on _redis_event_bus
+    enhanced_event_bus.on("workspace1/client1:msg", handler)
+
     # Register client1 as local
     await enhanced_event_bus.register_local_client("workspace1", "client1")
-    
+
     # Emit a targeted message to local client
+    # This should be delivered locally (skipping Redis pub/sub) but still
+    # through _redis_event_bus where the handler is registered
     await enhanced_event_bus.emit("workspace1/client1:msg", b"test message")
     await asyncio.sleep(0.1)
-    
-    # For local clients, the message should be routed locally only
-    # (This demonstrates the optimization potential)
-    assert local_messages == [b"test message"]
-    # Redis should still receive it for compatibility, but in optimized version
-    # it could be skipped for local clients
+
+    # The handler should receive the message through local shortcut
+    assert messages_received == [b"test message"]
     
 
 @pytest.mark.asyncio

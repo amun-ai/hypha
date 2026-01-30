@@ -1851,7 +1851,7 @@ class WorkspaceManager:
                 try:
                     # List children artifacts (installed apps) with filters
                     # Only query committed artifacts (stage=False)
-                    all_artifacts = await self._artifact_manager.list_children(
+                    all_artifacts = await self._artifact_manager.list(
                         parent_id=f"{cws}/applications",
                         filters=artifact_filters,
                         limit=1000,  # Reasonable limit for apps
@@ -2662,7 +2662,7 @@ class WorkspaceManager:
         # Try to find the application in both committed and staged versions
         # First try committed applications
         try:
-            applications = await self._artifact_manager.list_children(
+            applications = await self._artifact_manager.list(
                 f"{workspace}/applications",
                 context={"ws": workspace, "user": user_info.model_dump()},
             )

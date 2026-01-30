@@ -306,7 +306,7 @@ class ArtifactController:
                         f"HTTP workspace artifacts endpoint: stage={stage}, converted to stage_param={stage_param}"
                     )
 
-                    results = await self.list_children(
+                    results = await self.list(
                         parent_id=None,
                         keywords=keywords,
                         filters=filters,
@@ -407,7 +407,7 @@ class ArtifactController:
                     f"HTTP list_children endpoint: stage={stage}, converted to stage_param={stage_param}"
                 )
 
-                results = await self.list_children(
+                results = await self.list(
                     parent_id=parent_id,
                     offset=offset,
                     limit=limit,
@@ -435,6 +435,78 @@ class ArtifactController:
                 raise HTTPException(status_code=500, detail="File storage error.")
             except Exception as e:
                 logger.error(f"Unhandled exception in http list_children: {str(e)}")
+                raise HTTPException(
+                    status_code=500, detail=f"An unexpected error occurred: {str(e)}"
+                )
+
+        # HTTP endpoint for searching artifacts in workspace
+        @router.get("/{workspace}/artifacts/-/search")
+        async def search_artifacts(
+            workspace: str,
+            keywords: str = None,
+            filters: str = None,
+            offset: int = 0,
+            mode: str = "AND",
+            limit: int = 100,
+            order_by: str = None,
+            pagination: bool = False,
+            stage: str = "false",
+            no_cache: bool = False,
+            user_info: self.store.login_optional = Depends(self.store.login_optional),
+        ):
+            """Search artifacts across the entire workspace."""
+            try:
+                cache_key = f"artifact_search:{workspace}:{offset}:{limit}:{order_by}:{keywords}:{filters}:{mode}:{stage}"
+                if not no_cache:
+                    logger.info(f"Responding to search request ({workspace}) from cache")
+                    cached_results = await self._cache.get(cache_key)
+                    if cached_results:
+                        return cached_results
+                if keywords:
+                    keywords = keywords.split(",")
+                if filters:
+                    filters = json.loads(filters)
+
+                # Convert stage parameter
+                if stage == "true":
+                    stage_param = True
+                elif stage == "false":
+                    stage_param = False
+                elif stage == "all":
+                    stage_param = "all"
+                else:
+                    stage_param = False
+
+                logger.info(
+                    f"HTTP search_artifacts endpoint: stage={stage}, converted to stage_param={stage_param}"
+                )
+
+                results = await self.search(
+                    keywords=keywords,
+                    filters=filters,
+                    mode=mode,
+                    offset=offset,
+                    limit=limit,
+                    order_by=order_by,
+                    pagination=pagination,
+                    stage=stage_param,
+                    context={"user": user_info.model_dump(), "ws": workspace},
+                )
+                await self._cache.set(cache_key, results, ttl=60)
+
+                return results
+            except KeyError:
+                raise HTTPException(status_code=404, detail="Artifact not found")
+            except PermissionError:
+                raise HTTPException(status_code=403, detail="Permission denied")
+            except SQLAlchemyError as e:
+                logger.error(f"Database error: {str(e)}")
+                raise HTTPException(status_code=500, detail="Internal server error.")
+            except ClientError as e:
+                logger.error(f"S3 client error: {str(e)}")
+                raise HTTPException(status_code=500, detail="File storage error.")
+            except Exception as e:
+                logger.error(f"Unhandled exception in http search_artifacts: {str(e)}")
                 raise HTTPException(
                     status_code=500, detail=f"An unexpected error occurred: {str(e)}"
                 )
@@ -4604,6 +4676,13 @@ class ArtifactController:
                         "Workspace must match the alias workspace, if provided."
                     )
                 workspace = ws
+
+        # Validate alias - reserved names not allowed
+        if alias and alias in ("-", "~", "_"):
+            raise ValueError(
+                f"Alias '{alias}' is reserved and cannot be used. Please choose a different alias."
+            )
+
         created_at = int(time.time())
         session = await self._get_session()
         try:
@@ -4728,8 +4807,9 @@ class ArtifactController:
                                 f"Artifact with alias '{alias}' already exists, please choose a different alias or remove the existing artifact (ID: {existing_artifact.workspace}/{existing_artifact.alias})."
                             )
 
-                        # Check if overwriting a collection with children
-                        if overwrite and existing_artifact.type == "collection":
+                        # Check if overwriting an artifact that has children (is_collection)
+                        existing_config = existing_artifact.config or {}
+                        if overwrite and existing_config.get("is_collection"):
                             children_count_query = select(func.count()).where(
                                 ArtifactModel.parent_id == existing_artifact.id
                             )
@@ -4741,7 +4821,7 @@ class ArtifactController:
                             children_count = children_result.scalar()
                             if children_count > 0:
                                 raise ValueError(
-                                    f"Cannot overwrite collection '{existing_artifact.workspace}/{existing_artifact.alias}' as it has {children_count} child artifacts. Remove the children first or use a different alias."
+                                    f"Cannot overwrite artifact '{existing_artifact.workspace}/{existing_artifact.alias}' as it has {children_count} child artifacts. Remove the children first or use a different alias."
                                 )
 
                         id = existing_artifact.id
@@ -4755,6 +4835,20 @@ class ArtifactController:
                 # Set creator as admin (this should override parent permission for the creator)
                 permissions[user_info.id] = "*"
                 config["permissions"] = permissions
+
+                # Set is_collection flag based on type or parent_id
+                # If type is "collection", always set is_collection to True
+                if type == "collection":
+                    config["is_collection"] = True
+
+                # If creating a child artifact (parent_id specified), mark parent as collection
+                if parent_artifact:
+                    parent_config = parent_artifact.config or {}
+                    if not parent_config.get("is_collection"):
+                        parent_config["is_collection"] = True
+                        parent_artifact.config = parent_config
+                        flag_modified(parent_artifact, "config")
+                        session.add(parent_artifact)
 
                 # Check permissions based on stage mode
                 if parent_artifact:
@@ -5473,7 +5567,9 @@ class ArtifactController:
                         logger.warning(f"Failed to fetch git versions for {artifact_id}: {e}")
                         artifact_data["versions"] = []
 
-                if artifact.type == "collection":
+                # Check if artifact is a collection (has is_collection flag or type is collection for backward compatibility)
+                artifact_config = artifact.config or {}
+                if artifact_config.get("is_collection") or artifact.type == "collection":
                     # Use with_only_columns to optimize the count query
                     count_q = select(func.count()).where(
                         ArtifactModel.parent_id == artifact.id
@@ -5486,7 +5582,9 @@ class ArtifactController:
                     child_count = result.scalar()
                     artifact_data["config"] = artifact_data.get("config", {})
                     artifact_data["config"]["child_count"] = child_count
-                elif artifact.type == "vector-collection":
+                    # Ensure is_collection is set in the response
+                    artifact_data["config"]["is_collection"] = True
+                if artifact.type == "vector-collection":
                     artifact_data["config"] = artifact_data.get("config", {})
                     artifact_data["config"]["vector_count"] = (
                         await self._count_vectors(
@@ -5971,7 +6069,7 @@ class ArtifactController:
                 # Delete all versions and the entire artifact
                 # Handle recursive deletion first
                 if recursive:
-                    children = await self.list_children(artifact_id, context=context)
+                    children = await self.list(artifact_id, context=context)
                     for child in children:
                         await self.delete(
                             child["id"], delete_files=delete_files, context=context
@@ -8183,11 +8281,11 @@ class ArtifactController:
         return None
 
     @schema_method
-    async def list_children(
+    async def search(
         self,
         parent_id: Optional[str] = PydanticField(
             None,
-            description="Parent collection ID to list children from. Format: 'workspace/collection-alias'. If None, lists root artifacts in workspace."
+            description="Parent collection ID to list children from. Format: 'workspace/collection-alias'. If None, lists all artifacts in workspace (use filters={'parent_id': None} for root artifacts only)."
         ),
         keywords: Optional[List[str]] = PydanticField(
             None,
@@ -8216,10 +8314,6 @@ class ArtifactController:
             None,
             description="Field to sort results by. Format: 'field' or '-field' for descending. Examples: 'created_at', '-download_count', 'manifest.name'."
         ),
-        silent: bool = PydanticField(
-            False,
-            description="If True, does not increment view count for the parent collection."
-        ),
         pagination: bool = PydanticField(
             False,
             description="If True, returns pagination metadata (total count, has_next, has_previous) along with items."
@@ -8233,54 +8327,60 @@ class ArtifactController:
             description="Context containing user info and workspace. Usually provided automatically by the system."
         ),
     ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
-        """List child artifacts within a collection or workspace.
-        
-        This method retrieves artifacts within a parent collection or at the workspace root.
-        Supports filtering, searching, sorting, and pagination. Returns artifact summaries
-        with key metadata fields for efficient listing.
-        
+        """Search artifacts within a collection or across the workspace.
+
+        This method searches artifacts within a parent collection, at the workspace root,
+        or across all artifacts in the workspace. Supports filtering, keyword search,
+        sorting, and pagination. Returns artifact summaries with key metadata fields.
+
         Returns:
             If pagination=False: List of artifact dictionaries
             If pagination=True: Dictionary with 'items' list and pagination metadata
-            
+
         Examples:
-            # List all artifacts in a collection
-            items = await list_children("public/datasets")
-            
-            # Search with keywords
-            items = await list_children(
-                "public/models",
-                keywords=["neural", "network"]
-            )
-            
-            # Filter by type and status
-            items = await list_children(
+            # Search all artifacts in workspace (no parent_id restriction)
+            items = await search()
+
+            # List children of a specific collection
+            items = await search("public/datasets")
+
+            # Search with keywords across workspace
+            items = await search(keywords=["neural", "network"])
+
+            # Filter by type across workspace
+            items = await search(filters={"type": "dataset"})
+
+            # Search root artifacts only (no parent)
+            items = await search(filters={"parent_id": None})
+
+            # Combined: search within collection with filters
+            items = await search(
                 "my-collection",
                 filters={"type": "dataset", "manifest.status": "validated"}
             )
-            
+
             # Paginated results
-            result = await list_children(
+            result = await search(
                 "large-collection",
                 offset=20,
                 limit=10,
                 pagination=True
             )
             print(f"Showing {len(result['items'])} of {result['total']} items")
-            
+
             # Sort by download count
-            popular = await list_children(
+            popular = await search(
                 "public/apps",
                 order_by="-download_count",
                 limit=10
             )
-            
+
         Raises:
             ValueError: If parent_id is invalid or filters malformed
-            PermissionError: If user lacks read permission on parent
+            PermissionError: If user lacks read permission on parent or workspace
             HTTPException: If parent collection not found
         """
-        logger.info(f"list_children implementation: stage parameter value = {stage}")
+        logger.info(f"search: stage parameter value = {stage}")
 
         # Convert 'all' to None for internal implementation
         if stage == "all":
@@ -8306,8 +8406,9 @@ class ArtifactController:
                     self.engine.dialect.name
                 )  # Database type (e.g., 'postgresql', 'sqlite')
 
-                # Prepare base query for children artifacts
+                # Prepare base query for artifacts
                 if parent_artifact:
+                    # Search within a specific parent collection
                     config = parent_artifact.config or {}
                     list_fields = config.get("list_fields")
                     if list_fields:
@@ -8333,12 +8434,12 @@ class ArtifactController:
                             ArtifactModel.parent_id == parent_artifact.id
                         )
                 else:
+                    # No parent_id specified - search ALL artifacts in workspace
+                    # Use filters={"parent_id": None} to search root artifacts only
                     query = select(ArtifactModel).where(
-                        ArtifactModel.parent_id == None,
                         ArtifactModel.workspace == context["ws"],
                     )
                     count_query = select(func.count()).where(
-                        ArtifactModel.parent_id == None,
                         ArtifactModel.workspace == context["ws"],
                     )
                 conditions = []
@@ -8409,7 +8510,6 @@ class ArtifactController:
                                 "type": ArtifactModel.type,
                                 "alias": ArtifactModel.alias,
                                 "workspace": ArtifactModel.workspace,
-                                "parent_id": ArtifactModel.parent_id,
                                 "created_by": ArtifactModel.created_by,
                             }
                             range_fields = {
@@ -8418,6 +8518,20 @@ class ArtifactController:
                                 "download_count": ArtifactModel.download_count,
                                 "view_count": ArtifactModel.view_count,
                             }
+
+                            # Special handling for parent_id filter
+                            if key == "parent_id":
+                                if value is None:
+                                    # Search root artifacts only (no parent)
+                                    condition = ArtifactModel.parent_id == None
+                                else:
+                                    # Validate and resolve parent_id alias to internal ID
+                                    filter_parent_id = self._validate_artifact_id(value, context)
+                                    filter_parent = await self._get_artifact(session, filter_parent_id)
+                                    condition = ArtifactModel.parent_id == filter_parent.id
+                                conditions.append(condition)
+                                continue
+
                             if key in fixed_fields:
                                 model_field = fixed_fields[key]
                                 condition = model_field == value
@@ -8508,7 +8622,7 @@ class ArtifactController:
                     result = await self._execute_with_retry(
                         session,
                         count_query,
-                        description=f"list_children count query for '{parent_id or context['ws']}'",
+                        description=f"search count query for '{parent_id or context['ws']}'",
                     )
                     total_count = result.scalar()
                 else:
@@ -8608,7 +8722,7 @@ class ArtifactController:
                 result = await self._execute_with_retry(
                     session,
                     query,
-                    description=f"list_children main query for '{parent_id or context['ws']}'",
+                    description=f"search main query for '{parent_id or context['ws']}'",
                 )
                 artifacts = result.scalars().all()
 
@@ -8620,12 +8734,6 @@ class ArtifactController:
                     )
                     results.append(_artifact_data)
 
-                # Increment view count for parent artifact if not in stage mode
-                if not silent and parent_artifact:
-                    await self._increment_stat(
-                        session, parent_artifact.id, "view_count"
-                    )
-                    await session.commit()
                 if pagination:
                     return {
                         "items": results,
@@ -8639,6 +8747,116 @@ class ArtifactController:
             raise e
         finally:
             await session.close()
+
+    @schema_method
+    async def list(
+        self,
+        parent_id: Optional[str] = PydanticField(
+            None,
+            description="Parent collection ID to list children from. Format: 'workspace/collection-alias'. If None, lists root artifacts (artifacts without a parent)."
+        ),
+        keywords: Optional[List[str]] = PydanticField(
+            None,
+            description="Keywords to search for in artifact names and descriptions."
+        ),
+        filters: Optional[Dict[str, Any]] = PydanticField(
+            None,
+            description="Filter criteria for artifacts. Examples: {'type': 'dataset'}, {'manifest.status': 'published'}."
+        ),
+        mode: str = PydanticField(
+            "AND",
+            description="How to combine multiple filters. 'AND' requires all conditions to match, 'OR' requires any condition to match."
+        ),
+        offset: int = PydanticField(
+            0,
+            description="Number of items to skip for pagination.",
+            ge=0
+        ),
+        limit: int = PydanticField(
+            100,
+            description="Maximum number of items to return. Range: 1-1000.",
+            ge=1,
+            le=1000
+        ),
+        order_by: Optional[str] = PydanticField(
+            None,
+            description="Field to sort results by. Format: 'field' or '-field' for descending."
+        ),
+        silent: bool = PydanticField(
+            False,
+            description="If True, does not increment view count for the parent collection."
+        ),
+        pagination: bool = PydanticField(
+            False,
+            description="If True, returns pagination metadata along with items."
+        ),
+        stage: Union[bool, str] = PydanticField(
+            False,
+            description="Control which artifacts to return: False=committed only (default), True=staged only, 'all'=both."
+        ),
+        context: Optional[dict] = PydanticField(
+            None,
+            description="Context containing user info and workspace. Usually provided automatically by the system."
+        ),
+    ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
+        """List children of a collection or root artifacts in the workspace.
+
+        This is a convenience wrapper around search() that provides backward-compatible
+        behavior: when parent_id is None, it lists only root artifacts (artifacts
+        without a parent), rather than all artifacts in the workspace.
+
+        For workspace-wide search across all artifacts, use search() directly.
+        Note: This method increments the view_count of the parent collection when
+        silent=False, while search() never increments view_count.
+
+        Returns:
+            If pagination=False: List of artifact dictionaries
+            If pagination=True: Dictionary with 'items' list and pagination metadata
+
+        Examples:
+            # List root artifacts (no parent)
+            items = await list()
+
+            # List children of a specific collection
+            items = await list("public/datasets")
+
+            # Filter root artifacts by type
+            items = await list(filters={"type": "dataset"})
+        """
+        # If no parent_id specified, list root artifacts only (parent_id=None)
+        if parent_id is None:
+            filters = filters or {}
+            if "parent_id" not in filters:
+                filters["parent_id"] = None
+
+        results = await self.search(
+            parent_id=parent_id,
+            keywords=keywords,
+            filters=filters,
+            mode=mode,
+            offset=offset,
+            limit=limit,
+            order_by=order_by,
+            pagination=pagination,
+            stage=stage,
+            context=context,
+        )
+
+        # Increment view count for parent collection if not silent
+        if not silent and parent_id:
+            validated_parent_id = self._validate_artifact_id(parent_id, context)
+            session = await self._get_session(read_only=False)
+            try:
+                async with session.begin():
+                    parent_artifact = await self._get_artifact(session, validated_parent_id)
+                    await self._increment_stat(
+                        session, parent_artifact.id, "view_count"
+                    )
+                    await session.commit()
+            finally:
+                await session.close()
+
+        return results
 
     @schema_method
     async def publish(
@@ -9255,25 +9473,28 @@ class ArtifactController:
                                 f"User does not have permission to attach artifact to the collection '{new_parent.alias}'."
                             )
                     
-                    # Check that new parent is a collection
-                    if new_parent.type != "collection":
-                        raise ValueError(
-                            f"New parent must be a collection, but '{new_parent_id}' is of type '{new_parent.type}'"
-                        )
-                    
+                    # Mark the new parent as a collection if it isn't already
+                    new_parent_config = new_parent.config or {}
+                    if not new_parent_config.get("is_collection"):
+                        new_parent_config["is_collection"] = True
+                        new_parent.config = new_parent_config
+                        flag_modified(new_parent, "config")
+                        session.add(new_parent)
+
                     # Check that new parent is in the same workspace
                     if new_parent.workspace != artifact.workspace:
                         raise ValueError(
                             f"Cannot move artifact to a different workspace. "
                             f"Artifact is in '{artifact.workspace}' but parent is in '{new_parent.workspace}'"
                         )
-                    
+
                     # Prevent circular dependencies
                     if new_parent_id == artifact_id:
                         raise ValueError("An artifact cannot be its own parent")
-                    
-                    # Check if moving would create a cycle (if artifact is a collection)
-                    if artifact.type == "collection":
+
+                    # Check if moving would create a cycle (if artifact has children / is_collection)
+                    artifact_config = artifact.config or {}
+                    if artifact_config.get("is_collection") or artifact.type == "collection":
                         # Check if new_parent is a descendant of artifact
                         current = new_parent
                         while current and current.parent_id:
@@ -9395,8 +9616,8 @@ class ArtifactController:
             "get_file": self.get_file,
             "read_file": self.read_file,
             "write_file": self.write_file,
-            "list": self.list_children,
-            "list_children": self.list_children,
+            "list": self.list,
+            "search": self.search,
             "list_files": self.list_files,
             "add_vectors": self.add_vectors,
             "search_vectors": self.search_vectors,

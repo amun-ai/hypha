@@ -2885,7 +2885,7 @@ class ServerAppController:
         """List applications in the workspace."""
         try:
             ws = context["ws"]
-            apps = await self.artifact_manager.list_children(
+            apps = await self.artifact_manager.list(
                 f"{ws}/applications", filters={"type": "application"}, context=context
             )
             return [app["manifest"] for app in apps]

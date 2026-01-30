@@ -1358,31 +1358,40 @@ class RedisEventBus:
             await emit_result
     
     def emit(self, event_name, data):
-        """Emit an event with smart routing using prefix-based system."""
+        """Emit an event with smart routing using prefix-based system.
+
+        For targeted messages to local clients, this skips Redis entirely
+        and delivers directly via the local event bus for better performance.
+        """
         if not self._ready.done():
             self._ready.set_result(True)
-        
-        tasks = []
 
-        # Always emit locally first
-        local_task = self._local_event_bus.emit(event_name, data)
-        if asyncio.iscoroutine(local_task):
-            tasks.append(local_task)
-
-        # Determine the appropriate prefix
+        # Determine the message type for routing decisions
         is_targeted_message = event_name.endswith(":msg") and "/" in event_name
-        
-        # Special case: broadcast messages (workspace/*:msg) should use broadcast prefix
         is_broadcast_message = event_name.endswith("/*:msg")
-        
+
+        # OPTIMIZATION: For targeted messages to local clients, skip Redis entirely
         if is_targeted_message and not is_broadcast_message:
-            # Use targeted: prefix for specific client messages
-            prefix = "targeted:"
             target_client = event_name[:-4]  # Remove ":msg" suffix
             if "/" in target_client:
                 workspace, client_id = target_client.split("/", 1)
                 if self.is_local_client(workspace, client_id):
-                    logger.debug(f"Local client message detected: {target_client} (could be optimized)")
+                    # LOCAL ONLY - skip Redis for better performance
+                    # Use _redis_event_bus since handlers are registered there
+                    logger.debug(f"Local-only delivery for {target_client}")
+                    return self._redis_event_bus.emit(event_name, data)
+
+        # For remote clients or broadcast messages, use both local and Redis
+        tasks = []
+
+        # Emit locally first
+        local_task = self._local_event_bus.emit(event_name, data)
+        if asyncio.iscoroutine(local_task):
+            tasks.append(local_task)
+
+        # Determine the appropriate prefix for Redis
+        if is_targeted_message and not is_broadcast_message:
+            prefix = "targeted:"
         else:
             # Use broadcast: prefix for broadcast messages and system events
             prefix = "broadcast:"
@@ -1401,7 +1410,7 @@ class RedisEventBus:
             if isinstance(data, str):
                 data = data.encode("utf-8")
             data_type_byte = b'b'
-        
+
         # Use prefix-based channel naming with data type encoded in payload
         redis_channel = prefix + event_name
         payload = data_type_byte + data
