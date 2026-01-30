@@ -58,13 +58,23 @@ os.environ["NO_PROXY"] = os.environ.get("NO_PROXY", "") + ",localhost,127.0.0.1"
 test_env = os.environ.copy()
 
 
-def _wait_for_server_health(server_url, server_name, max_timeout=40):
-    """Helper function to wait for server health checks with robust retry logic."""
+def _wait_for_server_health(server_url, server_name, max_timeout=60):
+    """Helper function to wait for server health checks with robust retry logic.
+
+    Args:
+        server_url: Base URL of the server to check
+        server_name: Name for logging purposes
+        max_timeout: Maximum time to wait in seconds (default: 60 for CI environments)
+
+    Returns:
+        True if server is healthy, False if timeout reached
+    """
     timeout = max_timeout
-    check_interval = 0.1
+    check_interval = 0.2
     backoff_factor = 1.1
-    max_interval = 1.0
-    
+    max_interval = 2.0
+    start_time = time.time()
+
     while timeout > 0:
         try:
             # Check readiness
@@ -79,16 +89,20 @@ def _wait_for_server_health(server_url, server_name, max_timeout=40):
                     timeout=5
                 )
                 if liveness_response.ok:
+                    elapsed = time.time() - start_time
+                    print(f"Server ({server_name}) is ready after {elapsed:.1f}s")
                     return True
         except (RequestException, Exception) as e:
             # Log the exception for debugging in the second half of timeout period
             if timeout < max_timeout * 0.5:
-                print(f"Server ({server_name}) not ready: {e}")
-        
+                print(f"Server ({server_name}) not ready after {time.time() - start_time:.1f}s: {e}")
+
         time.sleep(check_interval)
         timeout -= check_interval
         # Exponential backoff for check interval
         check_interval = min(check_interval * backoff_factor, max_interval)
+
+    print(f"Server ({server_name}) failed to start after {max_timeout}s")
     
     return False
 
@@ -729,15 +743,15 @@ def fastapi_server_redis_1(redis_server, minio_server):
 
 
 @pytest_asyncio.fixture(name="fastapi_server_redis_2", scope="session")
-def fastapi_server_redis_2(redis_server, minio_server):
+def fastapi_server_redis_2(redis_server, minio_server, fastapi_server_redis_1):
     """Start a backup server as test fixture and tear down after test.
 
     This fixture is used for testing horizontal scalability (multiple Hypha servers
-    sharing the same Redis instance). It does NOT depend on fastapi_server to avoid
-    port conflicts during cleanup - both fixtures manage independent server instances.
+    sharing the same Redis instance). It depends on fastapi_server_redis_1 to ensure
+    the first server is fully initialized before starting the second one.
     """
     # Add a small delay to ensure the first server is fully initialized
-    time.sleep(1)
+    time.sleep(2)
 
     # Check if port is available, if not try to clean it up with retries
     if not _is_port_available(SIO_PORT_REDIS_2):
@@ -750,7 +764,7 @@ def fastapi_server_redis_2(redis_server, minio_server):
                 f"Try running: lsof -ti :{SIO_PORT_REDIS_2} | xargs kill -9"
             )
 
-
+    # Use PIPE to capture output for debugging if startup fails
     with subprocess.Popen(
         [
             sys.executable,
@@ -771,6 +785,8 @@ def fastapi_server_redis_2(redis_server, minio_server):
         env=test_env,
         # Ensure the process has its own process group
         preexec_fn=os.setsid if hasattr(os, 'setsid') else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     ) as proc:
         # Wait for server to be ready
         server_url = f"http://127.0.0.1:{SIO_PORT_REDIS_2}"
@@ -779,10 +795,16 @@ def fastapi_server_redis_2(redis_server, minio_server):
             try:
                 if proc.poll() is not None:
                     print(f"Server process exited with code: {proc.returncode}")
+                    # Try to capture any output
+                    stdout, stderr = proc.communicate(timeout=5)
+                    if stdout:
+                        print(f"Server stdout: {stdout.decode('utf-8', errors='replace')[-2000:]}")
+                    if stderr:
+                        print(f"Server stderr: {stderr.decode('utf-8', errors='replace')[-2000:]}")
                 else:
                     print("Server process is still running but not responding to health checks")
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Error getting server diagnostics: {e}")
             raise TimeoutError("Server (fastapi_server_redis_2) did not start in time")
 
         yield
