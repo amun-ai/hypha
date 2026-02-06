@@ -98,6 +98,17 @@ class HTTPStreamingRPCServer:
         connection_key = f"{workspace}/{client_id}"
 
         async with self._lock:
+            # Check if there's an existing connection with the same key
+            # If so, close it first to prevent queue mismatch between old stream and new messages
+            if connection_key in self._connections:
+                old_queue = self._connections[connection_key]
+                # Signal old stream to stop by putting a sentinel value
+                try:
+                    old_queue.put_nowait(None)  # None signals stream to close
+                except asyncio.QueueFull:
+                    pass  # Old queue is full, it will be replaced anyway
+                logger.info(f"[HTTP RPC] Closing old connection for {connection_key}")
+
             self._connections[connection_key] = queue
             self._connection_info[connection_key] = {
                 "workspace": workspace,
@@ -339,6 +350,11 @@ class HTTPStreamingRPCServer:
                                     data = await asyncio.wait_for(
                                         queue.get(), timeout=1.0
                                     )
+
+                                    # Check for sentinel value (None) indicating connection replacement
+                                    if data is None:
+                                        logger.info(f"[STREAM] Received close signal for {workspace}/{client_id}")
+                                        break
 
                                     # Process the data based on its type
                                     if isinstance(data, bytes):

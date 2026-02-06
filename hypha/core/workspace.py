@@ -675,8 +675,9 @@ class WorkspaceManager:
         # If validation passes, subscribe to all events
         for evt in event_types:
             connection.subscribe(evt)
-        
+
         logger.info(f"Client {workspace}/{client_id} subscribed to: {event_type}")
+        return True  # Explicitly return success to ensure RPC response is sent
 
     @schema_method
     async def unsubscribe(
@@ -700,8 +701,9 @@ class WorkspaceManager:
                 connection.unsubscribe(evt)
         else:
             connection.unsubscribe(event_type)
-        
+
         logger.info(f"Client {workspace}/{client_id} unsubscribed from: {event_type}")
+        return True  # Explicitly return success to ensure RPC response is sent
 
     @schema_method
     async def get_env(
