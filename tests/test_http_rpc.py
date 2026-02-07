@@ -4,12 +4,60 @@ This module tests the HTTP streaming RPC transport as an alternative to WebSocke
 """
 
 import asyncio
+import json
 import pytest
 import httpx
+import msgpack
 
 from hypha_rpc import connect_to_server
 
 from . import SERVER_URL
+
+
+class MsgpackStreamReader:
+    """Helper to read length-prefixed msgpack messages from an HTTP stream."""
+
+    def __init__(self, response):
+        self.response = response
+        self.buffer = b""
+        self._iter = None
+
+    async def _ensure_iter(self):
+        if self._iter is None:
+            self._iter = self.response.aiter_bytes()
+
+    async def read_message(self) -> dict:
+        """Read a single length-prefixed msgpack message."""
+        await self._ensure_iter()
+
+        # Read until we have at least the length prefix
+        while len(self.buffer) < 4:
+            try:
+                chunk = await self._iter.__anext__()
+                self.buffer += chunk
+            except StopAsyncIteration:
+                raise ValueError("Stream ended before length prefix")
+
+        length = int.from_bytes(self.buffer[:4], 'big')
+
+        # Read until we have the full message
+        while len(self.buffer) < 4 + length:
+            try:
+                chunk = await self._iter.__anext__()
+                self.buffer += chunk
+            except StopAsyncIteration:
+                raise ValueError(f"Stream ended before full message: got {len(self.buffer) - 4}, expected {length}")
+
+        msg_data = self.buffer[4:4 + length]
+        self.buffer = self.buffer[4 + length:]
+
+        return msgpack.unpackb(msg_data)
+
+
+async def read_msgpack_message(response) -> dict:
+    """Read a single length-prefixed msgpack message from the response stream."""
+    reader = MsgpackStreamReader(response)
+    return await reader.read_message()
 
 
 class TestHTTPStreamingRPC:
@@ -45,10 +93,10 @@ class TestHTTPStreamingRPC:
                         content = await response.aread()
                         print(f"Error response: {content}")
                     assert response.status_code == 200, f"HTTP RPC stream endpoint should exist, got {response.status_code}"
-                    # Verify we can read at least one line
-                    async for line in response.aiter_lines():
-                        if line.strip():
-                            break  # Got at least one line, test passes
+                    # Verify we can read the first message (connection_info)
+                    msg = await read_msgpack_message(response)
+                    assert msg is not None, "Should receive at least one message"
+                    assert msg.get("type") == "connection_info", f"First message should be connection_info, got {msg.get('type')}"
         finally:
             await ws_server.disconnect()
 
@@ -99,16 +147,9 @@ class TestHTTPStreamingRPC:
                 ) as response:
                     assert response.status_code == 200, f"Expected 200, got {response.status_code}"
 
-                    # Read first line (should be connection info)
-                    first_line = None
-                    async for line in response.aiter_lines():
-                        if line.strip():
-                            first_line = line
-                            break
-
-                    assert first_line is not None, "Should receive connection info"
-                    import json
-                    conn_info = json.loads(first_line)
+                    # Read first message (should be connection info)
+                    conn_info = await read_msgpack_message(response)
+                    assert conn_info is not None, "Should receive connection info"
                     assert conn_info.get("type") == "connection_info"
                     assert "workspace" in conn_info
                     assert "client_id" in conn_info
@@ -365,22 +406,32 @@ class TestHTTPStreamingRPC:
                     ping_received = False
                     timeout_at = asyncio.get_event_loop().time() + 35  # Wait up to 35s for ping
 
-                    async for line in response.aiter_lines():
+                    # Read messages using length-prefixed msgpack format
+                    buffer = b""
+                    async for chunk in response.aiter_bytes():
                         if asyncio.get_event_loop().time() > timeout_at:
                             break
 
-                        if line.strip():
-                            import json
-                            msg = json.loads(line)
+                        buffer += chunk
+
+                        # Try to parse complete messages from buffer
+                        while len(buffer) >= 4:
+                            length = int.from_bytes(buffer[:4], 'big')
+                            if len(buffer) < 4 + length:
+                                break  # Need more data
+
+                            msg_data = buffer[4:4 + length]
+                            buffer = buffer[4 + length:]
+
+                            msg = msgpack.unpackb(msg_data)
                             messages_received.append(msg)
 
                             if msg.get("type") == "ping":
                                 ping_received = True
                                 break
 
-                            # Wait for at least connection_info
-                            if msg.get("type") == "connection_info":
-                                continue
+                        if ping_received:
+                            break
 
                     # We should have received connection info at least
                     assert any(m.get("type") == "connection_info" for m in messages_received)

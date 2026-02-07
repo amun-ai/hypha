@@ -361,31 +361,53 @@ async def test_conda_worker_cli_functionality():
     print("✓ Conda worker CLI validates required arguments")
 
 
-async def test_browser_worker_cli_functionality():
+def test_browser_worker_cli_functionality():
     """Test browser worker CLI argument parsing and configuration."""
     from hypha.workers.browser import main
     import sys
+    import os
     from unittest.mock import patch
 
-    # Test help functionality (should not raise exception)
-    with patch.object(sys, "argv", ["browser.py", "--help"]):
-        try:
-            main()
-        except SystemExit as e:
-            # --help causes SystemExit with code 0
-            assert e.code == 0
+    # Keys to remove from environment during the test
+    env_keys_to_clear = [
+        "HYPHA_SERVER_URL",
+        "HYPHA_WORKSPACE",
+        "HYPHA_TOKEN",
+        "HYPHA_SERVICE_ID",
+        "HYPHA_VISIBILITY",
+        "HYPHA_IN_DOCKER",
+    ]
 
-    print("✓ Browser worker CLI help works")
+    # Save original values and clear them
+    saved_values = {}
+    for key in env_keys_to_clear:
+        saved_values[key] = os.environ.pop(key, None)
 
-    # Test missing required arguments
-    with patch.object(sys, "argv", ["browser.py"]):
-        try:
-            main()
-        except SystemExit as e:
-            # Missing required args should cause SystemExit with code 1
-            assert e.code == 1
+    try:
+        # Test help functionality (should not raise exception)
+        with patch.object(sys, "argv", ["browser.py", "--help"]):
+            try:
+                main()
+            except SystemExit as e:
+                # --help causes SystemExit with code 0
+                assert e.code == 0
 
-    print("✓ Browser worker CLI validates required arguments")
+        print("✓ Browser worker CLI help works")
+
+        # Test missing required arguments
+        with patch.object(sys, "argv", ["browser.py"]):
+            try:
+                main()
+            except SystemExit as e:
+                # Missing required args should cause SystemExit with code 1
+                assert e.code == 1
+
+        print("✓ Browser worker CLI validates required arguments")
+    finally:
+        # Restore original values
+        for key, value in saved_values.items():
+            if value is not None:
+                os.environ[key] = value
 
 
 async def test_worker_environment_variable_support():
