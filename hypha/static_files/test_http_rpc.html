@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hypha HTTP RPC Test</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        h1 {
+            color: #333;
+            border-bottom: 2px solid #4CAF50;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #666;
+            margin-top: 20px;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin: 5px;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        button:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .status.success {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        .status.error {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        .status.info {
+            background: #d1ecf1;
+            border: 1px solid #bee5eb;
+            color: #0c5460;
+        }
+        #log {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 400px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .log-entry {
+            margin: 2px 0;
+            padding: 2px 0;
+        }
+        .log-entry.error {
+            color: #f48771;
+        }
+        .log-entry.success {
+            color: #73c991;
+        }
+        .log-entry.info {
+            color: #75beff;
+        }
+        .log-entry.debug {
+            color: #b5b5b5;
+        }
+        .test-result {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 3px;
+            margin-left: 10px;
+            font-weight: bold;
+        }
+        .test-result.pass {
+            background: #d4edda;
+            color: #155724;
+        }
+        .test-result.fail {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin: 15px 0;
+        }
+        input[type="text"] {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            flex: 1;
+            min-width: 200px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🧪 Hypha HTTP RPC Transport Test Suite</h1>
+        <div id="status" class="status info">Ready to test HTTP RPC transport...</div>
+    </div>
+
+    <div class="container">
+        <h2>Connection Settings</h2>
+        <div class="controls">
+            <input type="text" id="serverUrl" value="http://localhost:9527" placeholder="Server URL">
+            <button onclick="testConnection()">Connect via HTTP</button>
+            <button onclick="disconnect()">Disconnect</button>
+            <button onclick="clearLog()">Clear Log</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Authentication</h2>
+        <div class="controls">
+            <button onclick="testLogin()">Test Login & Get Token</button>
+            <button onclick="testTokenConnection()">Connect with Token</button>
+        </div>
+        <div id="tokenDisplay" style="margin-top: 10px; padding: 10px; background: #f0f0f0; border-radius: 4px; font-family: monospace; word-break: break-all; display: none;"></div>
+    </div>
+
+    <div class="container">
+        <h2>Test Suite</h2>
+        <div class="controls">
+            <button onclick="runAllTests()">Run All Tests</button>
+            <button onclick="testBasicRPC()">Test 1: Basic RPC</button>
+            <button onclick="testServiceRegistration()">Test 2: Service Registration</button>
+            <button onclick="testServiceCall()">Test 3: Service Call</button>
+            <button onclick="testBinaryData()">Test 4: Binary Data</button>
+            <button onclick="testMultipleClients()">Test 5: Multiple Clients</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Console Log</h2>
+        <div id="log"></div>
+    </div>
+
+    <script src="./hypha-rpc-websocket.js"></script>
+    <script>
+        let server = null;
+        let testResults = [];
+        let authToken = null;
+
+        function setStatus(message, type = 'info') {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = message;
+            statusEl.className = `status ${type}`;
+        }
+
+        function log(message, level = 'info') {
+            const logEl = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${level}`;
+            const timestamp = new Date().toLocaleTimeString();
+            entry.textContent = `[${timestamp}] [${level.toUpperCase()}] ${message}`;
+            logEl.appendChild(entry);
+            logEl.scrollTop = logEl.scrollHeight;
+            console.log(`[${level}]`, message);
+        }
+
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+            testResults = [];
+            log('Log cleared', 'info');
+        }
+
+        function recordTest(name, passed, error = null) {
+            testResults.push({ name, passed, error });
+            const status = passed ? 'PASS ✓' : 'FAIL ✗';
+            const level = passed ? 'success' : 'error';
+            log(`${status} ${name}${error ? ': ' + error : ''}`, level);
+        }
+
+        async function testConnection() {
+            try {
+                const serverUrl = document.getElementById('serverUrl').value;
+                log(`Connecting to ${serverUrl} via HTTP transport...`, 'info');
+                setStatus('Connecting...', 'info');
+
+                // Use HTTP transport explicitly
+                server = await hyphaWebsocketClient.connectToServer({
+                    server_url: serverUrl,
+                    transport: 'http',  // Force HTTP transport
+                    method_timeout: 30
+                });
+
+                log(`✓ Connected successfully!`, 'success');
+                log(`  Workspace: ${server.config.workspace}`, 'debug');
+                log(`  Client ID: ${server.config.client_id}`, 'debug');
+                log(`  Manager ID: ${server.config.manager_id}`, 'debug');
+                setStatus(`Connected to workspace: ${server.config.workspace}`, 'success');
+
+                recordTest('Connection', true);
+                return true;
+            } catch (error) {
+                log(`✗ Connection failed: ${error.message}`, 'error');
+                setStatus(`Connection failed: ${error.message}`, 'error');
+                recordTest('Connection', false, error.message);
+                return false;
+            }
+        }
+
+        async function disconnect() {
+            if (server) {
+                try {
+                    await server.disconnect();
+                    server = null;
+                    log('Disconnected from server', 'info');
+                    setStatus('Disconnected', 'info');
+                } catch (error) {
+                    log(`Error disconnecting: ${error.message}`, 'error');
+                }
+            }
+        }
+
+        async function testLogin() {
+            try {
+                const serverUrl = document.getElementById('serverUrl').value;
+                log('Starting login flow via HTTP transport...', 'info');
+                setStatus('Initiating login...', 'info');
+
+                // Connect anonymously first to get login URL
+                authToken = await hyphaWebsocketClient.login({
+                    server_url: serverUrl,
+                    transport: 'http',
+                    method_timeout: 30,
+                    login_callback: (context) => {
+                        window.open(context.login_url);
+                    }
+                });
+
+                log('✓ Token generated!', 'success');
+                log(`Token: ${authToken.substring(0, 50)}...`, 'info');
+                console.log('Full token:', authToken);
+
+                // Display token
+                const tokenDisplay = document.getElementById('tokenDisplay');
+                tokenDisplay.style.display = 'block';
+                tokenDisplay.innerHTML = `<strong>Token:</strong> ${authToken}<br>`;
+
+                log('Token saved. You can now use "Connect with Token" button.', 'success');
+                setStatus('Token obtained successfully', 'success');
+
+                recordTest('Login & Get Token', true);
+            } catch (error) {
+                log(`✗ Login failed: ${error.message}`, 'error');
+                console.error('Login error:', error);
+                setStatus(`Login failed: ${error.message}`, 'error');
+                recordTest('Login & Get Token', false, error.message);
+            }
+        }
+
+        async function testTokenConnection() {
+            try {
+                if (!authToken) {
+                    throw new Error('No token available. Please run "Test Login & Get Token" first.');
+                }
+
+                const serverUrl = document.getElementById('serverUrl').value;
+                log('Connecting with authentication token via HTTP transport...', 'info');
+                log(`Using token: ${authToken.substring(0, 50)}...`, 'debug');
+                console.log('Connecting with full token:', authToken);
+                setStatus('Connecting with token...', 'info');
+
+                // Connect with token using HTTP transport
+                server = await hyphaWebsocketClient.connectToServer({
+                    server_url: serverUrl,
+                    token: authToken,
+                    transport: 'http',
+                    method_timeout: 30
+                });
+
+                log('✓ Connected successfully with authentication!', 'success');
+                log(`  Workspace: ${server.config.workspace}`, 'debug');
+                log(`  Client ID: ${server.config.client_id}`, 'debug');
+                log(`  Manager ID: ${server.config.manager_id}`, 'debug');
+
+                // Check if we have user info
+                if (server.config.user) {
+                    log(`  User ID: ${server.config.user.id}`, 'debug');
+                    log(`  User Email: ${server.config.user.email || 'N/A'}`, 'debug');
+                }
+
+                setStatus(`Authenticated connection to: ${server.config.workspace}`, 'success');
+                console.log('Full server config:', server.config);
+
+                recordTest('Token Connection', true);
+            } catch (error) {
+                log(`✗ Token connection failed: ${error.message}`, 'error');
+                console.error('Token connection error:', error);
+                setStatus(`Token connection failed: ${error.message}`, 'error');
+                recordTest('Token Connection', false, error.message);
+            }
+        }
+
+        async function ensureConnected() {
+            if (!server) {
+                log('Not connected, attempting to connect...', 'info');
+                const success = await testConnection();
+                if (!success) {
+                    throw new Error('Failed to connect to server');
+                }
+                // Wait a bit for connection to stabilize
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+        }
+
+        async function testBasicRPC() {
+            try {
+                await ensureConnected();
+                log('Test 1: Testing basic RPC call (list_services)...', 'info');
+
+                const services = await server.listServices();
+                log(`✓ Got ${services.length} services`, 'success');
+
+                recordTest('Basic RPC', true);
+            } catch (error) {
+                log(`✗ Basic RPC test failed: ${error.message}`, 'error');
+                recordTest('Basic RPC', false, error.message);
+            }
+        }
+
+        async function testServiceRegistration() {
+            try {
+                await ensureConnected();
+                log('Test 2: Testing service registration...', 'info');
+
+                const testService = {
+                    id: 'test-service',
+                    name: 'Test Service',
+                    type: 'test',
+                    config: {
+                        visibility: 'public',
+                        require_context: false
+                    },
+                    async hello(name) {
+                        return `Hello, ${name}!`;
+                    },
+                    async echo(message) {
+                        return message;
+                    },
+                    async add(a, b) {
+                        return a + b;
+                    }
+                };
+
+                await server.registerService(testService);
+                log(`✓ Service registered: ${testService.id}`, 'success');
+
+                // Verify it's in the list
+                const services = await server.listServices();
+                const found = services.find(s => s.id && s.id.includes('test-service'));
+                if (found) {
+                    log(`✓ Service found in list: ${found.id}`, 'success');
+                    recordTest('Service Registration', true);
+                } else {
+                    throw new Error('Service not found in list');
+                }
+            } catch (error) {
+                log(`✗ Service registration test failed: ${error.message}`, 'error');
+                recordTest('Service Registration', false, error.message);
+            }
+        }
+
+        async function testServiceCall() {
+            try {
+                await ensureConnected();
+                log('Test 3: Testing service method calls...', 'info');
+
+                const workspace = server.config.workspace;
+                const clientId = server.config.client_id;
+
+                // Get the service we registered
+                const serviceId = `${workspace}/${clientId}:test-service`;
+                log(`Getting service: ${serviceId}`, 'debug');
+
+                const svc = await server.getService(serviceId);
+                log(`✓ Got service reference`, 'success');
+
+                // Test hello method
+                const greeting = await svc.hello('World');
+                if (greeting === 'Hello, World!') {
+                    log(`✓ hello() returned: "${greeting}"`, 'success');
+                } else {
+                    throw new Error(`Unexpected greeting: ${greeting}`);
+                }
+
+                // Test echo method
+                const testMessage = 'Test message 123';
+                const echoed = await svc.echo(testMessage);
+                if (echoed === testMessage) {
+                    log(`✓ echo() returned: "${echoed}"`, 'success');
+                } else {
+                    throw new Error(`Echo mismatch: ${echoed}`);
+                }
+
+                // Test add method
+                const sum = await svc.add(5, 3);
+                if (sum === 8) {
+                    log(`✓ add(5, 3) returned: ${sum}`, 'success');
+                } else {
+                    throw new Error(`Add mismatch: ${sum}`);
+                }
+
+                recordTest('Service Call', true);
+            } catch (error) {
+                log(`✗ Service call test failed: ${error.message}`, 'error');
+                recordTest('Service Call', false, error.message);
+            }
+        }
+
+        async function testBinaryData() {
+            try {
+                await ensureConnected();
+                log('Test 4: Testing binary data transfer...', 'info');
+
+                // Create a test service with binary data
+                const binaryService = {
+                    id: 'binary-test',
+                    name: 'Binary Test Service',
+                    type: 'test',
+                    config: {
+                        visibility: 'public',
+                        require_context: false
+                    },
+                    async getBytes(size) {
+                        const arr = new Uint8Array(size);
+                        for (let i = 0; i < size; i++) {
+                            arr[i] = i % 256;
+                        }
+                        return arr;
+                    },
+                    async echoBytes(data) {
+                        return data;
+                    }
+                };
+
+                await server.registerService(binaryService);
+                log(`✓ Binary service registered`, 'success');
+
+                const workspace = server.config.workspace;
+                const clientId = server.config.client_id;
+                const svc = await server.getService(`${workspace}/${clientId}:binary-test`);
+
+                // Test getting bytes
+                const bytes = await svc.getBytes(100);
+                if (bytes instanceof Uint8Array && bytes.length === 100) {
+                    log(`✓ getBytes(100) returned Uint8Array of length ${bytes.length}`, 'success');
+                } else {
+                    throw new Error(`Expected Uint8Array(100), got ${bytes}`);
+                }
+
+                // Test echoing bytes
+                const testData = new Uint8Array([1, 2, 3, 4, 5]);
+                const echoed = await svc.echoBytes(testData);
+                if (echoed instanceof Uint8Array && echoed.length === testData.length) {
+                    let match = true;
+                    for (let i = 0; i < testData.length; i++) {
+                        if (testData[i] !== echoed[i]) {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (match) {
+                        log(`✓ echoBytes() correctly echoed binary data`, 'success');
+                    } else {
+                        throw new Error('Echoed data does not match');
+                    }
+                } else {
+                    throw new Error(`Expected Uint8Array(5), got ${echoed}`);
+                }
+
+                recordTest('Binary Data', true);
+            } catch (error) {
+                log(`✗ Binary data test failed: ${error.message}`, 'error');
+                recordTest('Binary Data', false, error.message);
+            }
+        }
+
+        async function testMultipleClients() {
+            try {
+                await ensureConnected();
+                log('Test 5: Testing multiple concurrent clients...', 'info');
+
+                const serverUrl = document.getElementById('serverUrl').value;
+
+                // Create 3 additional clients
+                const clients = [];
+                for (let i = 0; i < 3; i++) {
+                    const client = await hyphaWebsocketClient.connectToServer({
+                        server_url: serverUrl,
+                        transport: 'http',
+                        method_timeout: 30
+                    });
+                    clients.push(client);
+                    log(`✓ Client ${i + 1} connected: ${client.config.client_id}`, 'success');
+                }
+
+                // Each client registers a service
+                for (let i = 0; i < clients.length; i++) {
+                    await clients[i].registerService({
+                        id: `multi-test-${i}`,
+                        name: `Multi Test ${i}`,
+                        type: 'test',
+                        config: {
+                            visibility: 'public',
+                            require_context: false
+                        },
+                        async identify() {
+                            return `Client ${i}`;
+                        }
+                    });
+                    log(`✓ Client ${i + 1} registered service`, 'success');
+                }
+
+                // Main client calls each service
+                for (let i = 0; i < clients.length; i++) {
+                    const ws = clients[i].config.workspace;
+                    const cid = clients[i].config.client_id;
+                    const svc = await server.getService(`${ws}/${cid}:multi-test-${i}`);
+                    const result = await svc.identify();
+                    if (result === `Client ${i}`) {
+                        log(`✓ Successfully called service on client ${i + 1}`, 'success');
+                    } else {
+                        throw new Error(`Unexpected result from client ${i}: ${result}`);
+                    }
+                }
+
+                // Cleanup
+                for (let i = 0; i < clients.length; i++) {
+                    await clients[i].disconnect();
+                    log(`✓ Client ${i + 1} disconnected`, 'debug');
+                }
+
+                recordTest('Multiple Clients', true);
+            } catch (error) {
+                log(`✗ Multiple clients test failed: ${error.message}`, 'error');
+                recordTest('Multiple Clients', false, error.message);
+            }
+        }
+
+        async function runAllTests() {
+            log('='.repeat(60), 'info');
+            log('Starting full test suite...', 'info');
+            log('='.repeat(60), 'info');
+
+            testResults = [];
+            const startTime = Date.now();
+
+            await testConnection();
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            await testBasicRPC();
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            await testServiceRegistration();
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            await testServiceCall();
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            await testBinaryData();
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            await testMultipleClients();
+
+            const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+
+            log('='.repeat(60), 'info');
+            log('Test Suite Complete', 'info');
+            log('='.repeat(60), 'info');
+
+            const passed = testResults.filter(t => t.passed).length;
+            const failed = testResults.filter(t => !t.passed).length;
+
+            log(`Total: ${testResults.length} tests`, 'info');
+            log(`Passed: ${passed}`, 'success');
+            log(`Failed: ${failed}`, failed > 0 ? 'error' : 'info');
+            log(`Duration: ${duration}s`, 'info');
+
+            if (failed === 0) {
+                setStatus(`All ${testResults.length} tests passed! ✓`, 'success');
+            } else {
+                setStatus(`${failed} of ${testResults.length} tests failed`, 'error');
+            }
+        }
+
+        // Auto-run tests on load if URL has ?autotest
+        window.addEventListener('load', () => {
+            const params = new URLSearchParams(window.location.search);
+            if (params.get('autotest') === 'true') {
+                setTimeout(runAllTests, 1000);
+            }
+        });
+    </script>
+</body>
+</html>

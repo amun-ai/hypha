@@ -4,12 +4,60 @@ This module tests the HTTP streaming RPC transport as an alternative to WebSocke
 """
 
 import asyncio
+import json
 import pytest
 import httpx
+import msgpack
 
 from hypha_rpc import connect_to_server
 
 from . import SERVER_URL
+
+
+class MsgpackStreamReader:
+    """Helper to read length-prefixed msgpack messages from an HTTP stream."""
+
+    def __init__(self, response):
+        self.response = response
+        self.buffer = b""
+        self._iter = None
+
+    async def _ensure_iter(self):
+        if self._iter is None:
+            self._iter = self.response.aiter_bytes()
+
+    async def read_message(self) -> dict:
+        """Read a single length-prefixed msgpack message."""
+        await self._ensure_iter()
+
+        # Read until we have at least the length prefix
+        while len(self.buffer) < 4:
+            try:
+                chunk = await self._iter.__anext__()
+                self.buffer += chunk
+            except StopAsyncIteration:
+                raise ValueError("Stream ended before length prefix")
+
+        length = int.from_bytes(self.buffer[:4], 'big')
+
+        # Read until we have the full message
+        while len(self.buffer) < 4 + length:
+            try:
+                chunk = await self._iter.__anext__()
+                self.buffer += chunk
+            except StopAsyncIteration:
+                raise ValueError(f"Stream ended before full message: got {len(self.buffer) - 4}, expected {length}")
+
+        msg_data = self.buffer[4:4 + length]
+        self.buffer = self.buffer[4 + length:]
+
+        return msgpack.unpackb(msg_data)
+
+
+async def read_msgpack_message(response) -> dict:
+    """Read a single length-prefixed msgpack message from the response stream."""
+    reader = MsgpackStreamReader(response)
+    return await reader.read_message()
 
 
 class TestHTTPStreamingRPC:
@@ -45,10 +93,10 @@ class TestHTTPStreamingRPC:
                         content = await response.aread()
                         print(f"Error response: {content}")
                     assert response.status_code == 200, f"HTTP RPC stream endpoint should exist, got {response.status_code}"
-                    # Verify we can read at least one line
-                    async for line in response.aiter_lines():
-                        if line.strip():
-                            break  # Got at least one line, test passes
+                    # Verify we can read the first message (connection_info)
+                    msg = await read_msgpack_message(response)
+                    assert msg is not None, "Should receive at least one message"
+                    assert msg.get("type") == "connection_info", f"First message should be connection_info, got {msg.get('type')}"
         finally:
             await ws_server.disconnect()
 
@@ -99,16 +147,9 @@ class TestHTTPStreamingRPC:
                 ) as response:
                     assert response.status_code == 200, f"Expected 200, got {response.status_code}"
 
-                    # Read first line (should be connection info)
-                    first_line = None
-                    async for line in response.aiter_lines():
-                        if line.strip():
-                            first_line = line
-                            break
-
-                    assert first_line is not None, "Should receive connection info"
-                    import json
-                    conn_info = json.loads(first_line)
+                    # Read first message (should be connection info)
+                    conn_info = await read_msgpack_message(response)
+                    assert conn_info is not None, "Should receive connection info"
                     assert conn_info.get("type") == "connection_info"
                     assert "workspace" in conn_info
                     assert "client_id" in conn_info
@@ -365,22 +406,32 @@ class TestHTTPStreamingRPC:
                     ping_received = False
                     timeout_at = asyncio.get_event_loop().time() + 35  # Wait up to 35s for ping
 
-                    async for line in response.aiter_lines():
+                    # Read messages using length-prefixed msgpack format
+                    buffer = b""
+                    async for chunk in response.aiter_bytes():
                         if asyncio.get_event_loop().time() > timeout_at:
                             break
 
-                        if line.strip():
-                            import json
-                            msg = json.loads(line)
+                        buffer += chunk
+
+                        # Try to parse complete messages from buffer
+                        while len(buffer) >= 4:
+                            length = int.from_bytes(buffer[:4], 'big')
+                            if len(buffer) < 4 + length:
+                                break  # Need more data
+
+                            msg_data = buffer[4:4 + length]
+                            buffer = buffer[4 + length:]
+
+                            msg = msgpack.unpackb(msg_data)
                             messages_received.append(msg)
 
                             if msg.get("type") == "ping":
                                 ping_received = True
                                 break
 
-                            # Wait for at least connection_info
-                            if msg.get("type") == "connection_info":
-                                continue
+                        if ping_received:
+                            break
 
                     # We should have received connection info at least
                     assert any(m.get("type") == "connection_info" for m in messages_received)
@@ -641,3 +692,389 @@ class TestHTTPReconnectionToken:
 
         finally:
             await ws_server.disconnect()
+
+
+class TestHTTPObjectTransmission:
+    """Test HTTP transport with complex objects and callbacks."""
+
+    @pytest.mark.asyncio
+    async def test_http_numpy_array_transmission(self, fastapi_server):
+        """Test transmitting numpy arrays over HTTP transport."""
+        import numpy as np
+
+        # Service provider via WebSocket
+        ws_server = await connect_to_server({
+            "server_url": SERVER_URL,
+            "client_id": "numpy-provider-ws",
+        })
+
+        workspace = ws_server.config["workspace"]
+
+        # Register service that works with numpy arrays
+        await ws_server.register_service({
+            "id": "numpy-service",
+            "name": "Numpy Service",
+            "config": {"visibility": "public"},
+            "process_array": lambda arr: {
+                "shape": arr.shape,
+                "dtype": str(arr.dtype),
+                "sum": float(np.sum(arr)),
+                "mean": float(np.mean(arr)),
+                "result_array": arr * 2,  # Return modified array
+            },
+            "reshape": lambda arr, shape: np.reshape(arr, shape),
+        })
+
+        token = await ws_server.generate_token()
+
+        # HTTP client connects
+        http_server = await connect_to_server({
+            "server_url": SERVER_URL,
+            "workspace": workspace,
+            "client_id": "numpy-consumer-http",
+            "transport": "http",
+            "token": token,
+        })
+
+        service = await http_server.get_service("numpy-provider-ws:numpy-service")
+
+        # Test 1: Send and receive numpy array
+        test_array = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32)
+        result = await service.process_array(test_array)
+
+        assert result["shape"] == [2, 3]
+        assert result["dtype"] == "float32"
+        assert result["sum"] == 21.0
+        assert result["mean"] == 3.5
+
+        result_array = result["result_array"]
+        assert isinstance(result_array, np.ndarray)
+        assert np.array_equal(result_array, test_array * 2)
+
+        # Test 2: Large array
+        large_array = np.random.rand(100, 100)
+        result2 = await service.process_array(large_array)
+        assert result2["shape"] == [100, 100]
+
+        # Test 3: Reshape operation
+        flat_array = np.arange(12)
+        reshaped = await service.reshape(flat_array, (3, 4))
+        assert reshaped.shape == (3, 4)
+        assert np.array_equal(reshaped, np.arange(12).reshape(3, 4))
+
+        # Cleanup
+        await http_server.disconnect()
+        await ws_server.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_http_nested_objects_transmission(self, fastapi_server):
+        """Test transmitting nested complex objects over HTTP."""
+        import numpy as np
+
+        ws_server = await connect_to_server({
+            "server_url": SERVER_URL,
+            "client_id": "nested-provider-ws",
+        })
+
+        workspace = ws_server.config["workspace"]
+
+        # Service that handles nested objects
+        await ws_server.register_service({
+            "id": "nested-service",
+            "name": "Nested Object Service",
+            "config": {"visibility": "public"},
+            "process_nested": lambda data: {
+                "received_keys": list(data.keys()),
+                "array_sum": float(np.sum(data["array"])) if "array" in data else 0,
+                "nested_count": len(data.get("nested", {}).get("items", [])),
+                "echo": data,
+            },
+        })
+
+        token = await ws_server.generate_token()
+
+        http_server = await connect_to_server({
+            "server_url": SERVER_URL,
+            "workspace": workspace,
+            "client_id": "nested-consumer-http",
+            "transport": "http",
+            "token": token,
+        })
+
+        service = await http_server.get_service("nested-provider-ws:nested-service")
+
+        # Complex nested structure
+        test_data = {
+            "string": "test",
+            "number": 42,
+            "array": np.array([1, 2, 3, 4, 5]),
+            "nested": {
+                "items": [1, 2, 3],
+                "metadata": {
+                    "name": "test_item",
+                    "values": [10, 20, 30],
+                },
+            },
+            "list_of_arrays": [
+                np.array([1, 2]),
+                np.array([3, 4]),
+            ],
+        }
+
+        result = await service.process_nested(test_data)
+
+        assert set(result["received_keys"]) == set(test_data.keys())
+        assert result["array_sum"] == 15.0
+        assert result["nested_count"] == 3
+
+        # Verify echo preserves structure
+        echo = result["echo"]
+        assert echo["string"] == "test"
+        assert echo["number"] == 42
+        assert np.array_equal(echo["array"], test_data["array"])
+        assert echo["nested"]["metadata"]["name"] == "test_item"
+
+        # Cleanup
+        await http_server.disconnect()
+        await ws_server.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_http_callbacks_basic(self, fastapi_server):
+        """Test basic callback functionality over HTTP transport."""
+        ws_server = await connect_to_server({
+            "server_url": SERVER_URL,
+            "client_id": "callback-provider-ws",
+        })
+
+        workspace = ws_server.config["workspace"]
+
+        # Service that uses callbacks
+        async def call_multiple_times(callback, count):
+            results = []
+            for i in range(count):
+                result = await callback(i)
+                results.append(result)
+            return results
+
+        async def process_with_progress(data, progress_callback):
+            for i in range(len(data)):
+                await progress_callback({"step": i, "total": len(data)})
+            return sum(data)
+
+        await ws_server.register_service({
+            "id": "callback-service",
+            "name": "Callback Service",
+            "config": {"visibility": "public"},
+            "call_multiple_times": call_multiple_times,
+            "process_with_progress": process_with_progress,
+        })
+
+        token = await ws_server.generate_token()
+
+        http_server = await connect_to_server({
+            "server_url": SERVER_URL,
+            "workspace": workspace,
+            "client_id": "callback-consumer-http",
+            "transport": "http",
+            "token": token,
+        })
+
+        service = await http_server.get_service("callback-provider-ws:callback-service")
+
+        # Test 1: Simple callback
+        callback_results = []
+
+        def test_callback(value):
+            callback_results.append(value)
+            return value * 2
+
+        results = await service.call_multiple_times(test_callback, 5)
+        assert len(callback_results) == 5
+        assert callback_results == [0, 1, 2, 3, 4]
+        assert results == [0, 2, 4, 6, 8]
+
+        # Test 2: Progress callback
+        progress_updates = []
+
+        def progress_callback(info):
+            progress_updates.append(info)
+
+        test_data = [10, 20, 30, 40]
+        result = await service.process_with_progress(test_data, progress_callback)
+        assert result == 100
+        assert len(progress_updates) == 4
+        assert progress_updates[0] == {"step": 0, "total": 4}
+        assert progress_updates[-1] == {"step": 3, "total": 4}
+
+        # Cleanup
+        await http_server.disconnect()
+        await ws_server.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_http_async_callbacks(self, fastapi_server):
+        """Test async callback functionality over HTTP transport."""
+        ws_server = await connect_to_server({
+            "server_url": SERVER_URL,
+            "client_id": "async-callback-provider-ws",
+        })
+
+        workspace = ws_server.config["workspace"]
+
+        # Service with async callback support
+        async def process_async_callback(items, async_callback):
+            results = []
+            for item in items:
+                result = await async_callback(item)
+                results.append(result)
+            return results
+
+        await ws_server.register_service({
+            "id": "async-callback-service",
+            "name": "Async Callback Service",
+            "config": {"visibility": "public"},
+            "process_async": process_async_callback,
+        })
+
+        token = await ws_server.generate_token()
+
+        http_server = await connect_to_server({
+            "server_url": SERVER_URL,
+            "workspace": workspace,
+            "client_id": "async-callback-consumer-http",
+            "transport": "http",
+            "token": token,
+        })
+
+        service = await http_server.get_service("async-callback-provider-ws:async-callback-service")
+
+        # Async callback
+        async def async_transform(value):
+            await asyncio.sleep(0.01)  # Simulate async work
+            return value ** 2
+
+        test_items = [1, 2, 3, 4, 5]
+        results = await service.process_async(test_items, async_transform)
+        assert results == [1, 4, 9, 16, 25]
+
+        # Cleanup
+        await http_server.disconnect()
+        await ws_server.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_http_callback_with_numpy(self, fastapi_server):
+        """Test callbacks that pass numpy arrays over HTTP."""
+        import numpy as np
+
+        ws_server = await connect_to_server({
+            "server_url": SERVER_URL,
+            "client_id": "numpy-callback-provider-ws",
+        })
+
+        workspace = ws_server.config["workspace"]
+
+        # Service that sends arrays to callbacks
+        async def transform_batch(arrays, transform_callback):
+            results = []
+            for arr in arrays:
+                result = await transform_callback(arr)
+                results.append(result)
+            return results
+
+        await ws_server.register_service({
+            "id": "numpy-callback-service",
+            "name": "Numpy Callback Service",
+            "config": {"visibility": "public"},
+            "transform_batch": transform_batch,
+        })
+
+        token = await ws_server.generate_token()
+
+        http_server = await connect_to_server({
+            "server_url": SERVER_URL,
+            "workspace": workspace,
+            "client_id": "numpy-callback-consumer-http",
+            "transport": "http",
+            "token": token,
+        })
+
+        service = await http_server.get_service("numpy-callback-provider-ws:numpy-callback-service")
+
+        # Callback that processes numpy arrays
+        def array_processor(arr):
+            return {
+                "sum": float(np.sum(arr)),
+                "modified": arr * 3,
+            }
+
+        test_arrays = [
+            np.array([1, 2, 3]),
+            np.array([4, 5, 6]),
+            np.array([7, 8, 9]),
+        ]
+
+        results = await service.transform_batch(test_arrays, array_processor)
+
+        assert len(results) == 3
+        assert results[0]["sum"] == 6.0
+        assert results[1]["sum"] == 15.0
+        assert results[2]["sum"] == 24.0
+
+        assert np.array_equal(results[0]["modified"], np.array([3, 6, 9]))
+        assert np.array_equal(results[1]["modified"], np.array([12, 15, 18]))
+        assert np.array_equal(results[2]["modified"], np.array([21, 24, 27]))
+
+        # Cleanup
+        await http_server.disconnect()
+        await ws_server.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_http_binary_data_transmission(self, fastapi_server):
+        """Test transmitting raw binary data over HTTP."""
+        ws_server = await connect_to_server({
+            "server_url": SERVER_URL,
+            "client_id": "binary-provider-ws",
+        })
+
+        workspace = ws_server.config["workspace"]
+
+        # Service that handles binary data
+        await ws_server.register_service({
+            "id": "binary-service",
+            "name": "Binary Service",
+            "config": {"visibility": "public"},
+            "process_binary": lambda data: {
+                "length": len(data),
+                "first_bytes": data[:10],
+                "reversed": bytes(reversed(data)),
+            },
+            "concat_binary": lambda parts: b"".join(parts),
+        })
+
+        token = await ws_server.generate_token()
+
+        http_server = await connect_to_server({
+            "server_url": SERVER_URL,
+            "workspace": workspace,
+            "client_id": "binary-consumer-http",
+            "transport": "http",
+            "token": token,
+        })
+
+        service = await http_server.get_service("binary-provider-ws:binary-service")
+
+        # Test 1: Send binary data
+        test_data = b"Hello, World! This is binary data."
+        result = await service.process_binary(test_data)
+
+        assert result["length"] == len(test_data)
+        assert result["first_bytes"] == test_data[:10]
+        assert result["reversed"] == bytes(reversed(test_data))
+
+        # Test 2: Multiple binary chunks
+        parts = [b"Part1", b"Part2", b"Part3"]
+        concatenated = await service.concat_binary(parts)
+        assert concatenated == b"Part1Part2Part3"
+
+        # Cleanup
+        await http_server.disconnect()
+        await ws_server.disconnect()

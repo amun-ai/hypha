@@ -2,7 +2,7 @@
 
 This module provides HTTP-based RPC transport as an alternative to WebSocket.
 It uses:
-- HTTP GET with streaming (NDJSON) for server-to-client messages (events, callbacks, responses)
+- HTTP GET with streaming (msgpack) for server-to-client messages (events, callbacks, responses)
 - HTTP POST for client-to-server messages (method calls)
 
 This is more resilient to network issues than WebSocket because:
@@ -13,7 +13,6 @@ This is more resilient to network issues than WebSocket because:
 
 import asyncio
 import io
-import json
 import logging
 import os
 import sys
@@ -39,6 +38,11 @@ LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("http-rpc")
 logger.setLevel(LOGLEVEL)
+
+# SECURITY: Limits to prevent DoS attacks
+MAX_REQUEST_BODY_SIZE = 100 * 1024 * 1024  # 100 MB max request size
+MAX_CONNECTIONS_PER_WORKSPACE = 1000  # Max concurrent connections per workspace
+MESSAGE_QUEUE_SIZE = 100  # Max messages buffered per connection
 
 
 class HTTPStreamingRPCServer:
@@ -86,11 +90,24 @@ class HTTPStreamingRPCServer:
             readonly=is_readonly,
         )
 
-        # Create message queue for this connection
-        queue = asyncio.Queue()
+        # Create message queue for this connection with bounded size
+        # SECURITY: Prevent unbounded memory growth from malicious clients
+        # maxsize=100 limits buffered messages to prevent DoS attacks
+        queue = asyncio.Queue(maxsize=100)
         connection_key = f"{workspace}/{client_id}"
 
         async with self._lock:
+            # Check if there's an existing connection with the same key
+            # If so, close it first to prevent queue mismatch between old stream and new messages
+            if connection_key in self._connections:
+                old_queue = self._connections[connection_key]
+                # Signal old stream to stop by putting a sentinel value
+                try:
+                    old_queue.put_nowait(None)  # None signals stream to close
+                except asyncio.QueueFull:
+                    pass  # Old queue is full, it will be replaced anyway
+                logger.info(f"[HTTP RPC] Closing old connection for {connection_key}")
+
             self._connections[connection_key] = queue
             self._connection_info[connection_key] = {
                 "workspace": workspace,
@@ -104,7 +121,12 @@ class HTTPStreamingRPCServer:
             try:
                 if isinstance(data, dict):
                     data = msgpack.packb(data)
-                await queue.put(data)
+                # SECURITY: Use put_nowait to prevent blocking event bus
+                # If queue is full (slow/malicious client), drop messages
+                try:
+                    queue.put_nowait(data)
+                except asyncio.QueueFull:
+                    logger.warning(f"Message queue full for {connection_key}, dropping message")
             except Exception as e:
                 logger.error(f"Failed to queue message: {e}")
 
@@ -173,20 +195,14 @@ class HTTPStreamingRPCServer:
             workspace: str,
             request: Request,
             client_id: str = None,
-            format: str = None,  # Optional format parameter: "json" or "msgpack"
             reconnection_token: str = None,  # Token for reconnecting to existing session
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
             """Streaming endpoint for server-to-client messages.
 
-            This endpoint supports two streaming formats:
-            - NDJSON (default): Each line is a complete JSON object
-            - msgpack: Length-prefixed msgpack frames for binary data support
-
-            Format selection:
-            - Use `format=msgpack` query parameter for binary data support
-            - Use `Accept: application/x-ndjson` header for JSON (default)
-            - Use `Accept: application/x-msgpack-stream` header for msgpack
+            This endpoint uses msgpack streaming format with length-prefixed frames.
+            Each frame consists of a 4-byte big-endian length prefix followed by
+            msgpack-encoded data.
 
             Reconnection:
             - Use `reconnection_token` query parameter to reconnect with same client_id
@@ -195,17 +211,11 @@ class HTTPStreamingRPCServer:
 
             The client should:
             1. Connect to this endpoint with a GET request
-            2. Read messages continuously (lines for JSON, frames for msgpack)
+            2. Read length-prefixed msgpack frames continuously
             3. Parse each message
             4. Handle the message (method call, response, event)
             5. Reconnect if the connection is lost (using reconnection_token)
             """
-            # Determine format from query param or Accept header
-            accept_header = request.headers.get("accept", "")
-            if format == "msgpack" or "application/x-msgpack" in accept_header:
-                use_msgpack = True
-            else:
-                use_msgpack = False
             try:
                 # Generate client_id if not provided
                 if not client_id:
@@ -284,16 +294,11 @@ class HTTPStreamingRPCServer:
                     user_info, expires_in=self.store.reconnection_token_life_time
                 )
 
-                def encode_message(message: dict, use_msgpack_format: bool) -> bytes:
-                    """Encode a message in the appropriate format."""
-                    if use_msgpack_format:
-                        # msgpack with 4-byte length prefix for framing
-                        data = msgpack.packb(message)
-                        length = len(data)
-                        return length.to_bytes(4, 'big') + data
-                    else:
-                        # NDJSON: JSON + newline
-                        return (json.dumps(message) + "\n").encode('utf-8')
+                def encode_message(message: dict) -> bytes:
+                    """Encode a message as length-prefixed msgpack."""
+                    data = msgpack.packb(message)
+                    length = len(data)
+                    return length.to_bytes(4, 'big') + data
 
                 async def stream_messages():
                     """Generator that yields messages in the requested format."""
@@ -309,7 +314,7 @@ class HTTPStreamingRPCServer:
                             "reconnection_token_life_time": self.store.reconnection_token_life_time,
                             "public_base_url": self.store.public_base_url,
                         }
-                        yield encode_message(conn_info, use_msgpack)
+                        yield encode_message(conn_info)
 
                         # Keep-alive interval (send ping every 30 seconds)
                         last_ping = time.time()
@@ -328,26 +333,25 @@ class HTTPStreamingRPCServer:
                                         queue.get(), timeout=1.0
                                     )
 
+                                    # Check for sentinel value (None) indicating connection replacement
+                                    if data is None:
+                                        logger.info(f"[STREAM] Received close signal for {workspace}/{client_id}")
+                                        break
+
                                     # Process the data based on its type
                                     if isinstance(data, bytes):
-                                        if use_msgpack:
-                                            # For msgpack output, forward the raw bytes with length prefix
-                                            length = len(data)
-                                            yield length.to_bytes(4, 'big') + data
-                                        else:
-                                            # For JSON output, decode msgpack first
-                                            unpacker = msgpack.Unpacker(io.BytesIO(data))
-                                            message = unpacker.unpack()
-                                            yield encode_message(message, use_msgpack)
+                                        # Forward raw msgpack bytes with length prefix
+                                        length = len(data)
+                                        yield length.to_bytes(4, 'big') + data
                                     elif isinstance(data, dict):
-                                        yield encode_message(data, use_msgpack)
+                                        yield encode_message(data)
                                     else:
-                                        yield encode_message({"data": data}, use_msgpack)
+                                        yield encode_message({"data": data})
 
                                 except asyncio.TimeoutError:
                                     # No message, check if we need to send ping
                                     if time.time() - last_ping > ping_interval:
-                                        yield encode_message({"type": "ping"}, use_msgpack)
+                                        yield encode_message({"type": "ping"})
                                         last_ping = time.time()
                                     continue
 
@@ -356,17 +360,16 @@ class HTTPStreamingRPCServer:
                                 break
                             except Exception as e:
                                 logger.error(f"Error in stream: {e}")
-                                yield encode_message({"type": "error", "message": str(e)}, use_msgpack)
+                                yield encode_message({"type": "error", "message": str(e)})
                                 break
 
                     finally:
                         # Cleanup connection
                         await self._remove_connection(workspace, client_id, conn)
 
-                media_type = "application/x-msgpack-stream" if use_msgpack else "application/x-ndjson"
                 return StreamingResponse(
                     stream_messages(),
-                    media_type=media_type,
+                    media_type="application/x-msgpack-stream",
                     headers={
                         "Cache-Control": "no-cache",
                         "Connection": "keep-alive",
