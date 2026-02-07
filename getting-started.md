@@ -124,7 +124,7 @@ npm install hypha-rpc
 
 Or include it in your HTML:
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.90/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.95/dist/hypha-rpc-websocket.min.js"></script>
 ```
 
 ```javascript
