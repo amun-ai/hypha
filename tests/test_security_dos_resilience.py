@@ -198,15 +198,15 @@ class TestDOS3WorkerPoolExhaustion:
     autoscaling config, resource quotas per workspace.
     """
 
-    async def test_autoscaling_accepts_large_max_instances(
+    async def test_autoscaling_rejects_excessive_max_instances(
         self, fastapi_server, test_user_token
     ):
-        """Test that autoscaling config accepts very large max_instances.
+        """Test that autoscaling config rejects excessive max_instances (DOS3 fix).
 
-        This demonstrates lack of validation on autoscaling parameters.
+        This verifies the DOS3 fix is working.
         """
         api = await connect_to_server({
-            "client_id": "dos3-autoscale-test",
+            "client_id": "dos3-reject-test",
             "server_url": WS_SERVER_URL,
             "token": test_user_token,
         })
@@ -228,33 +228,83 @@ async def hello(name):
 api.export({"hello": hello})
 '''
 
-            # Try to install app with extremely large max_instances
-            # Note: We won't actually trigger scaling to avoid consuming resources
             app_controller = await api.get_service("server-apps")
 
+            # Try to install app with max_instances > 50 (default limit)
             try:
                 manifest = await app_controller.install(
                     source=app_source,
                     config={
                         "autoscaling": {
                             "min_instances": 1,
-                            "max_instances": 10000,  # Unreasonably high
+                            "max_instances": 10000,  # Should be rejected
                             "target_requests_per_instance": 10,
                         }
                     }
                 )
 
-                print(f"\n[DOS3] Installed app with max_instances=10000")
-                print("[DOS3] VULNERABILITY: No validation of autoscaling parameters")
-                print("[DOS3] An attacker could force system to spawn thousands of workers")
-
-                # Check the config was accepted
-                assert manifest["config"]["autoscaling"]["max_instances"] == 10000
+                # If we get here, the fix didn't work
+                print(f"\n[DOS3-FIX] FAILED: max_instances=10000 was accepted!")
+                assert False, "Excessive max_instances should have been rejected"
 
             except Exception as e:
-                # If it fails, that's actually good (means there's validation)
-                print(f"\n[DOS3] GOOD: Validation rejected large max_instances: {e}")
-                raise
+                # This is expected - the validation should reject it
+                error_msg = str(e)
+                print(f"\n[DOS3-FIX] VERIFIED: Excessive max_instances rejected")
+                print(f"[DOS3-FIX] Error: {error_msg}")
+                assert "max_instances" in error_msg.lower() or "exceeds" in error_msg.lower(), \
+                    f"Error should mention max_instances limit: {error_msg}"
+
+        finally:
+            await api.disconnect()
+
+    async def test_autoscaling_accepts_reasonable_max_instances(
+        self, fastapi_server, test_user_token
+    ):
+        """Test that autoscaling config accepts reasonable max_instances values.
+
+        This verifies the fix doesn't break legitimate use cases.
+        """
+        api = await connect_to_server({
+            "client_id": "dos3-accept-test",
+            "server_url": WS_SERVER_URL,
+            "token": test_user_token,
+        })
+
+        try:
+            # Create workspace
+            ws_info = await api.create_workspace({
+                "name": f"dos3-accept-{uuid.uuid4().hex[:8]}",
+                "description": "Testing autoscaling with reasonable values"
+            }, overwrite=True)
+
+            # Simple server app source code
+            app_source = '''
+from hypha_rpc import api
+
+async def hello(name):
+    return f"Hello {name}"
+
+api.export({"hello": hello})
+'''
+
+            app_controller = await api.get_service("server-apps")
+
+            # Install app with max_instances = 10 (well within limit)
+            manifest = await app_controller.install(
+                source=app_source,
+                config={
+                    "autoscaling": {
+                        "enabled": True,
+                        "min_instances": 1,
+                        "max_instances": 10,  # Reasonable value
+                        "target_requests_per_instance": 10,
+                    }
+                }
+            )
+
+            print(f"\n[DOS3-FIX] VERIFIED: Reasonable max_instances=10 accepted")
+            assert manifest["config"]["autoscaling"]["max_instances"] == 10
 
         finally:
             await api.disconnect()

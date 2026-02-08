@@ -38,6 +38,22 @@ class AutoscalingConfig(BaseModel):
     metric_type: str = "load"  # Can be "load" or "custom"
     custom_metric_function: Optional[str] = None  # For custom metrics
 
+    @field_validator("max_instances")
+    @classmethod
+    def validate_max_instances(cls, v):
+        """DOS3 Fix: Validate max_instances to prevent worker pool exhaustion.
+
+        Limits max_instances to prevent a single app from spawning unlimited workers.
+        Can be configured via HYPHA_MAX_AUTOSCALING_INSTANCES environment variable.
+        """
+        max_allowed = int(os.environ.get("HYPHA_MAX_AUTOSCALING_INSTANCES", "50"))
+        if v > max_allowed:
+            raise ValueError(
+                f"max_instances ({v}) exceeds allowed limit ({max_allowed}). "
+                f"Configure limit via HYPHA_MAX_AUTOSCALING_INSTANCES environment variable."
+            )
+        return v
+
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
