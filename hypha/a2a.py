@@ -33,15 +33,19 @@ from a2a.utils import new_agent_text_message
 class HyphaAgentExecutor(AgentExecutor):
     """AgentExecutor that adapts Hypha services to A2A SDK interface."""
 
-    def __init__(self, run_function: Callable):
-        """Initialize with Hypha service's run function.
+    def __init__(self, run_function: Callable, workspace: str = None, user_info: dict = None):
+        """Initialize with Hypha service's run function and security context.
 
         Args:
             run_function: The service's run function that will process messages
+            workspace: The workspace ID for security context
+            user_info: User information dict for security context
         """
         self.run_function = run_function
+        self.workspace = workspace
+        self.user_info = user_info
         logger.info(
-            f"HyphaAgentExecutor initialized with run_function: {type(run_function)}"
+            f"HyphaAgentExecutor initialized with run_function: {type(run_function)}, workspace: {workspace}"
         )
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
@@ -143,17 +147,51 @@ class HyphaAgentExecutor(AgentExecutor):
             }
 
     def _filter_context_for_hypha(self, context: RequestContext) -> Optional[Dict]:
-        """Filter RequestContext to only include serializable data for Hypha."""
+        """Filter RequestContext to preserve security context for Hypha services.
+
+        SECURITY CRITICAL: This method MUST preserve user identity, workspace,
+        and permissions to enable proper authorization checks in Hypha services.
+        Returning None would completely bypass security (V24 vulnerability).
+        """
         try:
-            # For now, return None to avoid serialization issues
-            # In the future, we could extract specific fields from context
-            return None
+            # Construct Hypha security context from stored user_info
+            if not self.workspace or not self.user_info:
+                logger.error("Missing workspace or user_info - cannot construct secure context")
+                # Return minimal context rather than None to preserve some security
+                return {
+                    "ws": self.workspace if self.workspace else "unknown",
+                    "from": "a2a-client/unknown",
+                    "user": None,
+                }
+
+            # Build proper Hypha context with security information
+            # user_info is a UserInfo object from hypha.core.auth
+            hypha_context = {
+                "ws": self.workspace,
+                "from": f"{self.workspace}/a2a-client",  # Identify as A2A client
+                "user": {
+                    "id": getattr(self.user_info, "id", "unknown"),
+                    "email": getattr(self.user_info, "email", None),
+                    "roles": getattr(self.user_info, "roles", []),
+                    "is_anonymous": getattr(self.user_info, "is_anonymous", False),
+                    "parent": getattr(self.user_info, "parent", None),
+                },
+            }
+
+            logger.debug(f"Constructed Hypha context: ws={hypha_context['ws']}, from={hypha_context['from']}")
+            return hypha_context
+
         except Exception as e:
             logger.exception(f"Error filtering context: {e}")
-            return None
+            # SECURITY: Don't return None - return minimal context to preserve some security
+            return {
+                "ws": self.workspace if self.workspace else "unknown",
+                "from": "a2a-client/error",
+                "user": None,
+            }
 
 
-async def create_a2a_app_from_service(service, service_info):
+async def create_a2a_app_from_service(service, service_info, workspace=None, user_info=None):
     """Create A2AStarletteApplication from a Hypha service.
 
     This function follows the A2A samples repository pattern:
@@ -166,13 +204,15 @@ async def create_a2a_app_from_service(service, service_info):
     Args:
         service: Hypha service object with agent_card and run function
         service_info: Service information from Hypha
+        workspace: Workspace ID for security context (SECURITY CRITICAL)
+        user_info: User information for security context (SECURITY CRITICAL)
 
     Returns:
         ASGI application that can be called with (scope, receive, send)
     """
 
     logger.info(
-        f"create_a2a_app_from_service called with service type: {type(service)}"
+        f"create_a2a_app_from_service called with service type: {type(service)}, workspace: {workspace}"
     )
 
     # Extract run function
@@ -277,8 +317,9 @@ async def create_a2a_app_from_service(service, service_info):
 
     logger.info("Creating HyphaAgentExecutor...")
     try:
-        agent_executor = HyphaAgentExecutor(run_function)
-        logger.info("HyphaAgentExecutor created successfully")
+        # Pass security context to executor (FIX for V24)
+        agent_executor = HyphaAgentExecutor(run_function, workspace=workspace, user_info=user_info)
+        logger.info(f"HyphaAgentExecutor created successfully with workspace: {workspace}")
     except Exception as e:
         logger.error(f"Failed to create HyphaAgentExecutor: {e}")
         raise
@@ -442,6 +483,33 @@ class A2ARoutingMiddleware:
                     # Login and get user info
                     user_info = await self.store.login_optional(request)
 
+                    # SECURITY: Validate cross-workspace access (V26 fix)
+                    # Apply V10-V14 pattern: validate permission on TARGET workspace
+                    workspace_from_url = workspace
+                    current_workspace = user_info.scope.current_workspace
+
+                    if workspace_from_url != current_workspace:
+                        # Check permission on target workspace before accessing
+                        from hypha.core.auth import UserInfo, UserPermission
+
+                        if not user_info.check_permission(workspace_from_url, UserPermission.read):
+                            logger.warning(
+                                f"A2A cross-workspace access denied: "
+                                f"{current_workspace} -> {workspace_from_url}, "
+                                f"user: {user_info.id}, service: {service_id}"
+                            )
+                            await self._send_error_response(
+                                send, 403,
+                                f"No permission to access workspace '{workspace_from_url}'"
+                            )
+                            return
+
+                        # Log approved cross-workspace access for audit trail
+                        logger.info(
+                            f"A2A cross-workspace access granted: user {user_info.id} "
+                            f"from {current_workspace} to {workspace_from_url}, service: {service_id}"
+                        )
+
                     # Get the A2A service
                     # For public services, we need to create a workspace interface
                     # that allows accessing services in that workspace
@@ -494,8 +562,10 @@ class A2ARoutingMiddleware:
                         service = await api.get_service(service_info.id)
 
                         # Create the A2A ASGI app and handle the request
+                        # Pass user_info and workspace for security context (FIX for V24)
                         await self.handle_a2a_service(
-                            service, service_info, scope, receive, send
+                            service, service_info, scope, receive, send,
+                            workspace=workspace, user_info=user_info
                         )
                         return
 
@@ -509,13 +579,26 @@ class A2ARoutingMiddleware:
         # Continue to next middleware if not an A2A route
         await self.app(scope, receive, send)
 
-    async def handle_a2a_service(self, service, service_info, scope, receive, send):
-        """Handle A2A service requests by creating an A2A application."""
+    async def handle_a2a_service(self, service, service_info, scope, receive, send, workspace=None, user_info=None):
+        """Handle A2A service requests by creating an A2A application.
+
+        Args:
+            service: The Hypha service object
+            service_info: Service metadata
+            scope: ASGI scope
+            receive: ASGI receive callable
+            send: ASGI send callable
+            workspace: Workspace ID for security context (SECURITY CRITICAL - V24 fix)
+            user_info: User information for security context (SECURITY CRITICAL - V24 fix)
+        """
 
         try:
 
-            # Create A2A application from the service
-            a2a_app = await create_a2a_app_from_service(service, service_info)
+            # Create A2A application from the service with security context
+            # This fixes V24 by ensuring user_info and workspace are passed through
+            a2a_app = await create_a2a_app_from_service(
+                service, service_info, workspace=workspace, user_info=user_info
+            )
 
             # Call the A2A application with the request
             await a2a_app(scope, receive, send)
