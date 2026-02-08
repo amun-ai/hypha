@@ -37,7 +37,7 @@ async def local_parse_token(token: str) -> UserInfo:
         # But if it does, generate an anonymous user
         from hypha.core.auth import generate_anonymous_user
         return generate_anonymous_user()
-    result = _parse_token(token)
+    result = await _parse_token(token)
     return result
 
 

@@ -63,6 +63,12 @@ def set_jwt_secret(secret: str):
 LOGIN_SERVICE_URL = "/public/services/hypha-login"
 LOGIN_KEY_PREFIX = "login_key:"
 
+# Module-level state variables
+_current_auth_function = None
+_current_root_token = None
+_current_get_token_function = None
+_redis_instance = None  # FIX V22: Global Redis instance for token revocation checks
+
 
 def get_user_email(token):
     """Return the user email from the token."""
@@ -121,10 +127,30 @@ def get_rsa_key(kid, refresh=False):
     return rsa_key
 
 
-def valid_token(authorization: str):
+async def valid_token(authorization: str):
     """Validate token."""
     if not authorization:
         raise HTTPException(status_code=401, detail="Authorization header is expected")
+
+    # FIX V22: Check if token has been revoked BEFORE validating it
+    # This prevents revoked tokens from being accepted even if they're otherwise valid
+    global _redis_instance
+    if _redis_instance:
+        try:
+            is_revoked = await _redis_instance.get("revoked_token:" + authorization)
+            if is_revoked:
+                raise HTTPException(
+                    status_code=401,
+                    detail="Token has been revoked. Please login again."
+                )
+        except HTTPException:
+            # Re-raise HTTP exceptions (like revocation errors)
+            raise
+        except Exception as redis_err:
+            # Log Redis errors but don't fail auth if Redis is unavailable
+            # This ensures service availability even if Redis has issues
+            logger.warning(f"Redis revocation check failed: {redis_err}")
+
 
     try:
         unverified_header = jwt.get_unverified_header(authorization)
@@ -187,18 +213,18 @@ def generate_anonymous_user(scope=None) -> UserInfo:
     )
 
 
-def _parse_token(authorization: str, expected_workspace: str = None):
+async def _parse_token(authorization: str, expected_workspace: str = None):
     """Parse the token with optional workspace validation.
-    
+
     Args:
         authorization: The authorization token string
         expected_workspace: If provided, will validate that the token's current_workspace matches
                           this value before performing full token validation. This prevents
                           validating tokens for unauthorized workspaces.
-    
+
     Returns:
         UserInfo object if token is valid and workspace matches (if specified)
-    
+
     Raises:
         HTTPException: If token is invalid or workspace doesn't match
     """
@@ -219,10 +245,10 @@ def _parse_token(authorization: str, expected_workspace: str = None):
         token = parts[1]
     else:
         token = authorization
-    
+
     if not token:
         raise ValueError("Token is empty")
-    
+
     # Check if this is the root token FIRST, before any JWT decoding
     global _current_root_token
 
@@ -245,16 +271,16 @@ def _parse_token(authorization: str, expected_workspace: str = None):
         try:
             # Decode without verification to get the payload
             unverified_payload = jwt.get_unverified_claims(token)
-            
+
             # Extract the current workspace from the scope
             scope_str = unverified_payload.get("scope", "")
             scope_info = parse_scope(scope_str)
-            
+
             # Check if current workspace matches expected
             # Only validate if the token has a current_workspace set
             if scope_info.current_workspace and scope_info.current_workspace != expected_workspace:
                 raise HTTPException(
-                    status_code=403, 
+                    status_code=403,
                     detail=f"Token is not authorized for workspace '{expected_workspace}'"
                 )
         except jwt.JWTError as err:
@@ -262,13 +288,8 @@ def _parse_token(authorization: str, expected_workspace: str = None):
             raise HTTPException(status_code=401, detail=f"Invalid token structure: {str(err)}") from err
 
     # Now perform full validation
-    payload = valid_token(token)
+    payload = await valid_token(token)
     return get_user_info(payload)
-
-
-_current_auth_function = None
-_current_root_token = None
-_current_get_token_function = None
 
 
 async def set_parse_token_function(auth_function: Callable):
@@ -295,6 +316,20 @@ async def set_get_token_function(get_token_function: Callable):
     global _current_get_token_function
     _current_get_token_function = get_token_function
     logger.info("Custom get_token function has been set")
+
+
+async def set_redis_instance(redis):
+    """Set the Redis instance for token revocation checks.
+
+    FIX V22: This allows valid_token() to check if tokens have been revoked.
+
+    Args:
+        redis: Redis or FakeRedis instance from the store
+    """
+    global _redis_instance
+    _redis_instance = redis
+    logger.info("Redis instance has been set for token revocation checks")
+
 
 def extract_token_from_authorization(authorization: str) -> str:
     """Extract the actual token from an Authorization header value.

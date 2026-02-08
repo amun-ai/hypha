@@ -94,6 +94,110 @@ def _get_safe_error_detail(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc_msg}"
 
 
+def _validate_workspace_id(workspace_id: str) -> None:
+    """Validate workspace identifier format.
+    
+    Args:
+        workspace_id: Workspace identifier to validate
+        
+    Raises:
+        ValueError: If workspace_id contains invalid characters
+    """
+    if not workspace_id:
+        raise ValueError("Workspace ID cannot be empty")
+    
+    # Allow alphanumeric, hyphens, underscores, and dots
+    # Prevent path traversal and injection attempts
+    if not all(c.isalnum() or c in "-_." for c in workspace_id):
+        raise ValueError(f"Invalid workspace ID format: {workspace_id}")
+    
+    # Prevent path traversal
+    if ".." in workspace_id or workspace_id.startswith("."):
+        raise ValueError(f"Path traversal detected in workspace ID: {workspace_id}")
+
+
+def _validate_service_id(service_id: str) -> None:
+    """Validate service identifier format.
+    
+    Args:
+        service_id: Service identifier to validate
+        
+    Raises:
+        ValueError: If service_id contains invalid characters
+    """
+    if not service_id:
+        raise ValueError("Service ID cannot be empty")
+    
+    # Allow alphanumeric, hyphens, underscores, colons, and dots
+    # Prevent path traversal and injection attempts
+    if not all(c.isalnum() or c in "-_:." for c in service_id):
+        raise ValueError(f"Invalid service ID format: {service_id}")
+    
+    # Prevent path traversal
+    if ".." in service_id:
+        raise ValueError(f"Path traversal detected in service ID: {service_id}")
+
+
+def _validate_path(path: str) -> None:
+    """Validate request path for security issues.
+    
+    Args:
+        path: Request path to validate
+        
+    Raises:
+        ValueError: If path contains dangerous patterns
+    """
+    # Prevent path traversal
+    if ".." in path:
+        raise ValueError("Path traversal detected")
+    
+    # Prevent null byte injection
+    if "\x00" in path:
+        raise ValueError("Null byte detected in path")
+    
+    # Prevent excessive path length (DoS)
+    if len(path) > 2048:
+        raise ValueError("Path too long")
+
+
+def _parse_query_string_safe(query_bytes: bytes) -> dict:
+    """Safely parse query string without DoS vulnerabilities.
+    
+    Args:
+        query_bytes: Raw query string bytes
+        
+    Returns:
+        Dictionary of query parameters
+        
+    Raises:
+        ValueError: If query string is malformed or too large
+    """
+    if not query_bytes:
+        return {}
+    
+    # Limit query string size (DoS prevention)
+    if len(query_bytes) > 8192:
+        raise ValueError("Query string too large")
+    
+    try:
+        query = query_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("Invalid UTF-8 in query string")
+    
+    # Parse safely without list comprehension that can fail on malformed input
+    params = {}
+    if query:
+        for param in query.split("&"):
+            if "=" in param:
+                key, value = param.split("=", 1)
+                # Only keep first occurrence of each key
+                if key not in params:
+                    params[key] = value
+            # Ignore malformed parameters without "="
+    
+    return params
+
+
 class MsgpackResponse(Response):
     """Response class for msgpack encoding."""
 
@@ -264,6 +368,13 @@ class ASGIRoutingMiddleware:
                 path = path_params["path"]
 
                 try:
+                    # V17: Validate workspace and service IDs
+                    _validate_workspace_id(workspace)
+                    _validate_service_id(service_id)
+
+                    # V18: Validate path for security issues
+                    _validate_path(path)
+
                     scope = {
                         k: scope[k]
                         for k in scope
@@ -277,15 +388,9 @@ class ASGIRoutingMiddleware:
                     scope["path"] = path
                     scope["raw_path"] = path.encode("latin-1")
 
-                    # get _mode from query string
-                    query = scope.get("query_string", b"").decode("utf-8")
-                    if query:
-                        _mode = dict([q.split("=") for q in query.split("&")]).get(
-                            "_mode"
-                        )
-                        # TODO: remove _mode from query string
-                    else:
-                        _mode = None
+                    # V16/V20: Safely parse query string
+                    query_params = _parse_query_string_safe(scope.get("query_string", b""))
+                    _mode = query_params.get("_mode")
 
                     # Create a Request object with the scope
                     request = Request(scope, receive=receive)
@@ -364,6 +469,8 @@ class ASGIRoutingMiddleware:
                         return
                 except Exception as exp:
                     logger.exception(f"Error in ASGI service: {exp}")
+                    # V19: Sanitize error details before sending to client
+                    safe_error_msg = _get_safe_error_detail(exp)
                     await send(
                         {
                             "type": "http.response.start",
@@ -376,7 +483,7 @@ class ASGIRoutingMiddleware:
                     await send(
                         {
                             "type": "http.response.body",
-                            "body": f"Internal Server Error: {exp}".encode(),
+                            "body": f"Internal Server Error: {safe_error_msg}".encode(),
                             "more_body": False,
                         }
                     )

@@ -806,8 +806,10 @@ class RedisRPCConnection:
                 target_ws = target_id.split("/")[0]
 
             # Validate that sender workspace matches target workspace
-            # Exception: System workspace "*" can send to any workspace
-            if self._workspace != "*" and target_ws != self._workspace:
+            # Exceptions:
+            # 1. System workspace "*" can send to any workspace
+            # 2. Any workspace can send to system workspace "*" (for manager services)
+            if self._workspace != "*" and target_ws != "*" and target_ws != self._workspace:
                 raise PermissionError(
                     f"Cross-workspace messaging not allowed: "
                     f"client in workspace '{self._workspace}' cannot send messages to workspace '{target_ws}'. "
