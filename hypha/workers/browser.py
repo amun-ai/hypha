@@ -462,8 +462,14 @@ class BrowserWorker(BaseWorker):
         3. Cleans up session data
 
         Raises:
+            PermissionError: If user lacks permission on session's workspace
             WorkerError: If stop operation fails (session is still removed)
         """
+        # Validate permission on session's workspace (fixes W1 vulnerability)
+        from hypha.core.auth import validate_workspace_id_permission
+        from hypha.core import UserPermission
+        validate_workspace_id_permission(session_id, context, UserPermission.read)
+
         if session_id not in self._sessions:
             logger.warning(
                 f"Browser session {session_id} not found for stopping, may have already been cleaned up"
@@ -506,13 +512,22 @@ class BrowserWorker(BaseWorker):
         """Get logs for a browser session.
 
         Returns browser console messages captured during execution:
-        
+
         Returns a dictionary with:
         - items: List of log events, each with 'type' and 'content' fields
         - total: Total number of log items (before filtering/pagination)
         - offset: The offset used for pagination
         - limit: The limit used for pagination
+
+        Raises:
+            PermissionError: If user lacks permission on session's workspace
+            SessionNotFoundError: If the session doesn't exist
         """
+        # Validate permission on session's workspace (fixes W1 vulnerability)
+        from hypha.core.auth import validate_workspace_id_permission
+        from hypha.core import UserPermission
+        validate_workspace_id_permission(session_id, context, UserPermission.read)
+
         if session_id not in self._sessions:
             raise SessionNotFoundError(f"Browser session {session_id} not found")
 
@@ -1272,14 +1287,20 @@ class BrowserWorker(BaseWorker):
             session_id: The session ID to execute the script in
             script: JavaScript code to execute in the page context
             context: Optional context information
-            
+
         Returns:
             The result of the script execution
-            
+
         Raises:
+            PermissionError: If user lacks permission on session's workspace
             SessionNotFoundError: If the session doesn't exist
             WorkerError: If the script execution fails
         """
+        # Validate permission on session's workspace (fixes W1 vulnerability)
+        from hypha.core.auth import validate_workspace_id_permission
+        from hypha.core import UserPermission
+        validate_workspace_id_permission(session_id, context, UserPermission.read)
+
         if session_id not in self._sessions:
             raise SessionNotFoundError(f"Browser session {session_id} not found")
         

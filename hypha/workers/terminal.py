@@ -968,7 +968,7 @@ class TerminalWorker(BaseWorker):
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Execute a command in the running terminal session.
-        
+
         Args:
             session_id: The session to execute in
             script: The command to execute
@@ -976,10 +976,20 @@ class TerminalWorker(BaseWorker):
             progress_callback: Optional callback for execution progress
             output_callback: Optional callback for output
             context: Optional context information
-            
+
         Returns:
             Dictionary containing execution results including screen changes
+
+        Raises:
+            PermissionError: If user lacks permission on session's workspace
+            SessionNotFoundError: If the session doesn't exist
+            WorkerError: If the terminal process is not available
         """
+        # Validate permission on session's workspace (fixes W1 vulnerability)
+        from hypha.core.auth import validate_workspace_id_permission
+        from hypha.core import UserPermission
+        validate_workspace_id_permission(session_id, context, UserPermission.read)
+
         if session_id not in self._sessions:
             raise SessionNotFoundError(f"Terminal session {session_id} not found")
 
@@ -1199,11 +1209,20 @@ class TerminalWorker(BaseWorker):
 
     @schema_method
     async def stop(
-        self, 
+        self,
         session_id: str = Field(..., description="The session ID to stop. Must be a valid terminal session."),
         context: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Stop a terminal session."""
+        """Stop a terminal session.
+
+        Raises:
+            PermissionError: If user lacks permission on session's workspace
+        """
+        # Validate permission on session's workspace (fixes W1 vulnerability)
+        from hypha.core.auth import validate_workspace_id_permission
+        from hypha.core import UserPermission
+        validate_workspace_id_permission(session_id, context, UserPermission.read)
+
         if session_id not in self._sessions:
             logger.warning(f"Terminal session {session_id} not found for stopping")
             return
@@ -1271,15 +1290,24 @@ class TerminalWorker(BaseWorker):
         context: Optional[Dict[str, Any]] = None,
     ) -> Union[Dict[str, Any], str]:
         """Get logs for a terminal session.
-        
+
         Returns a dictionary with:
         - items: List of log events, each with 'type' and 'content' fields
         - total: Total number of log items (before filtering/pagination)
         - offset: The offset used for pagination
         - limit: The limit used for pagination
-        
+
         Special type 'screen' returns the rendered screen content (cleaned of ANSI codes) as a string.
+
+        Raises:
+            PermissionError: If user lacks permission on session's workspace
+            SessionNotFoundError: If the session doesn't exist
         """
+        # Validate permission on session's workspace (fixes W1 vulnerability)
+        from hypha.core.auth import validate_workspace_id_permission
+        from hypha.core import UserPermission
+        validate_workspace_id_permission(session_id, context, UserPermission.read)
+
         if session_id not in self._sessions:
             raise SessionNotFoundError(f"Terminal session {session_id} not found")
 

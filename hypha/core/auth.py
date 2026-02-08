@@ -137,6 +137,7 @@ def valid_token(authorization: str):
                 algorithms=["HS256"],
                 audience=AUTH0_AUDIENCE,
                 issuer=AUTH0_ISSUER,
+                options={"require_exp": True},  # FIX V-AUTH-1: Require exp claim
             )
         elif alg == "RS256":
             # Get RSA key
@@ -152,6 +153,7 @@ def valid_token(authorization: str):
                 algorithms=["RS256"],
                 audience=AUTH0_AUDIENCE,
                 issuer=f"https://{AUTH0_DOMAIN}/",
+                options={"require_exp": True},  # FIX V-AUTH-1: Require exp claim
             )
         else:
             raise HTTPException(status_code=401, detail="Invalid algorithm: " + alg)
@@ -534,6 +536,7 @@ def update_user_scope(
     )
 
 
+
 def generate_jwt_scope(scope: ScopeInfo) -> str:
     """Generate scope."""
     ps = " ".join([f"ws:{w}#{m.value}" for w, m in scope.workspaces.items()])
@@ -728,4 +731,84 @@ def create_login_service(store):
         "profile": profile,
         "logout": logout,
     }
+
+
+def validate_workspace_id_permission(
+    id_with_workspace: str,
+    context: dict,
+    permission: UserPermission = UserPermission.read,
+    allow_same_workspace: bool = True,
+) -> str:
+    """Validate user has permission on workspace embedded in ID.
+
+    This utility prevents cross-workspace access vulnerabilities (V10-V14, W1) where
+    an ID contains a workspace prefix (e.g., "workspace/identifier") but the code only
+    validates permission on context["ws"] instead of the embedded workspace.
+
+    Args:
+        id_with_workspace: ID potentially containing workspace prefix (workspace/identifier)
+        context: Request context containing 'ws' and 'user' fields
+        permission: Required permission level (default: UserPermission.read)
+        allow_same_workspace: If True, skip check when target == context workspace (default: True)
+
+    Returns:
+        The workspace extracted from the ID (or context["ws"] if no prefix)
+
+    Raises:
+        PermissionError: If user lacks required permission on target workspace
+
+    Example:
+        # In any method accepting workspace-prefixed IDs (session_id, worker_id, etc.)
+        async def execute(self, session_id: str, context: dict = None):
+            # Validate permission on the session's workspace (not just context["ws"])
+            validate_workspace_id_permission(session_id, context, UserPermission.read)
+
+            # Now safe to proceed with execution
+            if session_id not in self._sessions:
+                raise SessionNotFoundError(f"Session {session_id} not found")
+            ...
+
+    Pattern:
+        This fixes the vulnerability pattern where:
+        1. User provides an ID like "victim-workspace/session-123"
+        2. Code validates permission on context["ws"] = "attacker-workspace" ✓
+        3. Code extracts "victim-workspace" from ID and operates on it ✗
+        4. Attacker gains cross-workspace access
+
+    Related Vulnerabilities:
+        - V10: ServerAppController.stop - cross-workspace session termination
+        - V11: ServerAppController.get_logs - cross-workspace log access
+        - V12: ServerAppController.get_session_info - cross-workspace info disclosure
+        - V14: ServerAppController.edit_worker - cross-workspace worker manipulation
+        - W1: Worker.execute/stop/get_logs - cross-workspace code execution
+    """
+    # Validate context has required fields (prevents KeyError)
+    if not context:
+        raise ValueError("Context is required for workspace validation")
+    if "ws" not in context:
+        raise ValueError("Context missing 'ws' field")
+    if "user" not in context:
+        raise ValueError("Context missing 'user' field")
+
+    if "/" not in id_with_workspace:
+        # No workspace prefix, use context workspace
+        return context["ws"]
+
+    # Extract workspace from ID prefix
+    target_ws = id_with_workspace.split("/")[0]
+    context_ws = context["ws"]
+
+    # If operating on same workspace, skip permission check (performance optimization)
+    if allow_same_workspace and target_ws == context_ws:
+        return target_ws
+
+    # Validate user has required permission on target workspace
+    user_info = UserInfo.from_context(context)
+    if not user_info.check_permission(target_ws, permission):
+        raise PermissionError(
+            f"Permission denied: insufficient access to workspace '{target_ws}'. "
+            f"Required permission: {permission.value}, current workspace: '{context_ws}'"
+        )
+
+    return target_ws
 

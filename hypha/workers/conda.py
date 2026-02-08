@@ -1049,19 +1049,25 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
             Execution result dictionary containing 'status', 'result', 'error', and 'output' fields
 
         Raises:
+            PermissionError: If user lacks permission on session's workspace
             SessionNotFoundError: If session_id doesn't exist
             WorkerError: If session is not running or execution fails
-        
+
         Args:
             session_id: The session to execute in
             script: The Python code to execute
             config: Optional execution configuration
             progress_callback: Optional callback for execution progress
             context: Optional context information
-            
+
         Returns:
             Dictionary containing execution results with Jupyter-like output format
         """
+        # Validate permission on session's workspace (fixes W1 vulnerability)
+        from hypha.core.auth import validate_workspace_id_permission
+        from hypha.core import UserPermission
+        validate_workspace_id_permission(session_id, context, UserPermission.read)
+
         if session_id not in self._sessions:
             raise SessionNotFoundError(
                 f"Conda environment session {session_id} not found"
@@ -1183,8 +1189,14 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
         4. Updates session status to STOPPED
 
         Raises:
+            PermissionError: If user lacks permission on session's workspace
             WorkerError: If stop operation fails (session is still removed)
         """
+        # Validate permission on session's workspace (fixes W1 vulnerability)
+        from hypha.core.auth import validate_workspace_id_permission
+        from hypha.core import UserPermission
+        validate_workspace_id_permission(session_id, context, UserPermission.read)
+
         if session_id not in self._sessions:
             logger.warning(
                 f"Conda environment session {session_id} not found for stopping"
@@ -1269,13 +1281,22 @@ os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Get logs for a conda environment session.
-        
+
         Returns a dictionary with:
         - items: List of log events, each with 'type' and 'content' fields
         - total: Total number of log items (before filtering/pagination)
         - offset: The offset used for pagination
         - limit: The limit used for pagination
+
+        Raises:
+            PermissionError: If user lacks permission on session's workspace
+            SessionNotFoundError: If the session doesn't exist
         """
+        # Validate permission on session's workspace (fixes W1 vulnerability)
+        from hypha.core.auth import validate_workspace_id_permission
+        from hypha.core import UserPermission
+        validate_workspace_id_permission(session_id, context, UserPermission.read)
+
         if session_id not in self._sessions:
             raise SessionNotFoundError(
                 f"Conda environment session {session_id} not found"

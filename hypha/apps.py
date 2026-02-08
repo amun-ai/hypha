@@ -998,9 +998,18 @@ class ServerAppController:
             description="Context including user and workspace details.",
         ),
     ) -> None:
-        """Enable/disable a worker and cleanup sessions when disabling."""
+        """Enable/disable a worker and cleanup sessions when disabling.
+
+        Raises:
+            PermissionError: If user lacks permission on worker's workspace
+        """
         if context is None:
             context = {"user": self.store.get_root_user().model_dump(), "ws": "public"}
+
+        # Validate permission on worker's workspace (fixes V14 vulnerability)
+        from hypha.core.auth import validate_workspace_id_permission
+        validate_workspace_id_permission(worker_id, context, UserPermission.read_write)
+
         workspace = context.get("ws")
         user_info = UserInfo.from_context(context)
         if not user_info.check_permission(workspace, UserPermission.read_write):
@@ -2725,9 +2734,19 @@ class ServerAppController:
             description="Additional context information including user and workspace details. Usually provided automatically by the system.",
         ),
     ) -> None:
-        """Stop a server app instance."""
+        """Stop a server app instance.
+
+        Raises:
+            PermissionError: If user lacks permission on session's workspace
+            Exception: If session not found and raise_exception is True
+        """
         if not context:
             context = {"user": self.store.get_root_user().model_dump(), "ws": "public"}
+
+        # Validate permission on session's workspace (fixes V10 vulnerability)
+        from hypha.core.auth import validate_workspace_id_permission
+        validate_workspace_id_permission(session_id, context, UserPermission.read)
+
         user_info = UserInfo.from_context(context)
         workspace = context["ws"]
         if not user_info.check_permission(workspace, UserPermission.read):
@@ -2828,7 +2847,14 @@ class ServerAppController:
         - limit: The limit used for pagination
 
         If type is specified, only items matching that type will be returned.
+
+        Raises:
+            PermissionError: If user lacks permission on session's workspace
         """
+        # Validate permission on session's workspace (fixes V11 vulnerability)
+        from hypha.core.auth import validate_workspace_id_permission
+        validate_workspace_id_permission(session_id, context, UserPermission.read)
+
         user_info = UserInfo.from_context(context)
         workspace = context["ws"]
         if not user_info.check_permission(workspace, UserPermission.read):
@@ -2971,7 +2997,14 @@ class ServerAppController:
         - created_at: Creation timestamp
         - updated_at: Last update timestamp
         - worker_id: The worker service ID
+
+        Raises:
+            PermissionError: If user lacks permission on session's workspace
         """
+        # Validate permission on session's workspace (fixes V12 vulnerability)
+        from hypha.core.auth import validate_workspace_id_permission
+        validate_workspace_id_permission(session_id, context, UserPermission.read)
+
         user_info = UserInfo.from_context(context)
         workspace = context["ws"]
         if not user_info.check_permission(workspace, UserPermission.read):
