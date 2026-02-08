@@ -1748,7 +1748,9 @@ class S3Controller:
             "list_files": self.list_files,
             "delete_directory": self.delete_directory,  # deprecated, use remove_file instead
             "delete_file": self.delete_file,  # deprecated, use remove_file instead
-            "generate_presigned_url": self.generate_presigned_url,  # deprecated, use put_file or get_file instead
+            # FIX V19: Removed generate_presigned_url from public API
+            # SECURITY: This method bypassed artifact permission checks
+            # Users should use artifact_manager.get_file() or put_file() which validate permissions
             "put_file": self.put_file,
             "get_file": self.get_file,
             "put_file_start_multipart": self.put_file_start_multipart,

@@ -18,6 +18,7 @@ Vulnerability List:
 - V12: get_session_info cross-workspace information disclosure (MEDIUM) - Tests added
 - V14: edit_worker cross-workspace manipulation (MEDIUM) - Tests added
 - V15: list_clients cross-workspace client enumeration (MEDIUM) - FIXED
+- V19: S3 presigned URL abuse (MEDIUM) - Tests added
 """
 
 import pytest
@@ -1521,3 +1522,147 @@ class TestV15ListClientsCrossWorkspace:
         assert isinstance(clients, list), "Should return a list of clients"
 
         await api.disconnect()
+
+
+class TestV19S3PresignedURLAbuse:
+    """
+    V19: S3 Presigned URL Abuse (MEDIUM SEVERITY)
+
+    Location: hypha/s3.py:978-1016 (generate_presigned_url method)
+
+    Issue: The S3Controller.generate_presigned_url() method is exposed as a public
+    service but does NOT validate artifact-level permissions. Users can call this
+    method directly to generate presigned URLs for files in artifacts they don't
+    have access to, bypassing the permission checks in artifact_manager.get_file().
+
+    Expected behavior: The deprecated generate_presigned_url method should be removed
+    from the public API, or it should validate artifact permissions before generating URLs.
+    Users should be required to use artifact_manager.get_file() and put_file() which
+    have proper permission checks.
+    """
+
+    async def test_cannot_generate_presigned_url_for_other_workspace_artifact(
+        self, fastapi_server, test_user_token
+    ):
+        """Test that users cannot generate presigned URLs for artifacts in other workspaces."""
+        api1 = await connect_to_server({
+            "client_id": "v19-user1",
+            "server_url": WS_SERVER_URL,
+            "token": test_user_token,
+        })
+
+        # Create workspace 1 (victim's workspace with an artifact)
+        ws1_info = await api1.create_workspace({
+            "name": f"v19-victim-ws-{uuid.uuid4().hex[:8]}",
+            "description": "Victim's workspace",
+        })
+        ws1_id = ws1_info["id"]
+
+        # Create an artifact in workspace 1
+        artifact_svc = await api1.get_service("public/artifact-manager")
+        artifact = await artifact_svc.create(
+            workspace=ws1_id,
+            alias="secret-data",
+            manifest={"name": "Secret Data", "description": "Protected data"},
+            type="dataset",
+        )
+
+        # Create workspace 2 (attacker's workspace)
+        ws2_info = await api1.create_workspace({
+            "name": f"v19-attacker-ws-{uuid.uuid4().hex[:8]}",
+            "description": "Attacker's workspace",
+        })
+        ws2_id = ws2_info["id"]
+
+        # Generate token for attacker workspace (NO access to ws1)
+        attacker_token = await api1.generate_token({"workspace": ws2_id})
+
+        # Connect as attacker
+        api_attacker = await connect_to_server({
+            "client_id": "v19-attacker",
+            "workspace": ws2_id,
+            "server_url": WS_SERVER_URL,
+            "token": attacker_token,
+        })
+
+        # Try to generate presigned URL via S3 service directly
+        s3_svc = await api_attacker.get_service("public/s3-storage")
+
+        # Construct path to victim's artifact file
+        # Format: workspace/artifact-id/v0/somefile.txt
+        malicious_path = f"{ws1_id}/{artifact['id']}/v0/data.csv"
+
+        # Attempt to generate presigned URL
+        # This should FAIL because:
+        # 1. The method should be removed from public API (deprecated), OR
+        # 2. It should validate artifact permissions before generating URL
+        with pytest.raises(Exception) as exc_info:
+            await s3_svc.generate_presigned_url(
+                path=malicious_path,
+                client_method="get_object"
+            )
+
+        error_msg = str(exc_info.value).lower()
+        # Accept either "not found" (method removed) or "permission" (permission check added)
+        assert "not found" in error_msg or "permission" in error_msg or "denied" in error_msg or "attribute" in error_msg, \
+            f"Expected method not found or permission error, got: {exc_info.value}"
+
+        await api1.disconnect()
+        await api_attacker.disconnect()
+
+    async def test_artifact_manager_get_file_has_permission_check(
+        self, fastapi_server, test_user_token
+    ):
+        """Test that artifact_manager.get_file() properly validates permissions."""
+        api1 = await connect_to_server({
+            "client_id": "v19-user2",
+            "server_url": WS_SERVER_URL,
+            "token": test_user_token,
+        })
+
+        # Create workspace 1 with an artifact
+        ws1_info = await api1.create_workspace({
+            "name": f"v19-ws1-{uuid.uuid4().hex[:8]}",
+            "description": "Workspace 1",
+        })
+        ws1_id = ws1_info["id"]
+
+        artifact_svc = await api1.get_service("public/artifact-manager")
+        artifact = await artifact_svc.create(
+            workspace=ws1_id,
+            alias="protected-data",
+            manifest={"name": "Protected Data"},
+            type="dataset",
+        )
+
+        # Create workspace 2 (attacker)
+        ws2_info = await api1.create_workspace({
+            "name": f"v19-ws2-{uuid.uuid4().hex[:8]}",
+            "description": "Workspace 2",
+        })
+        ws2_id = ws2_info["id"]
+
+        attacker_token = await api1.generate_token({"workspace": ws2_id})
+        api_attacker = await connect_to_server({
+            "client_id": "v19-attacker-2",
+            "workspace": ws2_id,
+            "server_url": WS_SERVER_URL,
+            "token": attacker_token,
+        })
+
+        # Try to get file from victim's artifact using artifact manager
+        attacker_artifact_svc = await api_attacker.get_service("public/artifact-manager")
+
+        # This should FAIL with permission error
+        with pytest.raises(Exception) as exc_info:
+            await attacker_artifact_svc.get_file(
+                artifact_id=f"{ws1_id}/{artifact['alias']}",
+                file_path="data.csv"
+            )
+
+        error_msg = str(exc_info.value).lower()
+        assert "permission" in error_msg or "not found" in error_msg or "denied" in error_msg, \
+            f"Expected permission error, got: {exc_info.value}"
+
+        await api1.disconnect()
+        await api_attacker.disconnect()
