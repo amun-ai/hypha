@@ -1207,8 +1207,8 @@ class MCPRoutingMiddleware:
 
         if cache_key in self.mcp_app_cache:
             logger.debug(f"Using cached MCP app for {cache_key}")
-            cache_entry = self.mcp_app_cache[cache_key]
-            return cache_entry["app"] if isinstance(cache_entry, dict) else cache_entry
+            # V21 fix: Cache only contains MCP apps, not workspace interfaces
+            return self.mcp_app_cache[cache_key]
         
         logger.debug(f"Creating new MCP app for {cache_key}")
         
@@ -1246,12 +1246,15 @@ class MCPRoutingMiddleware:
                 mcp_app = await create_mcp_app_from_service(
                     service, service_info, self.store.get_redis()
                 )
-                
-                # Cache the app AND the API connection for SSE
-                self.mcp_app_cache[cache_key] = {
-                    "app": mcp_app,
-                    "api": api  # Keep the API connection alive for SSE
-                }
+
+                # V21 FIX: Cache only the MCP app, NOT the workspace interface
+                # Security: Caching workspace interface causes permission leakage across users
+                # Each SSE connection should manage its own workspace interface
+                self.mcp_app_cache[cache_key] = mcp_app
+
+                # Clean up the workspace interface - SSE caller will manage it
+                await api.__aexit__(None, None, None)
+
                 return mcp_app
             except Exception:
                 await api.__aexit__(None, None, None)
@@ -1293,17 +1296,14 @@ class MCPRoutingMiddleware:
                 return mcp_app
     
     async def _cleanup_mcp_app(self, cache_key: str):
-        """Clean up cached MCP app."""
+        """Clean up cached MCP app.
+
+        V21 fix: Cache no longer stores workspace interfaces, only MCP apps.
+        This method now just removes the cached app from memory.
+        """
         if cache_key in self.mcp_app_cache:
             logger.debug(f"Cleaning up cached MCP app for {cache_key}")
-            cache_entry = self.mcp_app_cache[cache_key]
-            
-            # If it's a dict with an API connection (SSE case), clean it up
-            if isinstance(cache_entry, dict) and "api" in cache_entry:
-                try:
-                    await cache_entry["api"].__aexit__(None, None, None)
-                except Exception as e:
-                    logger.warning(f"Error cleaning up API connection: {e}")
+            # V21: Cache only contains MCP apps, no workspace interfaces to clean up
             
             del self.mcp_app_cache[cache_key]
     
