@@ -761,13 +761,14 @@ class RedisRPCConnection:
         pos = unpacker.tell()
         target_id = message.get("to")
         
-        # Security check: Block broadcast messages for readonly clients
-        if self._readonly and target_id == "*":
+        # Security check: Block ALL broadcast messages for readonly clients
+        # V-BUS-05: Check both "*" and "workspace/*" patterns
+        if self._readonly and (target_id == "*" or (isinstance(target_id, str) and target_id.endswith("/*"))):
             raise PermissionError(
                 f"Read-only client {self._workspace}/{self._client_id} cannot broadcast messages. "
                 f"Only point-to-point messages are allowed for read-only clients."
             )
-        
+
         # Handle broadcast messages within workspace
         if target_id == "*":
             # Convert * to workspace/* for proper workspace isolation
@@ -778,6 +779,24 @@ class RedisRPCConnection:
                     f"Invalid target ID: {target_id}, it appears that the target is a workspace manager (target_id should starts with */)"
                 )
             target_id = f"{self._workspace}/{target_id}"
+
+        # V-BUS-10: Validate cross-workspace access
+        # Extract target workspace and ensure sender has permission
+        if "/" in target_id and target_id != "*":
+            # Extract target workspace from target_id
+            if target_id.endswith("/*"):
+                target_ws = target_id[:-2]  # Remove "/*" suffix
+            else:
+                target_ws = target_id.split("/")[0]
+
+            # Validate that sender workspace matches target workspace
+            # Exception: System workspace "*" can send to any workspace
+            if self._workspace != "*" and target_ws != self._workspace:
+                raise PermissionError(
+                    f"Cross-workspace messaging not allowed: "
+                    f"client in workspace '{self._workspace}' cannot send messages to workspace '{target_ws}'. "
+                    f"Messages can only be sent within the same workspace."
+                )
 
         source_id = f"{self._workspace}/{self._client_id}"
 
