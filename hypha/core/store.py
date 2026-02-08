@@ -356,7 +356,15 @@ class RedisStore:
         self._shared_anonymous_user = None
         self._admin_utils = None
         self._enable_admin_terminal = enable_admin_terminal
-        
+
+        # Initialize rate limiter for DoS protection
+        from hypha.core.rate_limiter import RateLimiter
+        self._rate_limiter = RateLimiter(
+            redis_client=self._redis,
+            prefix="hypha:ratelimit:",
+        )
+        logger.info(f"Rate limiter initialized (enabled: {self._rate_limiter.enabled})")
+
         # Set root token immediately if provided
         if self._root_token:
             set_root_token(self._root_token)
@@ -383,6 +391,10 @@ class RedisStore:
 
     def get_openai_client(self):
         return self._openai_client
+
+    def get_rate_limiter(self):
+        """Get the rate limiter instance for DoS protection."""
+        return self._rate_limiter
 
     def get_ollama_client(self):
         return self._ollama_client
