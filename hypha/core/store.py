@@ -37,6 +37,7 @@ from hypha.core.auth import (
     create_scope,
     parse_auth_token,
     create_login_service,
+    set_redis_instance,
     UserPermission,
     AUTH0_CLIENT_ID,
     AUTH0_DOMAIN,
@@ -707,6 +708,11 @@ class RedisStore:
             logger.warning("RESETTING ALL REDIS DATA!!!")
             await self._redis.flushall()
         await self._event_bus.init()
+
+        # FIX V22: Set Redis instance for token revocation checks
+        await set_redis_instance(self._redis)
+        logger.info("Redis instance configured for token revocation checks")
+
         self._tracker = ActivityTracker(check_interval=self._activity_check_interval)
         self._tracker_task = asyncio.create_task(self._tracker.monitor_entities())
         RedisRPCConnection.set_activity_tracker(self._tracker)

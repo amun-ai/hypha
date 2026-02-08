@@ -20,6 +20,13 @@ from hypha.core.auth import (
     create_scope,
     update_user_scope,
 )
+from hypha.core.rate_limiter import RateLimiter, RateLimitExceeded
+from hypha.core.metrics import (
+    record_websocket_connection,
+    update_websocket_connections,
+    record_rate_limit_request,
+    record_rate_limit_rejection,
+)
 
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
@@ -44,6 +51,19 @@ class WebsocketServer:
         self._last_seen = {}
         # Idle timeout in seconds (applied to all connections, especially effective for anonymous churn)
         self._idle_timeout = int(os.environ.get("HYPHA_WS_IDLE_TIMEOUT", "600"))
+
+        # Initialize rate limiter for DOS1 protection
+        event_bus = store.get_event_bus()
+        redis_client = event_bus._redis if hasattr(event_bus, '_redis') else None
+        self._rate_limiter = RateLimiter(redis_client) if redis_client else None
+
+        # DOS1 configuration from environment variables
+        self._ws_rate_limit_enabled = os.environ.get("HYPHA_WS_RATE_LIMIT_ENABLED", "true").lower() == "true"
+        self._ws_max_connections_per_workspace = int(os.environ.get("HYPHA_WS_MAX_CONNECTIONS_PER_WORKSPACE", "1000"))
+        self._ws_max_connections_per_user = int(os.environ.get("HYPHA_WS_MAX_CONNECTIONS_PER_USER", "100"))
+        self._ws_connection_rate_per_workspace = int(os.environ.get("HYPHA_WS_CONNECTION_RATE_PER_WORKSPACE", "50"))
+        self._ws_connection_rate_window = int(os.environ.get("HYPHA_WS_CONNECTION_RATE_WINDOW", "60"))
+
         # Background task to clean up idle connections
         try:
             # Check if there's a running event loop before creating the coroutine
@@ -149,7 +169,82 @@ class WebsocketServer:
                 
                 # Mark as authenticated before checking client
                 authenticated = True
-                
+
+                # DOS1: Rate limit WebSocket connections
+                if self._ws_rate_limit_enabled and self._rate_limiter:
+                    # Check workspace connection rate (50/minute)
+                    ws_key = f"ws_conn:workspace:{workspace}"
+                    allowed, count, retry_after = await self._rate_limiter.check_rate_limit(
+                        ws_key,
+                        self._ws_connection_rate_per_workspace,
+                        self._ws_connection_rate_window,
+                        increment=True
+                    )
+
+                    if not allowed:
+                        record_websocket_connection(workspace, "rejected_rate_limit")
+                        record_rate_limit_rejection(workspace, "websocket", "workspace_rate_exceeded")
+                        logger.warning(
+                            f"WebSocket connection rate limit exceeded for workspace {workspace}: "
+                            f"{count}/{self._ws_connection_rate_per_workspace} per {self._ws_connection_rate_window}s"
+                        )
+                        # Send rate limit message to client
+                        await websocket.send_text(json.dumps({
+                            "type": "rate_limit_exceeded",
+                            "message": f"Too many connections: {count}/{self._ws_connection_rate_per_workspace} per minute",
+                            "retry_after": retry_after,
+                        }))
+                        # Close connection with policy violation code
+                        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                        return
+
+                    # Check user connection rate
+                    user_key = f"ws_conn:user:{user_info.id}"
+                    allowed, count, retry_after = await self._rate_limiter.check_rate_limit(
+                        user_key,
+                        self._ws_max_connections_per_user,
+                        self._ws_connection_rate_window,
+                        increment=False  # Don't double-count
+                    )
+
+                    if not allowed:
+                        record_websocket_connection(workspace, "rejected_rate_limit")
+                        record_rate_limit_rejection(workspace, "websocket", "user_rate_exceeded")
+                        logger.warning(
+                            f"WebSocket connection rate limit exceeded for user {user_info.id}: "
+                            f"{count}/{self._ws_max_connections_per_user} connections"
+                        )
+                        # Send rate limit message to client
+                        await websocket.send_text(json.dumps({
+                            "type": "rate_limit_exceeded",
+                            "message": f"Too many connections for your account: {count}/{self._ws_max_connections_per_user} per minute",
+                            "retry_after": retry_after,
+                        }))
+                        # Close connection with policy violation code
+                        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                        return
+
+                    # Check active connections quota
+                    active_ws_count = len([k for k in self._websockets.keys() if k.startswith(f"{workspace}/")])
+                    if active_ws_count >= self._ws_max_connections_per_workspace:
+                        record_websocket_connection(workspace, "rejected_quota")
+                        logger.warning(
+                            f"Active WebSocket connection quota exceeded for workspace {workspace}: "
+                            f"{active_ws_count} active connections (max {self._ws_max_connections_per_workspace})"
+                        )
+                        # Send quota exceeded message to client
+                        await websocket.send_text(json.dumps({
+                            "type": "quota_exceeded",
+                            "message": f"Workspace has too many active connections: {active_ws_count}/{self._ws_max_connections_per_workspace}",
+                        }))
+                        # Close connection with policy violation code
+                        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                        return
+
+                    # Record successful connection
+                    record_websocket_connection(workspace, "accepted")
+                    record_rate_limit_request(workspace, "websocket", "allowed")
+
                 # If the client is not reconnecting, check if it exists
                 if not reconnection_token:
                     # We operate as the root user to remove and add clients

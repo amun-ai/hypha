@@ -43,6 +43,12 @@ from hypha.core import (
 from hypha.vectors import VectorSearchEngine
 from hypha.core.auth import generate_auth_token, create_scope, parse_auth_token
 from hypha.utils import EventBus, random_id
+from hypha.core.rate_limiter import RateLimiter, RateLimitExceeded
+from hypha.core.metrics import (
+    record_service_registration,
+    record_rate_limit_request,
+    record_rate_limit_rejection,
+)
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
@@ -343,6 +349,15 @@ class WorkspaceManager:
             inactive_period=300,  # 5 minutes - configurable in future
             check_interval=60     # 1 minute - configurable in future
         )
+
+        # Initialize rate limiter for DOS2 protection
+        self._rate_limiter = RateLimiter(redis) if redis else None
+
+        # DOS2 configuration from environment variables
+        self._service_rate_limit_enabled = os.environ.get("HYPHA_SERVICE_RATE_LIMIT_ENABLED", "true").lower() == "true"
+        self._max_services_per_workspace = int(os.environ.get("HYPHA_MAX_SERVICES_PER_WORKSPACE", "1000"))
+        self._service_registration_rate = int(os.environ.get("HYPHA_SERVICE_REGISTRATION_RATE", "100"))
+        self._service_registration_window = int(os.environ.get("HYPHA_SERVICE_REGISTRATION_WINDOW", "60"))
 
     async def _get_sql_session(self):
         """Return an async session for the database."""
@@ -2035,6 +2050,50 @@ class WorkspaceManager:
         config = config or {}
         if not user_info.check_permission(ws, UserPermission.read_write):
             raise PermissionError(f"Permission denied for workspace {ws}")
+
+        # DOS2: Rate limit service registrations
+        if self._service_rate_limit_enabled and self._rate_limiter:
+            # Check service registration rate per workspace
+            ws_key = f"svc_reg:workspace:{ws}"
+            allowed, count, retry_after = await self._rate_limiter.check_rate_limit(
+                ws_key,
+                self._service_registration_rate,
+                self._service_registration_window,
+                increment=True
+            )
+
+            if not allowed:
+                record_service_registration(ws, "rejected_rate_limit")
+                record_rate_limit_rejection(ws, "service", "workspace_rate_exceeded")
+                logger.warning(
+                    f"Service registration rate limit exceeded for workspace {ws}: "
+                    f"{count} registrations in {self._service_registration_window}s window "
+                    f"(max {self._service_registration_rate})"
+                )
+                raise RateLimitExceeded(
+                    f"Too many service registrations for workspace {ws}. "
+                    f"Retry after {retry_after:.1f} seconds.",
+                    retry_after=retry_after
+                )
+
+            # Check total active services quota
+            service_count_key = f"services:*|*:{ws}/*:*@*"
+            active_services = await self._redis.keys(service_count_key)
+            if len(active_services) >= self._max_services_per_workspace:
+                record_service_registration(ws, "rejected_quota")
+                logger.warning(
+                    f"Service quota exceeded for workspace {ws}: "
+                    f"{len(active_services)} active services (max {self._max_services_per_workspace})"
+                )
+                raise RateLimitExceeded(
+                    f"Workspace has too many active services ({len(active_services)}). "
+                    f"Maximum allowed: {self._max_services_per_workspace}."
+                )
+
+            # Record successful registration attempt
+            record_service_registration(ws, "accepted")
+            record_rate_limit_request(ws, "service", "allowed")
+
         if "/" not in client_id:
             client_id = f"{ws}/{client_id}"
         service.config.workspace = ws

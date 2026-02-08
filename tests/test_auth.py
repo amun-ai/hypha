@@ -297,12 +297,13 @@ class TestCustomAuthFunctions:
 class TestTokenValidation:
     """Test token validation functionality."""
 
-    def test_valid_token_hs256(self):
+    @pytest.mark.asyncio
+    async def test_valid_token_hs256(self):
         """Test HS256 token validation."""
         # Create a valid token
         current_time = datetime.datetime.now(datetime.timezone.utc)
         expires_at = current_time + datetime.timedelta(seconds=3600)
-        
+
         payload = {
             "iss": AUTH0_ISSUER,
             "sub": "test-user",
@@ -313,20 +314,21 @@ class TestTokenValidation:
             AUTH0_NAMESPACE + "roles": ["user"],
             AUTH0_NAMESPACE + "email": "test@example.com",
         }
-        
+
         token = jose_jwt.encode(payload, auth.JWT_SECRET, algorithm="HS256")
-        
-        # Validate token
-        decoded_payload = valid_token(token)
+
+        # Validate token (FIX V22: valid_token is now async)
+        decoded_payload = await valid_token(token)
         assert decoded_payload["sub"] == "test-user"
         assert decoded_payload[AUTH0_NAMESPACE + "email"] == "test@example.com"
 
-    def test_expired_token(self):
+    @pytest.mark.asyncio
+    async def test_expired_token(self):
         """Test expired token validation."""
         # Create an expired token
         current_time = datetime.datetime.now(datetime.timezone.utc)
         expires_at = current_time - datetime.timedelta(seconds=3600)  # Expired 1 hour ago
-        
+
         payload = {
             "iss": AUTH0_ISSUER,
             "sub": "test-user",
@@ -337,23 +339,24 @@ class TestTokenValidation:
             AUTH0_NAMESPACE + "roles": ["user"],
             AUTH0_NAMESPACE + "email": "test@example.com",
         }
-        
+
         token = jose_jwt.encode(payload, auth.JWT_SECRET, algorithm="HS256")
-        
+
         # Should raise HTTPException for expired token
         from fastapi import HTTPException
         with pytest.raises(HTTPException) as exc_info:
-            valid_token(token)
+            await valid_token(token)
         assert exc_info.value.status_code == 401
         assert "expired" in str(exc_info.value.detail).lower()
 
-    def test_invalid_token(self):
+    @pytest.mark.asyncio
+    async def test_invalid_token(self):
         """Test invalid token validation."""
         from fastapi import HTTPException
-        
+
         # Test with invalid token
         with pytest.raises(HTTPException) as exc_info:
-            valid_token("invalid-token")
+            await valid_token("invalid-token")
         assert exc_info.value.status_code == 401
 
     def test_get_user_info_from_credentials(self):
@@ -516,7 +519,8 @@ class TestTokenHelperFunctions:
         rsa_key = get_rsa_key("test-kid", refresh=True)
         assert rsa_key == expected_key
 
-    def test_parse_token_with_bearer(self):
+    @pytest.mark.asyncio
+    async def test_parse_token_with_bearer(self):
         """Test _parse_token function with Bearer token."""
         # Create a valid token
         user_info = UserInfo(
@@ -526,11 +530,11 @@ class TestTokenHelperFunctions:
             roles=["user"],
             scope=create_scope(workspaces={"test-ws": UserPermission.admin}),
         )
-        
+
         # Generate a token using the internal function
         current_time = datetime.datetime.now(datetime.timezone.utc)
         expires_at = current_time + datetime.timedelta(seconds=3600)
-        
+
         payload = {
             "iss": AUTH0_ISSUER,
             "sub": "test-user",
@@ -541,45 +545,46 @@ class TestTokenHelperFunctions:
             AUTH0_NAMESPACE + "roles": ["user"],
             AUTH0_NAMESPACE + "email": "test@example.com",
         }
-        
+
         token = jose_jwt.encode(payload, auth.JWT_SECRET, algorithm="HS256")
-        
+
         # Test with Bearer prefix
-        parsed_user_info = _parse_token(f"Bearer {token}")
+        parsed_user_info = await _parse_token(f"Bearer {token}")
         assert parsed_user_info.id == "test-user"
         assert parsed_user_info.email == "test@example.com"
-        
+
         # Test with bearer (lowercase)
-        parsed_user_info = _parse_token(f"bearer {token}")
-        assert parsed_user_info.id == "test-user"
-        
-        # Test without Bearer prefix
-        parsed_user_info = _parse_token(token)
+        parsed_user_info = await _parse_token(f"bearer {token}")
         assert parsed_user_info.id == "test-user"
 
-    def test_parse_token_errors(self):
+        # Test without Bearer prefix
+        parsed_user_info = await _parse_token(token)
+        assert parsed_user_info.id == "test-user"
+
+    @pytest.mark.asyncio
+    async def test_parse_token_errors(self):
         """Test _parse_token error handling."""
         # Test empty token
         with pytest.raises(AssertionError, match="Authorization is required"):
-            _parse_token("")
-        
+            await _parse_token("")
+
         # Test invalid Bearer format
         with pytest.raises(HTTPException) as exc_info:
-            _parse_token("NotBearer token")
+            await _parse_token("NotBearer token")
         assert exc_info.value.status_code == 401
         # The actual error comes from JWT decoding, not Bearer validation
         assert "Error" in str(exc_info.value.detail)
-        
+
         # Test Bearer without token
         with pytest.raises(HTTPException) as exc_info:
-            _parse_token("Bearer")
+            await _parse_token("Bearer")
         assert exc_info.value.status_code == 401
         # The actual error comes from JWT decoding, not the Bearer parsing logic
         assert "Error" in str(exc_info.value.detail)
         
         # Test Bearer with multiple parts
         with pytest.raises(HTTPException) as exc_info:
-            _parse_token("Bearer token extra")
+            await _parse_token("Bearer token extra")
         assert exc_info.value.status_code == 401
         # This actually triggers the Bearer token validation
         assert "Bearer" in str(exc_info.value.detail)
@@ -731,8 +736,11 @@ class TestUserScopeUpdates:
 class TestRSATokenValidation:
     """Test RS256 token validation."""
 
+    @pytest.mark.asyncio
     @patch('hypha.core.auth.get_rsa_key')
-    def test_valid_token_rs256(self, mock_get_rsa_key):
+    async def test_valid_token_rs256(self, mock_get_rsa_key):
+        # FIX V22: valid_token is now async
+        import asyncio
         """Test RS256 token validation."""
         # Mock RSA key
         mock_rsa_key = {
@@ -766,14 +774,15 @@ class TestRSATokenValidation:
             with patch('hypha.core.auth.jwt.get_unverified_header') as mock_header:
                 mock_header.return_value = {"alg": "RS256", "kid": "test-kid"}
                 
-                result = valid_token("mock-rs256-token")
+                result = await valid_token("mock-rs256-token")
                 assert result == payload
                 
                 # Verify RSA key was requested
                 mock_get_rsa_key.assert_called()
 
+    @pytest.mark.asyncio
     @patch('hypha.core.auth.get_rsa_key')
-    def test_valid_token_rs256_key_refresh(self, mock_get_rsa_key):
+    async def test_valid_token_rs256_key_refresh(self, mock_get_rsa_key):
         """Test RS256 token validation with key refresh."""
         # First call returns empty (key not found), second call returns key
         mock_rsa_key = {
@@ -802,23 +811,25 @@ class TestRSATokenValidation:
             with patch('hypha.core.auth.jwt.get_unverified_header') as mock_header:
                 mock_header.return_value = {"alg": "RS256", "kid": "test-kid"}
                 
-                result = valid_token("mock-rs256-token")
+                result = await valid_token("mock-rs256-token")
                 assert result == payload
                 
                 # Verify key was requested twice (refresh logic)
                 assert mock_get_rsa_key.call_count == 2
 
-    def test_valid_token_invalid_algorithm(self):
+    @pytest.mark.asyncio
+    async def test_valid_token_invalid_algorithm(self):
         """Test token validation with invalid algorithm."""
         with patch('hypha.core.auth.jwt.get_unverified_header') as mock_header:
             mock_header.return_value = {"alg": "INVALID"}
             
             with pytest.raises(HTTPException) as exc_info:
-                valid_token("mock-token")
+                await valid_token("mock-token")
             assert exc_info.value.status_code == 401
             assert "Invalid algorithm" in str(exc_info.value.detail)
 
-    def test_valid_token_jwt_error(self):
+    @pytest.mark.asyncio
+    async def test_valid_token_jwt_error(self):
         """Test token validation with JWT error."""
         with patch('hypha.core.auth.jwt.get_unverified_header') as mock_header:
             mock_header.return_value = {"alg": "HS256"}
@@ -827,16 +838,17 @@ class TestRSATokenValidation:
                 mock_decode.side_effect = jose_jwt.JWTError("Invalid token")
                 
                 with pytest.raises(HTTPException) as exc_info:
-                    valid_token("invalid-token")
+                    await valid_token("invalid-token")
                 assert exc_info.value.status_code == 401
 
-    def test_valid_token_general_exception(self):
+    @pytest.mark.asyncio
+    async def test_valid_token_general_exception(self):
         """Test token validation with general exception."""
         with patch('hypha.core.auth.jwt.get_unverified_header') as mock_header:
             mock_header.side_effect = Exception("General error")
             
             with pytest.raises(HTTPException) as exc_info:
-                valid_token("mock-token")
+                await valid_token("mock-token")
             assert exc_info.value.status_code == 401
 
 
