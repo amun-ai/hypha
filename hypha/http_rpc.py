@@ -23,7 +23,7 @@ import shortuuid
 
 import msgpack
 from fastapi import Depends, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from hypha.core import RedisRPCConnection, UserInfo, UserPermission
 from hypha.core.auth import (
@@ -475,18 +475,12 @@ class HTTPStreamingRPCServer:
                         }
                         if queue:
                             await queue.put(token_msg)
-                        return JSONResponse(
-                            status_code=200,
-                            content={"success": True, "detail": "Token refresh requested"},
-                        )
+                        return Response(status_code=200)
                     elif msg_type == "ping":
                         # Respond with pong via stream
                         if queue:
                             await queue.put({"type": "pong"})
-                        return JSONResponse(
-                            status_code=200,
-                            content={"success": True, "detail": "Pong sent"},
-                        )
+                        return Response(status_code=200)
 
                     # Regular RPC message - add context
                     target_id = message.get("to")
@@ -510,10 +504,7 @@ class HTTPStreamingRPCServer:
                     packed_message = msgpack.packb(message) + body[pos:]
                     await event_bus.emit(f"{target_id}:msg", packed_message)
 
-                    return JSONResponse(
-                        status_code=200,
-                        content={"success": True, "detail": "Message sent"},
-                    )
+                    return Response(status_code=200)
                 else:
                     # Stateless call - handle synchronously
                     # This is a simplified path for clients that don't need callbacks
