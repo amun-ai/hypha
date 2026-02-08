@@ -1170,16 +1170,41 @@ class MCPRoutingMiddleware:
     
     async def _get_or_create_mcp_app(self, service_id: str, workspace: str, user_info, mode=None, is_sse=False):
         """Get cached MCP app or create new one.
-        
+
         Args:
             service_id: Service identifier
-            workspace: Workspace name
+            workspace: Workspace name (from URL - must be validated!)
             user_info: User information
             mode: Optional mode parameter
             is_sse: If True, keeps workspace interface alive for SSE sessions
         """
+        # SECURITY: Validate cross-workspace access (V23 fix)
+        # Apply V10-V14 pattern: validate permission on TARGET workspace BEFORE cache lookup
+        workspace_from_url = workspace
+        current_workspace = user_info.scope.current_workspace
+
+        if workspace_from_url != current_workspace:
+            # Check permission on target workspace before accessing
+            from hypha.core.auth import UserPermission
+
+            if not user_info.check_permission(workspace_from_url, UserPermission.read):
+                logger.warning(
+                    f"MCP cross-workspace access denied: "
+                    f"{current_workspace} -> {workspace_from_url}, "
+                    f"user: {user_info.id}, service: {service_id}"
+                )
+                raise PermissionError(
+                    f"No permission to access workspace '{workspace_from_url}'"
+                )
+
+            # Log approved cross-workspace access for audit trail
+            logger.info(
+                f"MCP cross-workspace access granted: user {user_info.id} "
+                f"from {current_workspace} to {workspace_from_url}, service: {service_id}"
+            )
+
         cache_key = f"{workspace}/{service_id}"
-        
+
         if cache_key in self.mcp_app_cache:
             logger.debug(f"Using cached MCP app for {cache_key}")
             cache_entry = self.mcp_app_cache[cache_key]
