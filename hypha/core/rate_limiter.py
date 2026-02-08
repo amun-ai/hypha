@@ -38,8 +38,22 @@ import os
 from typing import Optional, Literal, Callable, Any
 from functools import wraps
 import asyncio
+from prometheus_client import Counter
 
 logger = logging.getLogger(__name__)
+
+# Prometheus metrics for monitoring
+_rate_limit_exceeded_counter = Counter(
+    "rate_limit_exceeded_total",
+    "Total number of rate limit exceeded events",
+    ["endpoint"],
+)
+
+_rate_limit_errors_counter = Counter(
+    "rate_limit_errors_total",
+    "Total number of rate limiter errors (Redis failures)",
+    ["error_type"],
+)
 
 
 class RateLimitExceeded(Exception):
@@ -165,6 +179,8 @@ class RateLimiter:
         except Exception as e:
             # Graceful degradation: allow request if Redis fails
             logger.error(f"Rate limiter Redis error (allowing request): {e}")
+            # Track Redis errors for monitoring
+            _rate_limit_errors_counter.labels(error_type="redis_failure").inc()
             return True, 0, 0.0
 
     async def reset(self, key: str):
@@ -344,6 +360,10 @@ def rate_limit(
             )
 
             if not allowed:
+                # Track rate limit exceeded for monitoring
+                endpoint_name = endpoint or func.__name__
+                _rate_limit_exceeded_counter.labels(endpoint=endpoint_name).inc()
+
                 message = error_message or (
                     f"Rate limit exceeded: {count}/{_max_requests} requests in {_window_seconds}s. "
                     f"Retry after {retry_after:.1f} seconds."
