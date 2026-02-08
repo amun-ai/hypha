@@ -403,6 +403,13 @@ class WebsocketServer:
                 self._last_seen[conn_key] = time.time()
                 if "bytes" in data:
                     data = data["bytes"]
+                    # DOS9 Fix: Add size limit for binary messages (matching text message pattern)
+                    max_binary_size = int(os.environ.get("HYPHA_MAX_BINARY_MESSAGE_SIZE", str(10 * 1024 * 1024)))
+                    if len(data) > max_binary_size:
+                        logger.warning(
+                            f"Ignoring large binary message: {len(data)} bytes (max {max_binary_size})"
+                        )
+                        continue
                     await conn.emit_message(data)
                 elif "text" in data:
                     try:
