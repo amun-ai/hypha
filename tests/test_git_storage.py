@@ -7,6 +7,9 @@ fresh async context managers for S3 operations, matching the production pattern.
 """
 
 import io
+import struct
+import hashlib
+import zlib
 import time
 import pytest
 import pytest_asyncio
@@ -16,7 +19,7 @@ from aiobotocore.session import get_session as get_aiobotocore_session
 from botocore.config import Config
 
 from dulwich.objects import Blob, Tree, Commit, DEFAULT_OBJECT_FORMAT
-from dulwich.pack import write_pack_objects
+from dulwich.pack import write_pack_objects, create_delta, REF_DELTA
 
 from . import (
     MINIO_SERVER_URL,
@@ -226,6 +229,223 @@ class TestS3GitObjectStore:
         assert await store2.contains_async(blob_id)
         type_num, data = await store2.get_raw_async(blob_id)
         assert data == b"Persistent content"
+
+    async def test_add_thin_pack_with_delta(self, s3_client_factory, s3_config, git_test_bucket):
+        """Test adding a thin pack containing REF_DELTA objects.
+
+        This reproduces the bug where git push fails with
+        'failed to process pack: [b'<sha>']' when the client sends
+        delta-compressed objects referencing base objects already on the remote.
+        """
+        from hypha.git.object_store import S3GitObjectStore
+
+        store = S3GitObjectStore(
+            s3_client_factory, git_test_bucket, "thin-pack-test/.git", s3_config=s3_config
+        )
+        await store.initialize()
+
+        # Step 1: Add the base object via a normal (full) pack
+        base_content = b"Hello World! This is a test file with some content.\nLine 2\nLine 3\n"
+        base_blob = Blob.from_string(base_content)
+
+        pack_buffer = io.BytesIO()
+        write_pack_objects(pack_buffer, [base_blob], DEFAULT_OBJECT_FORMAT)
+        pack_buffer.seek(0)
+        await store.add_pack_async(pack_buffer.read())
+
+        # Verify the base object is stored
+        assert await store.contains_async(base_blob.id)
+
+        # Step 2: Build a thin pack with a REF_DELTA referencing the base blob
+        target_content = b"Hello World! This is a MODIFIED test file with some content.\nLine 2\nLine 3\n"
+        target_blob = Blob.from_string(target_content)
+
+        # Create delta from base to target
+        delta_chunks = list(create_delta(base_blob.as_raw_string(), target_blob.as_raw_string()))
+        delta_data = b"".join(delta_chunks)
+
+        thin_pack = _build_thin_pack(
+            base_sha_hex=base_blob.id,
+            delta_data=delta_data,
+        )
+
+        # Step 3: Adding the thin pack should succeed (not raise UnresolvedDeltas)
+        basename, checksum = await store.add_pack_async(thin_pack)
+        assert basename is not None
+        assert checksum is not None
+
+        # Step 4: The resolved target object should be retrievable
+        assert await store.contains_async(target_blob.id)
+        type_num, data = await store.get_raw_async(target_blob.id)
+        assert type_num == Blob.type_num
+        assert data == target_content
+
+    async def test_receive_thin_pack_via_repo(self, s3_client_factory, s3_config, git_test_bucket):
+        """Test that receive_pack_async handles thin packs (simulates git push with deltas).
+
+        This is the end-to-end test: first push creates the base objects,
+        second push sends a thin pack with deltas referencing those base objects.
+        """
+        from hypha.git.repo import S3GitRepo
+
+        repo = await S3GitRepo.init_bare(
+            s3_client_factory, git_test_bucket, "thin-repo-test/.git", s3_config=s3_config
+        )
+
+        # First push: full objects (initial commit)
+        base_content = b"Initial file content with enough data for delta compression.\nLine 2\nLine 3\n"
+        blob1 = Blob.from_string(base_content)
+        tree1 = Tree()
+        tree1.add(b"file.txt", 0o100644, blob1.id)
+
+        commit1 = Commit()
+        commit1.tree = tree1.id
+        commit1.author = commit1.committer = b"Test <test@example.com>"
+        commit1.encoding = b"UTF-8"
+        commit1.message = b"Initial commit\n"
+        commit1.commit_time = commit1.author_time = int(time.time())
+        commit1.commit_timezone = commit1.author_timezone = 0
+
+        pack_buffer = io.BytesIO()
+        write_pack_objects(pack_buffer, [blob1, tree1, commit1], DEFAULT_OBJECT_FORMAT)
+        pack_buffer.seek(0)
+
+        ref_updates1 = {
+            b"refs/heads/main": (b"0" * 40, commit1.id),
+        }
+        results1 = await repo.receive_pack_async(pack_buffer.read(), ref_updates1)
+        for ref_name, error in results1.items():
+            assert error is None, f"First push ref {ref_name} failed: {error}"
+
+        # Second push: thin pack with delta-compressed blob
+        modified_content = b"MODIFIED file content with enough data for delta compression.\nLine 2\nLine 3\n"
+        blob2 = Blob.from_string(modified_content)
+        tree2 = Tree()
+        tree2.add(b"file.txt", 0o100644, blob2.id)
+
+        commit2 = Commit()
+        commit2.tree = tree2.id
+        commit2.parents = [commit1.id]
+        commit2.author = commit2.committer = b"Test <test@example.com>"
+        commit2.encoding = b"UTF-8"
+        commit2.message = b"Modify file\n"
+        commit2.commit_time = commit2.author_time = int(time.time()) + 1
+        commit2.commit_timezone = commit2.author_timezone = 0
+
+        # Build thin pack: tree2 and commit2 as full objects, blob2 as REF_DELTA of blob1
+        delta_chunks = list(create_delta(blob1.as_raw_string(), blob2.as_raw_string()))
+        delta_data = b"".join(delta_chunks)
+
+        thin_pack = _build_thin_pack_multi(
+            full_objects=[tree2, commit2],
+            deltas=[(base_blob.id, delta_data) for base_blob in [blob1]],
+        )
+
+        ref_updates2 = {
+            b"refs/heads/main": (commit1.id, commit2.id),
+        }
+        results2 = await repo.receive_pack_async(thin_pack, ref_updates2)
+        for ref_name, error in results2.items():
+            assert error is None, f"Second push ref {ref_name} failed: {error}"
+
+        # Verify the new commit is accessible
+        head = await repo.head_async()
+        assert head == commit2.id
+
+        # Verify the modified file content is correct
+        content = await repo.get_file_content_async("file.txt")
+        assert content == modified_content
+
+
+def _build_thin_pack(base_sha_hex: bytes, delta_data: bytes) -> bytes:
+    """Build a thin pack containing a single REF_DELTA object.
+
+    Args:
+        base_sha_hex: Hex SHA of the base object (e.g. b'abc123...')
+        delta_data: Raw delta data (from create_delta)
+
+    Returns:
+        Raw pack file bytes
+    """
+    return _build_thin_pack_multi(full_objects=[], deltas=[(base_sha_hex, delta_data)])
+
+
+def _build_thin_pack_multi(
+    full_objects: list,
+    deltas: list[tuple[bytes, bytes]],
+) -> bytes:
+    """Build a thin pack with full objects and REF_DELTA objects.
+
+    Args:
+        full_objects: List of dulwich ShaFile objects to include as full objects
+        deltas: List of (base_sha_hex, delta_data) tuples for REF_DELTA objects
+
+    Returns:
+        Raw pack file bytes
+    """
+    num_objects = len(full_objects) + len(deltas)
+    buf = io.BytesIO()
+
+    # Pack header: PACK, version 2, N objects
+    buf.write(b"PACK")
+    buf.write(struct.pack(">I", 2))
+    buf.write(struct.pack(">I", num_objects))
+
+    # Write full objects
+    for obj in full_objects:
+        raw = obj.as_raw_string()
+        _write_pack_object(buf, obj.type_num, raw)
+
+    # Write REF_DELTA objects
+    for base_sha_hex, delta_data in deltas:
+        _write_ref_delta_object(buf, base_sha_hex, delta_data)
+
+    # SHA1 checksum of everything
+    pack_content = buf.getvalue()
+    sha1 = hashlib.sha1(pack_content).digest()
+    buf.write(sha1)
+
+    return buf.getvalue()
+
+
+def _write_pack_object(buf: io.BytesIO, type_num: int, data: bytes):
+    """Write a full object to a pack buffer."""
+    size = len(data)
+    c = (type_num << 4) | (size & 0x0F)
+    size >>= 4
+    if size:
+        c |= 0x80
+    buf.write(bytes([c]))
+    while size:
+        c = size & 0x7F
+        size >>= 7
+        if size:
+            c |= 0x80
+        buf.write(bytes([c]))
+    buf.write(zlib.compress(data))
+
+
+def _write_ref_delta_object(buf: io.BytesIO, base_sha_hex: bytes, delta_data: bytes):
+    """Write a REF_DELTA object to a pack buffer."""
+    size = len(delta_data)
+    c = (REF_DELTA << 4) | (size & 0x0F)
+    size >>= 4
+    if size:
+        c |= 0x80
+    buf.write(bytes([c]))
+    while size:
+        c = size & 0x7F
+        size >>= 7
+        if size:
+            c |= 0x80
+        buf.write(bytes([c]))
+
+    # Write base object SHA (20 bytes binary)
+    base_sha_bytes = bytes.fromhex(base_sha_hex.decode())
+    buf.write(base_sha_bytes)
+
+    # Write zlib-compressed delta data
+    buf.write(zlib.compress(delta_data))
 
 
 class TestS3RefsContainer:

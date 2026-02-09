@@ -22,13 +22,14 @@ from dulwich.object_store import (
     PACK_SPOOL_FILE_MAX_SIZE,
     BucketBasedObjectStore,
 )
-from dulwich.objects import ObjectID, ShaFile
+from dulwich.objects import ObjectID, ShaFile, object_class
 from dulwich.pack import (
     Pack,
     PackData,
     iter_sha1,
     load_pack_index_file,
     write_pack_index,
+    write_pack_objects,
 )
 
 from hypha.git.s3_async import create_async_s3_client
@@ -302,27 +303,101 @@ class S3GitObjectStore(BucketBasedObjectStore):
                 return await pack.get_raw_async(sha)
         raise KeyError(sha)
 
-    def _parse_pack_sync(self, pack_data: bytes) -> tuple[list, bytes, bytes]:
+    def _parse_pack_sync(
+        self, pack_data: bytes, resolve_ext_ref=None
+    ) -> tuple[list, bytes, bytes, bytes]:
         """Synchronous pack parsing - runs in thread pool for CPU-bound work.
 
+        If the pack is a thin pack (contains REF_DELTA objects referencing
+        external base objects), it is "thickened" by resolving all deltas and
+        rewriting the pack with full objects. This ensures stored packs are
+        self-contained and can be read without cross-pack references.
+
+        Args:
+            pack_data: Raw pack file data
+            resolve_ext_ref: Optional callback to resolve external references
+                in thin packs. Signature: (sha_bytes) -> (type_num, [raw_data])
+
         Returns:
-            Tuple of (entries, checksum, index_data)
+            Tuple of (entries, checksum, index_data, pack_data) where pack_data
+            may be rewritten if the original was a thin pack.
         """
+        from dulwich.pack import UnresolvedDeltas
+
         pack_file = io.BytesIO(pack_data)
         p = PackData("incoming.pack", file=pack_file, object_format=self.object_format)
-        entries = p.sorted_entries()
+
+        # Try parsing without resolve_ext_ref first (fast path for non-thin packs)
+        try:
+            entries = p.sorted_entries()
+        except UnresolvedDeltas:
+            if resolve_ext_ref is None:
+                raise
+            # Thin pack detected: re-parse with resolve_ext_ref, then thicken
+            p = PackData(
+                "incoming.pack",
+                file=io.BytesIO(pack_data),
+                object_format=self.object_format,
+            )
+            entries = p.sorted_entries(resolve_ext_ref=resolve_ext_ref)
+
+            if not entries:
+                return [], None, None, pack_data
+
+            pack_data = self._thicken_pack(p, entries, resolve_ext_ref)
+
+            # Re-parse the thickened pack for correct entries/checksum/index
+            p = PackData(
+                "full.pack",
+                file=io.BytesIO(pack_data),
+                object_format=self.object_format,
+            )
+            entries = p.sorted_entries()
 
         if not entries:
-            return [], None, None
+            return [], None, None, pack_data
 
-        # Get checksum and generate index
         checksum = p.get_stored_checksum()
         idx_file = io.BytesIO()
         write_pack_index(idx_file, entries, checksum, version=self.pack_index_version)
         idx_file.seek(0)
         index_data = idx_file.read()
 
-        return entries, checksum, index_data
+        return entries, checksum, index_data, pack_data
+
+    def _thicken_pack(self, pack_data_obj, entries, resolve_ext_ref):
+        """Resolve all delta objects in a thin pack and rewrite as a full pack.
+
+        Args:
+            pack_data_obj: Parsed PackData object (thin pack)
+            entries: Sorted entries from the thin pack
+            resolve_ext_ref: Callback to resolve external object references
+
+        Returns:
+            Raw bytes of the thickened (non-thin) pack file
+        """
+        # Build a temporary Pack with resolve_ext_ref to read resolved objects
+        checksum = pack_data_obj.get_stored_checksum()
+        idx_buf = io.BytesIO()
+        write_pack_index(idx_buf, entries, checksum, version=self.pack_index_version)
+        idx_buf.seek(0)
+        idx = load_pack_index_file("temp.idx", idx_buf, self.object_format)
+        temp_pack = Pack.from_objects(pack_data_obj, idx)
+        temp_pack.resolve_ext_ref = resolve_ext_ref
+
+        # Resolve all objects to their full (non-delta) form
+        resolved_objects = []
+        for sha_raw, offset, crc32 in entries:
+            type_num, data = temp_pack.get_raw(sha_raw)
+            obj = object_class(type_num)()
+            obj.set_raw_string(data)
+            resolved_objects.append(obj)
+
+        # Re-pack as a full (non-thin) pack
+        full_buf = io.BytesIO()
+        write_pack_objects(full_buf, resolved_objects, self.object_format)
+        full_buf.seek(0)
+        return full_buf.read()
 
     async def add_pack_async(
         self, pack_data: bytes
@@ -337,10 +412,25 @@ class S3GitObjectStore(BucketBasedObjectStore):
         """
         logger.debug(f"add_pack_async: parsing pack data ({len(pack_data)} bytes)")
 
+        # Pre-load all existing packs so we can resolve external delta references
+        # synchronously in the thread pool. Thin packs (sent by git push) contain
+        # REF_DELTA objects whose base objects exist in previously pushed packs.
+        for pack in self._pack_cache.values():
+            await pack._ensure_loaded()
+
+        def resolve_ext_ref(sha: bytes) -> tuple[int, list[bytes]]:
+            """Resolve an external object reference from existing packs."""
+            for pack in self._pack_cache.values():
+                if sha in pack:
+                    type_num, data = pack.get_raw(sha)
+                    return (type_num, [data])
+            raise KeyError(sha)
+
         # Run synchronous pack parsing in thread pool to avoid blocking event loop
         # (dulwich pack parsing is CPU-bound, not I/O-bound)
-        entries, checksum, index_data = await asyncio.to_thread(
-            self._parse_pack_sync, pack_data
+        # pack_data may be rewritten if the incoming pack was a thin pack
+        entries, checksum, index_data, pack_data = await asyncio.to_thread(
+            self._parse_pack_sync, pack_data, resolve_ext_ref
         )
         logger.debug(f"add_pack_async: got {len(entries)} entries")
 

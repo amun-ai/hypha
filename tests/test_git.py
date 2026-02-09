@@ -3053,3 +3053,150 @@ async def test_git_child_token_preserves_parent_user(
     await child_artifact_manager.delete(artifact_id=artifact_alias)
     await child_api.disconnect()
     await api.disconnect()
+
+
+async def test_git_push_delta_compressed_second_push(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test that a second git push with delta-compressed objects succeeds.
+
+    This is a regression test for the bug where git push fails with
+    'failed to process pack: [b'<sha>']' when the client sends a thin pack
+    containing REF_DELTA objects that reference base objects already on the
+    remote. The first push to an empty repo works (no deltas), but subsequent
+    pushes fail because git delta-compresses modified files against objects
+    already pushed.
+
+    The fix thickens thin packs by resolving all deltas before storing to S3.
+    """
+    import subprocess
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-delta-push-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    artifact_alias = f"git-delta-test-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Git Delta Push Test"},
+        config={"storage": "git"},
+    )
+
+    workspace = api.config.workspace
+    port = SIO_PORT
+    auth_url = f"http://git:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        clone_dir = os.path.join(tmpdir, "repo")
+
+        # Step 1: Clone empty repo
+        result = subprocess.run(
+            ["git", "clone", auth_url, clone_dir],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            assert "empty" in result.stderr.lower() or "warning" in result.stderr.lower(), \
+                f"Clone failed: {result.stderr}"
+            os.makedirs(clone_dir, exist_ok=True)
+            subprocess.run(["git", "init", "-b", "main"], cwd=clone_dir, check=True)
+            subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=clone_dir, check=True)
+
+        # Configure git user
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=clone_dir, check=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=clone_dir, check=True)
+
+        # Ensure main branch
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=clone_dir, capture_output=True, text=True, timeout=10,
+        )
+        current_branch = result.stdout.strip()
+        if current_branch and current_branch != "main":
+            subprocess.run(["git", "branch", "-m", current_branch, "main"], cwd=clone_dir, check=True)
+
+        # Step 2: First push - create a file with enough content for delta compression
+        test_file = os.path.join(clone_dir, "data.txt")
+        with open(test_file, "w") as f:
+            f.write("This is a test file with enough content for delta compression.\n")
+            f.write("Line 2: some more content here.\n")
+            f.write("Line 3: and yet another line of data.\n")
+
+        subprocess.run(["git", "add", "data.txt"], cwd=clone_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=clone_dir, check=True, capture_output=True)
+
+        result = subprocess.run(
+            ["git", "push", auth_url, "main:main"],
+            cwd=clone_dir,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+        assert result.returncode == 0, \
+            f"First push failed: stdout={result.stdout}, stderr={result.stderr}"
+
+        # Step 3: Second push - modify the file (git will send a delta against the old version)
+        with open(test_file, "w") as f:
+            f.write("This is a MODIFIED test file with enough content for delta compression.\n")
+            f.write("Line 2: some more content here.\n")
+            f.write("Line 3: and yet another line of data.\n")
+
+        subprocess.run(["git", "add", "data.txt"], cwd=clone_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "Modify data file"], cwd=clone_dir, check=True, capture_output=True)
+
+        # This is the push that previously failed with:
+        #   ! [remote rejected] main -> main (failed to process pack: [b'<sha>'])
+        result = subprocess.run(
+            ["git", "push", auth_url, "main:main"],
+            cwd=clone_dir,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+        assert result.returncode == 0, \
+            f"Second push (delta-compressed) failed: stdout={result.stdout}, stderr={result.stderr}"
+
+        # Step 4: Clone fresh to verify both commits are present and content is correct
+        clone_dir2 = os.path.join(tmpdir, "verify")
+        result = subprocess.run(
+            ["git", "clone", auth_url, clone_dir2],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, \
+            f"Verification clone failed: stdout={result.stdout}, stderr={result.stderr}"
+
+        # Verify the latest file content
+        cloned_file = os.path.join(clone_dir2, "data.txt")
+        assert os.path.exists(cloned_file), "data.txt should exist in cloned repo"
+        with open(cloned_file, "r") as f:
+            content = f.read()
+        assert "MODIFIED" in content, f"Expected modified content, got: {content}"
+
+        # Verify commit history has 2 commits
+        result = subprocess.run(
+            ["git", "log", "--oneline"],
+            cwd=clone_dir2,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0
+        commits = result.stdout.strip().split("\n")
+        assert len(commits) == 2, f"Expected 2 commits, got {len(commits)}: {result.stdout}"
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
