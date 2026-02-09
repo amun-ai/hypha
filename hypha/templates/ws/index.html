@@ -2567,6 +2567,14 @@
             const [gitAuthUrl, setGitAuthUrl] = React.useState(null);
             const [generatingToken, setGeneratingToken] = React.useState(false);
             const [gitUrlCopied, setGitUrlCopied] = React.useState(false);
+            const [tokenExpirationLabel, setTokenExpirationLabel] = React.useState(null);
+
+            const TOKEN_EXPIRATION_OPTIONS = [
+                { label: '1 hour', value: 3600 },
+                { label: '1 day', value: 86400 },
+                { label: '1 month', value: 2592000 },
+                { label: '1 year', value: 31536000 },
+            ];
 
             const canUpload = currentArtifact.staging !== null; // Can only upload to staged artifacts
 
@@ -2669,18 +2677,16 @@
             };
 
             // Generate git URL with embedded token (works for both clone and push)
-            const generateGitAuthUrl = async () => {
+            const generateGitAuthUrl = async (expiresIn = 3600, label = '1 hour') => {
                 if (!ws || !currentArtifact.git_url) return;
                 try {
                     setGeneratingToken(true);
-                    // Generate a token with write permission, valid for 1 hour
-                    const token = await ws.generateToken({ expires_in: 3600 });
-                    // Parse the git URL and insert credentials
-                    // Username must match the user ID in the token for git authentication
+                    const token = await ws.generateToken({ expires_in: expiresIn });
                     const gitUrl = new URL(currentArtifact.git_url);
                     gitUrl.username = 'git';
                     gitUrl.password = token;
                     setGitAuthUrl(gitUrl.toString());
+                    setTokenExpirationLabel(label);
                 } catch (error) {
                     console.error('Failed to generate git auth token:', error);
                     alert('Failed to generate auth token: ' + error.message);
@@ -3519,7 +3525,7 @@
                                                                 </button>
                                                             </div>
                                                             <p className="text-xs text-gray-500 mt-1">
-                                                                Authenticated URL with clone, fetch, and push access. Token expires in 1 hour.
+                                                                Authenticated URL with clone, fetch, and push access. Token expires in {tokenExpirationLabel || '1 hour'}.
                                                             </p>
                                                         </>
                                                     ) : (
@@ -3528,19 +3534,35 @@
                                                                 <code className="flex-1 bg-gray-900 px-3 py-2 rounded text-sm font-mono overflow-x-auto text-gray-500 flex items-center">
                                                                     {currentArtifact.git_url}
                                                                 </code>
-                                                                <button
-                                                                    className="bg-orange-600 hover:bg-orange-500 text-white px-4 rounded transition duration-200 flex items-center gap-2 whitespace-nowrap"
-                                                                    onClick={generateGitAuthUrl}
-                                                                    disabled={generatingToken}
-                                                                    title="Generate authenticated URL for clone and push access"
-                                                                >
-                                                                    <i className={`fas ${generatingToken ? 'fa-spinner fa-spin' : 'fa-key'}`}></i>
-                                                                    <span className="text-sm">Generate Auth URL</span>
-                                                                </button>
+                                                                <div className="relative" style={{display: 'inline-block'}}>
+                                                                    <select
+                                                                        className="bg-orange-600 hover:bg-orange-500 text-white px-4 py-2 rounded transition duration-200 text-sm cursor-pointer appearance-none pr-8"
+                                                                        disabled={generatingToken}
+                                                                        title="Generate authenticated URL for clone and push access"
+                                                                        value=""
+                                                                        onChange={(e) => {
+                                                                            if (e.target.value) {
+                                                                                const opt = TOKEN_EXPIRATION_OPTIONS.find(o => o.value === Number(e.target.value));
+                                                                                generateGitAuthUrl(opt.value, opt.label);
+                                                                                e.target.value = '';
+                                                                            }
+                                                                        }}
+                                                                    >
+                                                                        <option value="" disabled>
+                                                                            {generatingToken ? '⏳ Generating...' : '🔑 Generate Auth URL'}
+                                                                        </option>
+                                                                        {TOKEN_EXPIRATION_OPTIONS.map(opt => (
+                                                                            <option key={opt.value} value={opt.value}>
+                                                                                Expires in {opt.label}
+                                                                            </option>
+                                                                        ))}
+                                                                    </select>
+                                                                    <i className="fas fa-chevron-down absolute right-2 top-1/2 transform -translate-y-1/2 text-white text-xs pointer-events-none"></i>
+                                                                </div>
                                                             </div>
                                                             <p className="text-xs text-yellow-500 mt-1">
                                                                 <i className="fas fa-exclamation-triangle mr-1"></i>
-                                                                This is a private repository. Click "Generate Auth URL" to get a URL with your credentials for cloning.
+                                                                This is a private repository. Select an expiration time to generate an authenticated URL for cloning.
                                                             </p>
                                                         </>
                                                     )}
@@ -3550,15 +3572,31 @@
                                             {/* Button to generate auth URL for public repos (for push access) */}
                                             {isPublicRead && !gitAuthUrl && (
                                                 <div className="mt-2">
-                                                    <button
-                                                        className="bg-orange-600 hover:bg-orange-500 text-white px-3 py-1.5 rounded transition duration-200 flex items-center gap-2 text-sm"
-                                                        onClick={generateGitAuthUrl}
-                                                        disabled={generatingToken}
-                                                        title="Generate authenticated URL for push access"
-                                                    >
-                                                        <i className={`fas ${generatingToken ? 'fa-spinner fa-spin' : 'fa-key'}`}></i>
-                                                        Generate Read-Write URL
-                                                    </button>
+                                                    <div className="relative" style={{display: 'inline-block'}}>
+                                                        <select
+                                                            className="bg-orange-600 hover:bg-orange-500 text-white px-3 py-1.5 rounded transition duration-200 text-sm cursor-pointer appearance-none pr-7"
+                                                            disabled={generatingToken}
+                                                            title="Generate authenticated URL for push access"
+                                                            value=""
+                                                            onChange={(e) => {
+                                                                if (e.target.value) {
+                                                                    const opt = TOKEN_EXPIRATION_OPTIONS.find(o => o.value === Number(e.target.value));
+                                                                    generateGitAuthUrl(opt.value, opt.label);
+                                                                    e.target.value = '';
+                                                                }
+                                                            }}
+                                                        >
+                                                            <option value="" disabled>
+                                                                {generatingToken ? '⏳ Generating...' : '🔑 Generate Read-Write URL'}
+                                                            </option>
+                                                            {TOKEN_EXPIRATION_OPTIONS.map(opt => (
+                                                                <option key={opt.value} value={opt.value}>
+                                                                    Expires in {opt.label}
+                                                                </option>
+                                                            ))}
+                                                        </select>
+                                                        <i className="fas fa-chevron-down absolute right-2 top-1/2 transform -translate-y-1/2 text-white text-xs pointer-events-none"></i>
+                                                    </div>
                                                     <p className="text-xs text-gray-500 mt-1">
                                                         Need to push changes? Generate an authenticated URL with write access.
                                                     </p>
