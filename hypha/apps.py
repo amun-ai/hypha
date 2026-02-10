@@ -2311,19 +2311,25 @@ class ServerAppController:
         workspace = context["ws"]
         user_info = UserInfo.from_context(context)
 
+        if not user_info.check_permission(workspace, UserPermission.read_write):
+            raise Exception(
+                f"User {user_info.id} does not have permission"
+                f" to run app {app_id} in workspace {workspace}."
+            )
+
         # Add "__rlb" suffix to enable load balancing metrics for app clients
         # Add "_rapp_" prefix to identify app clients
         # This allows the system to track load only for clients that may have multiple instances
         client_id = "_rapp_" + random_id(readable=True) + "__rlb"
 
-        async with self.store.get_workspace_interface(user_info, workspace) as ws:
+        # Use root user for token generation since generate_token() requires admin.
+        # This is a system-level operation: the caller is already authorized above.
+        # Set parent to the actual caller's ID to preserve the audit trail.
+        root_user = self.store.get_root_user().model_copy(
+            update={"parent": user_info.parent or user_info.id}
+        )
+        async with self.store.get_workspace_interface(root_user, workspace) as ws:
             token = await ws.generate_token({"client_id": client_id})
-
-        if not user_info.check_permission(workspace, UserPermission.read):
-            raise Exception(
-                f"User {user_info.id} does not have permission"
-                f" to run app {app_id} in workspace {workspace}."
-            )
             
         _progress_callback = partial(call_progress_callback, progress_callback)
 
