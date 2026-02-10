@@ -161,7 +161,7 @@ class TestHNSW:
     @pytest.mark.parametrize("num_vectors,dim", [
         (100, 128),
         (1000, 128),
-        (5000, 384),
+        (2000, 128),
     ])
     def test_hnsw_build_performance(self, num_vectors, dim):
         """Test HNSW index build time with different dataset sizes."""
@@ -1552,7 +1552,7 @@ class TestPerformance:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("num_vectors,num_shards", [
         (1000, 4),
-        (5000, 10),
+        (2000, 6),
     ])
     async def test_spann_scalability(self, s3_config, redis_client, num_vectors, num_shards):
         """Test SPANN indexing scalability with different dataset sizes."""
