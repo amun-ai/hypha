@@ -102,7 +102,7 @@ async def test_dump_and_load_collection(vector_search_engine, minio_server):
         # Create a bucket if it doesn't exist
         try:
             await s3_client.create_bucket(Bucket=bucket)
-        except s3_client.meta.client.exceptions.BucketAlreadyOwnedByYou:
+        except s3_client.exceptions.BucketAlreadyOwnedByYou:
             pass
 
         collection_name = "s3_test_collection"
