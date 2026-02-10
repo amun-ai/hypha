@@ -9892,6 +9892,7 @@ async def test_document_chunking_and_vector_search(
             "name": "doc search test client",
             "server_url": SERVER_URL,
             "token": test_user_token,
+            "method_timeout": 120,
         }
     )
     artifact_manager = await api.get_service("public/artifact-manager")
