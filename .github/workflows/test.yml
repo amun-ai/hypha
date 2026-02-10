@@ -46,6 +46,27 @@ jobs:
           channels: conda-forge,defaults
           channel-priority: true
           activate-environment: test-env
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ matrix.python-version }}-${{ hashFiles('requirements*.txt') }}
+          restore-keys: |
+            pip-${{ matrix.python-version }}-
+      - name: Cache tox environments
+        uses: actions/cache@v4
+        with:
+          path: .tox
+          key: tox-${{ matrix.python-version }}-${{ hashFiles('requirements*.txt', 'tox.ini') }}
+          restore-keys: |
+            tox-${{ matrix.python-version }}-
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            playwright-
       - name: Install conda dependencies
         run: |
           conda install -c conda-forge conda-pack numpy ipykernel python=${{ matrix.python-version }}
