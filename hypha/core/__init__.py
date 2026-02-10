@@ -992,10 +992,12 @@ class RedisRPCConnection:
         
             logger.debug(f"Redis Connection Disconnected: {self._workspace}/{self._client_id}")
             
-            # Handle disconnection callback
+            # Handle disconnection callback (supports both sync and async handlers)
             if self._handle_disconnected:
                 try:
-                    await self._handle_disconnected(reason)
+                    result = self._handle_disconnected(reason)
+                    if inspect.isawaitable(result):
+                        await result
                 except Exception as e:
                     logger.warning(f"Error in disconnect handler: {e}")
 
