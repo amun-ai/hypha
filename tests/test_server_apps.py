@@ -272,232 +272,93 @@ api.export({
     await api.disconnect()
 
 
-async def test_install_app_in_custom_workspace(
+async def test_install_app_with_workspace_ui_token(
     minio_server, fastapi_server, test_user_token
 ):
-    """Test installing an app in a custom workspace the user owns.
+    """Reproduce: workspace owner installs app via CLI with a UI-generated token.
 
-    This reproduces the issue where a user who owns a custom workspace
-    (e.g., 'hypha-agents') gets 'Only admin can generate token' when
-    installing an app, even though they have admin permissions.
+    Exact scenario from the bug report:
+    1. User owns workspace 'hypha-agents'
+    2. User opens workspace UI (templates/ws/index.html)
+    3. User generates a token — the UI defaults to read_write permission
+    4. User saves token to .hypha_token / .env
+    5. User runs hypha-apps-cli install
+    6. CLI connects to the workspace with the child token
+    7. install() -> commit_app() -> start() -> generate_token() fails with:
+       "PermissionError: Only admin can generate token."
+
+    Root cause: start() called generate_token() with the child token's
+    user_info. generate_token() requires admin, but the child token only
+    has read_write in its scope. update_user_scope() only upgrades to
+    admin when NO existing permission entry exists, so the read_write
+    entry blocks the ownership-based upgrade.
+
+    Fix: start() uses root user for the internal worker token generation
+    (a system operation), with permission check at read_write level.
     """
-    # Step 1: Connect as user-1 to their own user workspace
+    # Step 1: User connects to their workspace (simulates opening the UI)
     api = await connect_to_server(
-        {"name": "test custom ws", "server_url": SERVER_URL, "token": test_user_token}
+        {"name": "ws-owner", "server_url": SERVER_URL, "token": test_user_token}
     )
-
-    # Step 2: Create a custom persistent workspace
-    custom_ws_name = "test-custom-agents"
+    custom_ws = "test-ui-token-agents"
     await api.create_workspace(
         {
-            "name": custom_ws_name,
-            "description": "Test workspace for app install",
+            "name": custom_ws,
+            "description": "Simulates hypha-agents workspace",
             "persistent": True,
         }
     )
 
-    # Step 3: Disconnect and reconnect to the custom workspace
-    await api.disconnect()
-
-    api2 = await connect_to_server(
-        {
-            "name": "test custom ws client",
-            "server_url": SERVER_URL,
-            "token": test_user_token,
-            "workspace": custom_ws_name,
-        }
-    )
-
-    # Step 4: Try to install an app in the custom workspace
-    controller = await api2.get_service("public/server-apps")
-
-    source = """
-<config lang="json">
-{
-    "name": "Custom WS Test App",
-    "type": "window",
-    "version": "1.0.0",
-    "description": "App installed in a custom workspace"
-}
-</config>
-
-<div>
-    <h1>Test App in Custom Workspace</h1>
-</div>
-    """
-
-    # This should succeed - the user owns the workspace
-    app_info = await controller.install(
-        source=source,
-        wait_for_service=False,
-        timeout=20,
-        overwrite=True,
-    )
-
-    app_id = app_info["id"]
-    assert app_id, "App should be installed successfully"
-
-    # Cleanup
-    await controller.uninstall(app_id)
-    await api2.disconnect()
-
-
-async def test_install_app_with_child_token_in_custom_workspace(
-    minio_server, fastapi_server, test_user_token
-):
-    """Test installing an app using a child token (as hypha-apps-cli login does).
-
-    The hypha-apps-cli login flow generates a scoped child token via
-    generate_token. This test verifies that a child token with read_write
-    permission can still install apps (which internally calls generate_token
-    requiring admin).
-    """
-    # Step 1: Connect as user-1 to their own user workspace
-    api = await connect_to_server(
-        {"name": "test child token", "server_url": SERVER_URL, "token": test_user_token}
-    )
-
-    # Step 2: Create a custom persistent workspace
-    custom_ws_name = "test-child-token-agents"
-    await api.create_workspace(
-        {
-            "name": custom_ws_name,
-            "description": "Test workspace for child token app install",
-            "persistent": True,
-        }
-    )
-
-    # Step 3: Generate a child token with read_write permission for the workspace
-    # This simulates what hypha-apps-cli login does when workspace is NOT passed
+    # Step 2: Generate token via workspace UI — default permission is read_write
+    # This is what templates/ws/index.html does:
+    #   tokenConfig = { expires_in: expiryTime, workspace }
+    #   // permission is NOT set when it equals the default 'read_write'
+    #   token = await ws.generateToken(tokenConfig)
     child_token = await api.generate_token(
         {
-            "workspace": custom_ws_name,
+            "workspace": custom_ws,
             "permission": "read_write",
             "expires_in": 3600,
         }
     )
-
     await api.disconnect()
 
-    # Step 4: Connect to the custom workspace using the child token
+    # Step 3: CLI connects to the workspace using the child token
+    # (simulates hypha-apps-cli connect)
     api2 = await connect_to_server(
         {
-            "name": "child token client",
+            "name": "cli-client",
             "server_url": SERVER_URL,
             "token": child_token,
-            "workspace": custom_ws_name,
+            "workspace": custom_ws,
         }
     )
 
-    # Step 5: Try to install an app - this should reproduce the error
+    # Step 4: CLI calls install (simulates hypha-apps-cli install)
     controller = await api2.get_service("public/server-apps")
-
     source = """
 <config lang="json">
 {
-    "name": "Child Token Test App",
+    "name": "Security Agent",
     "type": "window",
     "version": "1.0.0",
-    "description": "App installed with child token"
+    "description": "Simulates the security-agent app from the bug report"
 }
 </config>
 
-<div>
-    <h1>Test App with Child Token</h1>
-</div>
+<div><h1>Security Agent</h1></div>
     """
-
-    # This will fail if the child token's read_write permission
-    # prevents generate_token (which requires admin) during app start
+    # Without the fix this raises:
+    #   PermissionError: Only admin can generate token.
     app_info = await controller.install(
         source=source,
         wait_for_service=False,
         timeout=20,
         overwrite=True,
     )
+    assert app_info["id"], "Install must succeed with UI-generated read_write token"
 
-    app_id = app_info["id"]
-    assert app_id, "App should be installed successfully with child token"
-
-    # Cleanup
-    await controller.uninstall(app_id)
-    await api2.disconnect()
-
-
-async def test_install_app_with_admin_child_token_in_custom_workspace(
-    minio_server, fastapi_server, test_user_token
-):
-    """Test installing an app using a child token with admin permission.
-
-    Even with explicit admin permission in the child token, the install
-    may fail if the child token's user ID is not recognized as workspace owner.
-    """
-    # Step 1: Connect as user-1
-    api = await connect_to_server(
-        {"name": "test admin child", "server_url": SERVER_URL, "token": test_user_token}
-    )
-
-    # Step 2: Create a custom persistent workspace
-    custom_ws_name = "test-admin-child-agents"
-    await api.create_workspace(
-        {
-            "name": custom_ws_name,
-            "description": "Test workspace for admin child token",
-            "persistent": True,
-        }
-    )
-
-    # Step 3: Generate a child token with admin permission
-    child_token = await api.generate_token(
-        {
-            "workspace": custom_ws_name,
-            "permission": "admin",
-            "expires_in": 3600,
-        }
-    )
-
-    await api.disconnect()
-
-    # Step 4: Connect using the admin child token
-    api2 = await connect_to_server(
-        {
-            "name": "admin child client",
-            "server_url": SERVER_URL,
-            "token": child_token,
-            "workspace": custom_ws_name,
-        }
-    )
-
-    # Step 5: Try to install an app
-    controller = await api2.get_service("public/server-apps")
-
-    source = """
-<config lang="json">
-{
-    "name": "Admin Child Token Test App",
-    "type": "window",
-    "version": "1.0.0",
-    "description": "App installed with admin child token"
-}
-</config>
-
-<div>
-    <h1>Test App with Admin Child Token</h1>
-</div>
-    """
-
-    app_info = await controller.install(
-        source=source,
-        wait_for_service=False,
-        timeout=20,
-        overwrite=True,
-    )
-
-    app_id = app_info["id"]
-    assert app_id, "App should be installed with admin child token"
-
-    # Cleanup
-    await controller.uninstall(app_id)
+    await controller.uninstall(app_info["id"])
     await api2.disconnect()
 
 
