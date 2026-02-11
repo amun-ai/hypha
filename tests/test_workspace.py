@@ -1562,3 +1562,56 @@ async def test_workspace_manager_tilde_shortcut(fastapi_server, test_user_token)
     await api.disconnect()
     
     print("✅ All workspace manager '~' shortcut tests passed successfully")
+
+
+async def test_anonymous_workspace_unload_does_not_disconnect_others(fastapi_server):
+    """Test that when one anonymous client disconnects, other clients in the same workspace survive.
+
+    Previously, delete_client() called self.unload() for anonymous workspaces,
+    which force-disconnected ALL remaining clients. This was changed to
+    self.unload_if_empty() so the workspace only unloads when no clients remain.
+    """
+    import asyncio
+
+    # Connect first anonymous client (creates the anonymous workspace)
+    api1 = await connect_to_server(
+        {
+            "client_id": "anon-client-1",
+            "name": "anon client 1",
+            "server_url": WS_SERVER_URL,
+        }
+    )
+    workspace = api1.config.workspace
+
+    # Generate a token so a second client can join the same anonymous workspace
+    token = await api1.generate_token()
+
+    # Connect second client to the same anonymous workspace using the token
+    api2 = await connect_to_server(
+        {
+            "client_id": "anon-client-2",
+            "name": "anon client 2",
+            "server_url": WS_SERVER_URL,
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    # Verify both clients are functional before disconnection
+    result = await api2.echo("before disconnect")
+    assert result == "before disconnect"
+
+    # Disconnect client 1 — this triggers delete_client() with unload_if_empty()
+    # The server should NOT force-unload the workspace because client 2 is still there.
+    await api1.disconnect()
+
+    # Wait for the server to process the disconnection and run unload_if_empty()
+    await asyncio.sleep(3)
+
+    # Verify client 2 is still functional after client 1 disconnected.
+    # If the workspace was force-unloaded (old behavior), this would fail
+    # because client 2's connection would have been severed.
+    result = await api2.echo("still alive")
+    assert result == "still alive"
+
+    await api2.disconnect()

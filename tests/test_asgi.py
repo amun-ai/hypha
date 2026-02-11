@@ -1015,3 +1015,85 @@ api.export(new HyphaApp());
     # Stop the app
     await controller.stop(config["id"])
     await api.disconnect()
+
+
+async def test_anonymous_cross_workspace_public_asgi(fastapi_server, test_user_token):
+    """Test that anonymous HTTP users can access public ASGI services in other workspaces.
+
+    This verifies the fix where middleware uses the target workspace from the URL
+    instead of the user's own workspace, allowing anonymous users to reach public
+    services while protected services remain blocked.
+    """
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+    workspace = api.config.workspace
+
+    # Register a public ASGI service that echoes back context info
+    app = FastAPI()
+
+    @app.get("/hello")
+    async def hello():
+        context = getattr(app.state, "context", None)
+        user_info = context.get("user") if context else None
+        return {
+            "message": "hello from public service",
+            "user_id": user_info.get("id") if user_info else None,
+            "workspace": context.get("ws") if context else None,
+        }
+
+    async def serve_public(args, context=None):
+        app.state.context = context
+        await app(args["scope"], args["receive"], args["send"])
+
+    await api.register_service(
+        {
+            "id": "anon-test-public",
+            "type": "asgi",
+            "config": {"visibility": "public", "require_context": True},
+            "serve": serve_public,
+        }
+    )
+
+    # Register a protected ASGI service
+    protected_app = FastAPI()
+
+    @protected_app.get("/hello")
+    async def protected_hello():
+        return {"message": "should not be reachable by anonymous"}
+
+    async def serve_protected(args, context=None):
+        protected_app.state.context = context
+        await protected_app(args["scope"], args["receive"], args["send"])
+
+    await api.register_service(
+        {
+            "id": "anon-test-protected",
+            "type": "asgi",
+            "config": {"visibility": "protected", "require_context": True},
+            "serve": serve_protected,
+        }
+    )
+
+    async with httpx.AsyncClient() as client:
+        # Anonymous access to public service should succeed
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/apps/anon-test-public/hello"
+        )
+        assert response.status_code == 200, (
+            f"Anonymous user should access public ASGI service, got {response.status_code}: {response.text}"
+        )
+        result = response.json()
+        assert result["message"] == "hello from public service"
+        assert result["user_id"] == "anonymouz-http"
+        assert result["workspace"] == workspace
+
+        # Anonymous access to protected service should fail
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/apps/anon-test-protected/hello"
+        )
+        assert response.status_code != 200, (
+            "Anonymous user should NOT access protected ASGI service"
+        )
+
+    await api.disconnect()

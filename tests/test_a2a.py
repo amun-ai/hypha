@@ -1017,3 +1017,101 @@ async def test_a2a_memory_leak_detection(fastapi_server, test_user_token):
     print("   🔥 STRICT mode: Very low tolerance for growth!")
     print("   - Health endpoint monitors A2A service memory usage")
     print("=" * 60)
+
+
+async def test_anonymous_cross_workspace_public_a2a(fastapi_server, test_user_token):
+    """Test that anonymous HTTP users can access public A2A services in other workspaces.
+
+    This verifies the fix where the A2A middleware uses the target workspace from
+    the URL instead of the user's own workspace.
+    """
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+    workspace = api.config.workspace
+
+    agent_card = {
+        "protocol_version": "0.3.0",
+        "name": "Public Anon Test Agent",
+        "description": "Agent for testing anonymous cross-workspace access",
+        "url": f"http://localhost:9527/{workspace}/a2a/anon-a2a-agent",
+        "version": "1.0.0",
+        "capabilities": {"streaming": False, "push_notifications": False},
+        "default_input_modes": ["text/plain"],
+        "default_output_modes": ["text/plain"],
+        "skills": [
+            {
+                "id": "echo",
+                "name": "Echo",
+                "description": "Echoes back",
+                "tags": ["test"],
+            }
+        ],
+    }
+
+    async def agent_run(message, context=None):
+        return "Hello from anonymous-accessible agent"
+
+    # Register a public A2A service
+    await api.register_service(
+        {
+            "id": "anon-a2a-agent",
+            "type": "a2a",
+            "config": {"visibility": "public"},
+            "agent_card": agent_card,
+            "run": agent_run,
+        }
+    )
+
+    # Register a protected A2A service
+    await api.register_service(
+        {
+            "id": "protected-a2a-agent",
+            "type": "a2a",
+            "config": {"visibility": "protected"},
+            "agent_card": {**agent_card, "name": "Protected Agent"},
+            "run": agent_run,
+        }
+    )
+
+    async with httpx.AsyncClient() as client:
+        # Anonymous access to public agent card should succeed
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/a2a/anon-a2a-agent/.well-known/agent-card.json"
+        )
+        assert response.status_code == 200, (
+            f"Anonymous user should access public A2A agent card, got {response.status_code}: {response.text}"
+        )
+        card = response.json()
+        assert card["name"] == "Public Anon Test Agent"
+
+        # Anonymous JSON-RPC message/send to public A2A service should succeed
+        response = await client.post(
+            f"{SERVER_URL}/{workspace}/a2a/anon-a2a-agent",
+            json={
+                "jsonrpc": "2.0",
+                "method": "message/send",
+                "id": "test-anon-1",
+                "params": {
+                    "message": {
+                        "messageId": str(uuid.uuid4()),
+                        "role": "user",
+                        "parts": [{"kind": "text", "text": "Hello"}],
+                    }
+                },
+            },
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 200, (
+            f"Anonymous user should send message to public A2A service, got {response.status_code}: {response.text}"
+        )
+
+        # Anonymous access to protected agent card should fail
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/a2a/protected-a2a-agent/.well-known/agent-card.json"
+        )
+        assert response.status_code != 200, (
+            "Anonymous user should NOT access protected A2A agent card"
+        )
+
+    await api.disconnect()
