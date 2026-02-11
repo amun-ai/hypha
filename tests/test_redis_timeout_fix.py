@@ -171,11 +171,12 @@ async def test_integration_with_workspace_get_service():
     # Mock Redis store
     mock_store = AsyncMock(spec=RedisStore)
     mock_store.get_service_info = AsyncMock(return_value=None)
-    
+    mock_store.keys = AsyncMock(return_value=[])
+
     # Mock event bus with timeout handling
     mock_event_bus = AsyncMock(spec=RedisEventBus)
     mock_event_bus.subscribe_to_client_events = AsyncMock()
-    
+
     # Create workspace manager
     workspace_mgr = WorkspaceManager("test-workspace", mock_store, mock_event_bus, None, None, None)
     

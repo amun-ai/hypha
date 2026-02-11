@@ -2772,13 +2772,13 @@ class WorkspaceManager:
         context=None,
     ):
         """Get a service based on the service_id"""
-        self.validate_context(context, permission=UserPermission.read)
+        # Don't validate workspace permission here - service visibility
+        # handles access control. Public services should be accessible to anyone,
+        # including anonymous users. Protected services are checked in
+        # get_service_info() based on visibility.
         assert (
             service_id != "*"
         ), "Invalid service id: {service_id}, it cannot be a wildcard."
-
-        # no need to validate the context
-        # self.validate_context(context, permission=UserPermission.read)
         try:
             config = config or GetServiceConfig()
             # Permission check will be handled by the get_service_api function
@@ -3285,8 +3285,10 @@ class WorkspaceManager:
                     logger.info(
                         f"Unloading workspace {cws} for anonymous user (while deleting client {client_id})"
                     )
-                    # unload temporary workspace if the user exits
-                    await self.unload(context=context)
+                    # Only unload if no other clients remain; force-unloading while
+                    # other clients are still connected would disconnect them before
+                    # they receive the client_disconnected event via Redis broadcast.
+                    await self.unload_if_empty(context=context)
                 else:
                     logger.info(
                         f"Unloading workspace {cws} for non-anonymous user (while deleting client {client_id})"

@@ -445,10 +445,12 @@ class A2ARoutingMiddleware:
                     # Get the A2A service
                     # For public services, we need to create a workspace interface
                     # that allows accessing services in that workspace
-                    # We use the user's current workspace as the base for the interface
-                    # but query services from the target workspace
+                    # Use the TARGET workspace from URL for the workspace interface.
+                    # Permission checks are enforced by get_service_info() based on
+                    # service visibility: public services are accessible to anyone,
+                    # protected services require workspace-level permission.
                     async with self.store.get_workspace_interface(
-                        user_info, user_info.scope.current_workspace
+                        user_info, workspace  # Use target workspace from URL
                     ) as api:
                         try:
                             logger.info(
@@ -557,8 +559,9 @@ class A2ARoutingMiddleware:
                     user_info = await self.store.login_optional(request)
                     
                     # Get service through workspace interface
+                    # Use target workspace from URL so anonymous users can access public services
                     async with self.store.get_workspace_interface(
-                        user_info, user_info.scope.current_workspace
+                        user_info, workspace
                     ) as api:
                         # Build full service ID
                         full_service_id = f"{workspace}/{service_id}"

@@ -291,10 +291,11 @@ class ASGIRoutingMiddleware:
                     request = Request(scope, receive=receive)
                     user_info = await self.store.login_optional(request)
 
-                    # Here we must always use the user's current workspace for the interface
-                    # This is a security measure to prevent unauthorized access to private workspaces
+                    # Use the TARGET workspace from URL, not user's current workspace.
+                    # This allows anonymous users to access public services in any workspace.
+                    # Permission checks are enforced by get_service() based on service visibility.
                     async with self.store.get_workspace_interface(
-                        user_info, user_info.scope.current_workspace
+                        user_info, workspace  # Use target workspace from URL
                     ) as api:
                         # Call get_service to trigger lazy loading if needed
                         service = await api.get_service(

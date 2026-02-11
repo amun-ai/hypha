@@ -1189,8 +1189,9 @@ class MCPRoutingMiddleware:
         
         if is_sse:
             # For SSE, keep workspace interface alive
+            # Use target workspace from URL so anonymous users can access public services
             api = await self.store.get_workspace_interface(
-                user_info, user_info.scope.current_workspace
+                user_info, workspace
             ).__aenter__()
             
             try:
@@ -1233,8 +1234,9 @@ class MCPRoutingMiddleware:
                 raise
         else:
             # For non-SSE, use normal context manager
+            # Use target workspace from URL so anonymous users can access public services
             async with self.store.get_workspace_interface(
-                user_info, user_info.scope.current_workspace
+                user_info, workspace
             ) as api:
                 # Build full service ID with proper handling of @app_id and wildcard
                 # Extract @app_id suffix if present
@@ -1452,8 +1454,9 @@ class MCPRoutingMiddleware:
                     user_info = await self.store.login_optional(request)
                     
                     # Get service through workspace interface
+                    # Use target workspace from URL so anonymous users can access public services
                     async with self.store.get_workspace_interface(
-                        user_info, user_info.scope.current_workspace
+                        user_info, workspace
                     ) as api:
                         # Build full service ID with proper handling of @app_id and wildcard
                         # Extract @app_id suffix if present
@@ -1655,10 +1658,10 @@ class MCPRoutingMiddleware:
             user_info = await self.store.login_optional(request)
             
             # Create new MCP app for each request
-            # Use the user's own workspace for the interface
-            # This allows us to access services in other workspaces if they're public/accessible
+            # Use target workspace from URL so anonymous users can access public services
+            # Permission checks are enforced by get_service_info() based on service visibility
             async with self.store.get_workspace_interface(
-                user_info, user_info.scope.current_workspace
+                user_info, workspace
             ) as api:
                 try:
                     # Build the full service ID based on what's provided
