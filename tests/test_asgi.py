@@ -570,10 +570,12 @@ async def test_asgi_auth_context(fastapi_server, test_user_token):
         print(f"Has context: {result.get('has_context')}")
 
         # Without token, user should be anonymous but context should still be available
-        # Public services run in the public workspace, not the user's workspace
+        # Anonymous users access public services in the TARGET workspace from URL,
+        # not their own anonymous workspace. This allows them to correctly interact
+        # with public services hosted in any workspace.
         assert result.get("user_id") == "anonymouz-http"
         assert result.get("has_context") == True
-        assert result.get("workspace") == "ws-anonymous"
+        assert result.get("workspace") == workspace
         print("✓ Anonymous ASGI access works with context")
 
     # Test 2: Public ASGI service WITH token
