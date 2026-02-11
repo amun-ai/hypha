@@ -1995,6 +1995,24 @@
                             value={expiryTime}
                             onChange={(e) => setExpiryTime(e.target.value)}
                         />
+                        <div className="flex gap-2 mt-1 flex-wrap">
+                            {[
+                                { label: '1h', value: 3600 },
+                                { label: '1d', value: 86400 },
+                                { label: '1w', value: 604800 },
+                                { label: '1m', value: 2592000 },
+                                { label: '1y', value: 31536000 },
+                            ].map(preset => (
+                                <button
+                                    key={preset.value}
+                                    type="button"
+                                    className={`px-2 py-0.5 text-xs rounded transition duration-200 ${Number(expiryTime) === preset.value ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
+                                    onClick={() => setExpiryTime(preset.value)}
+                                >
+                                    {preset.label}
+                                </button>
+                            ))}
+                        </div>
                     </div>
                     <div className="mt-4">
                         <label htmlFor="client-id" className="block text-sm font-medium text-gray-300">
@@ -2566,6 +2584,15 @@
             // Git URL with token (for clone & push)
             const [gitAuthUrl, setGitAuthUrl] = React.useState(null);
             const [generatingToken, setGeneratingToken] = React.useState(false);
+            const [gitTokenExpiry, setGitTokenExpiry] = React.useState(3600);
+            const [tokenExpirationLabel, setTokenExpirationLabel] = React.useState('1 hour');
+            const gitExpiryOptions = [
+                { label: '1 hour', value: 3600 },
+                { label: '1 day', value: 86400 },
+                { label: '1 week', value: 604800 },
+                { label: '1 month', value: 2592000 },
+                { label: '1 year', value: 31536000 },
+            ];
             const [gitUrlCopied, setGitUrlCopied] = React.useState(false);
 
             const canUpload = currentArtifact.staging !== null; // Can only upload to staged artifacts
@@ -2669,12 +2696,12 @@
             };
 
             // Generate git URL with embedded token (works for both clone and push)
-            const generateGitAuthUrl = async () => {
+            const generateGitAuthUrl = async (expiresIn = gitTokenExpiry, label = tokenExpirationLabel) => {
                 if (!ws || !currentArtifact.git_url) return;
                 try {
                     setGeneratingToken(true);
-                    // Generate a token with write permission, valid for 1 hour
-                    const token = await ws.generateToken({ expires_in: 3600 });
+                    const token = await ws.generateToken({ expires_in: expiresIn });
+                    setTokenExpirationLabel(label);
                     // Parse the git URL and insert credentials
                     // Username must match the user ID in the token for git authentication
                     const gitUrl = new URL(currentArtifact.git_url);
@@ -3519,7 +3546,7 @@
                                                                 </button>
                                                             </div>
                                                             <p className="text-xs text-gray-500 mt-1">
-                                                                Authenticated URL with clone, fetch, and push access. Token expires in 1 hour.
+                                                                Authenticated URL with clone, fetch, and push access. Token expires in {tokenExpirationLabel || '1 hour'}.
                                                             </p>
                                                         </>
                                                     ) : (
@@ -3528,9 +3555,22 @@
                                                                 <code className="flex-1 bg-gray-900 px-3 py-2 rounded text-sm font-mono overflow-x-auto text-gray-500 flex items-center">
                                                                     {currentArtifact.git_url}
                                                                 </code>
+                                                                <select
+                                                                    className="text-black px-2 py-2 rounded text-sm border border-gray-300"
+                                                                    value={gitTokenExpiry}
+                                                                    onChange={(e) => {
+                                                                        const val = Number(e.target.value);
+                                                                        setGitTokenExpiry(val);
+                                                                        setTokenExpirationLabel(gitExpiryOptions.find(o => o.value === val)?.label || '');
+                                                                    }}
+                                                                >
+                                                                    {gitExpiryOptions.map(opt => (
+                                                                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                                                    ))}
+                                                                </select>
                                                                 <button
                                                                     className="bg-orange-600 hover:bg-orange-500 text-white px-4 rounded transition duration-200 flex items-center gap-2 whitespace-nowrap"
-                                                                    onClick={generateGitAuthUrl}
+                                                                    onClick={() => generateGitAuthUrl(gitTokenExpiry, gitExpiryOptions.find(o => o.value === gitTokenExpiry)?.label)}
                                                                     disabled={generatingToken}
                                                                     title="Generate authenticated URL for clone and push access"
                                                                 >
@@ -3540,7 +3580,7 @@
                                                             </div>
                                                             <p className="text-xs text-yellow-500 mt-1">
                                                                 <i className="fas fa-exclamation-triangle mr-1"></i>
-                                                                This is a private repository. Click "Generate Auth URL" to get a URL with your credentials for cloning.
+                                                                This is a private repository. Select an expiration time to generate an authenticated URL for cloning.
                                                             </p>
                                                         </>
                                                     )}
@@ -3550,17 +3590,32 @@
                                             {/* Button to generate auth URL for public repos (for push access) */}
                                             {isPublicRead && !gitAuthUrl && (
                                                 <div className="mt-2">
-                                                    <button
-                                                        className="bg-orange-600 hover:bg-orange-500 text-white px-3 py-1.5 rounded transition duration-200 flex items-center gap-2 text-sm"
-                                                        onClick={generateGitAuthUrl}
-                                                        disabled={generatingToken}
-                                                        title="Generate authenticated URL for push access"
-                                                    >
-                                                        <i className={`fas ${generatingToken ? 'fa-spinner fa-spin' : 'fa-key'}`}></i>
-                                                        Generate Read-Write URL
-                                                    </button>
+                                                    <div className="flex items-stretch gap-2">
+                                                        <select
+                                                            className="text-black px-2 py-1.5 rounded text-sm border border-gray-300"
+                                                            value={gitTokenExpiry}
+                                                            onChange={(e) => {
+                                                                const val = Number(e.target.value);
+                                                                setGitTokenExpiry(val);
+                                                                setTokenExpirationLabel(gitExpiryOptions.find(o => o.value === val)?.label || '');
+                                                            }}
+                                                        >
+                                                            {gitExpiryOptions.map(opt => (
+                                                                <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                                            ))}
+                                                        </select>
+                                                        <button
+                                                            className="bg-orange-600 hover:bg-orange-500 text-white px-3 py-1.5 rounded transition duration-200 flex items-center gap-2 text-sm"
+                                                            onClick={() => generateGitAuthUrl(gitTokenExpiry, gitExpiryOptions.find(o => o.value === gitTokenExpiry)?.label)}
+                                                            disabled={generatingToken}
+                                                            title="Generate authenticated URL for push access"
+                                                        >
+                                                            <i className={`fas ${generatingToken ? 'fa-spinner fa-spin' : 'fa-key'}`}></i>
+                                                            Generate Read-Write URL
+                                                        </button>
+                                                    </div>
                                                     <p className="text-xs text-gray-500 mt-1">
-                                                        Need to push changes? Generate an authenticated URL with write access.
+                                                        Need to push changes? Select an expiration time and generate an authenticated URL with write access.
                                                     </p>
                                                 </div>
                                             )}
