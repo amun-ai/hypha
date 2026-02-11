@@ -1,7 +1,12 @@
 """Test the agent skills module."""
 
+import io
+import re
+import zipfile
+
 import pytest
 import requests
+import yaml
 
 from . import SERVER_URL
 
@@ -44,7 +49,9 @@ async def test_skills_skill_md(fastapi_server):
     # Verify key sections exist
     assert "# Hypha Workspace Manager" in content
     assert "## Workspace Context" in content
-    assert "## Quick Start" in content
+    assert "## Step 1: Install Dependencies" in content
+    assert "## Step 2: Authentication" in content
+    assert "## Step 3: Connect and Use Services" in content
     assert "## Core Capabilities" in content
     assert "## Instructions for AI Agents" in content
 
@@ -478,3 +485,531 @@ async def test_skills_index_includes_download_info(fastapi_server):
     assert "download" in data
     assert "zip" in data["download"]
     assert data["download"]["zip"] == "create-zip-file"
+
+
+@pytest.mark.asyncio
+async def test_skills_bootstrapping_instructions(fastapi_server):
+    """Test that SKILL.md contains complete bootstrapping instructions.
+
+    An AI agent should be able to follow these instructions to:
+    1. Install the required library
+    2. Authenticate
+    3. Connect and use services
+    """
+    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
+    assert response.status_code == 200
+    content = response.text
+
+    # Step 1: Must include installation instructions
+    assert "pip install hypha-rpc" in content
+    assert "npm install hypha-rpc" in content
+
+    # Step 2: Must include authentication instructions
+    assert "## Step 2: Authentication" in content
+    assert "Anonymous Access" in content
+    assert "Token-Based Access" in content
+    assert "Authorization: Bearer" in content or "Bearer" in content
+
+    # Step 3: Must include connection instructions
+    assert "connect_to_server" in content
+    assert "## Step 3: Connect and Use Services" in content
+
+    # Must include HTTP-only path (no library needed)
+    assert "HTTP Only" in content or "HTTP API" in content
+    assert "curl" in content
+
+    # Must include token generation for programmatic access
+    assert "generate_token" in content
+
+
+@pytest.mark.asyncio
+async def test_skills_examples_has_installation(fastapi_server):
+    """Test that EXAMPLES.md starts with setup/installation."""
+    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/EXAMPLES.md")
+    assert response.status_code == 200
+    content = response.text
+
+    # Must include installation section
+    assert "## Setup & Installation" in content
+    assert "pip install hypha-rpc" in content
+
+    # Must include anonymous connection example
+    assert "Anonymous Connection" in content or "anonymous" in content.lower()
+
+
+@pytest.mark.asyncio
+async def test_skills_public_workspace_accessible_without_auth(fastapi_server):
+    """Test that public workspace skills are accessible without authentication."""
+    # Public workspace should work without any auth token
+    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
+    assert response.status_code == 200
+    assert "# Hypha Workspace Manager" in response.text
+
+    # The agent-skills service is registered only in the public workspace,
+    # so accessing via a non-public workspace URL results in service not found
+    response = requests.get(f"{SERVER_URL}/test-workspace/apps/agent-skills/SKILL.md")
+    assert response.status_code in (404, 500)  # Service not found in test-workspace
+
+
+# ============================================================================
+# Utility Tests: Verifying the agent skills documentation is actually useful
+# for AI agents to bootstrap and interact with Hypha
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_skills_frontmatter_spec_compliance(fastapi_server):
+    """Test that SKILL.md frontmatter complies with the Agent Skills spec.
+
+    The spec (https://agentskills.io/specification.md) requires:
+    - YAML frontmatter delimited by ---
+    - 'name' field: 1-64 chars, lowercase letters, numbers, hyphens only
+    - 'description' field: 1-1024 chars
+    """
+    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
+    assert response.status_code == 200
+    content = response.text
+
+    # Extract YAML frontmatter
+    assert content.startswith("---"), "SKILL.md must start with YAML frontmatter delimiter"
+    parts = content.split("---", 2)
+    assert len(parts) >= 3, "SKILL.md must have opening and closing --- delimiters"
+
+    frontmatter = yaml.safe_load(parts[1])
+    assert frontmatter is not None, "Frontmatter must be valid YAML"
+
+    # Validate 'name' field
+    assert "name" in frontmatter, "Frontmatter must contain 'name'"
+    name = frontmatter["name"]
+    assert 1 <= len(name) <= 64, f"Name length {len(name)} not in [1, 64]"
+    assert re.match(r"^[a-z0-9-]+$", name), f"Name '{name}' contains invalid chars"
+
+    # Validate 'description' field
+    assert "description" in frontmatter, "Frontmatter must contain 'description'"
+    desc = frontmatter["description"]
+    assert 1 <= len(desc) <= 1024, f"Description length {len(desc)} not in [1, 1024]"
+
+    # Validate optional but recommended fields
+    assert "metadata" in frontmatter, "Should include metadata"
+    assert "version" in frontmatter["metadata"], "Metadata should include version"
+    assert "server_url" in frontmatter["metadata"], "Metadata should include server_url"
+
+
+@pytest.mark.asyncio
+async def test_skills_server_url_consistency(fastapi_server):
+    """Test that server URLs in all documents are consistent and valid."""
+    files = ["SKILL.md", "REFERENCE.md", "EXAMPLES.md", "WORKSPACE_CONTEXT.md"]
+    server_urls = set()
+
+    for filename in files:
+        response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/{filename}")
+        assert response.status_code == 200, f"Failed to fetch {filename}"
+        content = response.text
+
+        # Extract server_url references (look for http:// or https:// URLs)
+        urls = re.findall(r'https?://[^\s"\'`\)}\]]+', content)
+        for url in urls:
+            # Clean trailing punctuation
+            url = url.rstrip(".,;:")
+            # Only consider Hypha server URLs (not example external URLs)
+            if "127.0.0.1" in url or "localhost" in url or "hypha" in url:
+                # Extract base URL (scheme + host + port)
+                match = re.match(r'(https?://[^/]+)', url)
+                if match:
+                    server_urls.add(match.group(1))
+
+    # All Hypha server URLs should be the same base URL
+    assert len(server_urls) <= 1, f"Inconsistent server URLs found: {server_urls}"
+
+
+@pytest.mark.asyncio
+async def test_skills_all_code_blocks_have_language(fastapi_server):
+    """Test that all fenced code blocks specify a language for syntax highlighting.
+
+    AI agents benefit from knowing the language of code blocks to execute them correctly.
+    """
+    files = ["SKILL.md", "EXAMPLES.md"]
+
+    for filename in files:
+        response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/{filename}")
+        assert response.status_code == 200
+
+        content = response.text
+        # Find all code fence openings
+        fences = re.findall(r"^```(.*)$", content, re.MULTILINE)
+
+        for i, fence in enumerate(fences):
+            fence = fence.strip()
+            # Every other fence is a closing fence (empty)
+            # But we should check that opening fences have a language
+            if fence == "":
+                # This could be a closing fence. Count if we're inside a block.
+                # Simple heuristic: check if the previous non-empty fence had a language
+                continue
+
+            # The language should be a known language identifier
+            known_languages = {"python", "javascript", "bash", "json", "yaml", "text", "markdown"}
+            assert fence.lower() in known_languages, (
+                f"Code block in {filename} has unrecognized language: '{fence}'. "
+                f"Known: {known_languages}"
+            )
+
+
+@pytest.mark.asyncio
+async def test_skills_python_examples_have_imports(fastapi_server):
+    """Test that Python code examples include necessary import statements.
+
+    An AI agent following the examples should not have to guess imports.
+    """
+    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
+    assert response.status_code == 200
+    content = response.text
+
+    # Extract Python code blocks
+    python_blocks = re.findall(r"```python\n(.*?)```", content, re.DOTALL)
+    assert len(python_blocks) > 0, "SKILL.md should contain Python examples"
+
+    # Check that blocks using connect_to_server have the import
+    for block in python_blocks:
+        if "connect_to_server(" in block and "import" not in block:
+            # It might be a continuation block; check if it uses connect_to_server
+            # in a way that assumes prior import context
+            if "from hypha_rpc" not in block and "async with" in block:
+                # Allow continuation blocks that are inside an async with context
+                pass
+            else:
+                assert False, (
+                    f"Python block uses connect_to_server but missing import:\n{block[:200]}"
+                )
+
+
+@pytest.mark.asyncio
+async def test_skills_http_examples_are_functional(fastapi_server):
+    """Test that HTTP examples in SKILL.md actually work against the server.
+
+    This verifies the documented curl commands would produce valid results.
+    """
+    # The SKILL.md documents: curl "{server_url}/public/services"
+    response = requests.get(f"{SERVER_URL}/public/services")
+    assert response.status_code == 200, (
+        "HTTP example 'GET /public/services' from SKILL.md doesn't work"
+    )
+    data = response.json()
+    assert isinstance(data, list), "Services endpoint should return a list"
+
+    # The SKILL.md documents health endpoint
+    response = requests.get(f"{SERVER_URL}/health/liveness")
+    assert response.status_code == 200, (
+        "Health endpoint documented in EXAMPLES.md doesn't work"
+    )
+
+
+@pytest.mark.asyncio
+async def test_skills_reference_documents_all_key_methods(fastapi_server):
+    """Test that REFERENCE.md documents the most important methods.
+
+    An AI agent needs at minimum these operations documented:
+    - list_services (discover what's available)
+    - register_service (create services)
+    - get_service (use services)
+    - generate_token (authentication)
+    """
+    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/REFERENCE.md")
+    assert response.status_code == 200
+    content = response.text
+
+    # Essential workspace manager methods that an agent needs
+    essential_methods = [
+        "list_services",
+        "register_service",
+        "generate_token",
+    ]
+
+    for method in essential_methods:
+        assert method in content, (
+            f"REFERENCE.md missing documentation for essential method: {method}"
+        )
+
+    # Verify methods have parameter documentation
+    # Each method section should have Parameters
+    method_sections = content.split("### ")
+    documented_methods = 0
+    for section in method_sections[1:]:  # Skip first split before any ###
+        if "**Parameters:**" in section:
+            documented_methods += 1
+
+    assert documented_methods >= 5, (
+        f"Only {documented_methods} methods have parameter docs, expected at least 5"
+    )
+
+
+@pytest.mark.asyncio
+async def test_skills_examples_cover_all_capabilities(fastapi_server):
+    """Test that EXAMPLES.md covers all major capabilities listed in SKILL.md."""
+    # Get SKILL.md capabilities
+    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
+    assert response.status_code == 200
+    skill_content = response.text
+
+    # Get EXAMPLES.md
+    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/EXAMPLES.md")
+    assert response.status_code == 200
+    examples_content = response.text
+
+    # Every major capability in SKILL.md should have examples
+    capabilities = [
+        ("Service Management", "register_service"),
+        ("Token & Permission Management", "generate_token"),
+        ("Artifact Management", "artifact_manager"),
+        ("Server Applications", "controller.install"),
+        ("MCP Integration", "mcp"),
+        ("A2A Protocol", "a2a"),
+        ("Vector Search", "search_vectors"),
+    ]
+
+    for capability_name, keyword in capabilities:
+        assert keyword in examples_content.lower() or keyword in examples_content, (
+            f"EXAMPLES.md missing examples for capability: {capability_name} "
+            f"(expected keyword: {keyword})"
+        )
+
+
+@pytest.mark.asyncio
+async def test_skills_examples_show_error_handling(fastapi_server):
+    """Test that EXAMPLES.md includes error handling patterns.
+
+    AI agents need to know how to handle common errors.
+    """
+    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/EXAMPLES.md")
+    assert response.status_code == 200
+    content = response.text
+
+    # Should have an error handling section
+    assert "## Error Handling" in content, "EXAMPLES.md should have Error Handling section"
+
+    # Should cover common error types
+    assert "KeyError" in content, "Should show how to handle service not found"
+    assert "PermissionError" in content, "Should show how to handle permission denied"
+    assert "TimeoutError" in content, "Should show how to handle timeouts"
+
+
+@pytest.mark.asyncio
+async def test_skills_progressive_disclosure(fastapi_server):
+    """Test that skills documents follow progressive disclosure pattern.
+
+    SKILL.md should be concise (overview), while REFERENCE.md provides details.
+    This pattern helps AI agents consume documentation efficiently.
+    """
+    skill_resp = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
+    ref_resp = requests.get(f"{SERVER_URL}/public/apps/agent-skills/REFERENCE.md")
+    examples_resp = requests.get(f"{SERVER_URL}/public/apps/agent-skills/EXAMPLES.md")
+
+    skill_len = len(skill_resp.text)
+    ref_len = len(ref_resp.text)
+    examples_len = len(examples_resp.text)
+
+    # SKILL.md should be the most concise (overview/quickstart)
+    assert skill_len < ref_len, (
+        f"SKILL.md ({skill_len} chars) should be shorter than REFERENCE.md ({ref_len} chars)"
+    )
+
+    # REFERENCE.md should be detailed (full API docs)
+    assert ref_len > 5000, (
+        f"REFERENCE.md ({ref_len} chars) seems too short for comprehensive API docs"
+    )
+
+    # EXAMPLES.md should have substantial content
+    assert examples_len > 5000, (
+        f"EXAMPLES.md ({examples_len} chars) seems too short for comprehensive examples"
+    )
+
+    # SKILL.md should reference the other files
+    assert "REFERENCE.md" in skill_resp.text, "SKILL.md should link to REFERENCE.md"
+    assert "EXAMPLES.md" in skill_resp.text, "SKILL.md should link to EXAMPLES.md"
+
+
+@pytest.mark.asyncio
+async def test_skills_zip_contains_complete_documentation(fastapi_server):
+    """Test that the zip download contains all documentation and source code.
+
+    An AI agent should be able to download the entire skill as a zip
+    and have everything needed offline.
+    """
+    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/create-zip-file")
+    assert response.status_code == 200
+
+    zip_buffer = io.BytesIO(response.content)
+    with zipfile.ZipFile(zip_buffer, "r") as zf:
+        file_names = zf.namelist()
+
+        # Must have all 4 documentation files
+        required_files = ["SKILL.md", "REFERENCE.md", "EXAMPLES.md", "WORKSPACE_CONTEXT.md"]
+        for f in required_files:
+            assert f in file_names, f"Zip missing required file: {f}"
+
+        # Must have SOURCE directory with workspace-manager
+        source_files = [f for f in file_names if f.startswith("SOURCE/")]
+        assert len(source_files) > 0, "Zip should contain SOURCE/ directory"
+
+        ws_manager_files = [f for f in source_files if "workspace-manager" in f]
+        assert len(ws_manager_files) > 0, "Zip should contain workspace-manager source"
+
+        # Source files should contain actual Python code
+        for f in ws_manager_files:
+            if f.endswith(".py"):
+                source_code = zf.read(f).decode("utf-8")
+                assert "def " in source_code or "async def " in source_code, (
+                    f"Source file {f} doesn't contain function definitions"
+                )
+
+        # SKILL.md in zip should match the live endpoint
+        skill_in_zip = zf.read("SKILL.md").decode("utf-8")
+        live_response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
+        assert skill_in_zip == live_response.text, (
+            "SKILL.md in zip should match the live endpoint"
+        )
+
+
+@pytest.mark.asyncio
+async def test_skills_agent_can_discover_services(fastapi_server):
+    """End-to-end test: Verify an agent can follow the SKILL.md instructions
+    to discover available services using the documented HTTP endpoint."""
+    # Step 1: Agent reads SKILL.md
+    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
+    assert response.status_code == 200
+    skill_content = response.text
+
+    # Step 2: Agent extracts the server URL from frontmatter
+    parts = skill_content.split("---", 2)
+    frontmatter = yaml.safe_load(parts[1])
+    server_url = frontmatter["metadata"]["server_url"]
+    workspace = frontmatter["metadata"]["workspace"]
+
+    # Step 3: Agent follows the documented HTTP API pattern to list services
+    # From SKILL.md: curl "{server_url}/{workspace}/services"
+    services_response = requests.get(f"{server_url}/{workspace}/services")
+    assert services_response.status_code == 200
+    services = services_response.json()
+    assert isinstance(services, list), "Services endpoint should return a list"
+    assert len(services) > 0, "Should have at least one service"
+
+    # Step 4: Agent can get more details from REFERENCE.md
+    ref_response = requests.get(f"{server_url}/{workspace}/apps/agent-skills/REFERENCE.md")
+    assert ref_response.status_code == 200
+    assert "Workspace Manager" in ref_response.text
+
+
+@pytest.mark.asyncio
+async def test_skills_agent_can_call_service_via_http(fastapi_server):
+    """End-to-end test: Verify an agent can call a service function via HTTP
+    following the documented pattern in SKILL.md."""
+    # The SKILL.md documents: GET /{workspace}/services/{service_id}/{function_name}
+    # The workspace manager's check_status is a simple function to test
+
+    # Call check_status on the default workspace manager
+    response = requests.get(f"{SERVER_URL}/public/services/~/check_status")
+    assert response.status_code == 200
+    status = response.json()
+    assert isinstance(status, dict), "check_status should return a dict"
+
+
+@pytest.mark.asyncio
+async def test_skills_index_is_valid_discovery_document(fastapi_server):
+    """Test that the index endpoint serves as a valid discovery document.
+
+    An AI agent should be able to GET the index and understand the full
+    skill structure from the response.
+    """
+    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/")
+    assert response.status_code == 200
+    data = response.json()
+
+    # Required discovery fields
+    assert "name" in data
+    assert "version" in data
+    assert "files" in data
+    assert "enabled_services" in data
+    assert "source_endpoints" in data
+    assert "download" in data
+
+    # The files list should allow an agent to iterate and fetch each
+    for filename in data["files"]:
+        file_response = requests.get(
+            f"{SERVER_URL}/public/apps/agent-skills/{filename}"
+        )
+        assert file_response.status_code == 200, (
+            f"File listed in index not accessible: {filename}"
+        )
+
+    # Source endpoints should be accessible
+    for endpoint in data["source_endpoints"][:3]:  # Test first 3
+        source_response = requests.get(
+            f"{SERVER_URL}/public/apps/agent-skills/{endpoint}"
+        )
+        assert source_response.status_code == 200, (
+            f"Source endpoint listed in index not accessible: {endpoint}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_skills_multiformat_examples(fastapi_server):
+    """Test that SKILL.md provides examples in all three formats: Python, JS, HTTP.
+
+    AI agents may work in different environments, so all formats should be covered.
+    """
+    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
+    assert response.status_code == 200
+    content = response.text
+
+    # Step 3 should have Python, JavaScript, and HTTP sections
+    assert "### Python" in content, "Missing Python section in Step 3"
+    assert "### JavaScript" in content, "Missing JavaScript section in Step 3"
+    assert "### HTTP API" in content, "Missing HTTP API section in Step 3"
+
+    # Each should have working code examples
+    assert "```python" in content
+    assert "```javascript" in content
+    assert "```bash" in content
+
+    # Python example should show async with pattern
+    assert "async with connect_to_server" in content
+
+    # JS example should show connectToServer
+    assert "connectToServer" in content
+
+    # HTTP example should show curl
+    assert "curl" in content
+
+
+@pytest.mark.asyncio
+async def test_skills_auth_options_documented(fastapi_server):
+    """Test that all three authentication options are clearly documented.
+
+    An AI agent needs to understand which auth method to use in different contexts.
+    """
+    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
+    assert response.status_code == 200
+    content = response.text
+
+    # Option A: Anonymous
+    assert "Anonymous Access" in content
+    # Should explain when to use it
+    assert "testing" in content.lower() or "public" in content.lower()
+
+    # Option B: Token-Based
+    assert "Token-Based Access" in content
+    assert "Bearer" in content
+    # Should show both Python and HTTP ways to use tokens
+    assert '"token"' in content or "'token'" in content
+    assert "Authorization:" in content
+
+    # Option C: Interactive Login
+    assert "Interactive Login" in content or "OAuth" in content
+    assert "login" in content
+
+    # Token generation docs
+    assert "generate_token" in content
+    # Should explain permission levels
+    assert "read" in content
+    assert "read_write" in content
+    assert "admin" in content

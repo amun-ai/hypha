@@ -19,14 +19,12 @@ import os
 import sys
 import inspect
 import re
+import time
 import zipfile
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
-import base64
 
-from starlette.routing import Route, Match
 from starlette.types import ASGIApp
-from starlette.datastructures import Headers
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
@@ -39,6 +37,20 @@ SKILL_VERSION = "1.0.0"
 
 # Documentation directory
 DOCS_DIR = Path(__file__).parent.parent / "docs"
+
+# Cache TTL in seconds for enabled services detection
+ENABLED_SERVICES_CACHE_TTL = 60
+
+# Mapping of service IDs to their implementing classes
+# Used for source code endpoints and API documentation generation
+SERVICE_CLASS_MAP = {
+    "workspace-manager": ("hypha.core.workspace", "WorkspaceManager"),
+    "artifact-manager": ("hypha.artifact", "ArtifactController"),
+    "server-apps": ("hypha.apps", "ServerAppController"),
+    "s3-storage": ("hypha.s3", "S3Controller"),
+    "queue": ("hypha.queue", "QueueService"),
+    "triton-client": ("hypha.triton", "TritonProxy"),
+}
 
 
 def extract_schema_from_callable(func: Callable) -> Optional[Dict[str, Any]]:
@@ -175,6 +187,7 @@ class DynamicDocGenerator:
         self.server_url = server_url
         self._doc_cache = {}
         self._enabled_services_cache = None
+        self._enabled_services_cache_time = 0
 
     def _get_doc_content(self, filename: str) -> Optional[str]:
         """Get cached documentation content."""
@@ -186,8 +199,13 @@ class DynamicDocGenerator:
         """Get list of enabled public services from the store.
 
         Returns a list of service IDs that are currently registered.
+        Uses a TTL cache to avoid stale results when services change.
         """
-        if self._enabled_services_cache is not None:
+        now = time.time()
+        if (
+            self._enabled_services_cache is not None
+            and (now - self._enabled_services_cache_time) < ENABLED_SERVICES_CACHE_TTL
+        ):
             return self._enabled_services_cache
 
         enabled = []
@@ -206,6 +224,7 @@ class DynamicDocGenerator:
                 enabled.append(svc_id)
 
         self._enabled_services_cache = enabled
+        self._enabled_services_cache_time = now
         return enabled
 
     def is_service_enabled(self, service_name: str) -> bool:
@@ -409,13 +428,10 @@ class DynamicDocGenerator:
         Returns:
             Source code as string, or None if not found
         """
+        # Build class name -> module path mapping from SERVICE_CLASS_MAP
         class_map = {
-            "WorkspaceManager": ("hypha.core.workspace", "WorkspaceManager"),
-            "ArtifactController": ("hypha.artifact", "ArtifactController"),
-            "ServerAppController": ("hypha.apps", "ServerAppController"),
-            "S3Controller": ("hypha.s3", "S3Controller"),
-            "QueueService": ("hypha.queue", "QueueService"),
-            "TritonProxy": ("hypha.triton", "TritonProxy"),
+            class_name: (module_path, class_name)
+            for module_path, class_name in SERVICE_CLASS_MAP.values()
         }
 
         if service_class not in class_map:
@@ -499,38 +515,178 @@ This skill enables you to interact with the Hypha distributed computing platform
 - **Persistent Storage**: {"Yes" if is_persistent else "No (temporary workspace)"}
 - **Server URL**: `{server_url}`
 
-## Quick Start
+## Step 1: Install Dependencies
 
-### Connecting to This Workspace
+### Python
+
+```bash
+pip install hypha-rpc
+```
+
+This installs the `hypha-rpc` package which provides `connect_to_server`, `login`, and other utilities.
+
+### JavaScript / Node.js
+
+```bash
+npm install hypha-rpc
+```
+
+### HTTP Only (No Library Needed)
+
+You can use Hypha entirely via HTTP REST endpoints with `curl`, `fetch`, or any HTTP client. No library installation required. See the HTTP API section below.
+
+## Step 2: Authentication
+
+Hypha supports three authentication modes. Choose the one that fits your situation:
+
+### Option A: Anonymous Access (No Token Needed)
+
+Connect without a token to get a temporary anonymous workspace. Ideal for quick testing and public services.
+
+```python
+import asyncio
+from hypha_rpc import connect_to_server
+
+async def main():
+    async with connect_to_server({{
+        "server_url": "{server_url}"
+    }}) as server:
+        # You are connected with an auto-generated anonymous workspace
+        print(f"Connected to: {{server.config.workspace}}")
+        services = await server.list_services()
+        print(f"Found {{len(services)}} services")
+
+asyncio.run(main())
+```
+
+```bash
+# HTTP: Anonymous access to public workspace services
+curl "{server_url}/public/services"
+```
+
+### Option B: Token-Based Access (Recommended for Agents)
+
+If you already have a workspace token (e.g., provided by a user or generated via the API), use it directly:
+
+```python
+async with connect_to_server({{
+    "server_url": "{server_url}",
+    "workspace": "{workspace}",
+    "token": "YOUR_TOKEN"
+}}) as server:
+    # Authenticated access with the token's permission level
+    status = await server.check_status()
+    print(f"Permission: {{status.get('user_permission')}}")
+```
+
+```bash
+# HTTP: Authenticated access with Bearer token
+curl -H "Authorization: Bearer YOUR_TOKEN" \\
+  "{server_url}/{workspace}/services"
+```
+
+### Option C: Interactive Login (Browser-Based OAuth)
+
+For interactive sessions where the user can open a browser:
+
+```python
+from hypha_rpc import login, connect_to_server
+
+async def main():
+    # Opens a browser window for OAuth login
+    token = await login({{"server_url": "{server_url}"}})
+
+    async with connect_to_server({{
+        "server_url": "{server_url}",
+        "token": token
+    }}) as server:
+        # Now authenticated as the logged-in user
+        # Generate a reusable token for future sessions
+        workspace_token = await server.generate_token({{
+            "permission": "read_write",
+            "expires_in": 86400  # 24 hours
+        }})
+        print(f"Save this token for later: {{workspace_token}}")
+
+asyncio.run(main())
+```
+
+### Generating Tokens for Programmatic Access
+
+Once authenticated, generate tokens for use by scripts or AI agents:
+
+```python
+# Generate a read-only token (safe to share)
+read_token = await server.generate_token({{
+    "permission": "read",
+    "expires_in": 86400  # 24 hours
+}})
+
+# Generate a read-write token (for data modification)
+rw_token = await server.generate_token({{
+    "permission": "read_write",
+    "expires_in": 3600  # 1 hour
+}})
+```
+
+Permission levels: `read` (view only), `read_write` (modify data), `admin` (full control including workspace deletion and token generation).
+
+## Step 3: Connect and Use Services
+
+### Python (Recommended)
 
 ```python
 from hypha_rpc import connect_to_server
 
-# Connect to this specific workspace
 async with connect_to_server({{
     "server_url": "{server_url}",
     "workspace": "{workspace}"
 }}) as server:
     # List available services
     services = await server.list_services()
-    print(f"Found {{len(services)}} services")
+
+    # Get a specific service
+    svc = await server.get_service("service-id")
+
+    # Call a service function
+    result = await svc.some_function(param1="value")
 ```
 
-### HTTP API Access
+### JavaScript
 
-All services in this workspace are accessible via HTTP:
+```javascript
+const {{ connectToServer }} = require('hypha-rpc');
+
+const server = await connectToServer({{
+    server_url: "{server_url}",
+    workspace: "{workspace}"
+}});
+
+const services = await server.listServices();
+const svc = await server.getService("service-id");
+const result = await svc.someFunction({{ param1: "value" }});
+```
+
+### HTTP API (curl / fetch / any HTTP client)
 
 ```bash
-# List all services in this workspace
+# List all services
 curl "{server_url}/{workspace}/services"
 
-# Get workspace information
-curl "{server_url}/{workspace}/info"
+# Get service details
+curl "{server_url}/{workspace}/services/{{service_id}}"
 
-# Call a service function
-curl -X POST "{server_url}/{workspace}/services/<service_id>/<function_name>" \\
+# Call a service function (GET for simple params)
+curl "{server_url}/{workspace}/services/{{service_id}}/{{function_name}}?param1=value"
+
+# Call a service function (POST for complex params)
+curl -X POST "{server_url}/{workspace}/services/{{service_id}}/{{function_name}}" \\
   -H "Content-Type: application/json" \\
-  -d '{{"param1": "value1"}}'
+  -d '{{"param1": "value1", "param2": 42}}'
+
+# With authentication
+curl -H "Authorization: Bearer YOUR_TOKEN" \\
+  "{server_url}/{workspace}/services/{{service_id}}/{{function_name}}"
 ```
 
 ## Core Capabilities
@@ -544,81 +700,68 @@ curl -X POST "{server_url}/{workspace}/services/<service_id>/<function_name>" \\
 - Generate workspace access tokens (`read`, `read_write`, `admin`)
 - Parse and validate tokens for permission checking
 - Revoke tokens and manage access scopes
-- Login flow with OAuth/browser authentication
 
 ### 3. Artifact Management
 {"- Create, read, edit, and delete artifacts (files, datasets, models)" if is_persistent else "- Limited artifact operations (workspace is not persistent)"}
 {"- Version control with Git-like staging and commit" if is_persistent else ""}
 {"- Vector search collections for semantic queries" if is_persistent else ""}
 {"- File upload/download with presigned URLs" if is_persistent else ""}
-{"- Multipart upload for large files" if is_persistent else ""}
 
 ### 4. S3 Storage (if enabled)
 - Direct S3-compatible object storage operations
 - Upload/download files with presigned URLs
-- List and remove files in workspaces
-- Multipart upload for large files (5MB+ parts)
-- HTTP proxy endpoint (`/{workspace}/files/`)
+- HTTP proxy endpoint: `{server_url}/{workspace}/files/`
 
 ### 5. Server Applications
 - Install and manage serverless applications (web-worker, web-python, window, iframe)
-- Deploy HTTP endpoints via ASGI (FastAPI, Django, Flask) or serverless functions
-- Start/stop application instances with autoscaling support
-- Access application logs, manage files, and commit changes
-- Custom workers for specialized runtimes (conda, terminal, k8s)
+- Deploy HTTP endpoints via ASGI (FastAPI) or serverless functions
+- Access apps at: `{server_url}/{workspace}/apps/{{app_id}}/`
 
 ### 6. MCP Integration (if enabled)
-- Expose Hypha services as MCP endpoints for AI tools
-- Define tools (callable functions), resources (data sources), prompts (templates)
-- Compatible with Claude Desktop, Cursor, OpenAI, and other MCP clients
-- MCP Proxy to connect to external MCP servers (e.g., DeepWiki)
+- Expose Hypha services as MCP endpoints for AI tools (Claude, Cursor, etc.)
+- MCP endpoint: `{server_url}/{workspace}/mcp/{{service_id}}/mcp`
 
 ### 7. A2A Protocol (if enabled)
-- Register Agent-to-Agent protocol services
-- Agent Card specification for discovery
-- Streaming responses via async generators
-- A2A Proxy to connect to external A2A agents
+- Agent-to-Agent protocol for multi-agent communication
+- A2A endpoint: `{server_url}/{workspace}/a2a/{{service_id}}`
 
 ### 8. Vector Search
-- Create vector collections with custom dimensions
-- Add, update, remove vectors with metadata
 - Semantic search by text query or vector
 - Search services by natural language description
 
 ## Available Services
 
-{service_list if service_list else "Use `list_services()` to discover all services in this workspace."}
+{service_list if service_list else "Use `list_services()` or `GET /{workspace}/services` to discover all services."}
 
 Key built-in services:
-1. **Workspace Manager** (`~` or `default`): Core workspace operations, service registration, token generation, permission management
-2. **Artifact Manager** (`public/artifact-manager`): File/data management, version control, vector search, presigned URLs
-3. **Server Apps** (`public/server-apps`): Serverless app deployment (ASGI, functions, web-worker, web-python), lifecycle management, autoscaling, MCP/A2A proxy
+1. **Workspace Manager** (`~` or `default`): Core workspace operations, service registration, token generation
+2. **Artifact Manager** (`public/artifact-manager`): File/data management, version control, vector search
+3. **Server Apps** (`public/server-apps`): Serverless app deployment (ASGI, functions, web-worker, web-python)
 4. **S3 Storage** (`public/s3-storage`): Direct S3 operations - upload, download, list, multipart (if enabled)
 
 ## Instructions for AI Agents
 
-When helping users with Hypha:
-
-1. **Always check workspace context** - Use `check_status()` to verify workspace is ready
-2. **List services first** - Call `list_services()` to see what's available
-3. **Use appropriate API** - WebSocket RPC for real-time, HTTP for stateless calls
-4. **Handle permissions** - Check user has required permissions before operations
-5. **Prefer async** - Use async APIs when possible for better performance
+1. **Bootstrap first** - Install `hypha-rpc` (`pip install hypha-rpc`), then connect
+2. **Check workspace status** - `await server.check_status()` to verify workspace is ready
+3. **Discover services** - `await server.list_services()` to see what's available
+4. **Choose transport** - Use Python/JS SDK for bidirectional real-time calls; use HTTP for simple stateless calls
+5. **Handle permissions** - Check user has required permissions before operations
+6. **HTTP fallback** - If you can't install libraries, all services work via HTTP REST endpoints
 
 ## Error Handling
 
 Common errors and solutions:
 
-- `PermissionError`: User lacks required permission level
-- `KeyError: Workspace not found`: Workspace doesn't exist or isn't loaded
-- `KeyError: Service not found`: Service not registered or app needs to start
-- `TimeoutError`: Service didn't respond in time, increase timeout
+- `PermissionError`: User lacks required permission level. Generate a new token with higher permission.
+- `KeyError: Workspace not found`: Workspace doesn't exist or was unloaded due to inactivity.
+- `KeyError: Service not found`: Service not registered. Try `list_services()` first, or start the app.
+- `TimeoutError`: Service didn't respond in time. Increase timeout or check if the service is running.
 
 ## Reference Documentation
 
 For detailed API documentation, see:
-- [REFERENCE.md](REFERENCE.md) - Complete API reference
-- [EXAMPLES.md](EXAMPLES.md) - Code examples
+- [REFERENCE.md](REFERENCE.md) - Complete API reference with all methods and parameters
+- [EXAMPLES.md](EXAMPLES.md) - Code examples for every feature
 - [WORKSPACE_CONTEXT.md](WORKSPACE_CONTEXT.md) - This workspace's specific configuration
 """
 
@@ -750,6 +893,7 @@ Comprehensive examples for workspace `{workspace}`.
 
 ## Table of Contents
 
+0. [Setup & Installation](#setup--installation)
 1. [Connection & Authentication](#connection-examples)
 2. [Service Management](#service-examples)
 3. [Token & Permission Management](#token--permission-management)
@@ -763,18 +907,50 @@ Comprehensive examples for workspace `{workspace}`.
 
 ---
 
+## Setup & Installation
+
+### Python
+
+```bash
+# Install the hypha-rpc client library
+pip install hypha-rpc
+
+# Verify installation
+python -c "from hypha_rpc import connect_to_server; print('hypha-rpc installed successfully')"
+```
+
+### JavaScript / Node.js
+
+```bash
+npm install hypha-rpc
+```
+
+### HTTP Only (No Installation)
+
+All Hypha services are accessible via REST HTTP endpoints. You can use `curl`, `fetch()`, `httpx`, `requests`, or any HTTP client:
+
+```bash
+# Test connection to the server
+curl {server_url}/health/liveness
+
+# List services in a workspace (no auth needed for public workspace)
+curl {server_url}/public/services
+```
+
+---
+
 ## Connection Examples
 
-### Basic Connection
+### Anonymous Connection (No Token)
 
 ```python
 import asyncio
 from hypha_rpc import connect_to_server
 
 async def main():
+    # Connect without a token - gets a temporary anonymous workspace
     async with connect_to_server({{
-        "server_url": "{server_url}",
-        "workspace": "{workspace}"
+        "server_url": "{server_url}"
     }}) as server:
         print(f"Connected to workspace: {{server.config.workspace}}")
 
@@ -2271,26 +2447,22 @@ def create_agent_skills_service(store) -> dict:
         service_id = parts[1]
         method_name = parts[2] if len(parts) > 2 else None
 
-        # Map service IDs to classes
-        service_class_map = {
-            "workspace-manager": "WorkspaceManager",
-            "artifact-manager": "ArtifactController",
-            "server-apps": "ServerAppController",
-            "s3-storage": "S3Controller",
-            "queue": "QueueService",
-            "triton-client": "TritonProxy",
+        # Derive service_id -> class_name from the module-level constant
+        service_id_to_class = {
+            svc_id: class_name
+            for svc_id, (_, class_name) in SERVICE_CLASS_MAP.items()
         }
 
-        if service_id not in service_class_map:
+        if service_id not in service_id_to_class:
             # List available services
-            available = ", ".join(service_class_map.keys())
+            available = ", ".join(service_id_to_class.keys())
             return {
                 "status": 404,
                 "headers": {"Content-Type": "text/plain"},
                 "body": f"Unknown service: {service_id}. Available services: {available}"
             }
 
-        class_name = service_class_map[service_id]
+        class_name = service_id_to_class[service_id]
 
         if method_name:
             # Get specific method source
@@ -2298,7 +2470,7 @@ def create_agent_skills_service(store) -> dict:
             if source:
                 return {
                     "status": 200,
-                    "headers": {"Content-Type": "text/plain; charset=utf-8"},
+                    "headers": {"Content-Type": "text/markdown; charset=utf-8"},
                     "body": f"# Source code for {class_name}.{method_name}\n\n```python\n{source}\n```"
                 }
             else:
@@ -2388,21 +2560,18 @@ For high-level usage, refer to REFERENCE.md and EXAMPLES.md.
 
             # Add source code for each enabled service
             enabled_services = await doc_generator.get_all_enabled_services()
-            service_class_map = {
-                "workspace-manager": "WorkspaceManager",
-                "artifact-manager": "ArtifactController",
-                "server-apps": "ServerAppController",
-                "s3-storage": "S3Controller",
-                "queue": "QueueService",
-                "triton-client": "TritonProxy",
+            # Derive service_id -> class_name from the module-level constant
+            svc_id_to_class = {
+                svc_id: class_name
+                for svc_id, (_, class_name) in SERVICE_CLASS_MAP.items()
             }
 
             for service_api in enabled_services:
                 service_id = service_api["id"]
-                if service_id not in service_class_map:
+                if service_id not in svc_id_to_class:
                     continue
 
-                class_name = service_class_map[service_id]
+                class_name = svc_id_to_class[service_id]
                 methods = service_api.get("methods", {})
 
                 # Create a README for this service
@@ -2449,6 +2618,20 @@ For high-level usage, refer to REFERENCE.md and EXAMPLES.md.
         services = []
 
         ws = workspace or "public"
+
+        # Require authentication for non-public workspaces
+        if ws != "public" and user_info is None:
+            return {
+                "status": 401,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({
+                    "error": "Authentication required",
+                    "message": f"Access to workspace '{ws}' skills requires a valid token. "
+                    "Use Authorization: Bearer <token> header or ?token=<token> query parameter. "
+                    "The 'public' workspace skills are available without authentication.",
+                    "public_url": f"{server_url}/public/apps/agent-skills/"
+                })
+            }
 
         if workspace and user_info:
             workspace_info = await get_workspace_info_safe(workspace, user_info)
