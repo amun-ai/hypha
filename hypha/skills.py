@@ -2285,7 +2285,7 @@ def create_agent_skills_service(store) -> dict:
     """Create agent skills service for registration as a public service.
 
     This creates a service of type 'functions' that handles requests to:
-    /{workspace}/apps/agent-skills/
+    /{workspace}/agent-skills/
 
     Files served:
     - SKILL.md: Main skill instructions
@@ -2346,7 +2346,7 @@ def create_agent_skills_service(store) -> dict:
         if isinstance(path, bytes):
             path = path.decode("latin-1")
 
-        # Path format: /{workspace}/apps/agent-skills/...
+        # Path format: /{workspace}/agent-skills/...
         parts = path.strip("/").split("/")
         if len(parts) >= 1 and parts[0] and not parts[0].startswith("apps"):
             return parts[0]
@@ -2507,7 +2507,7 @@ def create_agent_skills_service(store) -> dict:
 To get the source code for a specific method, use:
 
 ```
-GET /{'{workspace}'}/apps/agent-skills/SOURCE/{service_id}/{'{method_name}'}
+GET /{'{workspace}'}/agent-skills/SOURCE/{service_id}/{'{method_name}'}
 ```
 
 For example:
@@ -2630,7 +2630,7 @@ For high-level usage, refer to REFERENCE.md and EXAMPLES.md.
                     "Use Authorization: Bearer <token> header or ?token=<token> query parameter or cookies. "
                     "For generic Hypha documentation without authentication, use the global endpoint.",
                     "global_url": f"{server_url}/ws/agent-skills/",
-                    "public_url": f"{server_url}/public/apps/agent-skills/"
+                    "public_url": f"{server_url}/public/agent-skills/"
                 })
             }
 
@@ -2728,7 +2728,7 @@ def setup_agent_skills(store) -> dict:
     """Set up agent skills as a public service.
 
     This creates a 'functions' type service that serves agent skills documentation at:
-    /{workspace}/apps/agent-skills/
+    /{workspace}/agent-skills/
 
     Files served:
     - SKILL.md: Main skill instructions
@@ -2906,7 +2906,7 @@ curl -X POST "{server_url}/YOUR_WORKSPACE/services/SERVICE_ID/FUNCTION" \\
 Each workspace has its own agent skills endpoint with detailed, workspace-specific documentation:
 
 ```
-{server_url}/YOUR_WORKSPACE/apps/agent-skills/SKILL.md
+{server_url}/YOUR_WORKSPACE/agent-skills/SKILL.md
 ```
 
 These workspace-specific skills include:
@@ -2939,7 +2939,7 @@ These workspace-specific skills include:
 
 1. **Start here** - Read this global SKILL.md to understand the platform
 2. **Get a token** - Use anonymous access or request a token from the user
-3. **Access workspace skills** - Use `{server_url}/WORKSPACE/apps/agent-skills/SKILL.md` for workspace-specific docs
+3. **Access workspace skills** - Use `{server_url}/WORKSPACE/agent-skills/SKILL.md` for workspace-specific docs
 4. **Discover services** - `GET {server_url}/WORKSPACE/services` to list available services
 5. **Use HTTP or SDK** - HTTP REST for simple calls; Python/JS SDK for real-time bidirectional communication
 6. **Handle errors** - Check permissions, verify workspace exists, handle timeouts
@@ -2956,10 +2956,10 @@ These workspace-specific skills include:
 
 ## Reference
 
-- **Workspace-specific skills**: `{server_url}/WORKSPACE/apps/agent-skills/`
-- **Public workspace skills**: `{server_url}/public/apps/agent-skills/`
-- **API reference**: `{server_url}/WORKSPACE/apps/agent-skills/REFERENCE.md`
-- **Code examples**: `{server_url}/WORKSPACE/apps/agent-skills/EXAMPLES.md`
+- **Workspace-specific skills**: `{server_url}/WORKSPACE/agent-skills/`
+- **Public workspace skills**: `{server_url}/public/agent-skills/`
+- **API reference**: `{server_url}/WORKSPACE/agent-skills/REFERENCE.md`
+- **Code examples**: `{server_url}/WORKSPACE/agent-skills/EXAMPLES.md`
 """
 
 
@@ -3017,7 +3017,7 @@ def setup_global_agent_skills_routes(app, store, base_path: str = ""):
                 "description": "Hypha platform guide for AI agents - global entry point",
                 "type": "global",
                 "files": ["SKILL.md", "REFERENCE.md", "EXAMPLES.md"],
-                "workspace_skills_pattern": f"{server_url}/{{workspace}}/apps/agent-skills/",
+                "workspace_skills_pattern": f"{server_url}/{{workspace}}/agent-skills/",
                 "enabled_services": [svc["id"] for svc in enabled_services],
             }
             return JSONResponse(content=data, headers=cors_headers)

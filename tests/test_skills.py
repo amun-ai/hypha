@@ -15,7 +15,7 @@ from . import SERVER_URL
 async def test_skills_endpoint_index(fastapi_server):
     """Test the agent skills index endpoint."""
     # Test the skills endpoint for a workspace
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/")
     assert response.status_code == 200
     data = response.json()
 
@@ -35,7 +35,7 @@ async def test_skills_endpoint_index(fastapi_server):
 @pytest.mark.asyncio
 async def test_skills_skill_md(fastapi_server):
     """Test the SKILL.md endpoint."""
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/SKILL.md")
     assert response.status_code == 200
     assert response.headers.get("content-type", "").startswith("text/markdown")
 
@@ -59,7 +59,7 @@ async def test_skills_skill_md(fastapi_server):
 @pytest.mark.asyncio
 async def test_skills_reference_md(fastapi_server):
     """Test the REFERENCE.md endpoint with dynamic API documentation."""
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/REFERENCE.md")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/REFERENCE.md")
     assert response.status_code == 200
     assert response.headers.get("content-type", "").startswith("text/markdown")
 
@@ -86,7 +86,7 @@ async def test_skills_reference_md(fastapi_server):
 @pytest.mark.asyncio
 async def test_skills_examples_md(fastapi_server):
     """Test the EXAMPLES.md endpoint."""
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/EXAMPLES.md")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/EXAMPLES.md")
     assert response.status_code == 200
     assert response.headers.get("content-type", "").startswith("text/markdown")
 
@@ -116,7 +116,7 @@ async def test_skills_examples_md(fastapi_server):
 @pytest.mark.asyncio
 async def test_skills_workspace_context_md(fastapi_server):
     """Test the WORKSPACE_CONTEXT.md endpoint."""
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/WORKSPACE_CONTEXT.md")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/WORKSPACE_CONTEXT.md")
     assert response.status_code == 200
     assert response.headers.get("content-type", "").startswith("text/markdown")
 
@@ -135,7 +135,7 @@ async def test_skills_workspace_context_md(fastapi_server):
 @pytest.mark.asyncio
 async def test_skills_404_for_unknown_file(fastapi_server):
     """Test that unknown files return 404."""
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/UNKNOWN.md")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/UNKNOWN.md")
     assert response.status_code == 404
 
 
@@ -143,7 +143,7 @@ async def test_skills_404_for_unknown_file(fastapi_server):
 async def test_skills_cors_headers(fastapi_server):
     """Test that CORS headers are properly set."""
     response = requests.get(
-        f"{SERVER_URL}/public/apps/agent-skills/SKILL.md",
+        f"{SERVER_URL}/public/agent-skills/SKILL.md",
         headers={"Origin": "http://example.com"}
     )
     assert response.status_code == 200
@@ -158,16 +158,16 @@ async def test_skills_different_workspaces(fastapi_server):
     """Test that skills endpoint works for public workspace.
 
     Note: The agent-skills service is registered as a public service in the 'public'
-    workspace, so it's accessed via /public/apps/agent-skills/...
+    workspace, so it's accessed via /public/agent-skills/...
     The workspace context in the documentation is determined by the URL workspace.
     """
     # Test with public workspace - the service is registered in public workspace
-    response_public = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
+    response_public = requests.get(f"{SERVER_URL}/public/agent-skills/SKILL.md")
     assert response_public.status_code == 200
     assert "public" in response_public.text
 
     # Test WORKSPACE_CONTEXT.md shows public workspace info
-    response_ctx = requests.get(f"{SERVER_URL}/public/apps/agent-skills/WORKSPACE_CONTEXT.md")
+    response_ctx = requests.get(f"{SERVER_URL}/public/agent-skills/WORKSPACE_CONTEXT.md")
     assert response_ctx.status_code == 200
     assert "public" in response_ctx.text
 
@@ -197,7 +197,7 @@ async def test_skills_cross_workspace_access(fastapi_server):
 
     # Access agent-skills from the non-public workspace with auth
     response = requests.get(
-        f"{SERVER_URL}/{workspace}/apps/agent-skills/SKILL.md",
+        f"{SERVER_URL}/{workspace}/agent-skills/SKILL.md",
         headers={"Authorization": f"Bearer {ws_token}"},
     )
     assert response.status_code == 200, (
@@ -210,7 +210,7 @@ async def test_skills_cross_workspace_access(fastapi_server):
 
     # Also test the index endpoint
     response_index = requests.get(
-        f"{SERVER_URL}/{workspace}/apps/agent-skills/",
+        f"{SERVER_URL}/{workspace}/agent-skills/",
         headers={"Authorization": f"Bearer {ws_token}"},
     )
     assert response_index.status_code == 200
@@ -223,7 +223,7 @@ async def test_skills_cross_workspace_access(fastapi_server):
 @pytest.mark.asyncio
 async def test_skills_dynamic_schema_extraction(fastapi_server):
     """Test that API documentation is dynamically extracted from service schemas."""
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/REFERENCE.md")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/REFERENCE.md")
     assert response.status_code == 200
 
     content = response.text
@@ -339,7 +339,7 @@ def test_skills_load_documentation_file():
 @pytest.mark.asyncio
 async def test_skills_index_enabled_services(fastapi_server):
     """Test that index endpoint includes enabled services list."""
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/")
     assert response.status_code == 200
     data = response.json()
 
@@ -360,7 +360,7 @@ async def test_skills_index_enabled_services(fastapi_server):
 @pytest.mark.asyncio
 async def test_skills_reference_shows_enabled_services(fastapi_server):
     """Test that REFERENCE.md shows which services are enabled."""
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/REFERENCE.md")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/REFERENCE.md")
     assert response.status_code == 200
 
     content = response.text
@@ -374,7 +374,7 @@ async def test_skills_reference_shows_enabled_services(fastapi_server):
 @pytest.mark.asyncio
 async def test_skills_source_endpoint_service_list(fastapi_server):
     """Test the source code endpoint for listing service methods."""
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SOURCE/workspace-manager")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/SOURCE/workspace-manager")
     assert response.status_code == 200
     assert response.headers.get("content-type", "").startswith("text/markdown")
 
@@ -391,7 +391,7 @@ async def test_skills_source_endpoint_service_list(fastapi_server):
 @pytest.mark.asyncio
 async def test_skills_source_endpoint_specific_method(fastapi_server):
     """Test getting source code for a specific method."""
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SOURCE/workspace-manager/list_services")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/SOURCE/workspace-manager/list_services")
     assert response.status_code == 200
 
     content = response.text
@@ -404,7 +404,7 @@ async def test_skills_source_endpoint_specific_method(fastapi_server):
 @pytest.mark.asyncio
 async def test_skills_source_endpoint_unknown_service(fastapi_server):
     """Test that unknown services return 404 with helpful message."""
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SOURCE/unknown-service")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/SOURCE/unknown-service")
     assert response.status_code == 404
 
     content = response.text
@@ -417,7 +417,7 @@ async def test_skills_source_endpoint_unknown_service(fastapi_server):
 @pytest.mark.asyncio
 async def test_skills_source_endpoint_unknown_method(fastapi_server):
     """Test that unknown methods return 404."""
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SOURCE/workspace-manager/nonexistent_method_xyz")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/SOURCE/workspace-manager/nonexistent_method_xyz")
     assert response.status_code == 404
     assert "Method not found" in response.text
 
@@ -496,7 +496,7 @@ async def test_skills_create_zip_file(fastapi_server):
     import zipfile
     import io
 
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/create-zip-file")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/create-zip-file")
     assert response.status_code == 200
     assert response.headers.get("content-type") == "application/zip"
     assert "attachment" in response.headers.get("content-disposition", "")
@@ -525,7 +525,7 @@ async def test_skills_create_zip_file(fastapi_server):
 @pytest.mark.asyncio
 async def test_skills_index_includes_download_info(fastapi_server):
     """Test that index endpoint includes download information."""
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/")
     assert response.status_code == 200
     data = response.json()
 
@@ -544,7 +544,7 @@ async def test_skills_bootstrapping_instructions(fastapi_server):
     2. Authenticate
     3. Connect and use services
     """
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/SKILL.md")
     assert response.status_code == 200
     content = response.text
 
@@ -573,7 +573,7 @@ async def test_skills_bootstrapping_instructions(fastapi_server):
 @pytest.mark.asyncio
 async def test_skills_examples_has_installation(fastapi_server):
     """Test that EXAMPLES.md starts with setup/installation."""
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/EXAMPLES.md")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/EXAMPLES.md")
     assert response.status_code == 200
     content = response.text
 
@@ -589,12 +589,12 @@ async def test_skills_examples_has_installation(fastapi_server):
 async def test_skills_public_workspace_accessible_without_auth(fastapi_server):
     """Test that public workspace skills are accessible without authentication."""
     # Public workspace should work without any auth token
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/SKILL.md")
     assert response.status_code == 200
     assert "# Hypha Workspace Manager" in response.text
 
     # Non-public workspace skills require authentication
-    response = requests.get(f"{SERVER_URL}/test-workspace/apps/agent-skills/SKILL.md")
+    response = requests.get(f"{SERVER_URL}/test-workspace/agent-skills/SKILL.md")
     assert response.status_code == 401
     data = response.json()
     assert "Authentication required" in data["error"]
@@ -662,7 +662,7 @@ async def test_skills_global_skill_md_content(fastapi_server):
     assert "generate_token" in content
 
     # Should reference workspace-specific skills
-    assert "/apps/agent-skills/" in content
+    assert "/agent-skills/" in content
 
     # Should have HTTP examples
     assert "curl" in content
@@ -686,7 +686,7 @@ async def test_skills_frontmatter_spec_compliance(fastapi_server):
     - 'name' field: 1-64 chars, lowercase letters, numbers, hyphens only
     - 'description' field: 1-1024 chars
     """
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/SKILL.md")
     assert response.status_code == 200
     content = response.text
 
@@ -722,7 +722,7 @@ async def test_skills_server_url_consistency(fastapi_server):
     server_urls = set()
 
     for filename in files:
-        response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/{filename}")
+        response = requests.get(f"{SERVER_URL}/public/agent-skills/{filename}")
         assert response.status_code == 200, f"Failed to fetch {filename}"
         content = response.text
 
@@ -751,7 +751,7 @@ async def test_skills_all_code_blocks_have_language(fastapi_server):
     files = ["SKILL.md", "EXAMPLES.md"]
 
     for filename in files:
-        response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/{filename}")
+        response = requests.get(f"{SERVER_URL}/public/agent-skills/{filename}")
         assert response.status_code == 200
 
         content = response.text
@@ -781,7 +781,7 @@ async def test_skills_python_examples_have_imports(fastapi_server):
 
     An AI agent following the examples should not have to guess imports.
     """
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/SKILL.md")
     assert response.status_code == 200
     content = response.text
 
@@ -834,7 +834,7 @@ async def test_skills_reference_documents_all_key_methods(fastapi_server):
     - get_service (use services)
     - generate_token (authentication)
     """
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/REFERENCE.md")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/REFERENCE.md")
     assert response.status_code == 200
     content = response.text
 
@@ -867,12 +867,12 @@ async def test_skills_reference_documents_all_key_methods(fastapi_server):
 async def test_skills_examples_cover_all_capabilities(fastapi_server):
     """Test that EXAMPLES.md covers all major capabilities listed in SKILL.md."""
     # Get SKILL.md capabilities
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/SKILL.md")
     assert response.status_code == 200
     skill_content = response.text
 
     # Get EXAMPLES.md
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/EXAMPLES.md")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/EXAMPLES.md")
     assert response.status_code == 200
     examples_content = response.text
 
@@ -900,7 +900,7 @@ async def test_skills_examples_show_error_handling(fastapi_server):
 
     AI agents need to know how to handle common errors.
     """
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/EXAMPLES.md")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/EXAMPLES.md")
     assert response.status_code == 200
     content = response.text
 
@@ -920,9 +920,9 @@ async def test_skills_progressive_disclosure(fastapi_server):
     SKILL.md should be concise (overview), while REFERENCE.md provides details.
     This pattern helps AI agents consume documentation efficiently.
     """
-    skill_resp = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
-    ref_resp = requests.get(f"{SERVER_URL}/public/apps/agent-skills/REFERENCE.md")
-    examples_resp = requests.get(f"{SERVER_URL}/public/apps/agent-skills/EXAMPLES.md")
+    skill_resp = requests.get(f"{SERVER_URL}/public/agent-skills/SKILL.md")
+    ref_resp = requests.get(f"{SERVER_URL}/public/agent-skills/REFERENCE.md")
+    examples_resp = requests.get(f"{SERVER_URL}/public/agent-skills/EXAMPLES.md")
 
     skill_len = len(skill_resp.text)
     ref_len = len(ref_resp.text)
@@ -955,7 +955,7 @@ async def test_skills_zip_contains_complete_documentation(fastapi_server):
     An AI agent should be able to download the entire skill as a zip
     and have everything needed offline.
     """
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/create-zip-file")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/create-zip-file")
     assert response.status_code == 200
 
     zip_buffer = io.BytesIO(response.content)
@@ -984,7 +984,7 @@ async def test_skills_zip_contains_complete_documentation(fastapi_server):
 
         # SKILL.md in zip should match the live endpoint
         skill_in_zip = zf.read("SKILL.md").decode("utf-8")
-        live_response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
+        live_response = requests.get(f"{SERVER_URL}/public/agent-skills/SKILL.md")
         assert skill_in_zip == live_response.text, (
             "SKILL.md in zip should match the live endpoint"
         )
@@ -995,7 +995,7 @@ async def test_skills_agent_can_discover_services(fastapi_server):
     """End-to-end test: Verify an agent can follow the SKILL.md instructions
     to discover available services using the documented HTTP endpoint."""
     # Step 1: Agent reads SKILL.md
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/SKILL.md")
     assert response.status_code == 200
     skill_content = response.text
 
@@ -1014,7 +1014,7 @@ async def test_skills_agent_can_discover_services(fastapi_server):
     assert len(services) > 0, "Should have at least one service"
 
     # Step 4: Agent can get more details from REFERENCE.md
-    ref_response = requests.get(f"{server_url}/{workspace}/apps/agent-skills/REFERENCE.md")
+    ref_response = requests.get(f"{server_url}/{workspace}/agent-skills/REFERENCE.md")
     assert ref_response.status_code == 200
     assert "Workspace Manager" in ref_response.text
 
@@ -1040,7 +1040,7 @@ async def test_skills_index_is_valid_discovery_document(fastapi_server):
     An AI agent should be able to GET the index and understand the full
     skill structure from the response.
     """
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/")
     assert response.status_code == 200
     data = response.json()
 
@@ -1055,7 +1055,7 @@ async def test_skills_index_is_valid_discovery_document(fastapi_server):
     # The files list should allow an agent to iterate and fetch each
     for filename in data["files"]:
         file_response = requests.get(
-            f"{SERVER_URL}/public/apps/agent-skills/{filename}"
+            f"{SERVER_URL}/public/agent-skills/{filename}"
         )
         assert file_response.status_code == 200, (
             f"File listed in index not accessible: {filename}"
@@ -1064,7 +1064,7 @@ async def test_skills_index_is_valid_discovery_document(fastapi_server):
     # Source endpoints should be accessible
     for endpoint in data["source_endpoints"][:3]:  # Test first 3
         source_response = requests.get(
-            f"{SERVER_URL}/public/apps/agent-skills/{endpoint}"
+            f"{SERVER_URL}/public/agent-skills/{endpoint}"
         )
         assert source_response.status_code == 200, (
             f"Source endpoint listed in index not accessible: {endpoint}"
@@ -1077,7 +1077,7 @@ async def test_skills_multiformat_examples(fastapi_server):
 
     AI agents may work in different environments, so all formats should be covered.
     """
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/SKILL.md")
     assert response.status_code == 200
     content = response.text
 
@@ -1107,7 +1107,7 @@ async def test_skills_auth_options_documented(fastapi_server):
 
     An AI agent needs to understand which auth method to use in different contexts.
     """
-    response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/SKILL.md")
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/SKILL.md")
     assert response.status_code == 200
     content = response.text
 
