@@ -173,51 +173,11 @@ async def test_skills_different_workspaces(fastapi_server):
 
 
 @pytest.mark.asyncio
-async def test_skills_cross_workspace_access(fastapi_server):
-    """Test that agent-skills is accessible from any workspace via HTTP fallback.
-
-    The agent-skills service is registered in the public workspace, but should
-    be accessible from any workspace URL. The HTTP proxy falls back to the
-    public workspace when a service is not found in the target workspace.
-    """
-    import os
-    from hypha_rpc import connect_to_server
-
-    token = os.environ.get("HYPHA_ROOT_TOKEN")
-    assert token, "HYPHA_ROOT_TOKEN must be set"
-
-    # Connect and create a workspace
-    api = await connect_to_server(
-        {"server_url": SERVER_URL, "token": token}
-    )
-    workspace = api.config["workspace"]
-
-    # Generate a token for the workspace
-    ws_token = await api.generate_token()
-
-    # Access agent-skills from the non-public workspace with auth
-    response = requests.get(
-        f"{SERVER_URL}/{workspace}/agent-skills/SKILL.md",
-        headers={"Authorization": f"Bearer {ws_token}"},
-    )
-    assert response.status_code == 200, (
-        f"Expected 200 but got {response.status_code}: {response.text[:200]}"
-    )
-    assert "# Hypha Workspace Manager" in response.text
-
-    # Verify the workspace context reflects the actual workspace from URL
-    assert workspace in response.text
-
-    # Also test the index endpoint
-    response_index = requests.get(
-        f"{SERVER_URL}/{workspace}/agent-skills/",
-        headers={"Authorization": f"Bearer {ws_token}"},
-    )
-    assert response_index.status_code == 200
-    data = response_index.json()
-    assert data["name"] == "hypha"
-
-    await api.disconnect()
+async def test_skills_non_public_workspace_no_fallback(fastapi_server):
+    """Test that agent-skills from a non-existent workspace returns an error (no fallback)."""
+    # Accessing agent-skills from a non-existent workspace should fail
+    response = requests.get(f"{SERVER_URL}/nonexistent-workspace/agent-skills/SKILL.md")
+    assert response.status_code == 500
 
 
 @pytest.mark.asyncio
@@ -593,12 +553,9 @@ async def test_skills_public_workspace_accessible_without_auth(fastapi_server):
     assert response.status_code == 200
     assert "# Hypha Workspace Manager" in response.text
 
-    # Non-public workspace skills require authentication
+    # Non-existent workspace should return an error (no fallback)
     response = requests.get(f"{SERVER_URL}/test-workspace/agent-skills/SKILL.md")
-    assert response.status_code == 401
-    data = response.json()
-    assert "Authentication required" in data["error"]
-    assert "global_url" in data  # Points to the global endpoint
+    assert response.status_code == 500
 
 
 @pytest.mark.asyncio

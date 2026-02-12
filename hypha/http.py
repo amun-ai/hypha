@@ -306,45 +306,15 @@ class ASGIRoutingMiddleware:
                     # Use the TARGET workspace from URL, not user's current workspace.
                     # This allows anonymous users to access public services in any workspace.
                     # Permission checks are enforced by get_service() based on service visibility.
-                    #
-                    # If the service is not found in the target workspace (or the
-                    # workspace doesn't exist), fall back to the public workspace
-                    # for globally registered services (e.g., agent-skills).
-                    # The original workspace is preserved in scope["workspace"]
-                    # so the service handler can still provide workspace-specific content.
-                    _fallback_to_public = False
-                    if workspace != "public":
-                        try:
-                            async with self.store.get_workspace_interface(
-                                user_info, workspace
-                            ) as api:
-                                service = await api.get_service(
-                                    workspace + "/" + service_id, {"mode": _mode}
-                                )
-                                await self._handle_app_service(
-                                    service, workspace, path, scope, receive, send
-                                )
-                                return
-                        except Exception as e:
-                            err_msg = str(e)
-                            if (
-                                "Service not found" in err_msg
-                                or "does not exist" in err_msg
-                            ):
-                                _fallback_to_public = True
-                            else:
-                                raise
-
-                    if _fallback_to_public or workspace == "public":
-                        async with self.store.get_workspace_interface(
-                            user_info, "public"
-                        ) as api:
-                            service = await api.get_service(
-                                "public/" + service_id, {"mode": _mode}
-                            )
-                            await self._handle_app_service(
-                                service, "public", path, scope, receive, send
-                            )
+                    async with self.store.get_workspace_interface(
+                        user_info, workspace
+                    ) as api:
+                        service = await api.get_service(
+                            workspace + "/" + service_id, {"mode": _mode}
+                        )
+                        await self._handle_app_service(
+                            service, workspace, path, scope, receive, send
+                        )
                         return
                 except Exception as exp:
                     logger.exception(f"Error in ASGI service: {exp}")
