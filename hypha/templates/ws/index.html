@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hypha Workspace Management</title>
+    <title>Super Happy Agents</title>
     <!-- External Scripts -->
     <script src="../assets/hypha-rpc-websocket.js"></script>
     <script>
@@ -55,6 +55,11 @@
     <meta name="msapplication-TileColor" content="#da532c">
     <meta name="theme-color" content="#ffffff">
     <style>
+        /* 4:3 aspect ratio cards */
+        .card-4-3 {
+            aspect-ratio: 4 / 3;
+        }
+
         /* Styles for the sidebar and main content */
         .sidebar {
             width: 250px;
@@ -62,7 +67,7 @@
             top: 0;
             left: 0;
             height: 100%;
-            background-color: #1f2937;
+            background-color: #1a1625;
             padding-top: 20px;
             transition: all 0.3s;
         }
@@ -87,7 +92,7 @@
         }
 
         .sidebar .menu-item:hover {
-            background-color: #374151;
+            background-color: #2d2640;
         }
 
         .sidebar.collapsed .menu-item span {
@@ -95,7 +100,7 @@
         }
 
         .main-content {
-            padding: 20px;
+            padding: 12px 16px;
             transition: all 0.3s;
         }
 
@@ -230,7 +235,7 @@
     </style>
 </head>
 
-<body class="bg-black text-white font-poppins">
+<body class="bg-gray-950 text-white font-poppins" style="background-color: #0f0d15;">
     <div id="app"></div>
     <!-- Define defaultService synchronously before other scripts -->
     <script>
@@ -502,19 +507,17 @@
 
         const ClientCard = ({ client }) => {
             return (
-                <div className="flex flex-col items-start p-6 bg-gray-800 rounded-lg shadow-lg mb-6 w-full">
-                    <div className="flex items-center mb-4">
-                        <i className="fas fa-users fa-3x text-white mr-4"></i>
+                <div className="card-4-3 flex flex-col items-start p-4 bg-gray-800 rounded-lg shadow-lg w-full overflow-hidden">
+                    <div className="flex items-center mb-2">
+                        <i className="fas fa-user fa-lg text-white mr-3"></i>
+                        <span className="font-semibold text-sm">{client.id.split('/')[1]}</span>
                     </div>
-                    <div className="text-gray-400 whitespace-pre-wrap break-words w-full">
-                        <p className="mb-4">
-                            <strong>Client ID:</strong> {client.id.split('/')[1]}
+                    <div className="text-gray-400 text-sm whitespace-pre-wrap break-words w-full">
+                        <p className="mb-1">
+                            {client.user && (<><strong>User:</strong> {client.user.id}</>)}
                         </p>
-                        <p className="mb-4">
-                            {client.user && (<strong>User:</strong>)} {client.user && client.user.id}
-                        </p>
-                        <p className="mb-4">
-                            {client.user && (<strong>Email:</strong>)} {client.user && client.user.email}
+                        <p className="mb-1">
+                            {client.user && client.user.email && (<><strong>Email:</strong> {client.user.email}</>)}
                         </p>
                     </div>
                 </div>
@@ -523,47 +526,47 @@
 
         const ServiceCard = ({ service, onShowDetails, onBookmarkService }) => {
             return (
-              <div className="relative flex flex-col items-start p-6 bg-gray-800 rounded-lg shadow-lg mb-6 w-full">
+              <div className="card-4-3 relative flex flex-col items-start p-4 bg-gray-800 rounded-lg shadow-lg w-full overflow-hidden">
                 {/* Bookmark icon in the upper right corner */}
                 <button
-                  class="absolute top-2 right-2 text-white"
+                  class="absolute top-2 right-2 text-white text-xs"
                   onClick={() => onBookmarkService(service.id)}
                 >
                   <i className="fas fa-bookmark"></i>
                 </button>
-          
+
                 {/* Service information */}
-                <div className="flex items-center mb-4">
-                  <i className="fas fa-cog fa-3x text-white mr-4"></i>
+                <div className="flex items-center mb-2">
+                  <i className="fas fa-cog fa-lg text-white mr-3"></i>
                   <div>
-                    <h3 className="text-xl font-bold whitespace-pre-wrap break-words">
+                    <h3 className="text-sm font-bold whitespace-pre-wrap break-words">
                       {service.id.split(":")[1]}
                     </h3>
-                    <p className="text-gray-400">Type: {service.type}</p>
+                    <p className="text-gray-400 text-xs">Type: {service.type}</p>
                   </div>
                 </div>
-          
-                <div className="text-gray-400 whitespace-pre-wrap break-words w-full">
-                  <p className="mb-4">
+
+                <div className="text-gray-400 text-xs whitespace-pre-wrap break-words w-full flex-1">
+                  <p className="mb-1">
                     <strong>ID:</strong> {service.id}
                   </p>
-                  <p className="mb-4">
+                  <p className="mb-1">
                     <strong>Visibility:</strong>
                     {service.config.visibility === 'public' ? (
-                      <i className="fas fa-globe m-1 text-blue-500"></i>
+                      <i className="fas fa-globe ml-1 text-blue-500"></i>
                     ) : (
-                      <i className="fas fa-lock m-1 text-red-500"></i>
+                      <i className="fas fa-lock ml-1 text-red-500"></i>
                     )}
-                    {service.config.visibility}
+                    <span className="ml-1">{service.config.visibility}</span>
                   </p>
-                  <p className="mb-4">{service.description}</p>
+                  <p className="mb-1 line-clamp-2">{service.description}</p>
                 </div>
-          
+
                 <button
-                  className="mt-auto bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-full transition duration-300 flex items-center"
+                  className="mt-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-1 px-3 rounded-full transition duration-300 flex items-center"
                   onClick={() => onShowDetails(service)}
                 >
-                  <i className="fas fa-info-circle mr-2"></i> View Details
+                  <i className="fas fa-info-circle mr-1"></i> Details
                 </button>
               </div>
             );
@@ -6870,10 +6873,20 @@ license: "MIT"`);
                 >
                     {panel === 'dashboard' && (
                         <>
-                            <h1 className="text-4xl font-bold capitalize">Dashboard</h1>
+                            <div className="flex items-center py-2 mb-2">
+                                <i className="fas fa-robot text-2xl text-purple-400 mr-3"></i>
+                                <h1 className="text-2xl font-bold flex items-center">
+                                    Super Happy Agents
+                                    <span className="ml-2 relative flex h-2 w-2">
+                                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                                        <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                                    </span>
+                                    <span className="ml-1.5 text-xs font-normal text-green-400">online</span>
+                                </h1>
+                            </div>
                             {/* Header Section for Workspace Info */}
                             {currentWorkspaceInfo && (
-                                <div className="relative p-6 bg-gray-800 rounded-lg shadow-lg m-10">
+                                <div className="relative p-4 bg-gray-800 rounded-lg shadow-lg mb-4">
                                     {/* Bookmark Icon in the Upper Right Corner */}
                                     <button
                                         className="absolute top-4 right-4 text-yellow-400 hover:text-yellow-500 transition duration-300"
@@ -7024,38 +7037,57 @@ license: "MIT"`);
                                   </div>
                                 </>
                             )}
-                            <hr className="my-8 border-gray-700"></hr>
-                            <div className="flex items-center mb-6">
-                                <i className="fas fa-users fa-2x text-yellow-400 mr-3"></i>
-                                <h2 className="text-2xl font-bold">Clients</h2>
+                            <hr className="my-3 border-gray-700"></hr>
+                            <div className="flex items-center mb-2">
+                                <i className="fas fa-users text-lg text-yellow-400 mr-2"></i>
+                                <h2 className="text-lg font-bold">Clients</h2>
+                                <span className="ml-2 text-sm text-gray-400">connected to <code>{workspaceId}</code></span>
                             </div>
-                            <p className="text-xl text-gray-400 mt-4">
-                                Clients connected to workspace: <code>{workspaceId}</code>
-                            </p>
-                            <div className="grid grid-cols-1 md:grid-cols-1 lg:grid-cols-2 gap-8 mt-6">
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-2">
                                 {clients.map(client => (
                                     <ClientCard key={client.id} client={client} />
                                 ))}
+                                {(() => {
+                                    const cols = 3;
+                                    const remainder = clients.length % cols;
+                                    const placeholders = remainder === 0 ? 0 : cols - remainder;
+                                    return Array.from({ length: placeholders }, (_, i) => (
+                                        <div key={`placeholder-client-${i}`} className="card-4-3 flex flex-col items-center justify-center p-4 rounded-lg w-full border-2 border-dashed border-gray-700 opacity-40">
+                                            <i className="fas fa-user-slash text-xl text-gray-600 mb-1"></i>
+                                            <span className="text-gray-600 text-xs">Inactive session</span>
+                                        </div>
+                                    ));
+                                })()}
                             </div>
-                            <hr className="my-8 border-gray-700"></hr>
-                            <div className="flex items-center mb-6">
-                                <i className="fas fa-cogs fa-2x text-green-400 mr-3"></i>
-                                <h2 className="text-2xl font-bold">Services</h2>
+                            <hr className="my-3 border-gray-700"></hr>
+                            <div className="flex items-center mb-2">
+                                <i className="fas fa-cogs text-lg text-green-400 mr-2"></i>
+                                <h2 className="text-lg font-bold">Services</h2>
+                                <span className="ml-2 text-sm text-gray-400">in <code>{workspaceId}</code></span>
                             </div>
-                            <p className="text-xl text-gray-400 mt-4">
-                                Services available in workspace: <code>{workspaceId}</code>
-                            </p>
-                            <div className="grid grid-cols-1 md:grid-cols-1 lg:grid-cols-2 gap-8 mt-6">
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-2">
                                 {services.map(service => (
                                     service.type !== "built-in" && (
-                                        <ServiceCard 
-                                            key={service.id} 
-                                            service={service} 
-                                            onBookmarkService={handleBookmarkService} 
-                                            onShowDetails={onShowDetails} 
+                                        <ServiceCard
+                                            key={service.id}
+                                            service={service}
+                                            onBookmarkService={handleBookmarkService}
+                                            onShowDetails={onShowDetails}
                                         />
                                     )
                                 ))}
+                                {(() => {
+                                    const activeServices = services.filter(s => s.type !== "built-in");
+                                    const cols = 3;
+                                    const remainder = activeServices.length % cols;
+                                    const placeholders = remainder === 0 ? 0 : cols - remainder;
+                                    return Array.from({ length: placeholders }, (_, i) => (
+                                        <div key={`placeholder-service-${i}`} className="card-4-3 flex flex-col items-center justify-center p-4 rounded-lg w-full border-2 border-dashed border-gray-700 opacity-40">
+                                            <i className="fas fa-plug text-xl text-gray-600 mb-1"></i>
+                                            <span className="text-gray-600 text-xs">Inactive service</span>
+                                        </div>
+                                    ));
+                                })()}
                             </div>
                         </>
                     )}
