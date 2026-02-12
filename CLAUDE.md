@@ -606,6 +606,25 @@ When you run tests, use pytest and make sure you ran it inside the conda env nam
 - Do not convert exceptions to warnings
 - Do not use default values to mask multiple-service issues (e.g., don't auto-select when multiple services respond - this hides cleanup issues)
 
+### Version Bumping
+
+When bumping the version (e.g., `0.21.44` -> `0.21.45`), search the entire project for the old version string and replace all occurrences. The version appears in the following files:
+
+| File | Field |
+|------|-------|
+| `hypha/VERSION` | `version` (canonical source) |
+| `helm-charts/hypha-server/values.yaml` | `image.tag` |
+| `helm-charts/hypha-server/Chart.yaml` | `version` |
+| `helm-charts/hypha-server/README.md` | table row for `image.tag` |
+| `helm-charts/hypha-server-kit/values.yaml` | `image.tag` |
+| `helm-charts/hypha-server-kit/Chart.yaml` | `version`, `appVersion`, dependency `version` (3 occurrences) |
+| `helm-charts/hypha-server-kit/Chart.lock` | dependency `version` |
+| `helm-charts/aks-hypha.md` | `image.tag` |
+| `docker-compose/docker-compose.yml` | `image` tag |
+| `docker-compose/README.md` | image reference |
+
+**Process**: `grep -r "OLD_VERSION" .` to find all occurrences, replace each, then verify with `grep -r "OLD_VERSION" .` returning no results.
+
 ## Compound Engineering
 
 **Philosophy**: Maximize productivity through tight feedback loops and knowledge accumulation.
