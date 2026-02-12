@@ -34,7 +34,7 @@ from sqlalchemy.ext.asyncio import (
 
 from datetime import datetime
 from stat import S_IFREG
-from stream_zip import ZIP_32, async_stream_zip
+from stream_zip import NO_COMPRESSION_32, async_stream_zip
 import httpx
 
 from hrid import HRID
@@ -209,6 +209,26 @@ def convert_legacy_staging(staging):
         return new_staging
     
     return staging  # Return as-is if unknown format
+
+
+def _calculate_zip_size(file_info):
+    """Calculate exact zip file size for NO_COMPRESSION_32 mode.
+
+    The zip format with no compression has a deterministic structure:
+    - End of central directory record: 22 bytes
+    - Per file: 94 bytes overhead + 2 * len(filename_bytes) + file_data_size
+
+    Args:
+        file_info: List of (path, size) tuples
+
+    Returns:
+        Total zip file size in bytes
+    """
+    total = 22  # End of central directory record
+    for path, size in file_info:
+        name_bytes_len = len(path.encode("utf-8"))
+        total += size + 94 + 2 * name_bytes_len
+    return total
 
 
 class ArtifactController:
@@ -564,7 +584,7 @@ class ArtifactController:
 
                 async with self._create_client_async(s3_config) as s3_client:
                     if files is None:
-                        # List all files in the artifact
+                        # List all files in the artifact, collecting sizes
                         root_dir_key = safe_join(
                             s3_config["prefix"],
                             f"{artifact.id}/v{version_index}",
@@ -581,7 +601,7 @@ class ArtifactController:
                                 for item in items:
                                     item_path = f"{dir_path}/{item['name']}".strip("/")
                                     if item["type"] == "file":
-                                        yield item_path
+                                        yield (item_path, item.get("size", 0))
                                     elif item["type"] == "directory":
                                         async for sub_item in list_all_files(item_path):
                                             yield sub_item
@@ -592,146 +612,118 @@ class ArtifactController:
                                     detail=f"Error listing files: {str(e)}",
                                 )
 
-                        # Convert async generator to list to ensure all files are listed before streaming
-                        files = [path async for path in list_all_files()]
+                        file_info = [item async for item in list_all_files()]
                     else:
-
-                        async def validate_files(files):
-                            for file in files:
-                                yield file
-
-                        files = [file for file in files]
-
-                    logger.info(f"Creating ZIP file for artifact: {artifact_alias}")
-
-                    async def file_stream_generator(presigned_url: str):
-                        """Fetch file content from presigned URL in chunks."""
-                        try:
-                            async with httpx.AsyncClient() as client:
-                                async with client.stream(
-                                    "GET", presigned_url
-                                ) as response:
-                                    if response.status_code != 200:
-                                        logger.error(
-                                            f"Failed to fetch file from URL: {presigned_url}, Status: {response.status_code}"
-                                        )
-                                        raise HTTPException(
-                                            status_code=404,
-                                            detail=f"Failed to fetch file: {presigned_url}",
-                                        )
-                                    async for chunk in response.aiter_bytes(
-                                        1024 * 64
-                                    ):  # 64KB chunks
-                                        logger.debug(
-                                            f"Yielding chunk of size: {len(chunk)}"
-                                        )
-                                        yield chunk
-                        except Exception as e:
-                            logger.error(f"Error fetching file stream: {str(e)}")
-                            raise HTTPException(
-                                status_code=500,
-                                detail="Error fetching file content",
+                        # For explicitly specified files, fetch sizes via head_object
+                        file_info = []
+                        for file_path in files:
+                            file_key = safe_join(
+                                s3_config["prefix"],
+                                f"{artifact.id}/v{version_index}",
+                                file_path,
                             )
-
-                    async def member_files():
-                        """Yield file metadata and content for stream_zip."""
-                        modified_at = datetime.now()
-                        mode = S_IFREG | 0o600
-                        total_weight = 0
-                        if artifact.config and "download_weights" in artifact.config:
-                            download_weights = artifact.config.get(
-                                "download_weights", {}
+                            head = await s3_client.head_object(
+                                Bucket=s3_config["bucket"], Key=file_key,
                             )
-                        else:
-                            download_weights = {}
+                            file_info.append((file_path, head["ContentLength"]))
 
-                        # Check for special "create-zip-file" download weight
-                        special_zip_weight = download_weights.get("create-zip-file")
-                        if special_zip_weight is not None and not silent:
-                            total_weight = special_zip_weight
-                            logger.info(
-                                f"Using special zip download weight: {total_weight}"
-                            )
-
-                        try:
-                            if isinstance(files, list):
-                                file_list = files
-                            else:
-                                file_list = [path async for path in files]
-
-                            for path in file_list:
-                                file_key = safe_join(
-                                    s3_config["prefix"],
-                                    f"{artifact.id}/v{version_index}",
-                                    path,
-                                )
-                                logger.info(f"Adding file to ZIP: {file_key}")
-                                try:
-                                    presigned_url = (
-                                        await s3_client.generate_presigned_url(
-                                            "get_object",
-                                            Params={
-                                                "Bucket": s3_config["bucket"],
-                                                "Key": file_key,
-                                            },
-                                        )
-                                    )
-                                    # Add to total weight unless silent or special zip weight is set
-                                    if not silent and special_zip_weight is None:
-                                        download_weight = (
-                                            download_weights.get(path) or 0
-                                        )  # Default to 0 if no weight specified
-                                        total_weight += download_weight
-
-                                    yield (
-                                        path,
-                                        modified_at,
-                                        mode,
-                                        ZIP_32,
-                                        file_stream_generator(presigned_url),
-                                    )
-                                except Exception as e:
-                                    logger.error(
-                                        f"Error processing file {path}: {str(e)}"
-                                    )
-                                    raise HTTPException(
-                                        status_code=500,
-                                        detail=f"Error processing file: {path}",
-                                    )
-
-                            if total_weight > 0 and not silent:
-                                logger.info(
-                                    f"Bumping download count for artifact: {artifact_alias} by {total_weight}"
-                                )
-                                try:
-                                    async with session.begin():
-                                        await self._increment_stat(
-                                            session,
-                                            artifact.id,
-                                            "download_count",
-                                            increment=total_weight,
-                                        )
-                                        await session.commit()
-                                except Exception as e:
-                                    logger.error(
-                                        f"Error bumping download count for artifact ({artifact_alias}): {str(e)}"
-                                    )
-                                    raise e
-                                finally:
-                                    await session.close()
-                        except Exception as e:
-                            raise HTTPException(
-                                status_code=500, detail=f"Error listing files: {str(e)}"
-                            )
-
-                    # Return the ZIP file as a streaming response
-                    return StreamingResponse(
-                        async_stream_zip(member_files()),
-                        media_type="application/zip",
-                        headers={
-                            "Content-Disposition": f"attachment; filename={artifact_alias}.zip"
-                        },
+                    logger.info(
+                        f"Creating ZIP file for artifact: {artifact_alias} "
+                        f"({len(file_info)} files)"
                     )
+
+                    # Calculate exact zip size for Content-Length header
+                    total_zip_size = _calculate_zip_size(file_info)
+
+                async def file_stream_generator(file_key: str):
+                    """Stream file content directly from S3 in chunks."""
+                    async with self._create_client_async(s3_config) as client:
+                        response = await client.get_object(
+                            Bucket=s3_config["bucket"], Key=file_key,
+                        )
+                        async for chunk in response["Body"].iter_chunks(
+                            chunk_size=1024 * 64
+                        ):
+                            yield chunk
+
+                async def member_files():
+                    """Yield file metadata and content for stream_zip."""
+                    modified_at = datetime.now()
+                    mode = S_IFREG | 0o600
+                    total_weight = 0
+                    if artifact.config and "download_weights" in artifact.config:
+                        download_weights = artifact.config.get(
+                            "download_weights", {}
+                        )
+                    else:
+                        download_weights = {}
+
+                    # Check for special "create-zip-file" download weight
+                    special_zip_weight = download_weights.get("create-zip-file")
+                    if special_zip_weight is not None and not silent:
+                        total_weight = special_zip_weight
+                        logger.info(
+                            f"Using special zip download weight: {total_weight}"
+                        )
+
+                    try:
+                        for path, _size in file_info:
+                            file_key = safe_join(
+                                s3_config["prefix"],
+                                f"{artifact.id}/v{version_index}",
+                                path,
+                            )
+                            logger.info(f"Adding file to ZIP: {file_key}")
+                            # Add to total weight unless silent or special zip weight is set
+                            if not silent and special_zip_weight is None:
+                                download_weight = (
+                                    download_weights.get(path) or 0
+                                )  # Default to 0 if no weight specified
+                                total_weight += download_weight
+
+                            yield (
+                                path,
+                                modified_at,
+                                mode,
+                                NO_COMPRESSION_32,
+                                file_stream_generator(file_key),
+                            )
+
+                        if total_weight > 0 and not silent:
+                            logger.info(
+                                f"Bumping download count for artifact: {artifact_alias} by {total_weight}"
+                            )
+                            try:
+                                async with session.begin():
+                                    await self._increment_stat(
+                                        session,
+                                        artifact.id,
+                                        "download_count",
+                                        increment=total_weight,
+                                    )
+                                    await session.commit()
+                            except Exception as e:
+                                logger.error(
+                                    f"Error bumping download count for artifact ({artifact_alias}): {str(e)}"
+                                )
+                                raise e
+                            finally:
+                                await session.close()
+                    except Exception as e:
+                        raise HTTPException(
+                            status_code=500, detail=f"Error listing files: {str(e)}"
+                        )
+
+                # Return the ZIP file as a streaming response with Content-Length
+                # for browser download progress indication
+                return StreamingResponse(
+                    async_stream_zip(member_files()),
+                    media_type="application/zip",
+                    headers={
+                        "Content-Disposition": f"attachment; filename={artifact_alias}.zip",
+                        "Content-Length": str(total_zip_size),
+                    },
+                )
 
             except KeyError:
                 raise HTTPException(status_code=404, detail="Artifact not found")
@@ -4191,28 +4183,55 @@ class ArtifactController:
                 if sha_bytes and await repo.has_object_async(sha_bytes):
                     commit_sha = sha_bytes
 
-        # If no files specified, list all files recursively
-        if files is None:
-            async def list_all_files_recursive(dir_path=""):
-                """Recursively list all files in the git tree."""
-                items = await repo.list_tree_async(dir_path, commit_sha)
-                for item in items:
-                    item_path = f"{dir_path}/{item['name']}".strip("/")
-                    if item["type"] == "tree":
-                        async for sub_path in list_all_files_recursive(item_path):
-                            yield sub_path
-                    else:
-                        yield item_path
-
-            files = [path async for path in list_all_files_recursive()]
-
-        logger.info(f"Creating ZIP file for git artifact: {artifact_alias}")
-
         # Import LFS pointer parser
         from hypha.git.lfs import LFSPointer
 
         # Base path for LFS objects
         base_path = f"{s3_config['prefix']}/{artifact.id}"
+
+        # If no files specified, list all files recursively and collect sizes
+        if files is None:
+            async def list_all_files_recursive(dir_path=""):
+                """Recursively list all files in the git tree with sizes."""
+                items = await repo.list_tree_async(dir_path, commit_sha)
+                for item in items:
+                    item_path = f"{dir_path}/{item['name']}".strip("/")
+                    if item["type"] == "tree":
+                        async for sub_item in list_all_files_recursive(item_path):
+                            yield sub_item
+                    else:
+                        yield (item_path, item.get("size", 0))
+
+            file_info = [(path, size) async for path, size in list_all_files_recursive()]
+        else:
+            # For explicitly specified files, get sizes from git objects
+            file_info = []
+            for path in files:
+                content = await repo.get_file_content_async(path, commit_sha)
+                if content is not None:
+                    file_info.append((path, len(content)))
+                else:
+                    file_info.append((path, 0))
+
+        # Resolve LFS pointer sizes: for LFS-tracked files, the git blob size
+        # is the pointer size (~130 bytes), not the actual file size.
+        # We need the real file sizes for accurate Content-Length calculation.
+        resolved_file_info = []
+        for path, git_size in file_info:
+            content = await repo.get_file_content_async(path, commit_sha)
+            if content is not None:
+                lfs_pointer = LFSPointer.parse(content)
+                if lfs_pointer is not None:
+                    resolved_file_info.append((path, lfs_pointer.size))
+                else:
+                    resolved_file_info.append((path, len(content)))
+            else:
+                resolved_file_info.append((path, 0))
+
+        # Calculate total zip size for Content-Length header
+        total_zip_size = _calculate_zip_size(resolved_file_info)
+
+        logger.info(f"Creating ZIP file for git artifact: {artifact_alias}")
 
         async def git_file_stream_generator(file_path: str):
             """Stream file content from git repository in chunks.
@@ -4270,7 +4289,7 @@ class ArtifactController:
                 total_weight = special_zip_weight
                 logger.info(f"Using special zip download weight: {total_weight}")
 
-            for path in files:
+            for path, _size in resolved_file_info:
                 logger.info(f"Adding git file to ZIP: {path}")
                 # Add to total weight unless silent or special zip weight is set
                 if not silent and special_zip_weight is None:
@@ -4281,7 +4300,7 @@ class ArtifactController:
                     path,
                     modified_at,
                     mode,
-                    ZIP_32,
+                    NO_COMPRESSION_32,
                     git_file_stream_generator(path),
                 )
 
@@ -4302,7 +4321,8 @@ class ArtifactController:
             async_stream_zip(member_files()),
             media_type="application/zip",
             headers={
-                "Content-Disposition": f"attachment; filename={artifact_alias}.zip"
+                "Content-Disposition": f"attachment; filename={artifact_alias}.zip",
+                "Content-Length": str(total_zip_size),
             },
         )
 

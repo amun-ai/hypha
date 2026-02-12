@@ -1009,6 +1009,13 @@ async def test_git_create_zip_file(
     assert resp.status_code == 200, f"Create ZIP failed: {resp.text}"
     assert resp.headers.get("content-type") == "application/zip"
 
+    # Verify Content-Length header matches actual response body size
+    content_length = resp.headers.get("content-length")
+    assert content_length is not None, "Content-Length header missing from ZIP response"
+    assert int(content_length) == len(resp.content), (
+        f"Content-Length mismatch: header={content_length}, actual={len(resp.content)}"
+    )
+
     # Verify ZIP contents
     zip_buffer = io.BytesIO(resp.content)
     with zipfile.ZipFile(zip_buffer, "r") as zf:
@@ -1108,6 +1115,13 @@ async def test_git_create_zip_file_with_specific_files(
         timeout=30,
     )
     assert resp.status_code == 200, f"Create ZIP failed: {resp.text}"
+
+    # Verify Content-Length header matches actual response body size
+    content_length = resp.headers.get("content-length")
+    assert content_length is not None, "Content-Length header missing from ZIP response"
+    assert int(content_length) == len(resp.content), (
+        f"Content-Length mismatch: header={content_length}, actual={len(resp.content)}"
+    )
 
     # Verify ZIP contains only requested files
     zip_buffer = io.BytesIO(resp.content)
@@ -1270,6 +1284,13 @@ async def test_git_lfs_files_endpoint_streaming(
     zip_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/create-zip-file"
     resp = http.get(zip_url, params={"token": test_user_token}, timeout=60)
     assert resp.status_code == 200, f"Create ZIP failed: {resp.text}"
+
+    # Verify Content-Length header matches actual response body size
+    content_length = resp.headers.get("content-length")
+    assert content_length is not None, "Content-Length header missing from LFS ZIP response"
+    assert int(content_length) == len(resp.content), (
+        f"Content-Length mismatch: header={content_length}, actual={len(resp.content)}"
+    )
 
     # Verify ZIP contents
     zip_buffer = io.BytesIO(resp.content)
@@ -3053,3 +3074,61 @@ async def test_git_child_token_preserves_parent_user(
     await child_artifact_manager.delete(artifact_id=artifact_alias)
     await child_api.disconnect()
     await api.disconnect()
+
+
+# Unit test for _calculate_zip_size formula (no server required)
+
+
+def test_calculate_zip_size_accuracy():
+    """Verify _calculate_zip_size produces exact Content-Length for NO_COMPRESSION_32 zips.
+
+    This test creates actual zip files using stream_zip with NO_COMPRESSION_32 and
+    verifies that the calculated size exactly matches the actual output size.
+    """
+    from stream_zip import NO_COMPRESSION_32, stream_zip
+    from hypha.artifact import _calculate_zip_size
+    from datetime import datetime
+    from stat import S_IFREG
+
+    modified_at = datetime.now()
+    mode = S_IFREG | 0o600
+
+    test_cases = [
+        # (description, files: list of (name, content))
+        ("single small file", [("hello.txt", b"Hello, World!")]),
+        ("multiple files", [
+            ("README.md", b"# Test\nThis is a test."),
+            ("main.py", b'print("hello")\n'),
+            ("data.bin", os.urandom(1024)),
+        ]),
+        ("empty file", [("empty.txt", b"")]),
+        ("large file", [("big.bin", os.urandom(100_000))]),
+        ("unicode filename", [("data/résumé.txt", b"Content here")]),
+        ("nested paths", [
+            ("a/b/c/d.txt", b"deep"),
+            ("x.txt", b"shallow"),
+        ]),
+    ]
+
+    for desc, files in test_cases:
+        file_info = [(name, len(content)) for name, content in files]
+        expected_size = _calculate_zip_size(file_info)
+
+        # Create actual zip using stream_zip
+        def member_files():
+            for name, content in files:
+                yield (
+                    name,
+                    modified_at,
+                    mode,
+                    NO_COMPRESSION_32,
+                    (content,),
+                )
+
+        actual_data = b"".join(stream_zip(member_files()))
+        actual_size = len(actual_data)
+
+        assert expected_size == actual_size, (
+            f"_calculate_zip_size mismatch for '{desc}': "
+            f"calculated={expected_size}, actual={actual_size}"
+        )

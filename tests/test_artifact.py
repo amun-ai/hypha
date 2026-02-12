@@ -359,6 +359,12 @@ async def test_http_file_and_directory_endpoint(
             f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/create-zip-file?file=example.txt&file={nested_file_path}"
         )
         assert response.status_code == 200
+        # Verify Content-Length header matches actual response body size
+        content_length = response.headers.get("content-length")
+        assert content_length is not None, "Content-Length header missing from ZIP response"
+        assert int(content_length) == len(response.content), (
+            f"Content-Length mismatch: header={content_length}, actual={len(response.content)}"
+        )
         # Write the zip file in a io.BytesIO object, then check if the file contents are correct
         zip_file = ZipFile(BytesIO(response.content))
         assert sorted(zip_file.namelist()) == sorted(
@@ -379,6 +385,12 @@ async def test_http_file_and_directory_endpoint(
             f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/create-zip-file"
         )
         assert response.status_code == 200, response.text
+        # Verify Content-Length header matches actual response body size
+        content_length = response.headers.get("content-length")
+        assert content_length is not None, "Content-Length header missing from ZIP response"
+        assert int(content_length) == len(response.content), (
+            f"Content-Length mismatch: header={content_length}, actual={len(response.content)}"
+        )
         zip_file = ZipFile(BytesIO(response.content))
         assert sorted(zip_file.namelist()) == sorted(
             ["example.txt", "nested/example2.txt"]
