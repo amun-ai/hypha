@@ -154,7 +154,7 @@ def start_builtin_services(
         agent_skills_service = setup_agent_skills(store)
         store.register_public_service(agent_skills_service)
         setup_global_agent_skills_routes(app, store, base_path=args.base_path)
-        logger.info("Agent Skills registered at /{workspace}/apps/agent-skills/ and /ws/apps/agent-skills/")
+        logger.info("Agent Skills registered at /{workspace}/apps/agent-skills/ and /ws/agent-skills/")
 
     HTTPProxy(
         store,
