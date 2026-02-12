@@ -173,6 +173,54 @@ async def test_skills_different_workspaces(fastapi_server):
 
 
 @pytest.mark.asyncio
+async def test_skills_cross_workspace_access(fastapi_server):
+    """Test that agent-skills is accessible from any workspace via HTTP fallback.
+
+    The agent-skills service is registered in the public workspace, but should
+    be accessible from any workspace URL. The HTTP proxy falls back to the
+    public workspace when a service is not found in the target workspace.
+    """
+    import os
+    from hypha_rpc import connect_to_server
+
+    token = os.environ.get("HYPHA_ROOT_TOKEN")
+    assert token, "HYPHA_ROOT_TOKEN must be set"
+
+    # Connect and create a workspace
+    api = await connect_to_server(
+        {"server_url": SERVER_URL, "token": token}
+    )
+    workspace = api.config["workspace"]
+
+    # Generate a token for the workspace
+    ws_token = await api.generate_token()
+
+    # Access agent-skills from the non-public workspace with auth
+    response = requests.get(
+        f"{SERVER_URL}/{workspace}/apps/agent-skills/SKILL.md",
+        headers={"Authorization": f"Bearer {ws_token}"},
+    )
+    assert response.status_code == 200, (
+        f"Expected 200 but got {response.status_code}: {response.text[:200]}"
+    )
+    assert "# Hypha Workspace Manager" in response.text
+
+    # Verify the workspace context reflects the actual workspace from URL
+    assert workspace in response.text
+
+    # Also test the index endpoint
+    response_index = requests.get(
+        f"{SERVER_URL}/{workspace}/apps/agent-skills/",
+        headers={"Authorization": f"Bearer {ws_token}"},
+    )
+    assert response_index.status_code == 200
+    data = response_index.json()
+    assert data["name"] == "hypha"
+
+    await api.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_skills_dynamic_schema_extraction(fastapi_server):
     """Test that API documentation is dynamically extracted from service schemas."""
     response = requests.get(f"{SERVER_URL}/public/apps/agent-skills/REFERENCE.md")
@@ -545,10 +593,82 @@ async def test_skills_public_workspace_accessible_without_auth(fastapi_server):
     assert response.status_code == 200
     assert "# Hypha Workspace Manager" in response.text
 
-    # The agent-skills service is registered only in the public workspace,
-    # so accessing via a non-public workspace URL results in service not found
+    # Non-public workspace skills require authentication
     response = requests.get(f"{SERVER_URL}/test-workspace/apps/agent-skills/SKILL.md")
-    assert response.status_code in (404, 500)  # Service not found in test-workspace
+    assert response.status_code == 401
+    data = response.json()
+    assert "Authentication required" in data["error"]
+    assert "global_url" in data  # Points to the global endpoint
+
+
+@pytest.mark.asyncio
+async def test_skills_global_endpoint_no_auth(fastapi_server):
+    """Test the global /apps/agent-skills/ endpoint works without auth."""
+    # Global index
+    response = requests.get(f"{SERVER_URL}/apps/agent-skills/")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "hypha"
+    assert data["type"] == "global"
+    assert "SKILL.md" in data["files"]
+    assert "workspace_skills_pattern" in data
+
+    # Global SKILL.md
+    response = requests.get(f"{SERVER_URL}/apps/agent-skills/SKILL.md")
+    assert response.status_code == 200
+    assert response.headers.get("content-type", "").startswith("text/markdown")
+    content = response.text
+    assert "# Hypha Platform Guide" in content
+    assert "global" in content.lower()
+    assert "workspace-specific skills" in content.lower() or "Workspace-Specific" in content
+
+    # Global REFERENCE.md
+    response = requests.get(f"{SERVER_URL}/apps/agent-skills/REFERENCE.md")
+    assert response.status_code == 200
+    assert "**Parameters:**" in response.text
+
+    # Global EXAMPLES.md
+    response = requests.get(f"{SERVER_URL}/apps/agent-skills/EXAMPLES.md")
+    assert response.status_code == 200
+    assert "hypha" in response.text.lower()
+
+    # 404 for unknown files
+    response = requests.get(f"{SERVER_URL}/apps/agent-skills/UNKNOWN.md")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_skills_global_has_cors_headers(fastapi_server):
+    """Test that global endpoint includes CORS headers."""
+    response = requests.get(f"{SERVER_URL}/apps/agent-skills/SKILL.md")
+    assert response.status_code == 200
+    assert "access-control-allow-origin" in response.headers
+
+
+@pytest.mark.asyncio
+async def test_skills_global_skill_md_content(fastapi_server):
+    """Test that the global SKILL.md has proper content for bootstrapping."""
+    response = requests.get(f"{SERVER_URL}/apps/agent-skills/SKILL.md")
+    assert response.status_code == 200
+    content = response.text
+
+    # Should have YAML frontmatter
+    assert content.startswith("---")
+
+    # Should explain how to connect
+    assert "connect_to_server" in content
+
+    # Should explain how to get tokens
+    assert "generate_token" in content
+
+    # Should reference workspace-specific skills
+    assert "/apps/agent-skills/" in content
+
+    # Should have HTTP examples
+    assert "curl" in content
+
+    # Should explain authentication options
+    assert "Bearer" in content
 
 
 # ============================================================================

@@ -149,11 +149,12 @@ def start_builtin_services(
 
     # Register agent skills service BEFORE HTTPProxy (must be registered before _ready=True)
     if not args.disable_agent_skills:
-        from hypha.skills import setup_agent_skills
+        from hypha.skills import setup_agent_skills, setup_global_agent_skills_routes
 
         agent_skills_service = setup_agent_skills(store)
         store.register_public_service(agent_skills_service)
-        logger.info("Agent Skills service registered at /{workspace}/apps/agent-skills/")
+        setup_global_agent_skills_routes(app, store, base_path=args.base_path)
+        logger.info("Agent Skills registered at /{workspace}/apps/agent-skills/ and /apps/agent-skills/")
 
     HTTPProxy(
         store,

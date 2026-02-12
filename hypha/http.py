@@ -297,73 +297,44 @@ class ASGIRoutingMiddleware:
                     # Use the TARGET workspace from URL, not user's current workspace.
                     # This allows anonymous users to access public services in any workspace.
                     # Permission checks are enforced by get_service() based on service visibility.
-                    async with self.store.get_workspace_interface(
-                        user_info, workspace  # Use target workspace from URL
-                    ) as api:
-                        # Call get_service to trigger lazy loading if needed
-                        service = await api.get_service(
-                            workspace + "/" + service_id, {"mode": _mode}
-                        )
-                        # intercept the request if it's an ASGI service
-                        # Check multiple possible ways the service type might be stored
-                        service_type = getattr(service, "type", None)
-                        if service_type in ["asgi", "ASGI"]:
-                            # Reset activity timer for app services to prevent premature cleanup
-                            # ASGI services accessed via HTTP don't trigger normal RPC activity tracking
-                            # because HTTP requests bypass the WebSocket RPC layer. We need to manually
-                            # reset the timer for the client that registered this service.
-                            # The service ID format is: workspace/client_id:service_name
-                            # We need to extract the client_id part to reset its activity timer.
-                            service_full_id = getattr(service, "id", "")
-                            if service_full_id and "/" in service_full_id:
-                                # Extract client_id from service ID
-                                # Format: workspace/client_id:service_name
-                                parts = service_full_id.split("/", 1)
-                                if len(parts) == 2:
-                                    client_part = parts[1]
-                                    if ":" in client_part:
-                                        client_id = client_part.split(":", 1)[0]
-                                        full_client_id = f"{parts[0]}/{client_id}"
+                    #
+                    # If the service is not found in the target workspace (or the
+                    # workspace doesn't exist), fall back to the public workspace
+                    # for globally registered services (e.g., agent-skills).
+                    # The original workspace is preserved in scope["workspace"]
+                    # so the service handler can still provide workspace-specific content.
+                    _fallback_to_public = False
+                    if workspace != "public":
+                        try:
+                            async with self.store.get_workspace_interface(
+                                user_info, workspace
+                            ) as api:
+                                service = await api.get_service(
+                                    workspace + "/" + service_id, {"mode": _mode}
+                                )
+                                await self._handle_app_service(
+                                    service, workspace, path, scope, receive, send
+                                )
+                                return
+                        except Exception as e:
+                            err_msg = str(e)
+                            if (
+                                "Service not found" in err_msg
+                                or "does not exist" in err_msg
+                            ):
+                                _fallback_to_public = True
+                            else:
+                                raise
 
-                                        # Only reset timer for app services (identified by _rapp_ prefix)
-                                        if "/_rapp_" in full_client_id or "/_app_" in full_client_id:
-                                            try:
-                                                activity_tracker = self.store.get_activity_tracker()
-                                                await activity_tracker.reset_timer(full_client_id, entity_type="client")
-                                                logger.debug(f"Reset activity timer for client: {full_client_id}")
-                                            except Exception as e:
-                                                # Not critical - just log and continue
-                                                logger.debug(f"Could not reset activity timer for {full_client_id}: {e}")
-
-                            # Call the ASGI app with manually provided receive and send
-                            await service.serve(
-                                {
-                                    "scope": scope,
-                                    "receive": receive,
-                                    "send": send,
-                                }
+                    if _fallback_to_public or workspace == "public":
+                        async with self.store.get_workspace_interface(
+                            user_info, "public"
+                        ) as api:
+                            service = await api.get_service(
+                                "public/" + service_id, {"mode": _mode}
                             )
-                        elif service_type == "functions":
-                            await self.handle_function_service(
-                                service, path, scope, receive, send
-                            )
-                        else:
-                            await send(
-                                {
-                                    "type": "http.response.start",
-                                    "status": 500,
-                                    "headers": [
-                                        [b"content-type", b"text/plain"],
-                                    ],
-                                }
-                            )
-                            await send(
-                                {
-                                    "type": "http.response.body",
-                                    "body": b"Invalid service type: "
-                                    + str(service_type).encode(),
-                                    "more_body": False,
-                                }
+                            await self._handle_app_service(
+                                service, "public", path, scope, receive, send
                             )
                         return
                 except Exception as exp:
@@ -387,6 +358,55 @@ class ASGIRoutingMiddleware:
                     return
 
         await self.app(scope, receive, send)
+
+    async def _handle_app_service(self, service, workspace, path, scope, receive, send):
+        """Handle an app service request (ASGI or functions type)."""
+        service_type = getattr(service, "type", None)
+        if service_type in ["asgi", "ASGI"]:
+            # Reset activity timer for app services to prevent premature cleanup
+            service_full_id = getattr(service, "id", "")
+            if service_full_id and "/" in service_full_id:
+                parts = service_full_id.split("/", 1)
+                if len(parts) == 2:
+                    client_part = parts[1]
+                    if ":" in client_part:
+                        client_id = client_part.split(":", 1)[0]
+                        full_client_id = f"{parts[0]}/{client_id}"
+                        if "/_rapp_" in full_client_id or "/_app_" in full_client_id:
+                            try:
+                                activity_tracker = self.store.get_activity_tracker()
+                                await activity_tracker.reset_timer(
+                                    full_client_id, entity_type="client"
+                                )
+                                logger.debug(
+                                    f"Reset activity timer for client: {full_client_id}"
+                                )
+                            except Exception as e:
+                                logger.debug(
+                                    f"Could not reset activity timer for {full_client_id}: {e}"
+                                )
+
+            await service.serve(
+                {"scope": scope, "receive": receive, "send": send}
+            )
+        elif service_type == "functions":
+            await self.handle_function_service(service, path, scope, receive, send)
+        else:
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 500,
+                    "headers": [[b"content-type", b"text/plain"]],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": b"Invalid service type: "
+                    + str(service_type).encode(),
+                    "more_body": False,
+                }
+            )
 
     def _find_nested_function(self, service, path_parts):
         """Find a function in nested service structure."""
