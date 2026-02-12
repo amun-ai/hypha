@@ -2629,7 +2629,7 @@ For high-level usage, refer to REFERENCE.md and EXAMPLES.md.
                     "message": f"Access to workspace '{ws}' skills requires a valid token. "
                     "Use Authorization: Bearer <token> header or ?token=<token> query parameter or cookies. "
                     "For generic Hypha documentation without authentication, use the global endpoint.",
-                    "global_url": f"{server_url}/apps/agent-skills/",
+                    "global_url": f"{server_url}/ws/apps/agent-skills/",
                     "public_url": f"{server_url}/public/apps/agent-skills/"
                 })
             }
@@ -2964,7 +2964,7 @@ These workspace-specific skills include:
 
 
 def setup_global_agent_skills_routes(app, store, base_path: str = ""):
-    """Set up global agent-skills routes at /apps/agent-skills/.
+    """Set up global agent-skills routes at /ws/apps/agent-skills/.
 
     These routes serve generic Hypha documentation without requiring
     authentication, providing instructions on how to connect, obtain
@@ -2992,8 +2992,8 @@ def setup_global_agent_skills_routes(app, store, base_path: str = ""):
     def norm_url(path: str) -> str:
         return (base_path.rstrip("/") + path) if base_path else path
 
-    @app.get(norm_url("/apps/agent-skills/"))
-    @app.get(norm_url("/apps/agent-skills/{path:path}"))
+    @app.get(norm_url("/ws/apps/agent-skills/"))
+    @app.get(norm_url("/ws/apps/agent-skills/{path:path}"))
     async def global_agent_skills(request: Request, path: str = ""):
         """Serve global agent skills documentation (no auth required)."""
         path = path.strip("/")
@@ -3053,4 +3053,4 @@ def setup_global_agent_skills_routes(app, store, base_path: str = ""):
             headers=cors_headers,
         )
 
-    logger.info("Global agent skills routes registered at /apps/agent-skills/")
+    logger.info("Global agent skills routes registered at /ws/apps/agent-skills/")

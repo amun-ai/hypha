@@ -603,9 +603,9 @@ async def test_skills_public_workspace_accessible_without_auth(fastapi_server):
 
 @pytest.mark.asyncio
 async def test_skills_global_endpoint_no_auth(fastapi_server):
-    """Test the global /apps/agent-skills/ endpoint works without auth."""
+    """Test the global /ws/apps/agent-skills/ endpoint works without auth."""
     # Global index
-    response = requests.get(f"{SERVER_URL}/apps/agent-skills/")
+    response = requests.get(f"{SERVER_URL}/ws/apps/agent-skills/")
     assert response.status_code == 200
     data = response.json()
     assert data["name"] == "hypha"
@@ -614,7 +614,7 @@ async def test_skills_global_endpoint_no_auth(fastapi_server):
     assert "workspace_skills_pattern" in data
 
     # Global SKILL.md
-    response = requests.get(f"{SERVER_URL}/apps/agent-skills/SKILL.md")
+    response = requests.get(f"{SERVER_URL}/ws/apps/agent-skills/SKILL.md")
     assert response.status_code == 200
     assert response.headers.get("content-type", "").startswith("text/markdown")
     content = response.text
@@ -623,24 +623,24 @@ async def test_skills_global_endpoint_no_auth(fastapi_server):
     assert "workspace-specific skills" in content.lower() or "Workspace-Specific" in content
 
     # Global REFERENCE.md
-    response = requests.get(f"{SERVER_URL}/apps/agent-skills/REFERENCE.md")
+    response = requests.get(f"{SERVER_URL}/ws/apps/agent-skills/REFERENCE.md")
     assert response.status_code == 200
     assert "**Parameters:**" in response.text
 
     # Global EXAMPLES.md
-    response = requests.get(f"{SERVER_URL}/apps/agent-skills/EXAMPLES.md")
+    response = requests.get(f"{SERVER_URL}/ws/apps/agent-skills/EXAMPLES.md")
     assert response.status_code == 200
     assert "hypha" in response.text.lower()
 
     # 404 for unknown files
-    response = requests.get(f"{SERVER_URL}/apps/agent-skills/UNKNOWN.md")
+    response = requests.get(f"{SERVER_URL}/ws/apps/agent-skills/UNKNOWN.md")
     assert response.status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_skills_global_has_cors_headers(fastapi_server):
     """Test that global endpoint includes CORS headers."""
-    response = requests.get(f"{SERVER_URL}/apps/agent-skills/SKILL.md")
+    response = requests.get(f"{SERVER_URL}/ws/apps/agent-skills/SKILL.md")
     assert response.status_code == 200
     assert "access-control-allow-origin" in response.headers
 
@@ -648,7 +648,7 @@ async def test_skills_global_has_cors_headers(fastapi_server):
 @pytest.mark.asyncio
 async def test_skills_global_skill_md_content(fastapi_server):
     """Test that the global SKILL.md has proper content for bootstrapping."""
-    response = requests.get(f"{SERVER_URL}/apps/agent-skills/SKILL.md")
+    response = requests.get(f"{SERVER_URL}/ws/apps/agent-skills/SKILL.md")
     assert response.status_code == 200
     content = response.text
 
