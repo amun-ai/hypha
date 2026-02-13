@@ -1009,6 +1009,13 @@ async def test_git_create_zip_file(
     assert resp.status_code == 200, f"Create ZIP failed: {resp.text}"
     assert resp.headers.get("content-type") == "application/zip"
 
+    # Verify Content-Length header matches actual response body size
+    content_length = resp.headers.get("content-length")
+    assert content_length is not None, "Content-Length header missing from ZIP response"
+    assert int(content_length) == len(resp.content), (
+        f"Content-Length mismatch: header={content_length}, actual={len(resp.content)}"
+    )
+
     # Verify ZIP contents
     zip_buffer = io.BytesIO(resp.content)
     with zipfile.ZipFile(zip_buffer, "r") as zf:
@@ -1108,6 +1115,13 @@ async def test_git_create_zip_file_with_specific_files(
         timeout=30,
     )
     assert resp.status_code == 200, f"Create ZIP failed: {resp.text}"
+
+    # Verify Content-Length header matches actual response body size
+    content_length = resp.headers.get("content-length")
+    assert content_length is not None, "Content-Length header missing from ZIP response"
+    assert int(content_length) == len(resp.content), (
+        f"Content-Length mismatch: header={content_length}, actual={len(resp.content)}"
+    )
 
     # Verify ZIP contains only requested files
     zip_buffer = io.BytesIO(resp.content)
@@ -1270,6 +1284,13 @@ async def test_git_lfs_files_endpoint_streaming(
     zip_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/create-zip-file"
     resp = http.get(zip_url, params={"token": test_user_token}, timeout=60)
     assert resp.status_code == 200, f"Create ZIP failed: {resp.text}"
+
+    # Verify Content-Length header matches actual response body size
+    content_length = resp.headers.get("content-length")
+    assert content_length is not None, "Content-Length header missing from LFS ZIP response"
+    assert int(content_length) == len(resp.content), (
+        f"Content-Length mismatch: header={content_length}, actual={len(resp.content)}"
+    )
 
     # Verify ZIP contents
     zip_buffer = io.BytesIO(resp.content)
@@ -3053,3 +3074,277 @@ async def test_git_child_token_preserves_parent_user(
     await child_artifact_manager.delete(artifact_id=artifact_alias)
     await child_api.disconnect()
     await api.disconnect()
+
+
+async def test_git_create_zip_binary_content_integrity(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Test that git-storage create-zip-file preserves binary content byte-for-byte.
+
+    Pushes binary files via git to a git-storage artifact, then verifies the
+    create-zip-file endpoint produces a valid ZIP with exact content matches.
+    Also tests Content-Length accuracy and NO_COMPRESSION_32 mode.
+    """
+    import subprocess
+    import uuid
+    import zipfile
+    import io
+    import hashlib
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-zip-binary-test",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+    artifact_alias = f"git-zip-binary-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Git Zip Binary Test"},
+        config={"storage": "git"},
+    )
+
+    workspace = api.config.workspace
+    git_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}"
+
+    # Create diverse test content
+    test_files = {
+        "random.bin": os.urandom(30_000),
+        "all_bytes.dat": bytes(range(256)) * 50,
+        "zeros.bin": b"\x00" * 5_000,
+        "text_file.txt": b"Hello, World!\nLine 2\nLine 3\n",
+        "nested/deep/data.bin": os.urandom(10_000),
+        "nested/config.json": b'{"key": "value", "num": 42}',
+    }
+
+    original_hashes = {}
+    for path, content in test_files.items():
+        original_hashes[path] = hashlib.sha256(content).hexdigest()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        local_repo = os.path.join(tmpdir, "repo")
+        os.makedirs(local_repo)
+        subprocess.run(["git", "init", "-b", "main"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=local_repo, check=True, capture_output=True)
+
+        for path, content in test_files.items():
+            full_path = os.path.join(local_repo, path)
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            with open(full_path, "wb") as f:
+                f.write(content)
+
+        subprocess.run(["git", "add", "."], cwd=local_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Add binary test files"], cwd=local_repo, check=True, capture_output=True)
+
+        auth_url = git_url.replace("http://", f"http://git:{test_user_token}@")
+        subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=local_repo, check=True, capture_output=True)
+        result = subprocess.run(
+            ["git", "push", "-u", "origin", "main"],
+            cwd=local_repo, capture_output=True, text=True, timeout=30,
+        )
+        assert result.returncode == 0, f"Push failed: {result.stderr}"
+
+    # Test 1: All files ZIP
+    zip_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/create-zip-file"
+    http = get_http_session()
+    resp = http.get(zip_url, params={"token": test_user_token}, timeout=60)
+    assert resp.status_code == 200, f"Create ZIP failed: {resp.text}"
+
+    # Verify Content-Length
+    content_length = resp.headers.get("content-length")
+    assert content_length is not None, "Content-Length header missing"
+    assert int(content_length) == len(resp.content), (
+        f"Content-Length mismatch: header={content_length}, actual={len(resp.content)}"
+    )
+
+    # Verify Content-Length matches the formula
+    from hypha.artifact import _calculate_zip_size
+    file_info = [(path, len(content)) for path, content in test_files.items()]
+    formula_size = _calculate_zip_size(file_info)
+    assert formula_size == len(resp.content), (
+        f"Formula mismatch: formula={formula_size}, actual={len(resp.content)}"
+    )
+
+    # Verify ZIP integrity
+    zip_buffer = io.BytesIO(resp.content)
+    with zipfile.ZipFile(zip_buffer, "r") as zf:
+        zip_names = set(zf.namelist())
+        expected_names = set(test_files.keys())
+        assert zip_names == expected_names, (
+            f"File list mismatch: expected={expected_names}, got={zip_names}"
+        )
+
+        for path in test_files:
+            extracted = zf.read(path)
+            extracted_hash = hashlib.sha256(extracted).hexdigest()
+            assert extracted_hash == original_hashes[path], (
+                f"Content hash mismatch for {path}: "
+                f"original={original_hashes[path]}, extracted={extracted_hash}"
+            )
+
+        # Verify no compression applied
+        for info in zf.infolist():
+            assert info.compress_type == zipfile.ZIP_STORED, (
+                f"{info.filename}: compress_type={info.compress_type}, expected ZIP_STORED(0)"
+            )
+            assert info.compress_size == info.file_size, (
+                f"{info.filename}: compressed={info.compress_size} != original={info.file_size}"
+            )
+
+    # Test 2: Specific files ZIP
+    resp = http.get(
+        zip_url,
+        params={"token": test_user_token, "file": ["random.bin", "nested/deep/data.bin"]},
+        timeout=60,
+    )
+    assert resp.status_code == 200
+
+    content_length = resp.headers.get("content-length")
+    assert content_length is not None
+    assert int(content_length) == len(resp.content)
+
+    with zipfile.ZipFile(io.BytesIO(resp.content), "r") as zf:
+        assert set(zf.namelist()) == {"random.bin", "nested/deep/data.bin"}
+        assert hashlib.sha256(zf.read("random.bin")).hexdigest() == original_hashes["random.bin"]
+        assert hashlib.sha256(zf.read("nested/deep/data.bin")).hexdigest() == original_hashes["nested/deep/data.bin"]
+
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
+
+
+# Unit tests for _calculate_zip_size formula (no server required)
+
+
+def test_calculate_zip_size_accuracy():
+    """Verify _calculate_zip_size produces exact Content-Length for NO_COMPRESSION_32 zips.
+
+    This test creates actual zip files using stream_zip with NO_COMPRESSION_32 and
+    verifies that the calculated size exactly matches the actual output size.
+    Tests diverse edge cases: empty files, large files, binary data, unicode filenames,
+    deeply nested paths, many files, single-byte files, and exact boundary sizes.
+    """
+    import zipfile
+    from stream_zip import NO_COMPRESSION_32, stream_zip
+    from hypha.artifact import _calculate_zip_size
+    from datetime import datetime
+    from stat import S_IFREG
+    from io import BytesIO
+
+    modified_at = datetime.now()
+    mode = S_IFREG | 0o600
+
+    test_cases = [
+        # Basic cases
+        ("single small file", [("hello.txt", b"Hello, World!")]),
+        ("empty file", [("empty.txt", b"")]),
+        ("single byte", [("one.bin", b"X")]),
+
+        # Multiple files
+        ("multiple files", [
+            ("README.md", b"# Test\nThis is a test."),
+            ("main.py", b'print("hello")\n'),
+            ("data.bin", os.urandom(1024)),
+        ]),
+
+        # Size stress tests
+        ("large file 1MB", [("big.bin", os.urandom(1_000_000))]),
+        ("large file 5MB", [("huge.bin", os.urandom(5_000_000))]),
+        ("many small files", [(f"file_{i:04d}.txt", f"content_{i}".encode()) for i in range(100)]),
+
+        # Filename edge cases
+        ("unicode filename", [("data/résumé.txt", b"Content here")]),
+        ("multibyte unicode filename", [("日本語/ファイル.txt", b"Japanese")]),
+        ("emoji in filename", [("data/📊chart.csv", b"a,b,c\n1,2,3")]),
+        ("very long filename", [("a" * 200 + ".txt", b"long name")]),
+        ("deeply nested path", [("a/b/c/d/e/f/g/h/i/j/k/file.txt", b"deep")]),
+
+        # Binary content edge cases
+        ("all 256 byte values", [("bytes.dat", bytes(range(256)))]),
+        ("null bytes only", [("zeros.bin", b"\x00" * 10_000)]),
+        ("0xFF bytes only", [("ones.bin", b"\xff" * 10_000)]),
+
+        # Mixed content
+        ("mixed text and binary", [
+            ("readme.md", b"# Project\n"),
+            ("model.pth", os.urandom(100_000)),
+            ("config.yaml", b"key: value\nlist:\n  - item1\n  - item2\n"),
+            ("data/train.npy", os.urandom(50_000)),
+            ("data/test.npy", os.urandom(50_000)),
+            ("empty_placeholder", b""),
+        ]),
+
+        # Empty zip (no files)
+        ("no files", []),
+    ]
+
+    for desc, files in test_cases:
+        file_info = [(name, len(content)) for name, content in files]
+        expected_size = _calculate_zip_size(file_info)
+
+        # Create actual zip using stream_zip
+        def member_files(file_list=files):
+            for name, content in file_list:
+                yield (
+                    name,
+                    modified_at,
+                    mode,
+                    NO_COMPRESSION_32,
+                    (content,),
+                )
+
+        actual_data = b"".join(stream_zip(member_files()))
+        actual_size = len(actual_data)
+
+        assert expected_size == actual_size, (
+            f"_calculate_zip_size mismatch for '{desc}': "
+            f"calculated={expected_size}, actual={actual_size}, diff={expected_size - actual_size}"
+        )
+
+        # Also verify the zip is valid and extractable (except empty)
+        if files:
+            with zipfile.ZipFile(BytesIO(actual_data), "r") as zf:
+                assert set(zf.namelist()) == {name for name, _ in files}, (
+                    f"ZIP file list mismatch for '{desc}'"
+                )
+                for info in zf.infolist():
+                    assert info.compress_type == zipfile.ZIP_STORED, (
+                        f"'{desc}': {info.filename} has compress_type={info.compress_type}"
+                    )
+
+
+def test_calculate_zip_size_consistency_across_chunk_patterns():
+    """Verify Content-Length is correct regardless of how content is chunked.
+
+    stream_zip accepts content as an iterable of chunks. The formula must
+    produce the same result whether content arrives as one chunk or many.
+    """
+    from stream_zip import NO_COMPRESSION_32, stream_zip
+    from hypha.artifact import _calculate_zip_size
+    from datetime import datetime
+    from stat import S_IFREG
+
+    modified_at = datetime.now()
+    mode = S_IFREG | 0o600
+
+    content = os.urandom(100_000)
+    file_info = [("data.bin", len(content))]
+    expected_size = _calculate_zip_size(file_info)
+
+    # Test with various chunk sizes
+    chunk_sizes = [1, 7, 64, 1024, 4096, 65536, len(content)]
+    for chunk_size in chunk_sizes:
+        chunks = [content[i:i+chunk_size] for i in range(0, len(content), chunk_size)]
+
+        def member_files(c=chunks):
+            yield ("data.bin", modified_at, mode, NO_COMPRESSION_32, iter(c))
+
+        actual_data = b"".join(stream_zip(member_files()))
+        assert len(actual_data) == expected_size, (
+            f"Size mismatch with chunk_size={chunk_size}: "
+            f"expected={expected_size}, actual={len(actual_data)}"
+        )

@@ -359,6 +359,12 @@ async def test_http_file_and_directory_endpoint(
             f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/create-zip-file?file=example.txt&file={nested_file_path}"
         )
         assert response.status_code == 200
+        # Verify Content-Length header matches actual response body size
+        content_length = response.headers.get("content-length")
+        assert content_length is not None, "Content-Length header missing from ZIP response"
+        assert int(content_length) == len(response.content), (
+            f"Content-Length mismatch: header={content_length}, actual={len(response.content)}"
+        )
         # Write the zip file in a io.BytesIO object, then check if the file contents are correct
         zip_file = ZipFile(BytesIO(response.content))
         assert sorted(zip_file.namelist()) == sorted(
@@ -379,6 +385,12 @@ async def test_http_file_and_directory_endpoint(
             f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/create-zip-file"
         )
         assert response.status_code == 200, response.text
+        # Verify Content-Length header matches actual response body size
+        content_length = response.headers.get("content-length")
+        assert content_length is not None, "Content-Length header missing from ZIP response"
+        assert int(content_length) == len(response.content), (
+            f"Content-Length mismatch: header={content_length}, actual={len(response.content)}"
+        )
         zip_file = ZipFile(BytesIO(response.content))
         assert sorted(zip_file.namelist()) == sorted(
             ["example.txt", "nested/example2.txt"]
@@ -11285,4 +11297,318 @@ async def test_git_static_site_branch_selection(
 
     # Cleanup
     await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
+
+
+async def test_create_zip_binary_content_integrity(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test that create-zip-file preserves binary file content exactly.
+
+    This verifies that NO_COMPRESSION_32 mode correctly handles binary data
+    (random bytes, null bytes, all byte values) without corruption.
+    """
+    import hashlib
+
+    api = await connect_to_server(
+        {
+            "name": "zip binary test client",
+            "server_url": SERVER_URL,
+            "token": test_user_token,
+        }
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest={"name": "Zip Binary Test Collection"},
+        config={"permissions": {"*": "r", "@": "rw+"}},
+    )
+
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={"name": "Binary Content Dataset"},
+        version="stage",
+    )
+
+    # Create diverse binary test data
+    test_files = {
+        # Random bytes (incompressible, like model weights)
+        "model.bin": os.urandom(50_000),
+        # All 256 byte values repeated
+        "all_bytes.dat": bytes(range(256)) * 100,
+        # Null bytes (edge case for zip implementations)
+        "zeros.bin": b"\x00" * 10_000,
+        # Mixed: text-like + binary boundary
+        "mixed.dat": b"header\n" + os.urandom(5_000) + b"\nfooter",
+        # Small text file for comparison
+        "readme.txt": b"This is a text file.\n",
+        # Nested path with binary content
+        "data/weights/layer1.npy": os.urandom(20_000),
+    }
+
+    # Upload all files and record hashes
+    original_hashes = {}
+    for file_path, content in test_files.items():
+        original_hashes[file_path] = hashlib.sha256(content).hexdigest()
+        put_url = await artifact_manager.put_file(
+            artifact_id=dataset.id, file_path=file_path
+        )
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.put(put_url, content=content)
+            assert response.status_code == 200, f"Upload failed for {file_path}: {response.text}"
+
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    # Download the ZIP
+    workspace = api.config.workspace
+    zip_url = f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/create-zip-file"
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.get(zip_url)
+        assert response.status_code == 200, f"Create ZIP failed: {response.text}"
+
+    # Verify Content-Length matches actual body size
+    content_length = response.headers.get("content-length")
+    assert content_length is not None, "Content-Length header missing"
+    assert int(content_length) == len(response.content), (
+        f"Content-Length mismatch: header={content_length}, actual={len(response.content)}"
+    )
+
+    # Verify ZIP is valid and all files are present with correct content
+    zip_buffer = BytesIO(response.content)
+    with ZipFile(zip_buffer, "r") as zf:
+        zip_names = set(zf.namelist())
+        expected_names = set(test_files.keys())
+        assert zip_names == expected_names, (
+            f"File list mismatch: expected={expected_names}, got={zip_names}"
+        )
+
+        # Verify every file's content matches the original byte-for-byte
+        for file_path, original_content in test_files.items():
+            extracted = zf.read(file_path)
+            extracted_hash = hashlib.sha256(extracted).hexdigest()
+            assert extracted_hash == original_hashes[file_path], (
+                f"Content hash mismatch for {file_path}: "
+                f"original={original_hashes[file_path]}, extracted={extracted_hash}"
+            )
+            assert len(extracted) == len(original_content), (
+                f"Size mismatch for {file_path}: "
+                f"original={len(original_content)}, extracted={len(extracted)}"
+            )
+
+        # Verify no compression was applied (NO_COMPRESSION_32 -> stored)
+        for info in zf.infolist():
+            assert info.compress_type == zipfile.ZIP_STORED, (
+                f"File {info.filename} uses compression type {info.compress_type}, "
+                f"expected ZIP_STORED (0) for NO_COMPRESSION_32"
+            )
+            assert info.compress_size == info.file_size, (
+                f"File {info.filename}: compressed size ({info.compress_size}) != "
+                f"file size ({info.file_size}), compression was applied"
+            )
+
+    # Also test with specific file selection
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.get(
+            zip_url,
+            params={"file": ["model.bin", "data/weights/layer1.npy"]},
+        )
+        assert response.status_code == 200
+
+    content_length = response.headers.get("content-length")
+    assert content_length is not None
+    assert int(content_length) == len(response.content), (
+        f"Content-Length mismatch for specific files: "
+        f"header={content_length}, actual={len(response.content)}"
+    )
+
+    with ZipFile(BytesIO(response.content), "r") as zf:
+        assert set(zf.namelist()) == {"model.bin", "data/weights/layer1.npy"}
+        assert hashlib.sha256(zf.read("model.bin")).hexdigest() == original_hashes["model.bin"]
+        assert hashlib.sha256(zf.read("data/weights/layer1.npy")).hexdigest() == original_hashes["data/weights/layer1.npy"]
+
+    await artifact_manager.delete(artifact_id=collection.id)
+    await api.disconnect()
+
+
+async def test_create_zip_content_length_accuracy_large_files(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test Content-Length accuracy with larger files (multi-MB).
+
+    Verifies that _calculate_zip_size produces the exact correct value
+    when files are large enough that any off-by-one errors would accumulate.
+    """
+    api = await connect_to_server(
+        {
+            "name": "zip large file test client",
+            "server_url": SERVER_URL,
+            "token": test_user_token,
+        }
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest={"name": "Large Zip Test Collection"},
+        config={"permissions": {"*": "r", "@": "rw+"}},
+    )
+
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={"name": "Large Files Dataset"},
+        version="stage",
+    )
+
+    # Create files of various sizes (total ~5MB)
+    test_files = {
+        "large_random.bin": os.urandom(2_000_000),  # 2MB
+        "medium_random.bin": os.urandom(1_500_000),  # 1.5MB
+        "small_random.bin": os.urandom(500_000),  # 500KB
+        "repeated_pattern.dat": (b"ABCDEFGHIJ" * 100_000),  # 1MB of repeated text
+        "tiny.txt": b"x",  # 1 byte
+    }
+
+    for file_path, content in test_files.items():
+        put_url = await artifact_manager.put_file(
+            artifact_id=dataset.id, file_path=file_path
+        )
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.put(put_url, content=content)
+            assert response.status_code == 200
+
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    workspace = api.config.workspace
+    zip_url = f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/create-zip-file"
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        response = await client.get(zip_url)
+        assert response.status_code == 200
+
+    content_length = int(response.headers["content-length"])
+    actual_size = len(response.content)
+    assert content_length == actual_size, (
+        f"Content-Length mismatch with large files: "
+        f"header={content_length}, actual={actual_size}, diff={content_length - actual_size}"
+    )
+
+    # Cross-check with our formula
+    from hypha.artifact import _calculate_zip_size
+    file_info = [(name, len(data)) for name, data in test_files.items()]
+    formula_size = _calculate_zip_size(file_info)
+    assert formula_size == actual_size, (
+        f"Formula mismatch: formula={formula_size}, actual={actual_size}, diff={formula_size - actual_size}"
+    )
+
+    # Verify content integrity for the large file
+    import hashlib
+    with ZipFile(BytesIO(response.content), "r") as zf:
+        for name, original in test_files.items():
+            extracted = zf.read(name)
+            assert hashlib.sha256(extracted).hexdigest() == hashlib.sha256(original).hexdigest(), (
+                f"Content corruption in {name}"
+            )
+
+    await artifact_manager.delete(artifact_id=collection.id)
+    await api.disconnect()
+
+
+async def test_create_zip_sqlite_content_length_and_integrity(
+    minio_server, fastapi_server_sqlite, test_user_token
+):
+    """Test create-zip-file with SQLite backend for Content-Length and content integrity.
+
+    Uses fastapi_server_sqlite (no Docker/PostgreSQL needed) to verify the zip
+    performance optimization works across both database backends.
+    """
+    import hashlib
+
+    api = await connect_to_server(
+        {
+            "name": "zip sqlite test client",
+            "server_url": SERVER_URL_SQLITE,
+            "token": test_user_token,
+        }
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest={"name": "SQLite Zip Test Collection"},
+        config={"permissions": {"*": "r", "@": "rw+"}},
+    )
+
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={"name": "SQLite Zip Dataset"},
+        version="stage",
+    )
+
+    # Upload files: mix of text, binary, nested paths
+    test_files = {
+        "config.json": b'{"model": "resnet50", "epochs": 100}',
+        "weights/encoder.bin": os.urandom(30_000),
+        "weights/decoder.bin": os.urandom(25_000),
+        "logs/train.log": b"epoch 1: loss=0.5\nepoch 2: loss=0.3\n" * 500,
+    }
+
+    original_hashes = {}
+    for file_path, content in test_files.items():
+        original_hashes[file_path] = hashlib.sha256(content).hexdigest()
+        put_url = await artifact_manager.put_file(
+            artifact_id=dataset.id, file_path=file_path
+        )
+        response = requests.put(put_url, data=content)
+        assert response.ok, f"Upload failed for {file_path}"
+
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    # Test 1: All files zip
+    workspace = api.config.workspace
+    zip_url = f"{SERVER_URL_SQLITE}/{workspace}/artifacts/{dataset.alias}/create-zip-file"
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.get(zip_url)
+        assert response.status_code == 200
+
+    content_length = response.headers.get("content-length")
+    assert content_length is not None, "Content-Length header missing (SQLite backend)"
+    assert int(content_length) == len(response.content), (
+        f"Content-Length mismatch (SQLite): header={content_length}, actual={len(response.content)}"
+    )
+
+    with ZipFile(BytesIO(response.content), "r") as zf:
+        assert set(zf.namelist()) == set(test_files.keys())
+        for file_path in test_files:
+            extracted = zf.read(file_path)
+            assert hashlib.sha256(extracted).hexdigest() == original_hashes[file_path], (
+                f"Content corruption in {file_path} (SQLite backend)"
+            )
+        # Verify no compression
+        for info in zf.infolist():
+            assert info.compress_type == zipfile.ZIP_STORED, (
+                f"{info.filename}: expected ZIP_STORED, got {info.compress_type}"
+            )
+
+    # Test 2: Specific files zip
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.get(
+            zip_url,
+            params={"file": ["config.json", "weights/encoder.bin"]},
+        )
+        assert response.status_code == 200
+
+    content_length = response.headers.get("content-length")
+    assert content_length is not None
+    assert int(content_length) == len(response.content)
+
+    with ZipFile(BytesIO(response.content), "r") as zf:
+        assert set(zf.namelist()) == {"config.json", "weights/encoder.bin"}
+        assert hashlib.sha256(zf.read("config.json")).hexdigest() == original_hashes["config.json"]
+        assert hashlib.sha256(zf.read("weights/encoder.bin")).hexdigest() == original_hashes["weights/encoder.bin"]
+
+    await artifact_manager.delete(artifact_id=collection.id)
     await api.disconnect()
