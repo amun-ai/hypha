@@ -64,7 +64,25 @@
         theme: 'classic',
         tabComments: true,
         tabHeadings: true
-      }
+      },
+      plugins: [
+        function(hook, vm) {
+          hook.doneEach(function() {
+            // Scroll to the first search match if it exists
+            setTimeout(function() {
+                var mark = document.querySelector('.markdown-section mark');
+                if (mark) {
+                    // Calculate position with offset for header
+                    var top = mark.getBoundingClientRect().top + window.pageYOffset - 100;
+                    window.scrollTo({
+                        top: top,
+                        behavior: 'smooth'
+                    });
+                }
+            }, 750); // Increased delay to ensure rendering matches
+          });
+        }
+      ]
     };
   </script>
   <script src="https://imjoy-team.github.io/imjoy-docs/static/docsify-run-code.js"></script>
