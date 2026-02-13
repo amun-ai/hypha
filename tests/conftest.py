@@ -39,7 +39,6 @@ from . import (
     SIO_PORT,
     SIO_PORT2,
     SIO_PORT_REDIS_1,
-    SIO_PORT_REDIS_2,
     SIO_PORT_SQLITE,
     TRITON_PORT,
     POSTGRES_PORT,
@@ -116,6 +115,13 @@ def _is_port_available(port):
             return True
     except OSError:
         return False
+
+
+def _find_free_port():
+    """Find a free port by binding to port 0 and letting the OS assign one."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(('127.0.0.1', 0))
+        return sock.getsockname()[1]
 
 
 def _kill_process_on_port(port, max_retries=5):
@@ -749,20 +755,16 @@ def fastapi_server_redis_2(redis_server, minio_server, fastapi_server_redis_1):
     This fixture is used for testing horizontal scalability (multiple Hypha servers
     sharing the same Redis instance). It depends on fastapi_server_redis_1 to ensure
     the first server is fully initialized before starting the second one.
+
+    Uses a dynamically allocated port to avoid flaky port conflicts in CI.
+    Yields the server URL so tests can connect to it.
     """
     # Add a small delay to ensure the first server is fully initialized
     time.sleep(2)
 
-    # Check if port is available, if not try to clean it up with retries
-    if not _is_port_available(SIO_PORT_REDIS_2):
-        print(f"Port {SIO_PORT_REDIS_2} is already in use, attempting to clean up...")
-        success = _kill_process_on_port(SIO_PORT_REDIS_2, max_retries=5)
-        if not success:
-            raise RuntimeError(
-                f"Port {SIO_PORT_REDIS_2} is still in use after cleanup attempts. "
-                f"This could be due to a previous test run not cleaning up properly. "
-                f"Try running: lsof -ti :{SIO_PORT_REDIS_2} | xargs kill -9"
-            )
+    # Use a dynamically allocated free port to avoid flaky port conflicts
+    port = _find_free_port()
+    print(f"fastapi_server_redis_2: using dynamically allocated port {port}")
 
     # Use PIPE to capture output for debugging if startup fails
     with subprocess.Popen(
@@ -770,7 +772,7 @@ def fastapi_server_redis_2(redis_server, minio_server, fastapi_server_redis_1):
             sys.executable,
             "-m",
             "hypha.server",
-            f"--port={SIO_PORT_REDIS_2}",
+            f"--port={port}",
             # "--enable-server-apps",
             # "--enable-s3",
             # need to define it so the two server can communicate
@@ -789,7 +791,7 @@ def fastapi_server_redis_2(redis_server, minio_server, fastapi_server_redis_1):
         stderr=subprocess.PIPE,
     ) as proc:
         # Wait for server to be ready
-        server_url = f"http://127.0.0.1:{SIO_PORT_REDIS_2}"
+        server_url = f"http://127.0.0.1:{port}"
         if not _wait_for_server_health(server_url, "fastapi_server_redis_2"):
             # Try to get more information about why the server failed to start
             try:
@@ -807,7 +809,7 @@ def fastapi_server_redis_2(redis_server, minio_server, fastapi_server_redis_1):
                 print(f"Error getting server diagnostics: {e}")
             raise TimeoutError("Server (fastapi_server_redis_2) did not start in time")
 
-        yield
+        yield server_url
         _cleanup_server_process(proc, "fastapi_server_redis_2")
 
 

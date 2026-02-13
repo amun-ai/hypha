@@ -14,7 +14,6 @@ from redis import Redis
 from . import (
     SERVER_URL,
     SERVER_URL_REDIS_1,
-    SERVER_URL_REDIS_2,
     SIO_PORT2,
     WS_SERVER_URL,
     find_item,

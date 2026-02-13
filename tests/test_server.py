@@ -13,7 +13,6 @@ from hypha_rpc import connect_to_server
 from . import (
     SERVER_URL,
     SERVER_URL_REDIS_1,
-    SERVER_URL_REDIS_2,
     SIO_PORT2,
     WS_SERVER_URL,
     find_item,
@@ -336,14 +335,16 @@ async def test_server_scalability(
     3. Services registered on one server are discoverable from another
     4. RPC calls work across server instances via Redis event bus
 
-    Note: Previously this test was intermittently failing with 'address already in use'
-    errors. This was caused by an unnecessary dependency on the fastapi_server fixture,
-    which created port conflicts during fixture cleanup. The fix removed this dependency.
+    The fastapi_server_redis_2 fixture uses a dynamically allocated port
+    to avoid flaky 'address already in use' errors in CI.
     """
+    # fastapi_server_redis_2 yields the server URL with dynamic port
+    server_url_redis_2 = fastapi_server_redis_2
+
     api = await connect_to_server(
         {
             "client_id": "my-app-99",
-            "server_url": SERVER_URL_REDIS_2,
+            "server_url": server_url_redis_2,
             "token": test_user_token,
         }
     )
@@ -374,7 +375,7 @@ async def test_server_scalability(
     api77 = await connect_to_server(
         {
             "client_id": "my-app-77",
-            "server_url": SERVER_URL_REDIS_2,
+            "server_url": server_url_redis_2,
             "workspace": "my-test-workspace",
             "token": token,
             "method_timeout": 30,
