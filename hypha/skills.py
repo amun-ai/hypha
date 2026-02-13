@@ -487,7 +487,7 @@ def get_skill_md(workspace: str, server_url: str, workspace_info: dict = None, s
     for svc in services[:20]:  # Limit to 20 services for readability
         svc_id = svc.get("id", "unknown")
         svc_name = svc.get("name", "")
-        svc_desc = svc.get("description", "")[:100]
+        svc_desc = (svc.get("description") or "")[:100]
         service_list += f"- `{svc_id}`: {svc_name}"
         if svc_desc:
             service_list += f" - {svc_desc}"
@@ -2204,7 +2204,7 @@ def get_workspace_context_md(workspace: str, server_url: str, workspace_info: di
         svc_id = svc.get("id", "unknown")
         svc_name = svc.get("name", "unnamed")
         svc_type = svc.get("type", "unknown")
-        svc_desc = svc.get("description", "")[:100]
+        svc_desc = (svc.get("description") or "")[:100]
         service_list += f"\n### {svc_name or svc_id}\n- **ID**: `{svc_id}`\n- **Type**: {svc_type}\n"
         if svc_desc:
             service_list += f"- **Description**: {svc_desc}\n"
@@ -2285,7 +2285,7 @@ def create_agent_skills_service(store) -> dict:
     """Create agent skills service for registration as a public service.
 
     This creates a service of type 'functions' that handles requests to:
-    /{workspace}/apps/agent-skills/
+    /{workspace}/agent-skills/
 
     Files served:
     - SKILL.md: Main skill instructions
@@ -2346,7 +2346,7 @@ def create_agent_skills_service(store) -> dict:
         if isinstance(path, bytes):
             path = path.decode("latin-1")
 
-        # Path format: /{workspace}/apps/agent-skills/...
+        # Path format: /{workspace}/agent-skills/...
         parts = path.strip("/").split("/")
         if len(parts) >= 1 and parts[0] and not parts[0].startswith("apps"):
             return parts[0]
@@ -2507,7 +2507,7 @@ def create_agent_skills_service(store) -> dict:
 To get the source code for a specific method, use:
 
 ```
-GET /{'{workspace}'}/apps/agent-skills/SOURCE/{service_id}/{'{method_name}'}
+GET /{'{workspace}'}/agent-skills/SOURCE/{service_id}/{'{method_name}'}
 ```
 
 For example:
@@ -2627,9 +2627,10 @@ For high-level usage, refer to REFERENCE.md and EXAMPLES.md.
                 "body": json.dumps({
                     "error": "Authentication required",
                     "message": f"Access to workspace '{ws}' skills requires a valid token. "
-                    "Use Authorization: Bearer <token> header or ?token=<token> query parameter. "
-                    "The 'public' workspace skills are available without authentication.",
-                    "public_url": f"{server_url}/public/apps/agent-skills/"
+                    "Use Authorization: Bearer <token> header or ?token=<token> query parameter or cookies. "
+                    "For generic Hypha documentation without authentication, use the global endpoint.",
+                    "global_url": f"{server_url}/ws/agent-skills/",
+                    "public_url": f"{server_url}/public/agent-skills/"
                 })
             }
 
@@ -2727,7 +2728,7 @@ def setup_agent_skills(store) -> dict:
     """Set up agent skills as a public service.
 
     This creates a 'functions' type service that serves agent skills documentation at:
-    /{workspace}/apps/agent-skills/
+    /{workspace}/agent-skills/
 
     Files served:
     - SKILL.md: Main skill instructions
@@ -2743,3 +2744,313 @@ def setup_agent_skills(store) -> dict:
     """
     logger.info("Setting up Agent Skills service")
     return create_agent_skills_service(store)
+
+
+def get_global_skill_md(server_url: str) -> str:
+    """Generate the global SKILL.md for unauthenticated access.
+
+    This provides generic instructions on how to use Hypha: connecting,
+    obtaining tokens, discovering workspaces, and accessing workspace-specific skills.
+    """
+    return f"""---
+name: {SKILL_NAME}
+description: Connect to the Hypha distributed computing platform - obtain tokens, discover workspaces, and access services. This is the global entry point for AI agents.
+license: BSD-3-Clause
+compatibility: Requires network access to Hypha server. Works with Python 3.8+ or modern JavaScript environments.
+metadata:
+  version: {SKILL_VERSION}
+  server_url: {server_url}
+---
+
+# Hypha Platform Guide
+
+This is the **global** agent skills endpoint for the Hypha server at `{server_url}`.
+It provides instructions on how to connect, authenticate, and access workspace-specific services.
+
+## Quick Start
+
+### 1. Install Dependencies
+
+**Python:**
+```bash
+pip install hypha-rpc
+```
+
+**JavaScript / Node.js:**
+```bash
+npm install hypha-rpc
+```
+
+**HTTP Only (No Library Needed):**
+All Hypha services are accessible via HTTP REST endpoints with `curl`, `fetch`, or any HTTP client.
+
+### 2. Connect Anonymously
+
+```python
+import asyncio
+from hypha_rpc import connect_to_server
+
+async def main():
+    async with connect_to_server({{
+        "server_url": "{server_url}"
+    }}) as server:
+        print(f"Connected to workspace: {{server.config.workspace}}")
+        services = await server.list_services()
+        print(f"Found {{len(services)}} services")
+
+asyncio.run(main())
+```
+
+```bash
+# HTTP: List public services (no auth needed)
+curl "{server_url}/public/services"
+```
+
+### 3. Authenticate with a Token
+
+If you have a workspace token (provided by a user or generated via the API):
+
+```python
+async with connect_to_server({{
+    "server_url": "{server_url}",
+    "workspace": "YOUR_WORKSPACE",
+    "token": "YOUR_TOKEN"
+}}) as server:
+    status = await server.check_status()
+    print(f"Permission: {{status.get('user_permission')}}")
+```
+
+```bash
+# HTTP: Authenticated access
+curl -H "Authorization: Bearer YOUR_TOKEN" \\
+  "{server_url}/YOUR_WORKSPACE/services"
+```
+
+### 4. Interactive Login (Browser-Based OAuth)
+
+For interactive sessions where a user can open a browser:
+
+```python
+from hypha_rpc import login, connect_to_server
+
+async def main():
+    token = await login({{"server_url": "{server_url}"}})
+    async with connect_to_server({{
+        "server_url": "{server_url}",
+        "token": token
+    }}) as server:
+        # Generate a reusable token for future sessions
+        workspace_token = await server.generate_token({{
+            "permission": "read_write",
+            "expires_in": 86400  # 24 hours
+        }})
+        print(f"Workspace: {{server.config.workspace}}")
+        print(f"Save this token: {{workspace_token}}")
+
+asyncio.run(main())
+```
+
+## Token & Permission Management
+
+### Permission Levels
+- **`read`**: View workspace resources and services
+- **`read_write`**: Create/modify services, upload data, manage artifacts
+- **`admin`**: Full workspace control including deletion and token generation
+
+### Generating Tokens
+
+Once authenticated, generate tokens for programmatic access:
+
+```python
+# Read-only token (safe to share)
+read_token = await server.generate_token({{
+    "permission": "read",
+    "expires_in": 86400  # 24 hours
+}})
+
+# Read-write token
+rw_token = await server.generate_token({{
+    "permission": "read_write",
+    "expires_in": 3600  # 1 hour
+}})
+```
+
+## Discovering Workspaces and Services
+
+### List Services in a Workspace
+
+```python
+# List all services
+services = await server.list_services()
+
+# Get a specific service
+svc = await server.get_service("service-id")
+
+# Call a service function
+result = await svc.some_function(param1="value")
+```
+
+```bash
+# HTTP: List services
+curl "{server_url}/YOUR_WORKSPACE/services"
+
+# HTTP: Call a service function
+curl -X POST "{server_url}/YOUR_WORKSPACE/services/SERVICE_ID/FUNCTION" \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer YOUR_TOKEN" \\
+  -d '{{"param1": "value"}}'
+```
+
+## Workspace-Specific Skills
+
+Each workspace has its own agent skills endpoint with detailed, workspace-specific documentation:
+
+```
+{server_url}/YOUR_WORKSPACE/agent-skills/SKILL.md
+```
+
+These workspace-specific skills include:
+- Detailed service listings with schemas
+- Workspace configuration and capabilities
+- API reference for all enabled services
+- Code examples tailored to the workspace
+
+**Authentication is required** for workspace-specific skills (use a Bearer token or cookie).
+
+## Core Platform Capabilities
+
+1. **Service Management** - Register, discover, and call remote services via RPC or HTTP
+2. **Artifact Management** - Files, datasets, models with versioning and vector search
+3. **Server Applications** - Deploy serverless apps (web-worker, web-python, ASGI)
+4. **S3 Storage** - S3-compatible object storage with presigned URLs
+5. **MCP Integration** - Expose services as MCP endpoints for AI tools (Claude, Cursor, etc.)
+6. **A2A Protocol** - Agent-to-Agent communication for multi-agent systems
+
+## Key Built-in Services
+
+| Service | ID | Description |
+|---------|-----|------------|
+| Workspace Manager | `~` or `default` | Core workspace ops, service registration, token generation |
+| Artifact Manager | `public/artifact-manager` | File/data management, version control, vector search |
+| Server Apps | `public/server-apps` | Serverless app deployment |
+| S3 Storage | `public/s3-storage` | Direct S3 operations (if enabled) |
+
+## Instructions for AI Agents
+
+1. **Start here** - Read this global SKILL.md to understand the platform
+2. **Get a token** - Use anonymous access or request a token from the user
+3. **Access workspace skills** - Use `{server_url}/WORKSPACE/agent-skills/SKILL.md` for workspace-specific docs
+4. **Discover services** - `GET {server_url}/WORKSPACE/services` to list available services
+5. **Use HTTP or SDK** - HTTP REST for simple calls; Python/JS SDK for real-time bidirectional communication
+6. **Handle errors** - Check permissions, verify workspace exists, handle timeouts
+
+## Error Handling
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `PermissionError` | Insufficient permissions | Generate token with higher permission level |
+| `Workspace not found` | Workspace doesn't exist or was unloaded | Create workspace or check workspace ID |
+| `Service not found` | Service not registered | Use `list_services()` to discover available services |
+| `TimeoutError` | Service didn't respond | Increase timeout or check service status |
+| `401 Unauthorized` | Missing or invalid token | Provide valid token via Bearer header or cookie |
+
+## Reference
+
+- **Workspace-specific skills**: `{server_url}/WORKSPACE/agent-skills/`
+- **Public workspace skills**: `{server_url}/public/agent-skills/`
+- **API reference**: `{server_url}/WORKSPACE/agent-skills/REFERENCE.md`
+- **Code examples**: `{server_url}/WORKSPACE/agent-skills/EXAMPLES.md`
+"""
+
+
+def setup_global_agent_skills_routes(app, store, base_path: str = ""):
+    """Set up global agent-skills routes at /ws/agent-skills/.
+
+    These routes serve generic Hypha documentation without requiring
+    authentication, providing instructions on how to connect, obtain
+    tokens, and access workspace-specific skills.
+
+    Args:
+        app: The FastAPI application
+        store: The RedisStore instance
+        base_path: URL base path prefix
+    """
+    from fastapi import Request
+    from fastapi.responses import Response, JSONResponse
+
+    server_info = store.get_server_info()
+    server_url = server_info.get("public_base_url", "http://localhost:9527")
+
+    _doc_generator = None
+
+    def get_doc_generator() -> DynamicDocGenerator:
+        nonlocal _doc_generator
+        if _doc_generator is None:
+            _doc_generator = DynamicDocGenerator(store, server_url)
+        return _doc_generator
+
+    def norm_url(path: str) -> str:
+        return (base_path.rstrip("/") + path) if base_path else path
+
+    @app.get(norm_url("/ws/agent-skills/"))
+    @app.get(norm_url("/ws/agent-skills/{path:path}"))
+    async def global_agent_skills(request: Request, path: str = ""):
+        """Serve global agent skills documentation (no auth required)."""
+        path = path.strip("/")
+
+        cors_headers = {
+            "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Authorization, Content-Type",
+        }
+
+        if request.method == "OPTIONS":
+            return Response(status_code=204, headers=cors_headers)
+
+        if path in ["", "index", "index.html"]:
+            doc_generator = get_doc_generator()
+            enabled_services = await doc_generator.get_all_enabled_services()
+            data = {
+                "name": SKILL_NAME,
+                "version": SKILL_VERSION,
+                "description": "Hypha platform guide for AI agents - global entry point",
+                "type": "global",
+                "files": ["SKILL.md", "REFERENCE.md", "EXAMPLES.md"],
+                "workspace_skills_pattern": f"{server_url}/{{workspace}}/agent-skills/",
+                "enabled_services": [svc["id"] for svc in enabled_services],
+            }
+            return JSONResponse(content=data, headers=cors_headers)
+
+        if path == "SKILL.md":
+            content = get_global_skill_md(server_url)
+            return Response(
+                content=content,
+                media_type="text/markdown; charset=utf-8",
+                headers=cors_headers,
+            )
+
+        if path == "REFERENCE.md":
+            doc_generator = get_doc_generator()
+            content = await get_reference_md("public", server_url, doc_generator)
+            return Response(
+                content=content,
+                media_type="text/markdown; charset=utf-8",
+                headers=cors_headers,
+            )
+
+        if path == "EXAMPLES.md":
+            content = get_examples_md("public", server_url)
+            return Response(
+                content=content,
+                media_type="text/markdown; charset=utf-8",
+                headers=cors_headers,
+            )
+
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"File not found: {path}"},
+            headers=cors_headers,
+        )
+
+    logger.info("Global agent skills routes registered at /ws/agent-skills/")
