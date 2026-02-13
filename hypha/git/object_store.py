@@ -26,6 +26,8 @@ from dulwich.objects import ObjectID, ShaFile
 from dulwich.pack import (
     Pack,
     PackData,
+    PackIndexer,
+    extend_pack,
     iter_sha1,
     load_pack_index_file,
     write_pack_index,
@@ -302,27 +304,100 @@ class S3GitObjectStore(BucketBasedObjectStore):
                 return await pack.get_raw_async(sha)
         raise KeyError(sha)
 
-    def _parse_pack_sync(self, pack_data: bytes) -> tuple[list, bytes, bytes]:
-        """Synchronous pack parsing - runs in thread pool for CPU-bound work.
+    def _resolve_ext_ref(self, sha: bytes) -> tuple[int, bytes]:
+        """Resolve an external reference from existing packs (synchronous).
+
+        Used when parsing thin packs that contain delta objects referencing
+        base objects not included in the pack. All packs must be pre-loaded
+        before calling this method.
+
+        Args:
+            sha: The SHA of the object to resolve
 
         Returns:
-            Tuple of (entries, checksum, index_data)
+            Tuple of (type_num, data)
+
+        Raises:
+            KeyError: If the object is not found in any loaded pack
+        """
+        for pack in self._pack_cache.values():
+            if pack._pack is not None and sha in pack:
+                return pack.get_raw(sha)
+        raise KeyError(sha)
+
+    def _parse_pack_sync(
+        self, pack_data: bytes, resolve_ext_ref=None
+    ) -> tuple[list, bytes, bytes]:
+        """Synchronous pack parsing that handles thin packs.
+
+        Thin packs contain delta objects whose base objects are not in the pack.
+        This method "fattens" thin packs by appending the missing base objects,
+        producing a self-contained pack suitable for storage.
+
+        This mirrors dulwich's DiskObjectStore._complete_pack + add_thin_pack
+        approach: use PackIndexer to find external refs, then extend_pack to
+        append them.
+
+        Args:
+            pack_data: Raw pack file bytes
+            resolve_ext_ref: Optional function to resolve external references
+                for thin packs. Signature: (sha_bytes) -> (type_num, data)
+
+        Returns:
+            Tuple of (entries, checksum, pack_data_bytes) where pack_data_bytes
+            is the (possibly fattened) pack file content and checksum/entries
+            reflect the final state.
         """
         pack_file = io.BytesIO(pack_data)
         p = PackData("incoming.pack", file=pack_file, object_format=self.object_format)
-        entries = p.sorted_entries()
 
-        if not entries:
-            return [], None, None
+        # Use PackIndexer.for_pack_data to iterate entries and discover
+        # external refs (delta bases not present in this pack)
+        indexer = PackIndexer.for_pack_data(p, resolve_ext_ref=resolve_ext_ref)
+        entries = list(indexer)
+        ext_refs = set(indexer.ext_refs())
 
-        # Get checksum and generate index
-        checksum = p.get_stored_checksum()
+        if not entries and not ext_refs:
+            return [], None, None, None
+
+        if ext_refs and resolve_ext_ref:
+            # Thin pack detected: fatten it by appending external base objects.
+            # This makes the pack self-contained so it can be stored and read
+            # without needing external ref resolution at read time.
+            logger.info(
+                f"Thin pack detected with {len(ext_refs)} external refs, fattening"
+            )
+            pack_file.seek(0)
+            checksum, extra_entries = extend_pack(
+                pack_file,
+                ext_refs,
+                get_raw=resolve_ext_ref,
+                object_format=self.object_format,
+            )
+            entries.extend(extra_entries)
+
+            # Read back the fattened pack data
+            pack_file.seek(0)
+            fattened_pack_data = pack_file.read()
+        elif ext_refs:
+            # External refs but no resolver - cannot store this thin pack
+            raise KeyError(
+                f"Thin pack has unresolved external refs: "
+                f"{[ref.hex() for ref in ext_refs]}"
+            )
+        else:
+            # Normal pack, no external refs
+            fattened_pack_data = pack_data
+            checksum = p.get_stored_checksum()
+
+        # Sort entries and generate index
+        entries.sort()
         idx_file = io.BytesIO()
         write_pack_index(idx_file, entries, checksum, version=self.pack_index_version)
         idx_file.seek(0)
         index_data = idx_file.read()
 
-        return entries, checksum, index_data
+        return entries, checksum, index_data, fattened_pack_data
 
     async def add_pack_async(
         self, pack_data: bytes
@@ -337,10 +412,15 @@ class S3GitObjectStore(BucketBasedObjectStore):
         """
         logger.debug(f"add_pack_async: parsing pack data ({len(pack_data)} bytes)")
 
+        # Pre-load all existing packs so _resolve_ext_ref can resolve delta
+        # bases in thin packs (packs containing deltas referencing external objects)
+        for pack in self._pack_cache.values():
+            await pack._ensure_loaded()
+
         # Run synchronous pack parsing in thread pool to avoid blocking event loop
         # (dulwich pack parsing is CPU-bound, not I/O-bound)
-        entries, checksum, index_data = await asyncio.to_thread(
-            self._parse_pack_sync, pack_data
+        entries, checksum, index_data, final_pack_data = await asyncio.to_thread(
+            self._parse_pack_sync, pack_data, self._resolve_ext_ref
         )
         logger.debug(f"add_pack_async: got {len(entries)} entries")
 
@@ -359,9 +439,10 @@ class S3GitObjectStore(BucketBasedObjectStore):
             await existing._ensure_loaded()
             return basename, existing.get_stored_checksum()
 
-        # Upload to S3 using async client
+        # Upload to S3 using async client (use final_pack_data which may be
+        # fattened if the original was a thin pack)
         logger.debug("add_pack_async: uploading to S3")
-        await self._upload_pack_async(basename, pack_data, index_data)
+        await self._upload_pack_async(basename, final_pack_data, index_data)
         logger.debug("add_pack_async: upload complete")
 
         # Add to cache

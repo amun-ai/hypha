@@ -1216,3 +1216,227 @@ class TestGitRepoFileAccess:
         # Read from second commit
         content = await repo.get_file_content_async("file.txt", commit2.id)
         assert content == b"Version 2\n"
+
+
+class TestDeltaPacks:
+    """Tests for handling delta-compressed packs (thin packs).
+
+    Git clients send thin packs containing REF_DELTA objects that reference
+    base objects not included in the pack. The object store must resolve
+    these external references from previously stored packs.
+    """
+
+    async def test_thin_pack_with_ref_delta(
+        self, s3_client_factory, s3_config, git_test_bucket
+    ):
+        """Test that packs with REF_DELTA objects are handled correctly.
+
+        This reproduces the real-world scenario where:
+        1. An initial push stores base objects
+        2. A subsequent push sends a thin pack with deltas referencing the base objects
+        """
+        import hashlib
+        import zlib
+        from dulwich.pack import (
+            create_delta,
+            write_pack_header,
+            write_pack_objects,
+            REF_DELTA,
+        )
+        from hypha.git.object_store import S3GitObjectStore
+
+        store = S3GitObjectStore(
+            s3_client_factory,
+            git_test_bucket,
+            "delta-test/.git",
+            s3_config=s3_config,
+        )
+        await store.initialize()
+
+        # Step 1: Store a base blob in a normal pack (simulates first push)
+        base_content = b"Hello World! This is a base file with enough content to make delta encoding worthwhile. " * 5
+        base_blob = Blob.from_string(base_content)
+
+        pack_buf = io.BytesIO()
+        write_pack_objects(pack_buf, [base_blob], DEFAULT_OBJECT_FORMAT)
+        pack_buf.seek(0)
+        basename1, _ = await store.add_pack_async(pack_buf.read())
+        assert basename1 is not None
+
+        # Verify base blob is stored
+        assert await store.contains_async(base_blob.id)
+
+        # Step 2: Build a thin pack with a REF_DELTA referencing the base blob
+        target_content = b"Hello World! This is a modified file with enough content to make delta encoding worthwhile. " * 5
+        target_blob = Blob.from_string(target_content)
+
+        delta_data = b"".join(create_delta(base_content, target_content))
+
+        # Manually construct a thin pack with REF_DELTA
+        thin_pack_buf = io.BytesIO()
+        write_pack_header(thin_pack_buf.write, 1)  # 1 object
+
+        # Encode REF_DELTA type + size in variable-length format
+        obj_size = len(delta_data)
+        byte0 = (REF_DELTA << 4) | (obj_size & 0x0F)
+        obj_size >>= 4
+        if obj_size:
+            byte0 |= 0x80
+        thin_pack_buf.write(bytes([byte0]))
+        while obj_size:
+            b = obj_size & 0x7F
+            obj_size >>= 7
+            if obj_size:
+                b |= 0x80
+            thin_pack_buf.write(bytes([b]))
+
+        # 20-byte base object SHA (raw bytes)
+        base_sha_raw = bytes.fromhex(base_blob.id.decode("ascii"))
+        thin_pack_buf.write(base_sha_raw)
+
+        # Compressed delta data
+        thin_pack_buf.write(zlib.compress(delta_data))
+
+        # Pack checksum (SHA1 of all preceding data)
+        thin_pack_buf.seek(0)
+        all_data = thin_pack_buf.read()
+        checksum = hashlib.sha1(all_data).digest()
+        thin_pack_buf.write(checksum)
+
+        thin_pack_buf.seek(0)
+        thin_pack_data = thin_pack_buf.read()
+
+        # Step 3: Add the thin pack - this should resolve the delta via existing packs
+        basename2, checksum2 = await store.add_pack_async(thin_pack_data)
+        assert basename2 is not None
+        assert checksum2 is not None
+
+        # Step 4: Verify the resolved object can be retrieved
+        assert await store.contains_async(target_blob.id)
+        type_num, data = await store.get_raw_async(target_blob.id)
+        assert type_num == Blob.type_num
+        assert data == target_content
+
+    async def test_thin_pack_unresolvable_delta_raises(
+        self, s3_client_factory, s3_config, git_test_bucket
+    ):
+        """Test that a thin pack referencing a non-existent base raises an error."""
+        import hashlib
+        import zlib
+        from dulwich.pack import (
+            create_delta,
+            write_pack_header,
+            REF_DELTA,
+        )
+        from hypha.git.object_store import S3GitObjectStore
+
+        store = S3GitObjectStore(
+            s3_client_factory,
+            git_test_bucket,
+            "delta-fail-test/.git",
+            s3_config=s3_config,
+        )
+        await store.initialize()
+
+        # Build a thin pack referencing a base that doesn't exist in the store
+        base_content = b"This base blob is NOT stored anywhere."
+        target_content = b"This target blob references a missing base."
+        base_blob = Blob.from_string(base_content)
+
+        delta_data = b"".join(create_delta(base_content, target_content))
+
+        thin_pack_buf = io.BytesIO()
+        write_pack_header(thin_pack_buf.write, 1)
+
+        obj_size = len(delta_data)
+        byte0 = (REF_DELTA << 4) | (obj_size & 0x0F)
+        obj_size >>= 4
+        if obj_size:
+            byte0 |= 0x80
+        thin_pack_buf.write(bytes([byte0]))
+        while obj_size:
+            b = obj_size & 0x7F
+            obj_size >>= 7
+            if obj_size:
+                b |= 0x80
+            thin_pack_buf.write(bytes([b]))
+
+        base_sha_raw = bytes.fromhex(base_blob.id.decode("ascii"))
+        thin_pack_buf.write(base_sha_raw)
+        thin_pack_buf.write(zlib.compress(delta_data))
+
+        thin_pack_buf.seek(0)
+        all_data = thin_pack_buf.read()
+        checksum = hashlib.sha1(all_data).digest()
+        thin_pack_buf.write(checksum)
+
+        thin_pack_buf.seek(0)
+        thin_pack_data = thin_pack_buf.read()
+
+        # Should raise because the base object doesn't exist
+        with pytest.raises(Exception):
+            await store.add_pack_async(thin_pack_data)
+
+    async def test_normal_pack_still_works(
+        self, s3_client_factory, s3_config, git_test_bucket
+    ):
+        """Test that normal (non-thin) packs still work with the resolver."""
+        from hypha.git.object_store import S3GitObjectStore
+
+        store = S3GitObjectStore(
+            s3_client_factory,
+            git_test_bucket,
+            "normal-pack-test/.git",
+            s3_config=s3_config,
+        )
+        await store.initialize()
+
+        # Create a normal pack with multiple objects
+        blob1 = Blob.from_string(b"File one content")
+        blob2 = Blob.from_string(b"File two content")
+
+        pack_buf = io.BytesIO()
+        write_pack_objects(pack_buf, [blob1, blob2], DEFAULT_OBJECT_FORMAT)
+        pack_buf.seek(0)
+        basename, checksum = await store.add_pack_async(pack_buf.read())
+
+        assert basename is not None
+        assert await store.contains_async(blob1.id)
+        assert await store.contains_async(blob2.id)
+
+    async def test_deltified_pack_within_same_pack(
+        self, s3_client_factory, s3_config, git_test_bucket
+    ):
+        """Test that packs with OFS_DELTA (intra-pack deltas) work correctly."""
+        from hypha.git.object_store import S3GitObjectStore
+
+        store = S3GitObjectStore(
+            s3_client_factory,
+            git_test_bucket,
+            "ofs-delta-test/.git",
+            s3_config=s3_config,
+        )
+        await store.initialize()
+
+        # Create similar blobs that dulwich will deltify within the pack
+        content1 = b"Repeated content for delta compression. " * 20
+        content2 = b"Repeated content for delta compression! " * 20  # slight diff
+        blob1 = Blob.from_string(content1)
+        blob2 = Blob.from_string(content2)
+
+        pack_buf = io.BytesIO()
+        write_pack_objects(
+            pack_buf, [blob1, blob2], DEFAULT_OBJECT_FORMAT, deltify=True
+        )
+        pack_buf.seek(0)
+        basename, checksum = await store.add_pack_async(pack_buf.read())
+
+        assert basename is not None
+        assert await store.contains_async(blob1.id)
+        assert await store.contains_async(blob2.id)
+
+        # Verify actual content
+        type_num1, data1 = await store.get_raw_async(blob1.id)
+        type_num2, data2 = await store.get_raw_async(blob2.id)
+        assert data1 == content1
+        assert data2 == content2
