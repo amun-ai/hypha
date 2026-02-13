@@ -6900,6 +6900,46 @@ async def test_list_files_include_pending(
     assert files[0]["pending"] is True
 
 
+async def test_remove_file(minio_server, fastapi_server, test_user_token):
+    api = await connect_to_server(
+        {"name": "test-client", "token": test_user_token, "server_url": SERVER_URL}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a test artifact in staging mode
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={
+            "name": "Test Dataset",
+            "description": "Test dataset for file removal",
+        },
+        stage=True,
+    )
+
+    # Add a file to staging manifest
+    put_url = await artifact_manager.put_file(
+        artifact.id, "test_file.txt", download_weight=1.0
+    )
+    response = requests.put(put_url, data="actual file content", timeout=10)
+    assert response.ok
+
+    await artifact_manager.commit(artifact.id)
+
+    files = await artifact_manager.list_files(artifact.id)
+    assert len(files) == 1  # One file should be present after put_file
+
+    await artifact_manager.edit(artifact.id, stage=True)
+
+    # Remove the file from staging manifest
+    await artifact_manager.remove_file(artifact.id, "test_file.txt")
+
+    await artifact_manager.commit(artifact.id)
+
+    # Verify file is removed from staging manifest
+    files = await artifact_manager.list_files(artifact.id, include_pending=True)
+    assert len(files) == 0  # No files should be present after removal
+
+
 async def test_remove_file_error_handling(
     minio_server, fastapi_server, test_user_token
 ):

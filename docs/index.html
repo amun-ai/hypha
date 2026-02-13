@@ -11,7 +11,7 @@
   <meta name="author" content="Amun AI AB">
   <link rel="icon" href="https://imjoy.io/static/icons/favicon.ico" type="image/x-icon" />
   <meta name="theme-color" content="#ffffff">
-  <link rel="stylesheet" href="https://imjoy-team.github.io/imjoy-docs/static/vue.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify@4/lib/themes/vue.css" />
   <link rel="stylesheet" href="https://imjoy-team.github.io/imjoy-docs/static/style.css" />
 </head>
 
@@ -53,9 +53,10 @@
       },
       search: {
         paths: 'auto',
-        placeholder: 'Search',
+        placeholder: 'Type to search',
         noData: 'No Results.',
-        depth: 2
+        depth: 6,
+        namespace: 'hypha-docs'
       },
       tabs: {
         persist: true,
@@ -67,17 +68,19 @@
     };
   </script>
   <script src="https://imjoy-team.github.io/imjoy-docs/static/docsify-run-code.js"></script>
-  <script src="https://imjoy-team.github.io/imjoy-docs/static/docsify.min.js"></script>
-  <script src="https://imjoy-team.github.io/imjoy-docs/static/prism-python.min.js"></script>
-  <script src="https://imjoy-team.github.io/imjoy-docs/static/prism-json.min.js"></script>
-  <script src="https://imjoy-team.github.io/imjoy-docs/static/prism-bash.min.js"></script>
-  <script src="https://imjoy-team.github.io/imjoy-docs/static/prism-json.min.js"></script>
-  <script src="https://imjoy-team.github.io/imjoy-docs/static/search.min.js"></script>
+  
+  <!-- Updated to standard Docsify v4 and plugins -->
+  <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/docsify.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-python.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-json.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-bash.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/plugins/search.min.js"></script>
+  
   <script src="https://imjoy-team.github.io/imjoy-docs/static/external-script.min.js"></script>
   <script src="https://imjoy-team.github.io/imjoy-docs/static/docsify-pagination.min.js"></script>
   <script src="https://imjoy-team.github.io/imjoy-docs/static/docsify-tabs@1.js"></script>
   <script src="https://imjoy-team.github.io/imjoy-docs/static/zoom-image.min.js"></script>
-  <script src="https://imjoy-team.github.io/imjoy-docs/static/docsify-sidebar-collapse.min.js"></script>
+  <!-- <script src="https://imjoy-team.github.io/imjoy-docs/static/docsify-sidebar-collapse.min.js"></script> -->
   <script src="https://imjoy-team.github.io/imjoy-docs/static/require.min.js"></script>
   <script src="https://imjoy-team.github.io/imjoy-docs/static/imjoy-app.js"></script>
 </body>
