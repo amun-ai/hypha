@@ -265,7 +265,12 @@ class ASGIRoutingMiddleware:
                 match, params = self.agent_skills_route.matches(scope)
                 path_params = params.get("path_params", {})
                 if match == Match.FULL:
-                    path_params["service_id"] = "agent-skills"
+                    # Skip the global /ws/agent-skills/ route — it's handled
+                    # by a dedicated FastAPI endpoint, not an ASGI service.
+                    if path_params.get("workspace") == "ws":
+                        match = Match.NONE
+                    else:
+                        path_params["service_id"] = "agent-skills"
             if match == Match.FULL:
                 # Extract workspace and service_id from the matched path
                 workspace = path_params["workspace"]
