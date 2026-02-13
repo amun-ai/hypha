@@ -72,9 +72,14 @@
             setTimeout(function() {
                 var mark = document.querySelector('.markdown-section mark');
                 if (mark) {
-                    mark.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    // Calculate position with offset for header
+                    var top = mark.getBoundingClientRect().top + window.pageYOffset - 100;
+                    window.scrollTo({
+                        top: top,
+                        behavior: 'smooth'
+                    });
                 }
-            }, 500); // 500ms delay to ensure rendering matches
+            }, 750); // Increased delay to ensure rendering matches
           });
         }
       ]
