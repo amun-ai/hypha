@@ -1,0 +1,19 @@
+{
+  "id": "evt_contract_invoice_paid_001",
+  "object": "event",
+  "api_version": "2024-06-20",
+  "created": 1760000000,
+  "livemode": false,
+  "type": "invoice.payment_succeeded",
+  "data": {
+    "object": {
+      "id": "in_contract_001",
+      "object": "invoice",
+      "customer": "cus_contract_001",
+      "subscription": "sub_contract_001",
+      "status": "paid",
+      "total": 2500,
+      "currency": "usd"
+    }
+  }
+}

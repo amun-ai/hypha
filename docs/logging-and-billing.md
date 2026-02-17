@@ -2,6 +2,10 @@
 
 This guide describes the planned and recommended design for Hypha logging extensibility, interception, and billing hooks.
 
+Audience:
+- application developers building on Hypha
+- platform operators deploying/configuring Hypha for customers/teams
+
 Scope:
 - Extend logging to support application-defined events.
 - Add limited system-level default logging for baseline observability.
@@ -105,6 +109,47 @@ Recommended billing fields:
 - `idempotency_key`
 - optional dimensions (for example `model`, `region`, `operation`)
 
+## Current Billing Capabilities
+
+Current billing foundation is prepaid-first, with forward compatibility for postpaid and hybrid models.
+
+What you can rely on:
+- Payer model supports workspace/org or app-owner account style billing.
+- A single payer account can be associated with multiple workspaces.
+- Subscription plans can express:
+  - access permissions
+  - usage allowances
+  - feature entitlements.
+- Billable usage dimensions currently targeted:
+  - tokens
+  - requests
+  - storage
+  - runtime.
+- Allowance exhaustion behavior is a hard stop (no grace period), typically surfaced as HTTP `429` for quota/limit exhaustion.
+
+### Top-ups/Credits
+
+Top-up credits are not in initial scope, but API/data contracts should keep extension points for future credit buckets and hybrid charging behavior.
+
+## Stripe Integration
+
+For deployments using Stripe, the initial integration scope includes:
+- customer creation/mapping
+- subscription lifecycle
+- invoices
+- payment intents
+- webhook ingestion.
+
+Recommended operating model:
+- Treat Stripe as authoritative for payment/subscription financial lifecycle state.
+- Keep mirrored Stripe identifiers/status snapshots in Hypha for runtime enforcement and traceability.
+- Keep Hypha as source of truth for usage/metering ledger, entitlement checks, and payer/workspace mapping.
+
+Reliability target for this foundation:
+- webhook idempotency and replay handling
+- lightweight sync/consistency checks
+- not finance-grade accounting or full reconciliation workflow.
+
 ## Idempotency for billing events
 
 `idempotency_key` prevents double charging during retries, network failures, and duplicate submissions.
@@ -126,6 +171,11 @@ Expected behavior:
   - `(workspace, category, timestamp)`
   - `(workspace, event_type, timestamp)`
   - unique `(workspace, idempotency_key)` for billing dedupe.
+- Retention should be configurable per customer/tier:
+  - recommended default minimum for billable usage ledger: 13 months
+  - recommended default for non-billing operational events: 90 days
+  - higher tiers can offer longer retention.
+- Audit/export/reporting should be available for both customer-facing and internal operations.
 
 ## Testing strategy
 
@@ -142,4 +192,3 @@ Use three layers:
 3. Live/E2E tests:
 - Hypha + Redis + PostgreSQL stack.
 - retry and duplicate simulation under real services.
-

@@ -1023,6 +1023,7 @@ For containerized deployments, see the Dockerfile in the repository root and the
 
 Now that you've learned about Hypha's advanced features, you might want to explore:
 
+- **[Logging and Billing](logging-and-billing.md)** - Event model, interception policies, stop reason/error mapping, and billing idempotency
 - **[Server Apps](apps.md)** - Build web applications that run on the server
 - **[Artifact Management](artifact-manager.md)** - Store and version your data and models  
 - **[Vector Search](vector-search.md)** - Add semantic search capabilities

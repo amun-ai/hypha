@@ -1,5 +1,6 @@
  * [Getting Started](/getting-started)
  * [Configuration Guide](/configurations)
+ * [Logging and Billing](/logging-and-billing)
  * [Authentication](/auth)
  * [Artifact Manager](/artifact-manager)
  * [Service Type Annotation](/service-type-annotation)

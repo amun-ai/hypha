@@ -1,0 +1,28 @@
+{
+  "id": "evt_contract_subscription_updated_001",
+  "object": "event",
+  "api_version": "2024-06-20",
+  "created": 1760000300,
+  "livemode": false,
+  "type": "customer.subscription.updated",
+  "data": {
+    "object": {
+      "id": "sub_contract_001",
+      "object": "subscription",
+      "customer": "cus_contract_001",
+      "status": "active",
+      "current_period_start": 1760000000,
+      "current_period_end": 1762592000,
+      "items": {
+        "data": [
+          {
+            "id": "si_contract_001",
+            "price": {
+              "id": "price_contract_basic_monthly"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

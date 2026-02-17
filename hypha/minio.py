@@ -15,6 +15,8 @@ import urllib.request
 from pathlib import Path
 import requests
 from requests.exceptions import RequestException
+import shutil
+import shlex
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
@@ -72,6 +74,7 @@ def setup_minio_executables(
     if sys.platform == "darwin":
         # Detect architecture for macOS (Apple Silicon vs Intel)
         import platform
+
         machine = platform.machine()
         if machine == "arm64":
             arch = "arm64"
@@ -326,6 +329,75 @@ def generate_command(cmd_template, **kwargs):
     return cmd_template.format(**kwargs)
 
 
+_MC_ALIAS_REGISTRY = {}
+
+
+def _rewrite_local_endpoint_for_docker(arg: str) -> str:
+    """Map host-local endpoints to Docker-accessible endpoints."""
+    if arg.startswith("http://127.0.0.1:") or arg.startswith("https://127.0.0.1:"):
+        return arg.replace("127.0.0.1", "host.docker.internal", 1)
+    if arg.startswith("http://localhost:") or arg.startswith("https://localhost:"):
+        return arg.replace("localhost", "host.docker.internal", 1)
+    return arg
+
+
+def _record_alias_mapping(cmd_template, kwargs):
+    """Persist alias credentials for Docker fallback invocations."""
+    normalized = " ".join(cmd_template.strip().split())
+    if normalized.startswith("mc alias set"):
+        alias = kwargs.get("alias")
+        endpoint = kwargs.get("endpoint_url")
+        username = kwargs.get("username")
+        password = kwargs.get("password")
+        if alias and endpoint and username and password:
+            _MC_ALIAS_REGISTRY[alias] = {
+                "endpoint_url": endpoint,
+                "username": username,
+                "password": password,
+            }
+
+
+def _build_docker_mc_args(command_args):
+    """Build docker command args for mc command execution."""
+    if not shutil.which("docker"):
+        raise FileNotFoundError("docker executable not found for mc fallback")
+
+    # command_args includes local executable as first token, drop it.
+    mc_args = [_rewrite_local_endpoint_for_docker(arg) for arg in command_args[1:]]
+    mount_args = []
+    for arg in mc_args:
+        if os.path.isabs(arg) and os.path.exists(arg):
+            mode = "ro" if os.path.isfile(arg) else "rw"
+            mount_args.extend(["-v", f"{arg}:{arg}:{mode}"])
+
+    alias_in_args = next((arg for arg in mc_args if arg in _MC_ALIAS_REGISTRY), None)
+    if alias_in_args:
+        alias_cfg = _MC_ALIAS_REGISTRY[alias_in_args]
+        endpoint = _rewrite_local_endpoint_for_docker(alias_cfg["endpoint_url"])
+        setup_cmd = (
+            "mc alias set "
+            f"{shlex.quote(alias_in_args)} "
+            f"{shlex.quote(endpoint)} "
+            f"{shlex.quote(alias_cfg['username'])} "
+            f"{shlex.quote(alias_cfg['password'])} >/dev/null"
+        )
+        exec_cmd = "mc " + " ".join(shlex.quote(arg) for arg in mc_args)
+        shell_cmd = f"{setup_cmd} && {exec_cmd}"
+        return [
+            "docker",
+            "run",
+            "--rm",
+            *mount_args,
+            "--entrypoint",
+            "/bin/sh",
+            "minio/mc:latest",
+            "-c",
+            shell_cmd,
+        ]
+
+    return ["docker", "run", "--rm", *mount_args, "minio/mc:latest"] + mc_args
+
+
 def execute_command_sync(cmd_template, mc_executable, timeout=30, **kwargs):
     """Execute the command synchronously.
 
@@ -337,6 +409,20 @@ def execute_command_sync(cmd_template, mc_executable, timeout=30, **kwargs):
     """
     command_string = generate_command(cmd_template, json=True, **kwargs)
     command_string = mc_executable + command_string.lstrip("mc")
+    command_args = command_string.split()
+
+    def _run_with_docker_fallback(timeout_seconds):
+        docker_args = _build_docker_mc_args(command_args)
+        logger.warning(
+            "Falling back to Docker-based mc command due local binary failure: %s",
+            command_string,
+        )
+        return subprocess.check_output(
+            docker_args,
+            stderr=subprocess.STDOUT,
+            timeout=timeout_seconds,
+        )
+
     try:
         # Use shell=True on Windows to handle paths with spaces correctly
         if sys.platform == "win32":
@@ -348,16 +434,36 @@ def execute_command_sync(cmd_template, mc_executable, timeout=30, **kwargs):
             )
         else:
             _output = subprocess.check_output(
-                command_string.split(),
+                command_args,
                 stderr=subprocess.STDOUT,
                 timeout=timeout,
             )
         success, output = True, _output.decode("utf-8")
     except subprocess.CalledProcessError as err:
-        success, output = False, err.output.decode("utf-8")
+        output = err.output.decode("utf-8")
+        should_fallback = err.returncode in (126, 127, 137, 139, -9, -11)
+        if should_fallback:
+            try:
+                _output = _run_with_docker_fallback(timeout)
+                success, output = True, _output.decode("utf-8")
+            except Exception as fallback_err:
+                success = False
+                output = f"{output}\nDocker fallback failed: {fallback_err}".strip()
+        else:
+            success, output = False, output
     except subprocess.TimeoutExpired:
         success, output = False, f"Command timed out after {timeout} seconds"
-    return parse_output(success, output, command_string)
+    except FileNotFoundError as err:
+        try:
+            _output = _run_with_docker_fallback(timeout)
+            success, output = True, _output.decode("utf-8")
+        except Exception as fallback_err:
+            success = False
+            output = f"{err}\nDocker fallback failed: {fallback_err}".strip()
+    result = parse_output(success, output, command_string)
+    if success:
+        _record_alias_mapping(cmd_template, kwargs)
+    return result
 
 
 async def execute_command(cmd_template, mc_executable, **kwargs):
@@ -365,6 +471,19 @@ async def execute_command(cmd_template, mc_executable, **kwargs):
     loop = asyncio.get_event_loop()
     command_string = generate_command(cmd_template, json=True, **kwargs)
     command_string = mc_executable + command_string.lstrip("mc")
+    command_args = command_string.split()
+
+    def run_with_docker_fallback():
+        docker_args = _build_docker_mc_args(command_args)
+        logger.warning(
+            "Falling back to Docker-based mc command due local binary failure: %s",
+            command_string,
+        )
+        _output = subprocess.check_output(
+            docker_args,
+            stderr=subprocess.STDOUT,
+        )
+        return (True, _output.decode("utf-8"))
 
     def subprocess_call():
         try:
@@ -377,15 +496,36 @@ async def execute_command(cmd_template, mc_executable, **kwargs):
                 )
             else:
                 _output = subprocess.check_output(
-                    command_string.split(),
+                    command_args,
                     stderr=subprocess.STDOUT,
                 )
         except subprocess.CalledProcessError as err:
-            return (False, err.output.decode("utf-8"))
+            output = err.output.decode("utf-8")
+            should_fallback = err.returncode in (126, 127, 137, 139, -9, -11)
+            if should_fallback:
+                try:
+                    return run_with_docker_fallback()
+                except Exception as fallback_err:
+                    return (
+                        False,
+                        f"{output}\nDocker fallback failed: {fallback_err}".strip(),
+                    )
+            return (False, output)
+        except FileNotFoundError as err:
+            try:
+                return run_with_docker_fallback()
+            except Exception as fallback_err:
+                return (
+                    False,
+                    f"{err}\nDocker fallback failed: {fallback_err}".strip(),
+                )
         return (True, _output.decode("utf-8"))
 
     success, output = await loop.run_in_executor(None, subprocess_call)
-    return parse_output(success, output, command_string)
+    result = parse_output(success, output, command_string)
+    if success:
+        _record_alias_mapping(cmd_template, kwargs)
+    return result
 
 
 def parse_output(success, output, command_string):
@@ -473,14 +613,58 @@ class MinioClient:
         self.endpoint_url = endpoint_url
         self.access_key_id = access_key_id
         self.secret_access_key = secret_access_key
-        self._execute_sync(
-            "mc alias set {alias} {endpoint_url} {username} {password}",
-            alias=self.alias,
-            endpoint_url=self.endpoint_url,
-            username=self.access_key_id,
-            password=self.secret_access_key,
-            **kwargs,
-        )
+        self._set_alias_with_retry(**kwargs)
+
+    def _is_endpoint_live(self, timeout=2):
+        """Return True when MinIO health endpoint is reachable."""
+        try:
+            session = requests.Session()
+            session.trust_env = False
+            response = session.get(
+                f"{self.endpoint_url}/minio/health/live",
+                timeout=timeout,
+            )
+            return response.ok
+        except RequestException:
+            return False
+
+    def _set_alias_with_retry(self, **kwargs):
+        """Configure mc alias with retries to tolerate MinIO startup races."""
+        max_retries = int(os.environ.get("HYPHA_MINIO_ALIAS_MAX_RETRIES", "20"))
+        base_delay = float(os.environ.get("HYPHA_MINIO_ALIAS_RETRY_DELAY", "0.25"))
+        last_error = None
+
+        for attempt in range(max_retries):
+            if not self._is_endpoint_live():
+                last_error = Exception(f"MinIO endpoint not ready: {self.endpoint_url}")
+            else:
+                try:
+                    self._execute_sync(
+                        "mc alias set {alias} {endpoint_url} {username} {password}",
+                        alias=self.alias,
+                        endpoint_url=self.endpoint_url,
+                        username=self.access_key_id,
+                        password=self.secret_access_key,
+                        **kwargs,
+                    )
+                    return
+                except Exception as exc:
+                    last_error = exc
+
+            if attempt < max_retries - 1:
+                delay = min(base_delay * (1.5**attempt), 3.0)
+                logger.warning(
+                    "Retrying mc alias setup (%s/%s) in %.2fs: %s",
+                    attempt + 1,
+                    max_retries,
+                    delay,
+                    last_error,
+                )
+                time.sleep(delay)
+
+        raise Exception(
+            f"Failed to configure MinIO alias '{self.alias}' after {max_retries} attempts"
+        ) from last_error
 
     async def _execute(self, *args, **kwargs):
         if "target" in kwargs:
