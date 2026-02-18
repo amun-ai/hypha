@@ -1,5 +1,7 @@
 """Contract-first tests for event logging APIs."""
 
+import uuid
+
 import pytest
 from hypha_rpc import connect_to_server
 
@@ -127,6 +129,93 @@ async def test_event_log_workspace_isolation_contract(fastapi_server, test_user_
         if api_ws2 is not None:
             await api_ws2.disconnect()
         await api_ws1.disconnect()
+
+
+async def test_system_default_workspace_lifecycle_events_contract(
+    fastapi_server, test_user_token
+):
+    """Contract: workspace create/delete emits baseline system event logs."""
+    api = await _connect_client(
+        token=test_user_token, client_id="contract-event-system-workspace"
+    )
+    workspace_id = f"contract-system-ws-{uuid.uuid4().hex[:8]}"
+
+    try:
+        await api.create_workspace(
+            {
+                "id": workspace_id,
+                "name": workspace_id,
+                "description": "workspace system event contract",
+            },
+            overwrite=True,
+        )
+
+        created_events = await api.get_events(event_type="system.workspace.created")
+        assert any(
+            (event.get("data") or {}).get("workspace_id") == workspace_id
+            for event in created_events
+        ), "Expected system.workspace.created event for created workspace"
+
+        await api.delete_workspace(workspace_id)
+        deleted_events = await api.get_events(event_type="system.workspace.deleted")
+        assert any(
+            (event.get("data") or {}).get("workspace_id") == workspace_id
+            for event in deleted_events
+        ), "Expected system.workspace.deleted event for removed workspace"
+    finally:
+        await api.disconnect()
+
+
+async def test_system_default_service_lifecycle_events_contract(
+    fastapi_server, test_user_token
+):
+    """Contract: service register/update/remove emits baseline system event logs."""
+    api = await _connect_client(
+        token=test_user_token, client_id="contract-event-system-service"
+    )
+    service_name = f"contract-system-service-{uuid.uuid4().hex[:8]}"
+
+    try:
+        service_info = await api.register_service(
+            {
+                "id": service_name,
+                "name": "Contract System Service",
+                "type": "contract-system",
+            }
+        )
+        full_service_id = service_info["id"]
+
+        await api.register_service(
+            {
+                "id": service_name,
+                "name": "Contract System Service Updated",
+                "type": "contract-system",
+            },
+            overwrite=True,
+        )
+        await api.unregister_service(full_service_id)
+
+        registered_events = await api.get_events(
+            event_type="system.service.registered"
+        )
+        assert any(
+            (event.get("data") or {}).get("service_id") == full_service_id
+            for event in registered_events
+        ), "Expected system.service.registered event for registered service"
+
+        updated_events = await api.get_events(event_type="system.service.updated")
+        assert any(
+            (event.get("data") or {}).get("service_id") == full_service_id
+            for event in updated_events
+        ), "Expected system.service.updated event for updated service"
+
+        removed_events = await api.get_events(event_type="system.service.removed")
+        assert any(
+            (event.get("data") or {}).get("service_id") == full_service_id
+            for event in removed_events
+        ), "Expected system.service.removed event for removed service"
+    finally:
+        await api.disconnect()
 
 
 async def test_enriched_event_schema_contract_xfail_until_implemented(

@@ -1,194 +1,231 @@
 # Logging, Interception, and Billing
 
-This guide describes the planned and recommended design for Hypha logging extensibility, interception, and billing hooks.
-
-Audience:
-- application developers building on Hypha
-- platform operators deploying/configuring Hypha for customers/teams
+This guide covers Hypha's unified event pipeline for logging, interception, and billing hooks.
 
 Scope:
-- Extend logging to support application-defined events.
-- Add limited system-level default logging for baseline observability.
-- Add interception policies (`allow`, `stop`, `recover`).
-- Add billing usage hooks and summaries.
+- Extensible application events.
+- Limited system defaults for baseline observability.
+- Interceptor policies (`allow`, `stop`, `recover`).
+- Billing usage hooks (`record_usage`, `get_usage_summary`).
 
-Non-goals:
+Out of scope:
 - Full monitoring dashboards.
-- Alerting and incident management products.
-- Full rating/invoicing engine.
+- Alerting/incident management products.
+- Full rating/invoicing engines.
 
-## Event Model
+## Event Schema and Categories
 
-Use a single event pipeline for system, application, audit, and billing events.
+Hypha persists events with a shared schema:
 
-Recommended event fields:
-- `event_type`: Canonical event name (for example `app.task.failed`, `billing.tokens.used`).
-- `category`: One of `system`, `application`, `billing`, `audit`.
-- `level`: Severity or intent (`debug`, `info`, `warning`, `error`).
+- `event_type`: canonical event name (for example `system.app.started`, `billing.usage.recorded`)
+- `category`: `system`, `application`, `billing`, `audit`
+- `level`: `debug`, `info`, `warning`, `error`
 - `workspace`
 - `user_id`
 - `app_id` (optional)
 - `session_id` (optional)
 - `timestamp`
 - `data` (JSON payload)
-- `idempotency_key` (required for billing events)
+- `idempotency_key` (required for billing usage writes)
 
-## Interception
+### System Default Events (Baseline)
 
-Interception is a server-side policy layer in the event pipeline:
+Hypha emits baseline system events at key lifecycle points:
+
+- Workspace lifecycle:
+  - `system.workspace.created`
+  - `system.workspace.deleted`
+- Service lifecycle:
+  - `system.service.registered`
+  - `system.service.updated`
+  - `system.service.removed`
+- App lifecycle:
+  - `system.app.started`
+  - `system.app.stopped`
+  - `system.app.failed`
+
+These defaults are intentionally limited and are not intended to be a complete observability product.
+
+## Interception API and Behavior
+
+Interceptors are evaluated in deterministic order after event persistence.
 
 1. Validate event.
 2. Persist event.
-3. Evaluate matching interceptors in deterministic order.
-4. Apply action (`allow`, `stop`, `recover`).
+3. Evaluate matching interceptors.
+4. Apply action.
 
-### Why interception exists
+Actions:
+- `allow`: continue normal flow.
+- `stop`: stop the current call only.
+- `recover`: run recovery behavior and return a controlled response.
 
-It allows workspace/application owners to enforce runtime rules without duplicating guard logic in every service function.
+Important behavior:
+- `stop` does not auto-stop app sessions.
 
-Typical use cases:
-- Block specific operations when policy conditions are met.
-- Stop risky or invalid calls.
-- Trigger recovery handlers/fallback logic.
+Workspace APIs:
+- `register_interceptor(...)`
+- `list_interceptors(...)`
+- `remove_interceptor(...)`
 
-### Interceptor structure (recommended)
+Minimal interceptor example:
 
-- `id`
-- `name`
-- `enabled`
-- `scope`:
-  - `workspace` (required)
-  - `app_id` (optional)
-  - `session_id` (optional)
-- `event_selector` (event type/category match)
-- `condition` (simple operators such as `eq`, `ne`, `gt`, `lt`, `contains`)
-- `action` (`allow`, `stop`, `recover`)
-- `priority` (lower number runs first)
-- `recovery_config` (only for `recover`)
+```python
+await api.register_interceptor({
+    "name": "block-risky-op",
+    "enabled": True,
+    "scope": {"workspace": api.config.workspace},
+    "event_selector": {"event_types": ["app.task.execute"]},
+    "condition": {
+        "field": "data.risk_level",
+        "op": "eq",
+        "value": "high",
+    },
+    "action": {"type": "stop", "reason": "policy"},
+    "priority": 100,
+})
+```
 
-### Action semantics
+### Stop Error Mapping
 
-- `allow`: Continue request flow.
-- `stop`: Stop only the current call.
-- `recover`: Invoke configured recovery behavior and return controlled outcome.
+When action is `stop`, Hypha returns structured errors with stable codes.
 
-Confirmed behavior:
-- `stop` must not auto-stop app sessions.
+Recommended HTTP mapping:
+- `INTERCEPT_STOP_POLICY` -> `422` (or `409` when conflict semantics are clearer)
+- `INTERCEPT_STOP_SECURITY` -> `403`
+- `INTERCEPT_STOP_LIMIT` -> `429`
 
-### Stop reasons, codes, and status mapping
-
-When action is `stop`, return structured, reason-specific errors.
-
-Recommended error payload fields:
-- `code` (machine-readable)
-- `message` (human-readable)
-- `reason` (policy reason identifier)
-- `interceptor_id`
-- `interceptor_name`
-- `details` (optional safe metadata)
-
-Recommended code/status mapping for HTTP entry points:
-- Policy/business rule stop: `INTERCEPT_STOP_POLICY` -> `422` (or `409` when conflict semantics are clearer).
-- Permission/security stop: `INTERCEPT_STOP_SECURITY` -> `403`.
-- Quota/rate stop: `INTERCEPT_STOP_LIMIT` -> `429`.
-
-For RPC calls, return the same structured error payload through a typed RPC exception so clients can branch on `error.code` instead of parsing text.
+For RPC, clients should branch on `error.code` instead of parsing message text.
 
 ## Billing Hooks
 
-Billing hooks should be implemented as specialized logging events.
+Billing hooks are implemented as specialized event ingestion and aggregation APIs.
 
-Recommended APIs:
-- `record_usage(...)`
-- `get_usage_summary(...)`
+- `record_usage(usage)`
+- `get_usage_summary(query)`
 
-Recommended billing fields:
+Usage payload fields:
 - `billing_point`
 - `amount`
 - `unit`
-- `idempotency_key`
-- optional dimensions (for example `model`, `region`, `operation`)
+- `idempotency_key` (required)
+- optional dimensions (`model`, `region`, `operation`, etc.)
 
-## Current Billing Capabilities
+Example:
 
-Current billing foundation is prepaid-first, with forward compatibility for postpaid and hybrid models.
+```python
+await api.record_usage({
+    "billing_point": "tokens.prompt",
+    "amount": 1024,
+    "unit": "tokens",
+    "idempotency_key": "req-8f73f0a1",
+    "app_id": "assistant-app",
+    "session_id": "ws-user-abc/client-123",
+    "dimensions": {"model": "gpt-4.1"},
+})
+```
 
-What you can rely on:
-- Payer model supports workspace/org or app-owner account style billing.
-- A single payer account can be associated with multiple workspaces.
-- Subscription plans can express:
-  - access permissions
-  - usage allowances
-  - feature entitlements.
-- Billable usage dimensions currently targeted:
-  - tokens
-  - requests
-  - storage
-  - runtime.
-- Allowance exhaustion behavior is a hard stop (no grace period), typically surfaced as HTTP `429` for quota/limit exhaustion.
+Summary query example:
 
-### Top-ups/Credits
+```python
+summary = await api.get_usage_summary({
+    "start_time": "2026-02-01T00:00:00Z",
+    "end_time": "2026-02-29T23:59:59Z",
+    "group_by": ["billing_point", "app_id"],
+})
+```
 
-Top-up credits are not in initial scope, but API/data contracts should keep extension points for future credit buckets and hybrid charging behavior.
+## Idempotency Semantics and Retry Pattern
 
-## Stripe Integration
+`idempotency_key` prevents double counting when retries happen.
 
-For deployments using Stripe, the initial integration scope includes:
-- customer creation/mapping
+Rules:
+- Reuse the same key for the same logical billing event.
+- Use a different key for different logical events.
+
+Expected behavior:
+- First request with a new key is persisted.
+- Retries with the same key return deduped behavior and do not double count.
+
+Retry example (client-side):
+
+```python
+idempotency_key = f"usage:{request_id}"
+
+for _ in range(3):
+    try:
+        result = await api.record_usage({
+            "billing_point": "requests.api",
+            "amount": 1,
+            "unit": "request",
+            "idempotency_key": idempotency_key,
+        })
+        break
+    except TimeoutError:
+        # Safe to retry with the same idempotency key.
+        continue
+```
+
+## Billing Model Assumptions (Launch)
+
+Launch assumptions:
+- Prepaid-first billing model.
+- Subscription plans carry access + allowance + feature entitlements.
+- Hard stop on limit exhaustion (no grace period).
+- HTTP quota/allowance exhaustion should surface as `429`.
+
+Billable dimensions at launch:
+- tokens
+- requests
+- storage
+- runtime
+
+## Payer Account Model
+
+Hypha keeps an internal payer identity separate from Stripe customer identity.
+
+- `billing_account_id`: internal payer/account ID used by Hypha for metering and enforcement.
+- `stripe_customer_id`: mapped Stripe customer reference used for payment lifecycle synchronization.
+
+One payer account can map to multiple workspaces.
+
+## Stripe Ownership and Mirroring Model
+
+- Stripe is the source of truth for payment/subscription financial lifecycle state.
+- Hypha is the source of truth for metering ledger, entitlement enforcement, and workspace/payer mapping.
+- Hypha mirrors Stripe identifiers and key status snapshots for runtime enforcement and traceability.
+
+V1 Stripe integration scope:
+- customer mapping
 - subscription lifecycle
 - invoices
 - payment intents
-- webhook ingestion.
+- webhook ingestion with idempotent replay handling
 
-Recommended operating model:
-- Treat Stripe as authoritative for payment/subscription financial lifecycle state.
-- Keep mirrored Stripe identifiers/status snapshots in Hypha for runtime enforcement and traceability.
-- Keep Hypha as source of truth for usage/metering ledger, entitlement checks, and payer/workspace mapping.
+## Retention, Reporting, and Export
 
-Reliability target for this foundation:
-- webhook idempotency and replay handling
-- lightweight sync/consistency checks
-- not finance-grade accounting or full reconciliation workflow.
+Retention is configurable per customer/tier.
 
-## Idempotency for billing events
+Recommended baselines:
+- billable usage ledger: 13 months
+- non-billing operational events: 90 days
 
-`idempotency_key` prevents double charging during retries, network failures, and duplicate submissions.
+Reporting/export should be available for both customer-facing and internal operations.
 
-Rules:
-- Same logical billing event must reuse the same key.
-- Different billing event must use a different key.
-- Enforce uniqueness at storage level (for example unique `(workspace, idempotency_key)` index/constraint).
+## PostgreSQL / Cloud SQL Storage and Migrations
 
-Expected behavior:
-- First submission with new key: persisted and counted.
-- Retry with same key: treated as duplicate and not double-counted.
+Hypha persists event and billing data in PostgreSQL (including GCP Cloud SQL for PostgreSQL).
 
-## Storage and deployment notes
+Key index patterns:
+- `(workspace, timestamp)`
+- `(workspace, category, timestamp)`
+- `(workspace, event_type, timestamp)`
+- billing idempotency dedupe index for `(workspace, idempotency_key)` scoped to billing events
 
-- Use PostgreSQL (including GCP Cloud SQL for PostgreSQL).
-- Add indexes for query and billing usage paths:
-  - `(workspace, timestamp)`
-  - `(workspace, category, timestamp)`
-  - `(workspace, event_type, timestamp)`
-  - unique `(workspace, idempotency_key)` for billing dedupe.
-- Retention should be configurable per customer/tier:
-  - recommended default minimum for billable usage ledger: 13 months
-  - recommended default for non-billing operational events: 90 days
-  - higher tiers can offer longer retention.
-- Audit/export/reporting should be available for both customer-facing and internal operations.
+Migration workflow:
 
-## Testing strategy
+```bash
+alembic upgrade head
+```
 
-Use three layers:
-
-1. Unit tests:
-- condition evaluation and action mapping.
-- payload validation and idempotency key enforcement.
-
-2. Integration tests:
-- API behavior, permission checks, workspace isolation, dedupe behavior.
-- stop reason code and status/exception mapping verification.
-
-3. Live/E2E tests:
-- Hypha + Redis + PostgreSQL stack.
-- retry and duplicate simulation under real services.
+For schema changes, add Alembic revisions under `hypha/migrations/versions/` and validate upgrade paths in development/integration environments.

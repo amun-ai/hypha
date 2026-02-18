@@ -476,6 +476,31 @@ class ServerAppController:
         self.event_bus.on_local("client_disconnected", client_disconnected)
         store.set_server_app_controller(self)
 
+    async def _emit_system_event(
+        self,
+        *,
+        event_type: str,
+        workspace: str,
+        user_id: str,
+        data: Optional[dict] = None,
+        level: str = "info",
+        app_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> None:
+        """Emit app lifecycle system events through the workspace event pipeline."""
+        workspace_manager = getattr(self.store, "_workspace_manager", None)
+        if workspace_manager is None:
+            return
+        await workspace_manager._emit_system_event(
+            event_type=event_type,
+            workspace=workspace,
+            user_id=user_id,
+            data=data,
+            level=level,
+            app_id=app_id,
+            session_id=session_id,
+        )
+
     async def _worker_health_monitor_loop(self):
         """Periodic worker health monitoring loop."""
         while True:
@@ -2666,6 +2691,20 @@ class ServerAppController:
 
             # Extract meaningful error message
             error_msg = self._extract_core_error(exp, logs)
+            await self._emit_system_event(
+                event_type="system.app.failed",
+                workspace=workspace,
+                user_id=user_info.id,
+                level="error",
+                app_id=app_id,
+                session_id=full_client_id,
+                data={
+                    "app_id": app_id,
+                    "session_id": full_client_id,
+                    "stage": "start",
+                    "error": error_msg,
+                },
+            )
             raise Exception(
                 f"Failed to start app '{app_id}', error: {error_msg}, logs:\n{logs}"
             ) from None
@@ -2705,6 +2744,21 @@ class ServerAppController:
         # Final completion message
         _progress_callback(
             {"type": "success", "message": "Application startup completed successfully"}
+        )
+        await self._emit_system_event(
+            event_type="system.app.started",
+            workspace=workspace,
+            user_id=user_info.id,
+            app_id=app_id,
+            session_id=full_client_id,
+            data={
+                "app_id": app_id,
+                "session_id": full_client_id,
+                "app_type": app_type,
+                "worker_id": session_data.get("worker_id"),
+                "detached": detached,
+                "wait_for_service": wait_for_service,
+            },
         )
         response_data = {k: v for k, v in session_data.items()}
         return response_data
@@ -2756,6 +2810,8 @@ class ServerAppController:
     ):
         if not context:
             context = {"user": self.store.get_root_user().model_dump(), "ws": "public"}
+        user_info = UserInfo.from_context(context)
+        session_workspace = session_id.split("/")[0] if "/" in session_id else context["ws"]
         session_data = await self._get_session_from_redis(session_id)
         if session_data:
             session_stopped = False
@@ -2768,6 +2824,20 @@ class ServerAppController:
             except Exception as exp:
                 # Log the error
                 logger.error(f"Failed to stop session {session_id}: {exp}")
+                await self._emit_system_event(
+                    event_type="system.app.failed",
+                    workspace=session_workspace,
+                    user_id=user_info.id,
+                    level="error",
+                    app_id=session_data.get("app_id"),
+                    session_id=session_id,
+                    data={
+                        "app_id": session_data.get("app_id"),
+                        "session_id": session_id,
+                        "stage": "stop",
+                        "error": str(exp),
+                    },
+                )
                 if raise_exception:
                     # Re-raise the exception if raise_exception is True
                     raise
@@ -2789,6 +2859,17 @@ class ServerAppController:
                     )
                     if not remaining_instances:
                         await self.autoscaling_manager.stop_autoscaling(app_id)
+                await self._emit_system_event(
+                    event_type="system.app.stopped",
+                    workspace=session_workspace,
+                    user_id=user_info.id,
+                    app_id=app_id,
+                    session_id=session_id,
+                    data={
+                        "app_id": app_id,
+                        "session_id": session_id,
+                    },
+                )
             else:
                 # Session wasn't stopped successfully - keep it in Redis
                 logger.warning(f"Session {session_id} was not stopped successfully, keeping in Redis for manual cleanup")

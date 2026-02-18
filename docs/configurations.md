@@ -4,6 +4,12 @@ This guide covers advanced Hypha features for developers who want to build produ
 
 > **New to Hypha?** Start with the [Getting Started Guide](getting-started.md) to learn the basics first.
 
+## Logging and Billing Guide
+
+For logging extensibility, interceptor behavior, billing hooks, idempotency semantics, and retention/storage guidance, see:
+
+- [Logging and Billing](logging-and-billing.md)
+
 ## Advanced Server Configuration
 
 ### Built-in S3 (Minio) Server

@@ -790,6 +790,61 @@ class WorkspaceManager:
         finally:
             await session.close()
 
+    async def _emit_system_event(
+        self,
+        *,
+        event_type: str,
+        workspace: str,
+        user_id: str,
+        data: Optional[dict] = None,
+        level: str = "info",
+        app_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> None:
+        """Emit baseline system events without affecting primary control flow."""
+        try:
+            self._validate_event_payload(
+                event_type=event_type,
+                category="system",
+                level=level,
+                idempotency_key=None,
+            )
+            event_log = await self._persist_event(
+                event_type=event_type,
+                data=data,
+                category="system",
+                level=level,
+                workspace=workspace,
+                user_id=user_id,
+                app_id=app_id,
+                session_id=session_id,
+                idempotency_key=None,
+                billing_account_id=None,
+                retention_policy_id=None,
+                timestamp=naive_utc_now(),
+            )
+            try:
+                await self._evaluate_interceptors(event_log)
+            except InterceptorStopError as exp:
+                logger.warning(
+                    "System event %s intercepted with stop: %s",
+                    event_type,
+                    exp,
+                )
+            except Exception as exp:
+                logger.warning(
+                    "Failed to evaluate interceptors for system event %s: %s",
+                    event_type,
+                    exp,
+                )
+        except Exception as exp:
+            logger.warning(
+                "Failed to emit system event %s in workspace %s: %s",
+                event_type,
+                workspace,
+                exp,
+            )
+
     def _extract_event_field(self, payload: dict, field_path: str):
         value = payload
         for part in field_path.split("."):
@@ -2608,6 +2663,18 @@ class WorkspaceManager:
                 {"bookmark_type": "workspace", "id": workspace.id}, context=context
             )
         logger.info("Created workspace %s", workspace.id)
+        await self._emit_system_event(
+            event_type="system.workspace.created",
+            workspace=current_workspace,
+            user_id=user_info.id,
+            data={
+                "workspace_id": workspace.id,
+                "workspace_name": workspace.name,
+                "persistent": workspace.persistent,
+                "overwrite": overwrite,
+                "overwrote_existing": exists,
+            },
+        )
         # prepare the workspace for the user
         if (
             not workspace.id.startswith(ANONYMOUS_USER_WS_PREFIX)
@@ -2661,6 +2728,16 @@ class WorkspaceManager:
                 if b["name"] != workspace_info.id
             ]
             await self._update_workspace(user_workspace, user_info)
+        await self._emit_system_event(
+            event_type="system.workspace.deleted",
+            workspace=current_workspace,
+            user_id=user_info.id,
+            data={
+                "workspace_id": workspace_info.id,
+                "workspace_name": workspace_info.name,
+                "persistent": workspace_info.persistent,
+            },
+        )
         logger.info("Workspace %s removed by %s", workspace_info.id, user_info.id)
 
     @schema_method
@@ -3813,6 +3890,20 @@ class WorkspaceManager:
                     ws, "service_updated", service.model_dump()
                 )
                 logger.info(f"Updating service: {service.id}")
+            if service_name != "built-in":
+                await self._emit_system_event(
+                    event_type="system.service.updated",
+                    workspace=ws,
+                    user_id=user_info.id,
+                    data={
+                        "service_id": service.id,
+                        "service_name": service.name,
+                        "service_type": service.type,
+                        "app_id": service.app_id,
+                        "visibility": visibility,
+                    },
+                    app_id=service.app_id,
+                )
         else:
             if self._enable_service_search:
                 redis_data = await self._embed_service(service.to_redis_dict())
@@ -3874,6 +3965,20 @@ class WorkspaceManager:
                     ws, "service_added", service.model_dump(mode="json")
                 )
                 logger.info(f"Adding service {service.id}")
+            if service_name != "built-in":
+                await self._emit_system_event(
+                    event_type="system.service.registered",
+                    workspace=ws,
+                    user_id=user_info.id,
+                    data={
+                        "service_id": service.id,
+                        "service_name": service.name,
+                        "service_type": service.type,
+                        "app_id": service.app_id,
+                        "visibility": visibility,
+                    },
+                    app_id=service.app_id,
+                )
 
     @schema_method
     async def get_service_info(
@@ -4125,6 +4230,21 @@ class WorkspaceManager:
             else:
                 await self._event_bus.broadcast(
                     ws, "service_removed", service.model_dump()
+                )
+            service_name = service.id.split(":")[1]
+            if service_name != "built-in":
+                await self._emit_system_event(
+                    event_type="system.service.removed",
+                    workspace=ws,
+                    user_id=user_info.id,
+                    data={
+                        "service_id": service.id,
+                        "service_name": service.name,
+                        "service_type": service.type,
+                        "app_id": service.app_id,
+                        "visibility": visibility,
+                    },
+                    app_id=service.app_id,
                 )
 
         else:
