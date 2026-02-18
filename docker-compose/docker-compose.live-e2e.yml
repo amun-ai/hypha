@@ -1,0 +1,20 @@
+services:
+  hypha-server:
+    environment:
+      - HYPHA_ROOT_TOKEN=${HYPHA_ROOT_TOKEN:-09zDo-WV2_ZLwVfTA9Gj-pGKs2X403nio-StS2e-JihUBAiPW3hXsQ}
+      - HYPHA_STRIPE_WEBHOOK_SECRET=${HYPHA_STRIPE_WEBHOOK_SECRET:-whsec_contract_fixture_secret}
+      - PYTHONPATH=/workspace
+      - HYPHA_RESET_REDIS=true
+      - HYPHA_ENABLE_S3=false
+      - HYPHA_ENABLE_S3_PROXY=false
+    volumes:
+      - ..:/workspace
+    command: /bin/bash -lc "cd /workspace && python -m hypha.server --port=9527"
+    depends_on:
+      minio:
+        condition: service_started
+        required: false
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy

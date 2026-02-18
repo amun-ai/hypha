@@ -229,3 +229,34 @@ alembic upgrade head
 ```
 
 For schema changes, add Alembic revisions under `hypha/migrations/versions/` and validate upgrade paths in development/integration environments.
+
+## Local Live/E2E Execution
+
+Phase 6 local execution is fully automatable and does not require manual UI clicking.
+
+One-command run:
+
+```bash
+./scripts/run_logging_billing_live_e2e.sh
+```
+
+What this command does:
+- starts Postgres + Redis with Docker Compose
+- starts Hypha from local source on the host (default mode) against those real services
+- waits for readiness
+- runs live E2E scenarios in `tests/live/test_logging_interception_billing_live_e2e.py`
+- tears down the stack unless `HYPHA_LIVE_E2E_KEEP_STACK=1` is set.
+
+Phase 6 scenarios covered:
+- duplicate billing submissions with retry-like behavior and dedupe/no double-billing verification
+- interceptor stop and recover with realistic payloads
+- usage summary correctness against persisted events
+- allowance exhaustion limit enforcement (`TOO_MANY_REQUESTS` / limit-stop semantics)
+- multi-workspace usage using one payer account (`billing_account_id`) created via Stripe webhook path.
+
+Useful environment overrides:
+- `HYPHA_LIVE_E2E_SERVER_URL` (default `http://127.0.0.1:9527`)
+- `HYPHA_LIVE_E2E_ROOT_TOKEN` (default `09zDo-WV2_ZLwVfTA9Gj-pGKs2X403nio-StS2e-JihUBAiPW3hXsQ`)
+- `HYPHA_LIVE_E2E_WEBHOOK_SECRET` (default `whsec_contract_fixture_secret`)
+- `HYPHA_LIVE_E2E_HYPHA_MODE` (`host` by default, optional `compose`)
+- `HYPHA_LIVE_E2E_KEEP_STACK=1` to keep services running after tests.
