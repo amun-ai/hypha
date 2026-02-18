@@ -63,6 +63,14 @@ background_tasks = weakref.WeakSet()
 EVENT_TYPE_PATTERN = re.compile(r"^[A-Za-z0-9._:/-]+$")
 EVENT_CATEGORIES = {"system", "application", "billing", "audit"}
 EVENT_LEVELS = {"debug", "info", "warning", "error"}
+INTERCEPTOR_CONDITION_OPS = {"eq", "ne", "gt", "lt", "contains"}
+INTERCEPTOR_ACTION_TYPES = {"allow", "stop", "recover"}
+INTERCEPTOR_STOP_REASONS = {"policy", "security", "limit"}
+INTERCEPT_STOP_CODE_BY_REASON = {
+    "policy": "INTERCEPT_STOP_POLICY",
+    "security": "INTERCEPT_STOP_SECURITY",
+    "limit": "INTERCEPT_STOP_LIMIT",
+}
 
 
 # Function to return a timezone-naive datetime
@@ -225,6 +233,91 @@ class WorkspaceBillingAccount(SQLModel, table=True):
     active: bool = Field(default=True, nullable=False)
     created_at: datetime.datetime = Field(default_factory=naive_utc_now, nullable=False)
     updated_at: datetime.datetime = Field(default_factory=naive_utc_now, nullable=False)
+
+
+class EventInterceptor(SQLModel, table=True):
+    __tablename__ = "event_interceptors"
+    __table_args__ = (
+        Index(
+            "ix_event_interceptors_workspace_enabled_priority",
+            "workspace",
+            "enabled",
+            "priority",
+        ),
+        Index(
+            "ix_event_interceptors_workspace_created_at",
+            "workspace",
+            "created_at",
+        ),
+    )
+
+    id: str = Field(
+        default_factory=lambda: random_id(readable=False),
+        primary_key=True,
+    )
+    name: str = Field(nullable=False)
+    workspace: str = Field(nullable=False, index=True)
+    app_id: Optional[str] = Field(default=None, index=True)
+    session_id: Optional[str] = Field(default=None, index=True)
+    enabled: bool = Field(default=True, nullable=False, index=True)
+    priority: int = Field(default=100, nullable=False)
+    event_types: Optional[List[str]] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
+    categories: Optional[List[str]] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
+    condition_field: str = Field(nullable=False)
+    condition_op: str = Field(nullable=False)
+    condition_value: Optional[Any] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
+    action_type: str = Field(nullable=False)
+    action_reason: Optional[str] = Field(default=None)
+    action_recovery: Optional[Dict[str, Any]] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
+    created_by: str = Field(nullable=False)
+    created_at: datetime.datetime = Field(default_factory=naive_utc_now, nullable=False)
+    updated_at: datetime.datetime = Field(default_factory=naive_utc_now, nullable=False)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "scope": {
+                "workspace": self.workspace,
+                "app_id": self.app_id,
+                "session_id": self.session_id,
+            },
+            "enabled": self.enabled,
+            "priority": self.priority,
+            "event_selector": {
+                "event_types": self.event_types or [],
+                "categories": self.categories or [],
+            },
+            "condition": {
+                "field": self.condition_field,
+                "op": self.condition_op,
+                "value": self.condition_value,
+            },
+            "action": {
+                "type": self.action_type,
+                "reason": self.action_reason,
+                "recovery": self.action_recovery,
+            },
+            "created_by": self.created_by,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class InterceptorStopError(RuntimeError):
+    def __init__(self, code: str, message: str, *, reason: str, interceptor: dict):
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.reason = reason
+        self.interceptor = interceptor
 
 
 def validate_key_part(key_part: str):
@@ -560,6 +653,389 @@ class WorkspaceManager:
         
         return rpc
 
+    def _validate_event_payload(
+        self,
+        *,
+        event_type: str,
+        category: str,
+        level: str,
+        idempotency_key: Optional[str],
+    ) -> None:
+        if not event_type or " " in event_type:
+            raise ValueError("Event type must not contain spaces or be empty")
+        if len(event_type) > 128 or not EVENT_TYPE_PATTERN.match(event_type):
+            raise ValueError(
+                "Invalid event type; use 1..128 chars matching [A-Za-z0-9._:/-]"
+            )
+        if category not in EVENT_CATEGORIES:
+            raise ValueError(
+                f"Invalid event category '{category}', expected one of {sorted(EVENT_CATEGORIES)}"
+            )
+        if level not in EVENT_LEVELS:
+            raise ValueError(
+                f"Invalid event level '{level}', expected one of {sorted(EVENT_LEVELS)}"
+            )
+        if idempotency_key is not None and not (1 <= len(idempotency_key) <= 128):
+            raise ValueError("idempotency_key must be between 1 and 128 characters")
+
+    async def _persist_event(
+        self,
+        *,
+        event_type: str,
+        data: Optional[dict],
+        category: str,
+        level: str,
+        workspace: str,
+        user_id: str,
+        app_id: Optional[str],
+        session_id: Optional[str],
+        idempotency_key: Optional[str],
+        billing_account_id: Optional[str],
+        retention_policy_id: Optional[int],
+        timestamp: datetime.datetime,
+    ) -> EventLog:
+        session = await self._get_sql_session()
+        try:
+            async with session.begin():
+                event_log = EventLog(
+                    event_type=event_type,
+                    category=category,
+                    level=level,
+                    workspace=workspace,
+                    user_id=user_id,
+                    app_id=app_id,
+                    session_id=session_id,
+                    idempotency_key=idempotency_key,
+                    billing_account_id=billing_account_id,
+                    retention_policy_id=retention_policy_id,
+                    timestamp=timestamp,
+                    data=data,
+                )
+                session.add(event_log)
+                await session.flush()
+                await session.refresh(event_log)
+                return event_log
+        finally:
+            await session.close()
+
+    def _extract_event_field(self, payload: dict, field_path: str):
+        value = payload
+        for part in field_path.split("."):
+            if not isinstance(value, dict):
+                return None
+            value = value.get(part)
+        return value
+
+    def _evaluate_interceptor_condition(
+        self,
+        *,
+        op: str,
+        actual,
+        expected,
+    ) -> bool:
+        if op == "eq":
+            return actual == expected
+        if op == "ne":
+            return actual != expected
+        if op == "gt":
+            try:
+                return actual > expected
+            except TypeError:
+                return False
+        if op == "lt":
+            try:
+                return actual < expected
+            except TypeError:
+                return False
+        if op == "contains":
+            if isinstance(actual, str) and isinstance(expected, str):
+                return expected in actual
+            if isinstance(actual, (list, tuple, set)):
+                return expected in actual
+            if isinstance(actual, dict):
+                return expected in actual or expected in actual.values()
+            return False
+        return False
+
+    def _interceptor_matches_event(self, interceptor: EventInterceptor, payload: dict) -> bool:
+        if interceptor.workspace != payload.get("workspace"):
+            return False
+        if interceptor.app_id and interceptor.app_id != payload.get("app_id"):
+            return False
+        if interceptor.session_id and interceptor.session_id != payload.get("session_id"):
+            return False
+        if interceptor.event_types and payload.get("event_type") not in interceptor.event_types:
+            return False
+        if interceptor.categories and payload.get("category") not in interceptor.categories:
+            return False
+        return True
+
+    async def _emit_recovery_event(
+        self,
+        *,
+        source_event: EventLog,
+        interceptor: EventInterceptor,
+    ) -> EventLog:
+        recovery_config = interceptor.action_recovery or {}
+        recovery_event_type = recovery_config.get("event_type", "interceptor.recovered")
+        recovery_payload = {
+            "source_event_id": source_event.id,
+            "source_event_type": source_event.event_type,
+            "interceptor_id": interceptor.id,
+            "interceptor_name": interceptor.name,
+            "reason": interceptor.action_reason,
+            "recovery": recovery_config,
+        }
+        if source_event.data is not None:
+            recovery_payload["source_event_data"] = source_event.data
+        return await self._persist_event(
+            event_type=recovery_event_type,
+            data=recovery_payload,
+            category="audit",
+            level="warning",
+            workspace=source_event.workspace,
+            user_id=source_event.user_id,
+            app_id=source_event.app_id,
+            session_id=source_event.session_id,
+            idempotency_key=None,
+            billing_account_id=source_event.billing_account_id,
+            retention_policy_id=source_event.retention_policy_id,
+            timestamp=naive_utc_now(),
+        )
+
+    async def _evaluate_interceptors(self, event_log: EventLog):
+        session = await self._get_sql_session()
+        try:
+            async with session.begin():
+                query = (
+                    select(EventInterceptor)
+                    .filter(
+                        EventInterceptor.workspace == event_log.workspace,
+                        EventInterceptor.enabled.is_(True),
+                    )
+                    .order_by(EventInterceptor.priority.asc(), EventInterceptor.created_at.asc())
+                )
+                result = await session.execute(query)
+                interceptors = result.scalars().all()
+        finally:
+            await session.close()
+
+        event_payload = event_log.to_dict()
+        for interceptor in interceptors:
+            if not self._interceptor_matches_event(interceptor, event_payload):
+                continue
+            actual = self._extract_event_field(event_payload, interceptor.condition_field)
+            if not self._evaluate_interceptor_condition(
+                op=interceptor.condition_op,
+                actual=actual,
+                expected=interceptor.condition_value,
+            ):
+                continue
+
+            if interceptor.action_type == "allow":
+                continue
+
+            if interceptor.action_type == "stop":
+                reason = interceptor.action_reason or "policy"
+                error_code = INTERCEPT_STOP_CODE_BY_REASON.get(
+                    reason, "INTERCEPT_STOP_POLICY"
+                )
+                raise InterceptorStopError(
+                    error_code,
+                    f"Event blocked by interceptor '{interceptor.name}'",
+                    reason=reason,
+                    interceptor=interceptor.to_dict(),
+                )
+
+            if interceptor.action_type == "recover":
+                recovery_event = await self._emit_recovery_event(
+                    source_event=event_log,
+                    interceptor=interceptor,
+                )
+                return {
+                    "ok": True,
+                    "action": "recover",
+                    "interceptor_id": interceptor.id,
+                    "interceptor_name": interceptor.name,
+                    "recovery_event_id": recovery_event.id,
+                }
+        return None
+
+    @schema_method
+    async def register_interceptor(
+        self,
+        interceptor: dict = Field(..., description="Interceptor configuration"),
+        context: Optional[dict] = None,
+    ):
+        assert context is not None
+        workspace = context["ws"]
+        user_info = UserInfo.from_context(context)
+        if not user_info.check_permission(workspace, UserPermission.admin):
+            raise PermissionError(f"Permission denied for workspace {workspace}")
+
+        if not isinstance(interceptor, dict):
+            raise ValueError("interceptor must be an object")
+
+        name = interceptor.get("name")
+        if not isinstance(name, str) or not name.strip() or len(name) > 128:
+            raise ValueError("interceptor.name must be a non-empty string with max 128 characters")
+
+        scope = interceptor.get("scope") or {}
+        if not isinstance(scope, dict):
+            raise ValueError("interceptor.scope must be an object")
+        scope_workspace = scope.get("workspace") or workspace
+        if scope_workspace != workspace:
+            raise PermissionError("interceptor scope.workspace must match current workspace")
+        app_id = scope.get("app_id")
+        session_id = scope.get("session_id")
+
+        event_selector = interceptor.get("event_selector") or {}
+        if not isinstance(event_selector, dict):
+            raise ValueError("interceptor.event_selector must be an object")
+        event_types = event_selector.get("event_types") or []
+        categories = event_selector.get("categories") or []
+        if not isinstance(event_types, list) or not all(isinstance(i, str) for i in event_types):
+            raise ValueError("interceptor.event_selector.event_types must be a string array")
+        if not isinstance(categories, list) or not all(isinstance(i, str) for i in categories):
+            raise ValueError("interceptor.event_selector.categories must be a string array")
+        invalid_categories = [item for item in categories if item not in EVENT_CATEGORIES]
+        if invalid_categories:
+            raise ValueError(
+                f"Invalid categories in interceptor selector: {sorted(set(invalid_categories))}"
+            )
+
+        condition = interceptor.get("condition") or {}
+        if not isinstance(condition, dict):
+            raise ValueError("interceptor.condition must be an object")
+        condition_field = condition.get("field")
+        condition_op = condition.get("op")
+        condition_value = condition.get("value")
+        if not isinstance(condition_field, str) or not condition_field.strip():
+            raise ValueError("interceptor.condition.field must be a non-empty string")
+        if condition_op not in INTERCEPTOR_CONDITION_OPS:
+            raise ValueError(
+                f"interceptor.condition.op must be one of {sorted(INTERCEPTOR_CONDITION_OPS)}"
+            )
+
+        action = interceptor.get("action") or {}
+        if not isinstance(action, dict):
+            raise ValueError("interceptor.action must be an object")
+        action_type = action.get("type")
+        if action_type not in INTERCEPTOR_ACTION_TYPES:
+            raise ValueError(
+                f"interceptor.action.type must be one of {sorted(INTERCEPTOR_ACTION_TYPES)}"
+            )
+        action_reason = action.get("reason") or "policy"
+        if action_reason not in INTERCEPTOR_STOP_REASONS:
+            raise ValueError(
+                f"interceptor.action.reason must be one of {sorted(INTERCEPTOR_STOP_REASONS)}"
+            )
+        action_recovery = action.get("recovery")
+        if action_type == "recover" and action_recovery is not None and not isinstance(
+            action_recovery, dict
+        ):
+            raise ValueError("interceptor.action.recovery must be an object when provided")
+
+        enabled = bool(interceptor.get("enabled", True))
+        priority = interceptor.get("priority", 100)
+        if not isinstance(priority, int):
+            raise ValueError("interceptor.priority must be an integer")
+
+        db_session = await self._get_sql_session()
+        try:
+            async with db_session.begin():
+                db_item = EventInterceptor(
+                    name=name.strip(),
+                    workspace=workspace,
+                    app_id=app_id,
+                    session_id=session_id,
+                    enabled=enabled,
+                    priority=priority,
+                    event_types=event_types or [],
+                    categories=categories or [],
+                    condition_field=condition_field,
+                    condition_op=condition_op,
+                    condition_value=condition_value,
+                    action_type=action_type,
+                    action_reason=action_reason,
+                    action_recovery=action_recovery if action_type == "recover" else None,
+                    created_by=user_info.id,
+                    created_at=naive_utc_now(),
+                    updated_at=naive_utc_now(),
+                )
+                db_session.add(db_item)
+                await db_session.flush()
+                await db_session.refresh(db_item)
+                return db_item.to_dict()
+        finally:
+            await db_session.close()
+
+    @schema_method
+    async def list_interceptors(
+        self,
+        filters: Optional[dict] = Field(None, description="Optional interceptor filters"),
+        context: Optional[dict] = None,
+    ):
+        assert context is not None
+        workspace = context["ws"]
+        user_info = UserInfo.from_context(context)
+        if not user_info.check_permission(workspace, UserPermission.admin):
+            raise PermissionError(f"Permission denied for workspace {workspace}")
+
+        filters = filters or {}
+        app_id = filters.get("app_id")
+        session_id = filters.get("session_id")
+        enabled = filters.get("enabled")
+
+        db_session = await self._get_sql_session()
+        try:
+            async with db_session.begin():
+                query = select(EventInterceptor).filter(
+                    EventInterceptor.workspace == workspace
+                )
+                if app_id is not None:
+                    query = query.filter(EventInterceptor.app_id == app_id)
+                if session_id is not None:
+                    query = query.filter(EventInterceptor.session_id == session_id)
+                if enabled is not None:
+                    query = query.filter(EventInterceptor.enabled.is_(bool(enabled)))
+                query = query.order_by(
+                    EventInterceptor.priority.asc(),
+                    EventInterceptor.created_at.asc(),
+                )
+                result = await db_session.execute(query)
+                return [item.to_dict() for item in result.scalars().all()]
+        finally:
+            await db_session.close()
+
+    @schema_method
+    async def remove_interceptor(
+        self,
+        interceptor_id: str = Field(..., description="Interceptor ID"),
+        context: Optional[dict] = None,
+    ):
+        assert context is not None
+        workspace = context["ws"]
+        user_info = UserInfo.from_context(context)
+        if not user_info.check_permission(workspace, UserPermission.admin):
+            raise PermissionError(f"Permission denied for workspace {workspace}")
+
+        db_session = await self._get_sql_session()
+        try:
+            async with db_session.begin():
+                query = select(EventInterceptor).filter(
+                    EventInterceptor.id == interceptor_id,
+                    EventInterceptor.workspace == workspace,
+                )
+                result = await db_session.execute(query)
+                interceptor = result.scalars().first()
+                if interceptor is None:
+                    raise KeyError(f"Interceptor not found: {interceptor_id}")
+                await db_session.delete(interceptor)
+                return {"ok": True, "removed": True}
+        finally:
+            await db_session.close()
+
     @schema_method
     async def log_event(
         self,
@@ -587,55 +1063,44 @@ class WorkspaceManager:
         ),
         context: dict = None,
     ):
-        """Log a new event, checking permissions."""
-        if not event_type or " " in event_type:
-            raise ValueError("Event type must not contain spaces or be empty")
-        if len(event_type) > 128 or not EVENT_TYPE_PATTERN.match(event_type):
-            raise ValueError(
-                "Invalid event type; use 1..128 chars matching [A-Za-z0-9._:/-]"
-            )
-        if category not in EVENT_CATEGORIES:
-            raise ValueError(
-                f"Invalid event category '{category}', expected one of {sorted(EVENT_CATEGORIES)}"
-            )
-        if level not in EVENT_LEVELS:
-            raise ValueError(
-                f"Invalid event level '{level}', expected one of {sorted(EVENT_LEVELS)}"
-            )
-        if idempotency_key is not None and not (1 <= len(idempotency_key) <= 128):
-            raise ValueError("idempotency_key must be between 1 and 128 characters")
+        """Log a new event and run interception pipeline."""
+        self._validate_event_payload(
+            event_type=event_type,
+            category=category,
+            level=level,
+            idempotency_key=idempotency_key,
+        )
         self.validate_context(context, permission=UserPermission.read_write)
         workspace = context["ws"]
         user_info = UserInfo.from_context(context)
         event_timestamp = normalize_naive_utc_datetime(timestamp) or naive_utc_now()
 
-        session = await self._get_sql_session()
         try:
-            async with session.begin():
-                event_log = EventLog(
-                    event_type=event_type,
-                    category=category,
-                    level=level,
-                    workspace=workspace,
-                    user_id=user_info.id,
-                    app_id=app_id,
-                    session_id=session_id,
-                    idempotency_key=idempotency_key,
-                    billing_account_id=billing_account_id,
-                    retention_policy_id=retention_policy_id,
-                    timestamp=event_timestamp,
-                    data=data,
-                )
-                session.add(event_log)
-                await session.commit()
-                logger.info(
-                    f"Logged event: {event_type} by {user_info.id} in {workspace}"
-                )
+            event_log = await self._persist_event(
+                event_type=event_type,
+                data=data,
+                category=category,
+                level=level,
+                workspace=workspace,
+                user_id=user_info.id,
+                app_id=app_id,
+                session_id=session_id,
+                idempotency_key=idempotency_key,
+                billing_account_id=billing_account_id,
+                retention_policy_id=retention_policy_id,
+                timestamp=event_timestamp,
+            )
+            logger.info(f"Logged event: {event_type} by {user_info.id} in {workspace}")
+
+            pipeline_result = await self._evaluate_interceptors(event_log)
+            if pipeline_result is not None:
+                return pipeline_result
+        except InterceptorStopError as exp:
+            logger.warning(f"Event stopped by interceptor: {exp}")
+            raise
         except Exception as e:
             logger.error(f"Failed to log event: {event_type}, {e}")
             raise
-        finally:
-            await session.close()
 
     @schema_method
     async def get_event_stats(
@@ -3394,6 +3859,9 @@ class WorkspaceManager:
             "log_event": self.log_event,
             "get_event_stats": self.get_event_stats,
             "get_events": self.get_events,
+            "register_interceptor": self.register_interceptor,
+            "list_interceptors": self.list_interceptors,
+            "remove_interceptor": self.remove_interceptor,
             "register_service": self.register_service,
             "unregister_service": self.unregister_service,
             "list_workspaces": self.list_workspaces,
