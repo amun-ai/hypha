@@ -23,6 +23,8 @@ from hypha.core import RedisRPCConnection
 from sqlalchemy import (
     Column,
     JSON,
+    Index,
+    text,
     select,
     func,
 )
@@ -58,10 +60,25 @@ _allowed_characters = re.compile(r"^[a-zA-Z0-9-_/|*]*$")
 
 background_tasks = weakref.WeakSet()
 
+EVENT_TYPE_PATTERN = re.compile(r"^[A-Za-z0-9._:/-]+$")
+EVENT_CATEGORIES = {"system", "application", "billing", "audit"}
+EVENT_LEVELS = {"debug", "info", "warning", "error"}
+
 
 # Function to return a timezone-naive datetime
 def naive_utc_now():
     return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+
+
+def normalize_naive_utc_datetime(
+    value: Optional[datetime.datetime],
+) -> Optional[datetime.datetime]:
+    """Normalize datetimes to timezone-naive UTC for DB compatibility."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(datetime.timezone.utc).replace(tzinfo=None)
 
 
 def escape_redis_syntax(value: str) -> str:
@@ -82,11 +99,47 @@ def sanitize_search_value(value: str) -> str:
 # SQLModel model for storing events
 class EventLog(SQLModel, table=True):
     __tablename__ = "event_logs"
+    __table_args__ = (
+        Index("ix_event_logs_workspace_timestamp", "workspace", "timestamp"),
+        Index(
+            "ix_event_logs_workspace_category_timestamp",
+            "workspace",
+            "category",
+            "timestamp",
+        ),
+        Index(
+            "ix_event_logs_workspace_event_type_timestamp",
+            "workspace",
+            "event_type",
+            "timestamp",
+        ),
+        Index(
+            "ux_event_logs_workspace_idempotency_key_billing",
+            "workspace",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text(
+                "category = 'billing' AND idempotency_key IS NOT NULL"
+            ),
+            sqlite_where=text("category = 'billing' AND idempotency_key IS NOT NULL"),
+        ),
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     event_type: str = Field(nullable=False)
+    category: str = Field(default="application", nullable=False)
+    level: str = Field(default="info", nullable=False)
     workspace: str = Field(nullable=False)
     user_id: str = Field(nullable=False)
+    app_id: Optional[str] = Field(default=None)
+    session_id: Optional[str] = Field(default=None)
+    idempotency_key: Optional[str] = Field(default=None)
+    billing_account_id: Optional[str] = Field(
+        default=None, foreign_key="billing_accounts.id", index=True
+    )
+    retention_policy_id: Optional[int] = Field(
+        default=None, foreign_key="billing_retention_policies.id", index=True
+    )
     timestamp: datetime.datetime = Field(default_factory=naive_utc_now, index=True)
     data: Optional[Dict[str, Any]] = Field(
         default=None, sa_column=Column(JSON, nullable=True)
@@ -97,11 +150,81 @@ class EventLog(SQLModel, table=True):
         return {
             "id": self.id,
             "event_type": self.event_type,
+            "category": self.category,
+            "level": self.level,
             "workspace": self.workspace,
             "user_id": self.user_id,
+            "app_id": self.app_id,
+            "session_id": self.session_id,
+            "idempotency_key": self.idempotency_key,
+            "billing_account_id": self.billing_account_id,
+            "retention_policy_id": self.retention_policy_id,
             "timestamp": self.timestamp.isoformat() if self.timestamp else None,
             "data": self.data,
         }
+
+
+class BillingRetentionPolicy(SQLModel, table=True):
+    __tablename__ = "billing_retention_policies"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: Optional[str] = Field(default=None)
+    billable_usage_retention_days: int = Field(default=395, nullable=False)
+    operational_event_retention_days: int = Field(default=90, nullable=False)
+    config: Optional[Dict[str, Any]] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
+    created_at: datetime.datetime = Field(default_factory=naive_utc_now, nullable=False)
+    updated_at: datetime.datetime = Field(default_factory=naive_utc_now, nullable=False)
+
+
+class BillingAccount(SQLModel, table=True):
+    __tablename__ = "billing_accounts"
+    __table_args__ = (
+        Index(
+            "ux_billing_accounts_stripe_customer_id",
+            "stripe_customer_id",
+            unique=True,
+            postgresql_where=text("stripe_customer_id IS NOT NULL"),
+            sqlite_where=text("stripe_customer_id IS NOT NULL"),
+        ),
+    )
+
+    id: str = Field(
+        default_factory=lambda: random_id(readable=False),
+        primary_key=True,
+    )
+    stripe_customer_id: Optional[str] = Field(default=None)
+    plan_id: Optional[str] = Field(default=None)
+    price_id: Optional[str] = Field(default=None)
+    entitlement_snapshot_ref: Optional[str] = Field(default=None)
+    retention_policy_id: Optional[int] = Field(
+        default=None, foreign_key="billing_retention_policies.id", index=True
+    )
+    created_at: datetime.datetime = Field(default_factory=naive_utc_now, nullable=False)
+    updated_at: datetime.datetime = Field(default_factory=naive_utc_now, nullable=False)
+
+
+class WorkspaceBillingAccount(SQLModel, table=True):
+    __tablename__ = "workspace_billing_accounts"
+    __table_args__ = (
+        Index(
+            "ux_workspace_billing_accounts_workspace_active",
+            "workspace",
+            unique=True,
+            postgresql_where=text("active = true"),
+            sqlite_where=text("active = 1"),
+        ),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    workspace: str = Field(nullable=False, index=True)
+    billing_account_id: str = Field(
+        nullable=False, foreign_key="billing_accounts.id", index=True
+    )
+    active: bool = Field(default=True, nullable=False)
+    created_at: datetime.datetime = Field(default_factory=naive_utc_now, nullable=False)
+    updated_at: datetime.datetime = Field(default_factory=naive_utc_now, nullable=False)
 
 
 def validate_key_part(key_part: str):
@@ -442,21 +565,65 @@ class WorkspaceManager:
         self,
         event_type: str = Field(..., description="Event type"),
         data: Optional[dict] = Field(None, description="Additional event data"),
+        category: str = Field(
+            "application",
+            description="Event category: system|application|billing|audit",
+        ),
+        level: str = Field(
+            "info",
+            description="Event level: debug|info|warning|error",
+        ),
+        app_id: Optional[str] = Field(None, description="Application ID"),
+        session_id: Optional[str] = Field(None, description="Session ID"),
+        idempotency_key: Optional[str] = Field(None, description="Idempotency key"),
+        billing_account_id: Optional[str] = Field(
+            None, description="Billing account ID for usage-linked events"
+        ),
+        retention_policy_id: Optional[int] = Field(
+            None, description="Retention policy ID applied to this event"
+        ),
+        timestamp: Optional[datetime.datetime] = Field(
+            None, description="Explicit event timestamp (defaults to now)"
+        ),
         context: dict = None,
     ):
         """Log a new event, checking permissions."""
-        assert " " not in event_type, "Event type must not contain spaces"
+        if not event_type or " " in event_type:
+            raise ValueError("Event type must not contain spaces or be empty")
+        if len(event_type) > 128 or not EVENT_TYPE_PATTERN.match(event_type):
+            raise ValueError(
+                "Invalid event type; use 1..128 chars matching [A-Za-z0-9._:/-]"
+            )
+        if category not in EVENT_CATEGORIES:
+            raise ValueError(
+                f"Invalid event category '{category}', expected one of {sorted(EVENT_CATEGORIES)}"
+            )
+        if level not in EVENT_LEVELS:
+            raise ValueError(
+                f"Invalid event level '{level}', expected one of {sorted(EVENT_LEVELS)}"
+            )
+        if idempotency_key is not None and not (1 <= len(idempotency_key) <= 128):
+            raise ValueError("idempotency_key must be between 1 and 128 characters")
         self.validate_context(context, permission=UserPermission.read_write)
         workspace = context["ws"]
         user_info = UserInfo.from_context(context)
+        event_timestamp = normalize_naive_utc_datetime(timestamp) or naive_utc_now()
 
         session = await self._get_sql_session()
         try:
             async with session.begin():
                 event_log = EventLog(
                     event_type=event_type,
+                    category=category,
+                    level=level,
                     workspace=workspace,
                     user_id=user_info.id,
+                    app_id=app_id,
+                    session_id=session_id,
+                    idempotency_key=idempotency_key,
+                    billing_account_id=billing_account_id,
+                    retention_policy_id=retention_policy_id,
+                    timestamp=event_timestamp,
                     data=data,
                 )
                 session.add(event_log)
@@ -474,6 +641,12 @@ class WorkspaceManager:
     async def get_event_stats(
         self,
         event_type: Optional[str] = Field(None, description="Event type"),
+        category: Optional[str] = Field(None, description="Event category"),
+        level: Optional[str] = Field(None, description="Event level"),
+        app_id: Optional[str] = Field(None, description="Application ID"),
+        session_id: Optional[str] = Field(None, description="Session ID"),
+        idempotency_key: Optional[str] = Field(None, description="Idempotency key"),
+        billing_account_id: Optional[str] = Field(None, description="Billing account ID"),
         start_time: Optional[datetime.datetime] = Field(
             None, description="Start time for filtering events"
         ),
@@ -500,6 +673,18 @@ class WorkspaceManager:
                 # Apply optional filters
                 if event_type:
                     query = query.filter(EventLog.event_type == event_type)
+                if category:
+                    query = query.filter(EventLog.category == category)
+                if level:
+                    query = query.filter(EventLog.level == level)
+                if app_id:
+                    query = query.filter(EventLog.app_id == app_id)
+                if session_id:
+                    query = query.filter(EventLog.session_id == session_id)
+                if idempotency_key:
+                    query = query.filter(EventLog.idempotency_key == idempotency_key)
+                if billing_account_id:
+                    query = query.filter(EventLog.billing_account_id == billing_account_id)
                 if start_time:
                     query = query.filter(EventLog.timestamp >= start_time)
                 if end_time:
@@ -520,6 +705,12 @@ class WorkspaceManager:
     async def get_events(
         self,
         event_type: Optional[str] = Field(None, description="Event type"),
+        category: Optional[str] = Field(None, description="Event category"),
+        level: Optional[str] = Field(None, description="Event level"),
+        app_id: Optional[str] = Field(None, description="Application ID"),
+        session_id: Optional[str] = Field(None, description="Session ID"),
+        idempotency_key: Optional[str] = Field(None, description="Idempotency key"),
+        billing_account_id: Optional[str] = Field(None, description="Billing account ID"),
         start_time: Optional[datetime.datetime] = Field(
             None, description="Start time for filtering events"
         ),
@@ -544,6 +735,18 @@ class WorkspaceManager:
                 # Apply optional filters
                 if event_type:
                     query = query.filter(EventLog.event_type == event_type)
+                if category:
+                    query = query.filter(EventLog.category == category)
+                if level:
+                    query = query.filter(EventLog.level == level)
+                if app_id:
+                    query = query.filter(EventLog.app_id == app_id)
+                if session_id:
+                    query = query.filter(EventLog.session_id == session_id)
+                if idempotency_key:
+                    query = query.filter(EventLog.idempotency_key == idempotency_key)
+                if billing_account_id:
+                    query = query.filter(EventLog.billing_account_id == billing_account_id)
                 if start_time:
                     query = query.filter(EventLog.timestamp >= start_time)
                 if end_time:
