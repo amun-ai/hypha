@@ -110,7 +110,7 @@ def start_builtin_services(
             executable_path=args.executable_path or args.cache_dir,
             cleanup_period=args.s3_cleanup_period,
         )
-        
+
         artifact_manager = ArtifactController(
             store,
             s3_controller=s3_controller,
@@ -119,6 +119,7 @@ def start_builtin_services(
 
         # Mount Git router for artifact Git storage support
         from hypha.git.artifact_integration import GitArtifactManager
+
         git_manager = GitArtifactManager(artifact_manager)
         git_router = git_manager.get_router()
         app.include_router(git_router)
@@ -146,6 +147,12 @@ def start_builtin_services(
     # Set up HTTP Streaming RPC (always enabled)
     setup_http_rpc(store, app, base_path=args.base_path)
     logger.info("HTTP Streaming RPC enabled")
+    # Billing webhook endpoints are always available when server is running.
+    from hypha.billing import (
+        BillingWebhookController,
+    )  # pylint: disable=import-outside-toplevel
+
+    BillingWebhookController(store)
 
     # Register agent skills service BEFORE HTTPProxy (must be registered before _ready=True)
     if not args.disable_agent_skills:
@@ -153,7 +160,9 @@ def start_builtin_services(
 
         agent_skills_service = setup_agent_skills(store)
         store.register_public_service(agent_skills_service)
-        logger.info("Agent Skills service registered at /{workspace}/apps/agent-skills/")
+        logger.info(
+            "Agent Skills service registered at /{workspace}/apps/agent-skills/"
+        )
 
     HTTPProxy(
         store,
@@ -189,7 +198,9 @@ def mount_static_files(app, base_path, new_route, directory, name="static"):
         raise FileNotFoundError(f"The directory '{directory}' does not exist.")
 
     # If no collision, mount static files
-    app.mount(norm_url(base_path, new_route), StaticFiles(directory=directory), name=name)
+    app.mount(
+        norm_url(base_path, new_route), StaticFiles(directory=directory), name=name
+    )
 
     if Path(f"{directory}/index.html").exists():
         # Add a new route that serves index.html directly
@@ -282,13 +293,15 @@ def create_application(args):
         if terminal_startup_function not in args.startup_functions:
             args.startup_functions.append(terminal_startup_function)
             logger.info("Automatically added Terminal worker to startup functions")
-    
+
     # Automatically add Local Auth startup function if Local Auth is enabled
     if args.enable_local_auth:
         local_auth_startup_function = "hypha.local_auth:hypha_startup"
         if local_auth_startup_function not in args.startup_functions:
             args.startup_functions.append(local_auth_startup_function)
-            logger.info("Automatically added Local Authentication provider to startup functions")
+            logger.info(
+                "Automatically added Local Authentication provider to startup functions"
+            )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -355,7 +368,9 @@ def create_application(args):
     # Check admin terminal configuration
     if args.enable_admin_terminal:
         if not args.root_token:
-            logger.warning("Admin terminal requires --root-token to be set for security")
+            logger.warning(
+                "Admin terminal requires --root-token to be set for security"
+            )
             args.enable_admin_terminal = False
         else:
             logger.warning(
@@ -364,7 +379,7 @@ def create_application(args):
                 "Make sure to use a strong root token and keep it secure. "
                 f"Admin terminal will be accessible at: {public_base_url}/ws-user-root/apps/hypha-admin-terminal/"
             )
-    
+
     store = RedisStore(
         application,
         server_id=args.server_id or env.get("HYPHA_SERVER_ID"),
@@ -392,13 +407,19 @@ def create_application(args):
     websocket_server = WebsocketServer(store, path=norm_url(args.base_path, "/ws"))
 
     static_folder = str(Path(__file__).parent / "static_files")
-    mount_static_files(application, args.base_path, "/static", directory=static_folder, name="static")
+    mount_static_files(
+        application, args.base_path, "/static", directory=static_folder, name="static"
+    )
 
     if args.static_mounts:
         for index, mount in enumerate(args.static_mounts):
             mountpath, localdir = mount.split(":")
             mount_static_files(
-                application, args.base_path,mountpath, localdir, name=f"static-mount-{index}"
+                application,
+                args.base_path,
+                mountpath,
+                localdir,
+                name=f"static-mount-{index}",
             )
 
     start_builtin_services(application, store, args)

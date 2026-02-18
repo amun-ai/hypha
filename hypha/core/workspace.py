@@ -1,5 +1,6 @@
 import re
 import json
+import hashlib
 import asyncio
 import logging
 import traceback
@@ -28,6 +29,7 @@ from sqlalchemy import (
     select,
     func,
 )
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import SQLModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -71,6 +73,8 @@ INTERCEPT_STOP_CODE_BY_REASON = {
     "security": "INTERCEPT_STOP_SECURITY",
     "limit": "INTERCEPT_STOP_LIMIT",
 }
+BILLING_USAGE_EVENT_TYPE = "billing.usage.recorded"
+ALLOWED_USAGE_SUMMARY_GROUP_BY = {"billing_point", "app_id", "workspace", "unit"}
 
 
 # Function to return a timezone-naive datetime
@@ -203,6 +207,15 @@ class BillingAccount(SQLModel, table=True):
         primary_key=True,
     )
     stripe_customer_id: Optional[str] = Field(default=None)
+    stripe_subscription_id: Optional[str] = Field(default=None, index=True)
+    stripe_subscription_status: Optional[str] = Field(default=None)
+    current_period_start: Optional[datetime.datetime] = Field(default=None)
+    current_period_end: Optional[datetime.datetime] = Field(default=None)
+    last_webhook_event_id: Optional[str] = Field(default=None)
+    last_webhook_event_ts: Optional[datetime.datetime] = Field(default=None)
+    stripe_snapshot: Optional[Dict[str, Any]] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
     plan_id: Optional[str] = Field(default=None)
     price_id: Optional[str] = Field(default=None)
     entitlement_snapshot_ref: Optional[str] = Field(default=None)
@@ -233,6 +246,32 @@ class WorkspaceBillingAccount(SQLModel, table=True):
     active: bool = Field(default=True, nullable=False)
     created_at: datetime.datetime = Field(default_factory=naive_utc_now, nullable=False)
     updated_at: datetime.datetime = Field(default_factory=naive_utc_now, nullable=False)
+
+
+class StripeWebhookEvent(SQLModel, table=True):
+    __tablename__ = "stripe_webhook_events"
+    __table_args__ = (
+        Index(
+            "ux_stripe_webhook_events_stripe_event_id",
+            "stripe_event_id",
+            unique=True,
+        ),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    stripe_event_id: str = Field(nullable=False)
+    event_type: str = Field(nullable=False)
+    created_ts: Optional[datetime.datetime] = Field(default=None)
+    processed_at: datetime.datetime = Field(
+        default_factory=naive_utc_now, nullable=False
+    )
+    payload_hash: str = Field(nullable=False)
+    billing_account_id: Optional[str] = Field(
+        default=None, foreign_key="billing_accounts.id", index=True
+    )
+    payload: Optional[Dict[str, Any]] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
 
 
 class EventInterceptor(SQLModel, table=True):
@@ -320,6 +359,21 @@ class InterceptorStopError(RuntimeError):
         self.interceptor = interceptor
 
 
+class BillingContractError(RuntimeError):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        reason: Optional[str] = None,
+        details: Optional[dict] = None,
+    ):
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.reason = reason
+        self.details = details or {}
+
+
 def validate_key_part(key_part: str):
     """Ensure key parts only contain safe characters."""
     if not _allowed_characters.match(key_part):
@@ -354,12 +408,18 @@ class WorkspaceStatus:
 
 class WorkspaceActivityManager:
     """Manages intelligent cleanup of persistent workspaces based on activity tracking."""
-    
-    def __init__(self, activity_tracker, redis, workspace_manager, 
-                 inactive_period: int = 300, check_interval: int = 60):
+
+    def __init__(
+        self,
+        activity_tracker,
+        redis,
+        workspace_manager,
+        inactive_period: int = 300,
+        check_interval: int = 60,
+    ):
         """
         Initialize workspace activity manager.
-        
+
         Args:
             activity_tracker: The ActivityTracker instance
             redis: Redis connection
@@ -374,16 +434,18 @@ class WorkspaceActivityManager:
         self._check_interval = check_interval
         self._registrations = {}  # workspace_id -> registration_id
         self._enabled = activity_tracker is not None
-        
+
         # System workspaces that should never be deleted via activity tracking
         self._protected_workspaces = {
-            "public",           # Public shared workspace
-            "ws-user-root",     # Root user workspace  
-            "ws-anonymous",     # Anonymous shared workspace
+            "public",  # Public shared workspace
+            "ws-user-root",  # Root user workspace
+            "ws-anonymous",  # Anonymous shared workspace
         }
-        
+
         if self._enabled:
-            logger.info(f"WorkspaceActivityManager initialized with {inactive_period}s inactive period")
+            logger.info(
+                f"WorkspaceActivityManager initialized with {inactive_period}s inactive period"
+            )
 
     def is_enabled(self) -> bool:
         """Check if activity tracking is enabled."""
@@ -392,53 +454,57 @@ class WorkspaceActivityManager:
     async def register_for_cleanup(self, workspace_id: str) -> bool:
         """
         Register a persistent workspace for activity-based cleanup.
-        
+
         Args:
             workspace_id: The workspace ID to track
-            
+
         Returns:
             True if successfully registered, False otherwise
         """
         if not self._enabled or workspace_id in self._protected_workspaces:
             return False
-            
+
         try:
             # Create cleanup callback for this workspace
             async def cleanup_callback():
                 await self._cleanup_inactive_workspace(workspace_id)
-            
+
             # Register with activity tracker
             reg_id = self._tracker.register(
                 entity_id=workspace_id,
                 inactive_period=self._inactive_period,
                 on_inactive=cleanup_callback,
-                entity_type="workspace"
+                entity_type="workspace",
             )
-            
+
             # Store registration for tracking
             self._registrations[workspace_id] = reg_id
-            logger.debug(f"Registered workspace {workspace_id} for activity-based cleanup")
+            logger.debug(
+                f"Registered workspace {workspace_id} for activity-based cleanup"
+            )
             return True
-            
+
         except Exception as e:
-            logger.error(f"Failed to register workspace {workspace_id} for cleanup: {e}")
+            logger.error(
+                f"Failed to register workspace {workspace_id} for cleanup: {e}"
+            )
             return False
 
     async def reset_activity(self, workspace_id: str) -> bool:
         """
         Reset activity timer for a workspace when it's accessed.
-        
+
         Args:
             workspace_id: The workspace ID to reset activity for
-            
+
         Returns:
             True if successfully reset, False otherwise
         """
         if not self._enabled or workspace_id in self._protected_workspaces:
             return False
-            
+
         try:
-            await self._tracker.reset_timer(workspace_id, "workspace") 
+            await self._tracker.reset_timer(workspace_id, "workspace")
             logger.debug(f"Reset activity timer for workspace: {workspace_id}")
             return True
         except Exception as e:
@@ -448,52 +514,58 @@ class WorkspaceActivityManager:
     async def unregister(self, workspace_id: str) -> bool:
         """
         Unregister a workspace from activity tracking.
-        
+
         Args:
             workspace_id: The workspace ID to unregister
-            
+
         Returns:
             True if successfully unregistered, False otherwise
         """
         if not self._enabled:
             return False
-            
+
         try:
             if workspace_id in self._registrations:
                 reg_id = self._registrations.pop(workspace_id)
                 self._tracker.unregister(workspace_id, reg_id, "workspace")
-                logger.debug(f"Unregistered workspace {workspace_id} from activity tracking")
+                logger.debug(
+                    f"Unregistered workspace {workspace_id} from activity tracking"
+                )
                 return True
         except Exception as e:
             logger.error(f"Failed to unregister workspace {workspace_id}: {e}")
-            
+
         return False
 
     async def _cleanup_inactive_workspace(self, workspace_id: str):
         """
         Internal cleanup callback for inactive user workspaces.
-        
+
         Args:
             workspace_id: The workspace ID to potentially clean up
         """
         try:
             # Double-check workspace still exists and has no active clients
             if await self._redis.hexists("workspaces", workspace_id):
-                client_keys = await self._workspace_manager._list_client_keys(workspace_id)
+                client_keys = await self._workspace_manager._list_client_keys(
+                    workspace_id
+                )
                 if not client_keys:
                     # Safe to delete - no active clients
                     await self._redis.hdel("workspaces", workspace_id)
                     logger.info(f"Cleaned up inactive workspace: {workspace_id}")
                 else:
                     # Workspace has active clients, reset activity timer
-                    logger.debug(f"Workspace {workspace_id} still has active clients, resetting timer")
+                    logger.debug(
+                        f"Workspace {workspace_id} still has active clients, resetting timer"
+                    )
                     await self.reset_activity(workspace_id)
                     return  # Don't unregister, keep tracking
-            
+
             # Always clean up registration to prevent memory leak
             if workspace_id in self._registrations:
                 del self._registrations[workspace_id]
-            
+
         except Exception as e:
             logger.error(f"Error cleaning up inactive workspace {workspace_id}: {e}")
 
@@ -507,7 +579,7 @@ class WorkspaceActivityManager:
             "enabled": self._enabled,
             "inactive_period": self._inactive_period,
             "tracked_workspaces": len(self._registrations),
-            "workspace_ids": list(self._registrations.keys()) if self._enabled else []
+            "workspace_ids": list(self._registrations.keys()) if self._enabled else [],
         }
 
 
@@ -557,7 +629,7 @@ class WorkspaceManager:
             redis=redis,
             workspace_manager=self,
             inactive_period=300,  # 5 minutes - configurable in future
-            check_interval=60     # 1 minute - configurable in future
+            check_interval=60,  # 1 minute - configurable in future
         )
 
     async def _get_sql_session(self):
@@ -572,13 +644,15 @@ class WorkspaceManager:
         """Ensure the services vector collection exists."""
         if not self._enable_service_search or not self._vector_search:
             return
-        
+
         try:
             # Check if collection exists by trying to get info about it
             await self._vector_search.count("services")
         except Exception as exp:
             # Collection doesn't exist, create it
-            logger.info(f"Services vector collection doesn't exist (error: {exp}), creating it...")
+            logger.info(
+                f"Services vector collection doesn't exist (error: {exp}), creating it..."
+            )
             await self._vector_search.create_collection(
                 collection_name="services",
                 vector_fields=[
@@ -648,9 +722,7 @@ class WorkspaceManager:
             )
             await self._ensure_services_collection()
         self._initialized = True
-        
 
-        
         return rpc
 
     def _validate_event_payload(
@@ -757,16 +829,26 @@ class WorkspaceManager:
             return False
         return False
 
-    def _interceptor_matches_event(self, interceptor: EventInterceptor, payload: dict) -> bool:
+    def _interceptor_matches_event(
+        self, interceptor: EventInterceptor, payload: dict
+    ) -> bool:
         if interceptor.workspace != payload.get("workspace"):
             return False
         if interceptor.app_id and interceptor.app_id != payload.get("app_id"):
             return False
-        if interceptor.session_id and interceptor.session_id != payload.get("session_id"):
+        if interceptor.session_id and interceptor.session_id != payload.get(
+            "session_id"
+        ):
             return False
-        if interceptor.event_types and payload.get("event_type") not in interceptor.event_types:
+        if (
+            interceptor.event_types
+            and payload.get("event_type") not in interceptor.event_types
+        ):
             return False
-        if interceptor.categories and payload.get("category") not in interceptor.categories:
+        if (
+            interceptor.categories
+            and payload.get("category") not in interceptor.categories
+        ):
             return False
         return True
 
@@ -813,7 +895,10 @@ class WorkspaceManager:
                         EventInterceptor.workspace == event_log.workspace,
                         EventInterceptor.enabled.is_(True),
                     )
-                    .order_by(EventInterceptor.priority.asc(), EventInterceptor.created_at.asc())
+                    .order_by(
+                        EventInterceptor.priority.asc(),
+                        EventInterceptor.created_at.asc(),
+                    )
                 )
                 result = await session.execute(query)
                 interceptors = result.scalars().all()
@@ -824,7 +909,9 @@ class WorkspaceManager:
         for interceptor in interceptors:
             if not self._interceptor_matches_event(interceptor, event_payload):
                 continue
-            actual = self._extract_event_field(event_payload, interceptor.condition_field)
+            actual = self._extract_event_field(
+                event_payload, interceptor.condition_field
+            )
             if not self._evaluate_interceptor_condition(
                 op=interceptor.condition_op,
                 actual=actual,
@@ -878,14 +965,18 @@ class WorkspaceManager:
 
         name = interceptor.get("name")
         if not isinstance(name, str) or not name.strip() or len(name) > 128:
-            raise ValueError("interceptor.name must be a non-empty string with max 128 characters")
+            raise ValueError(
+                "interceptor.name must be a non-empty string with max 128 characters"
+            )
 
         scope = interceptor.get("scope") or {}
         if not isinstance(scope, dict):
             raise ValueError("interceptor.scope must be an object")
         scope_workspace = scope.get("workspace") or workspace
         if scope_workspace != workspace:
-            raise PermissionError("interceptor scope.workspace must match current workspace")
+            raise PermissionError(
+                "interceptor scope.workspace must match current workspace"
+            )
         app_id = scope.get("app_id")
         session_id = scope.get("session_id")
 
@@ -894,11 +985,21 @@ class WorkspaceManager:
             raise ValueError("interceptor.event_selector must be an object")
         event_types = event_selector.get("event_types") or []
         categories = event_selector.get("categories") or []
-        if not isinstance(event_types, list) or not all(isinstance(i, str) for i in event_types):
-            raise ValueError("interceptor.event_selector.event_types must be a string array")
-        if not isinstance(categories, list) or not all(isinstance(i, str) for i in categories):
-            raise ValueError("interceptor.event_selector.categories must be a string array")
-        invalid_categories = [item for item in categories if item not in EVENT_CATEGORIES]
+        if not isinstance(event_types, list) or not all(
+            isinstance(i, str) for i in event_types
+        ):
+            raise ValueError(
+                "interceptor.event_selector.event_types must be a string array"
+            )
+        if not isinstance(categories, list) or not all(
+            isinstance(i, str) for i in categories
+        ):
+            raise ValueError(
+                "interceptor.event_selector.categories must be a string array"
+            )
+        invalid_categories = [
+            item for item in categories if item not in EVENT_CATEGORIES
+        ]
         if invalid_categories:
             raise ValueError(
                 f"Invalid categories in interceptor selector: {sorted(set(invalid_categories))}"
@@ -931,10 +1032,14 @@ class WorkspaceManager:
                 f"interceptor.action.reason must be one of {sorted(INTERCEPTOR_STOP_REASONS)}"
             )
         action_recovery = action.get("recovery")
-        if action_type == "recover" and action_recovery is not None and not isinstance(
-            action_recovery, dict
+        if (
+            action_type == "recover"
+            and action_recovery is not None
+            and not isinstance(action_recovery, dict)
         ):
-            raise ValueError("interceptor.action.recovery must be an object when provided")
+            raise ValueError(
+                "interceptor.action.recovery must be an object when provided"
+            )
 
         enabled = bool(interceptor.get("enabled", True))
         priority = interceptor.get("priority", 100)
@@ -958,7 +1063,9 @@ class WorkspaceManager:
                     condition_value=condition_value,
                     action_type=action_type,
                     action_reason=action_reason,
-                    action_recovery=action_recovery if action_type == "recover" else None,
+                    action_recovery=(
+                        action_recovery if action_type == "recover" else None
+                    ),
                     created_by=user_info.id,
                     created_at=naive_utc_now(),
                     updated_at=naive_utc_now(),
@@ -973,7 +1080,9 @@ class WorkspaceManager:
     @schema_method
     async def list_interceptors(
         self,
-        filters: Optional[dict] = Field(None, description="Optional interceptor filters"),
+        filters: Optional[dict] = Field(
+            None, description="Optional interceptor filters"
+        ),
         context: Optional[dict] = None,
     ):
         assert context is not None
@@ -1035,6 +1144,397 @@ class WorkspaceManager:
                 return {"ok": True, "removed": True}
         finally:
             await db_session.close()
+
+    def _parse_rfc3339_datetime(
+        self,
+        value: Optional[Union[str, datetime.datetime]],
+        *,
+        field_name: str,
+        required: bool = False,
+    ) -> Optional[datetime.datetime]:
+        if value is None:
+            if required:
+                raise BillingContractError(
+                    "INVALID_ARGUMENT",
+                    f"{field_name} is required",
+                )
+            return None
+        if isinstance(value, datetime.datetime):
+            return normalize_naive_utc_datetime(value)
+        if not isinstance(value, str):
+            raise BillingContractError(
+                "INVALID_ARGUMENT",
+                f"{field_name} must be an RFC3339 string",
+            )
+        try:
+            normalized = value.strip()
+            if normalized.endswith("Z"):
+                normalized = normalized[:-1] + "+00:00"
+            parsed = datetime.datetime.fromisoformat(normalized)
+            return normalize_naive_utc_datetime(parsed)
+        except Exception as exp:
+            raise BillingContractError(
+                "INVALID_ARGUMENT",
+                f"{field_name} must be an RFC3339 datetime string",
+                details={"value": value},
+            ) from exp
+
+    @staticmethod
+    def _coerce_positive_number(value, *, field_name: str) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise BillingContractError(
+                "INVALID_ARGUMENT",
+                f"{field_name} must be a number",
+            )
+        normalized = float(value)
+        if normalized <= 0:
+            raise BillingContractError(
+                "INVALID_ARGUMENT",
+                f"{field_name} must be strictly positive",
+            )
+        return normalized
+
+    def _normalize_usage_payload(
+        self,
+        usage: dict,
+        *,
+        workspace: str,
+        app_id: Optional[str],
+        session_id: Optional[str],
+        resolved_billing_account_id: Optional[str],
+    ) -> tuple[dict, str]:
+        canonical_payload = {
+            "workspace": workspace,
+            "billing_point": usage["billing_point"],
+            "amount": float(usage["amount"]),
+            "unit": usage["unit"],
+            "idempotency_key": usage["idempotency_key"],
+            "dimensions": usage.get("dimensions") or {},
+            "occurred_at": usage.get("occurred_at"),
+            "app_id": app_id,
+            "session_id": session_id,
+            "billing_account_id": resolved_billing_account_id,
+            "subscription_id": usage.get("subscription_id"),
+            "plan_id": usage.get("plan_id"),
+            "price_id": usage.get("price_id"),
+            "entitlement": usage.get("entitlement") or {},
+        }
+        serialized = json.dumps(
+            canonical_payload, sort_keys=True, separators=(",", ":")
+        )
+        fingerprint = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        return canonical_payload, fingerprint
+
+    async def _resolve_billing_account(
+        self,
+        db_session: AsyncSession,
+        *,
+        workspace: str,
+        billing_account_id: Optional[str],
+    ) -> tuple[Optional[str], Optional[int], Optional[BillingAccount]]:
+        if billing_account_id:
+            result = await db_session.execute(
+                select(BillingAccount).filter(BillingAccount.id == billing_account_id)
+            )
+            account = result.scalars().first()
+            if account is None:
+                raise BillingContractError(
+                    "NOT_FOUND",
+                    f"billing_account_id not found: {billing_account_id}",
+                )
+            return account.id, account.retention_policy_id, account
+
+        mapping_result = await db_session.execute(
+            select(WorkspaceBillingAccount).filter(
+                WorkspaceBillingAccount.workspace == workspace,
+                WorkspaceBillingAccount.active.is_(True),
+            )
+        )
+        mapping = mapping_result.scalars().first()
+        if mapping is None:
+            return None, None, None
+
+        account_result = await db_session.execute(
+            select(BillingAccount).filter(
+                BillingAccount.id == mapping.billing_account_id
+            )
+        )
+        account = account_result.scalars().first()
+        if account is None:
+            return None, None, None
+        return account.id, account.retention_policy_id, account
+
+    async def _sum_usage_amount(
+        self,
+        db_session: AsyncSession,
+        *,
+        workspace: str,
+        billing_account_id: Optional[str],
+        entitlement_key: str,
+    ) -> float:
+        query = select(EventLog).filter(
+            EventLog.workspace == workspace,
+            EventLog.category == "billing",
+            EventLog.event_type == BILLING_USAGE_EVENT_TYPE,
+        )
+        if billing_account_id:
+            query = query.filter(EventLog.billing_account_id == billing_account_id)
+        result = await db_session.execute(query)
+        events = result.scalars().all()
+
+        used = 0.0
+        for event in events:
+            payload = event.data or {}
+            if not isinstance(payload, dict):
+                continue
+            billing_point = payload.get("billing_point")
+            entitlement = payload.get("entitlement") or {}
+            if not isinstance(entitlement, dict):
+                entitlement = {}
+            row_key = entitlement.get("key") or billing_point
+            if row_key != entitlement_key:
+                continue
+            amount = payload.get("amount")
+            if isinstance(amount, (int, float)) and not isinstance(amount, bool):
+                used += float(amount)
+        return used
+
+    async def _upsert_billing_account_for_customer(
+        self,
+        db_session: AsyncSession,
+        stripe_customer_id: str,
+    ) -> BillingAccount:
+        result = await db_session.execute(
+            select(BillingAccount).filter(
+                BillingAccount.stripe_customer_id == stripe_customer_id
+            )
+        )
+        account = result.scalars().first()
+        if account is not None:
+            return account
+        account = BillingAccount(
+            stripe_customer_id=stripe_customer_id,
+            created_at=naive_utc_now(),
+            updated_at=naive_utc_now(),
+        )
+        db_session.add(account)
+        await db_session.flush()
+        await db_session.refresh(account)
+        return account
+
+    async def process_stripe_webhook_event(self, payload: dict) -> dict:
+        if not isinstance(payload, dict):
+            raise BillingContractError(
+                "INVALID_ARGUMENT", "Webhook payload must be an object"
+            )
+        event_id = payload.get("id")
+        event_type = payload.get("type")
+        if not isinstance(event_id, str) or not event_id:
+            raise BillingContractError(
+                "INVALID_ARGUMENT", "Stripe event payload missing id"
+            )
+        if not isinstance(event_type, str) or not event_type:
+            raise BillingContractError(
+                "INVALID_ARGUMENT", "Stripe event payload missing type"
+            )
+
+        payload_raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        payload_hash = hashlib.sha256(payload_raw.encode("utf-8")).hexdigest()
+        event_created_raw = payload.get("created")
+        event_created = None
+        if isinstance(event_created_raw, (int, float)) and not isinstance(
+            event_created_raw, bool
+        ):
+            event_created = normalize_naive_utc_datetime(
+                datetime.datetime.fromtimestamp(
+                    float(event_created_raw), tz=datetime.timezone.utc
+                )
+            )
+
+        data_object = payload.get("data", {}).get("object", {})
+        if not isinstance(data_object, dict):
+            data_object = {}
+        stripe_customer_id = data_object.get("customer")
+        session = await self._get_sql_session()
+        request_id = random_id(readable=False)
+        try:
+            async with session.begin():
+                existing_result = await session.execute(
+                    select(StripeWebhookEvent).filter(
+                        StripeWebhookEvent.stripe_event_id == event_id
+                    )
+                )
+                existing = existing_result.scalars().first()
+                if existing is not None:
+                    return {
+                        "ok": True,
+                        "deduped": True,
+                        "event_id": event_id,
+                        "event_type": existing.event_type,
+                        "request_id": request_id,
+                    }
+
+                billing_account = None
+                if isinstance(stripe_customer_id, str) and stripe_customer_id:
+                    billing_account = await self._upsert_billing_account_for_customer(
+                        session, stripe_customer_id
+                    )
+
+                snapshot = {}
+                if billing_account is not None:
+                    snapshot = dict(billing_account.stripe_snapshot or {})
+                    last_webhook_ts = billing_account.last_webhook_event_ts
+                    is_newer = (
+                        event_created is None
+                        or last_webhook_ts is None
+                        or event_created >= last_webhook_ts
+                    )
+                    if is_newer:
+                        snapshot["last_event"] = {
+                            "id": event_id,
+                            "type": event_type,
+                            "created": (
+                                event_created.isoformat() if event_created else None
+                            ),
+                        }
+                        if event_type.startswith("customer.subscription."):
+                            price_id = None
+                            items = data_object.get("items", {}).get("data", [])
+                            if isinstance(items, list) and items:
+                                first_item = (
+                                    items[0] if isinstance(items[0], dict) else {}
+                                )
+                                price = first_item.get("price", {})
+                                if isinstance(price, dict):
+                                    price_id = price.get("id")
+                            billing_account.stripe_subscription_id = data_object.get(
+                                "id"
+                            )
+                            billing_account.stripe_subscription_status = (
+                                data_object.get("status")
+                            )
+                            billing_account.current_period_start = (
+                                normalize_naive_utc_datetime(
+                                    datetime.datetime.fromtimestamp(
+                                        float(data_object.get("current_period_start")),
+                                        tz=datetime.timezone.utc,
+                                    )
+                                )
+                                if isinstance(
+                                    data_object.get("current_period_start"),
+                                    (int, float),
+                                )
+                                else billing_account.current_period_start
+                            )
+                            billing_account.current_period_end = (
+                                normalize_naive_utc_datetime(
+                                    datetime.datetime.fromtimestamp(
+                                        float(data_object.get("current_period_end")),
+                                        tz=datetime.timezone.utc,
+                                    )
+                                )
+                                if isinstance(
+                                    data_object.get("current_period_end"), (int, float)
+                                )
+                                else billing_account.current_period_end
+                            )
+                            if isinstance(price_id, str) and price_id:
+                                billing_account.price_id = price_id
+                            snapshot["subscription"] = {
+                                "id": data_object.get("id"),
+                                "status": data_object.get("status"),
+                                "customer": stripe_customer_id,
+                                "price_id": price_id,
+                            }
+                        elif event_type.startswith("invoice."):
+                            snapshot["invoice"] = {
+                                "id": data_object.get("id"),
+                                "status": data_object.get("status"),
+                                "subscription": data_object.get("subscription"),
+                                "total": data_object.get("total"),
+                                "currency": data_object.get("currency"),
+                            }
+                        elif event_type.startswith("payment_intent."):
+                            snapshot["payment_intent"] = {
+                                "id": data_object.get("id"),
+                                "status": data_object.get("status"),
+                                "amount": data_object.get("amount"),
+                                "currency": data_object.get("currency"),
+                            }
+                        else:
+                            snapshot["event_type"] = event_type
+                        billing_account.last_webhook_event_id = event_id
+                        if event_created is not None:
+                            billing_account.last_webhook_event_ts = event_created
+                        billing_account.stripe_snapshot = snapshot
+                        billing_account.updated_at = naive_utc_now()
+
+                webhook_event = StripeWebhookEvent(
+                    stripe_event_id=event_id,
+                    event_type=event_type,
+                    created_ts=event_created,
+                    processed_at=naive_utc_now(),
+                    payload_hash=payload_hash,
+                    billing_account_id=billing_account.id if billing_account else None,
+                    payload=payload,
+                )
+                session.add(webhook_event)
+                await session.flush()
+
+                event_log = EventLog(
+                    event_type=f"stripe.webhook.{event_type}",
+                    category="billing",
+                    level="info",
+                    workspace="public",
+                    user_id="stripe-webhook",
+                    app_id=None,
+                    session_id=None,
+                    idempotency_key=f"stripe:{event_id}",
+                    billing_account_id=billing_account.id if billing_account else None,
+                    retention_policy_id=(
+                        billing_account.retention_policy_id if billing_account else None
+                    ),
+                    timestamp=event_created or naive_utc_now(),
+                    data={
+                        "stripe_event_id": event_id,
+                        "stripe_event_type": event_type,
+                        "stripe_customer_id": stripe_customer_id,
+                        "deduped": False,
+                    },
+                )
+                session.add(event_log)
+                await session.flush()
+
+                return {
+                    "ok": True,
+                    "deduped": False,
+                    "event_id": event_id,
+                    "event_type": event_type,
+                    "billing_account_id": (
+                        billing_account.id if billing_account else None
+                    ),
+                    "snapshot": snapshot,
+                    "request_id": request_id,
+                }
+        except IntegrityError:
+            await session.rollback()
+            existing_result = await session.execute(
+                select(StripeWebhookEvent).filter(
+                    StripeWebhookEvent.stripe_event_id == event_id
+                )
+            )
+            existing = existing_result.scalars().first()
+            if existing is not None:
+                return {
+                    "ok": True,
+                    "deduped": True,
+                    "event_id": event_id,
+                    "event_type": existing.event_type,
+                    "request_id": request_id,
+                }
+            raise
+        finally:
+            await session.close()
 
     @schema_method
     async def log_event(
@@ -1103,6 +1603,405 @@ class WorkspaceManager:
             raise
 
     @schema_method
+    async def record_usage(
+        self,
+        usage: dict = Field(..., description="UsageRecordV1 payload"),
+        context: Optional[dict] = None,
+    ):
+        self.validate_context(context, permission=UserPermission.read_write)
+        if not isinstance(usage, dict):
+            raise BillingContractError("INVALID_ARGUMENT", "usage must be an object")
+
+        billing_point = usage.get("billing_point")
+        if not isinstance(billing_point, str) or not billing_point.strip():
+            raise BillingContractError(
+                "INVALID_ARGUMENT",
+                "billing_point is required and must be a non-empty string",
+            )
+        billing_point = billing_point.strip()
+        if len(billing_point) > 128 or not EVENT_TYPE_PATTERN.match(billing_point):
+            raise BillingContractError(
+                "INVALID_ARGUMENT",
+                "billing_point must match [A-Za-z0-9._:/-] and be <= 128 chars",
+            )
+
+        amount = self._coerce_positive_number(usage.get("amount"), field_name="amount")
+
+        unit = usage.get("unit")
+        if not isinstance(unit, str) or not unit.strip() or len(unit.strip()) > 32:
+            raise BillingContractError(
+                "INVALID_ARGUMENT",
+                "unit is required and must be a non-empty string with <= 32 chars",
+            )
+        unit = unit.strip()
+
+        idempotency_key = usage.get("idempotency_key")
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            raise BillingContractError(
+                "INVALID_ARGUMENT",
+                "idempotency_key is required for record_usage",
+            )
+        idempotency_key = idempotency_key.strip()
+        if len(idempotency_key) > 128:
+            raise BillingContractError(
+                "INVALID_ARGUMENT",
+                "idempotency_key must be <= 128 chars",
+            )
+
+        dimensions = usage.get("dimensions") or {}
+        if not isinstance(dimensions, dict):
+            raise BillingContractError(
+                "INVALID_ARGUMENT",
+                "dimensions must be an object when provided",
+            )
+        for key, value in dimensions.items():
+            if not isinstance(key, str) or not key:
+                raise BillingContractError(
+                    "INVALID_ARGUMENT",
+                    "dimensions keys must be non-empty strings",
+                )
+            if isinstance(value, (dict, list)):
+                raise BillingContractError(
+                    "INVALID_ARGUMENT",
+                    "dimensions values must be scalar (string/number/boolean)",
+                )
+
+        workspace = context["ws"]
+        user_info = UserInfo.from_context(context)
+        app_id = usage.get("app_id")
+        session_id = usage.get("session_id")
+        occurred_at = self._parse_rfc3339_datetime(
+            usage.get("occurred_at"),
+            field_name="occurred_at",
+            required=False,
+        )
+
+        entitlement = usage.get("entitlement") or {}
+        if not isinstance(entitlement, dict):
+            raise BillingContractError(
+                "INVALID_ARGUMENT",
+                "entitlement must be an object when provided",
+            )
+        entitlement_key = entitlement.get("key") or billing_point
+        entitlement_limit = entitlement.get("limit")
+        if entitlement_limit is not None:
+            entitlement_limit = self._coerce_positive_number(
+                entitlement_limit,
+                field_name="entitlement.limit",
+            )
+
+        request_id = random_id(readable=False)
+        fingerprint = None
+        session = await self._get_sql_session()
+        try:
+            async with session.begin():
+                resolved_billing_account_id, retention_policy_id, account = (
+                    await self._resolve_billing_account(
+                        session,
+                        workspace=workspace,
+                        billing_account_id=usage.get("billing_account_id"),
+                    )
+                )
+
+                usage_payload = {
+                    "billing_point": billing_point,
+                    "amount": amount,
+                    "unit": unit,
+                    "idempotency_key": idempotency_key,
+                    "dimensions": dimensions,
+                    "occurred_at": occurred_at.isoformat() if occurred_at else None,
+                    "subscription_id": usage.get("subscription_id")
+                    or (account.stripe_subscription_id if account else None),
+                    "plan_id": usage.get("plan_id")
+                    or (account.plan_id if account else None),
+                    "price_id": usage.get("price_id")
+                    or (account.price_id if account else None),
+                    "entitlement": {
+                        "key": entitlement_key,
+                        "limit": entitlement_limit,
+                    },
+                }
+                canonical_payload, fingerprint = self._normalize_usage_payload(
+                    usage_payload,
+                    workspace=workspace,
+                    app_id=app_id,
+                    session_id=session_id,
+                    resolved_billing_account_id=resolved_billing_account_id,
+                )
+
+                query = select(EventLog).filter(
+                    EventLog.workspace == workspace,
+                    EventLog.category == "billing",
+                    EventLog.idempotency_key == idempotency_key,
+                )
+                existing_result = await session.execute(query)
+                existing_event = existing_result.scalars().first()
+                if existing_event is not None:
+                    existing_payload = existing_event.data or {}
+                    existing_fingerprint = None
+                    if isinstance(existing_payload, dict):
+                        existing_fingerprint = existing_payload.get(
+                            "idempotency_fingerprint"
+                        )
+                    if existing_fingerprint == fingerprint:
+                        return {
+                            "ok": True,
+                            "deduped": True,
+                            "usage_event_id": existing_event.id,
+                            "request_id": request_id,
+                        }
+                    raise BillingContractError(
+                        "IDEMPOTENCY_CONFLICT",
+                        "idempotency_key already exists with different usage payload",
+                    )
+
+                if entitlement_limit is not None:
+                    consumed = await self._sum_usage_amount(
+                        session,
+                        workspace=workspace,
+                        billing_account_id=resolved_billing_account_id,
+                        entitlement_key=entitlement_key,
+                    )
+                    if consumed + amount > entitlement_limit:
+                        raise BillingContractError(
+                            "TOO_MANY_REQUESTS",
+                            "Usage limit exhausted",
+                            reason="limit",
+                            details={
+                                "entitlement_key": entitlement_key,
+                                "limit": entitlement_limit,
+                                "consumed": consumed,
+                                "requested": amount,
+                            },
+                        )
+                    usage_payload["entitlement"]["consumed_before"] = consumed
+                    usage_payload["entitlement"]["consumed_after"] = consumed + amount
+
+                event_log = EventLog(
+                    event_type=BILLING_USAGE_EVENT_TYPE,
+                    data={
+                        **usage_payload,
+                        "workspace": workspace,
+                        "idempotency_payload": canonical_payload,
+                        "idempotency_fingerprint": fingerprint,
+                    },
+                    category="billing",
+                    level="info",
+                    workspace=workspace,
+                    user_id=user_info.id,
+                    app_id=app_id,
+                    session_id=session_id,
+                    idempotency_key=idempotency_key,
+                    billing_account_id=resolved_billing_account_id,
+                    retention_policy_id=retention_policy_id,
+                    timestamp=occurred_at or naive_utc_now(),
+                )
+                session.add(event_log)
+                await session.flush()
+                await session.refresh(event_log)
+                return {
+                    "ok": True,
+                    "deduped": False,
+                    "usage_event_id": event_log.id,
+                    "request_id": request_id,
+                }
+        except IntegrityError:
+            await session.rollback()
+            async with session.begin():
+                existing_result = await session.execute(
+                    select(EventLog).filter(
+                        EventLog.workspace == workspace,
+                        EventLog.category == "billing",
+                        EventLog.idempotency_key == idempotency_key,
+                    )
+                )
+                existing_event = existing_result.scalars().first()
+                if existing_event is not None:
+                    existing_payload = (
+                        existing_event.data
+                        if isinstance(existing_event.data, dict)
+                        else {}
+                    )
+                    existing_fingerprint = existing_payload.get(
+                        "idempotency_fingerprint"
+                    )
+                    if fingerprint is not None and existing_fingerprint == fingerprint:
+                        return {
+                            "ok": True,
+                            "deduped": True,
+                            "usage_event_id": existing_event.id,
+                            "request_id": request_id,
+                        }
+                    raise BillingContractError(
+                        "IDEMPOTENCY_CONFLICT",
+                        "idempotency_key already exists with different usage payload",
+                    )
+            raise
+        finally:
+            await session.close()
+
+    @schema_method
+    async def get_usage_summary(
+        self,
+        query: dict = Field(..., description="Usage summary query"),
+        context: Optional[dict] = None,
+    ):
+        self.validate_context(context, permission=UserPermission.read)
+        if not isinstance(query, dict):
+            raise BillingContractError("INVALID_ARGUMENT", "query must be an object")
+
+        start_time = self._parse_rfc3339_datetime(
+            query.get("start_time"),
+            field_name="start_time",
+            required=True,
+        )
+        end_time = self._parse_rfc3339_datetime(
+            query.get("end_time"),
+            field_name="end_time",
+            required=True,
+        )
+        if start_time is not None and end_time is not None and start_time > end_time:
+            raise BillingContractError(
+                "INVALID_ARGUMENT",
+                "start_time must be <= end_time",
+            )
+
+        group_by = query.get("group_by") or []
+        if not isinstance(group_by, list) or not all(
+            isinstance(item, str) for item in group_by
+        ):
+            raise BillingContractError(
+                "INVALID_ARGUMENT",
+                "group_by must be an array of strings",
+            )
+        invalid_group_by = [
+            item for item in group_by if item not in ALLOWED_USAGE_SUMMARY_GROUP_BY
+        ]
+        if invalid_group_by:
+            raise BillingContractError(
+                "INVALID_ARGUMENT",
+                f"Invalid group_by fields: {sorted(set(invalid_group_by))}",
+            )
+
+        workspace = context["ws"]
+        query_workspace = query.get("workspace")
+        if query_workspace and query_workspace != workspace:
+            raise BillingContractError(
+                "FORBIDDEN",
+                "workspace in query must match current workspace context",
+            )
+
+        filters = query.get("filters") or {}
+        if not isinstance(filters, dict):
+            raise BillingContractError(
+                "INVALID_ARGUMENT",
+                "filters must be an object",
+            )
+        dimension_filters = filters.get("dimensions") or {}
+        if not isinstance(dimension_filters, dict):
+            raise BillingContractError(
+                "INVALID_ARGUMENT",
+                "filters.dimensions must be an object",
+            )
+
+        billing_account_id = query.get("billing_account_id")
+        session = await self._get_sql_session()
+        try:
+            async with session.begin():
+                sql_query = select(EventLog).filter(
+                    EventLog.workspace == workspace,
+                    EventLog.category == "billing",
+                    EventLog.event_type == BILLING_USAGE_EVENT_TYPE,
+                    EventLog.timestamp >= start_time,
+                    EventLog.timestamp <= end_time,
+                )
+                if billing_account_id:
+                    sql_query = sql_query.filter(
+                        EventLog.billing_account_id == billing_account_id
+                    )
+                if query.get("app_id"):
+                    sql_query = sql_query.filter(EventLog.app_id == query.get("app_id"))
+                if query.get("session_id"):
+                    sql_query = sql_query.filter(
+                        EventLog.session_id == query.get("session_id")
+                    )
+                result = await session.execute(sql_query)
+                events = result.scalars().all()
+
+            grouped_rows = {}
+            total_amount = 0.0
+            total_count = 0
+            query_billing_point = query.get("billing_point")
+            query_unit = query.get("unit")
+
+            for event in events:
+                payload = event.data or {}
+                if not isinstance(payload, dict):
+                    continue
+                amount = payload.get("amount")
+                if not isinstance(amount, (int, float)) or isinstance(amount, bool):
+                    continue
+                amount = float(amount)
+                billing_point = payload.get("billing_point")
+                unit = payload.get("unit")
+                if query_billing_point and query_billing_point != billing_point:
+                    continue
+                if query_unit and query_unit != unit:
+                    continue
+
+                dimensions = payload.get("dimensions") or {}
+                if not isinstance(dimensions, dict):
+                    dimensions = {}
+                if any(
+                    dimensions.get(key) != value
+                    for key, value in dimension_filters.items()
+                ):
+                    continue
+
+                row_values = {}
+                for field in group_by:
+                    if field == "workspace":
+                        row_values[field] = event.workspace
+                    elif field == "app_id":
+                        row_values[field] = event.app_id
+                    elif field == "billing_point":
+                        row_values[field] = billing_point
+                    elif field == "unit":
+                        row_values[field] = unit
+
+                group_key = tuple((field, row_values.get(field)) for field in group_by)
+                row = grouped_rows.get(group_key)
+                if row is None:
+                    row = {**row_values, "amount": 0.0, "total_amount": 0.0, "count": 0}
+                    grouped_rows[group_key] = row
+
+                row["amount"] += amount
+                row["total_amount"] = row["amount"]
+                row["count"] += 1
+                total_amount += amount
+                total_count += 1
+
+            rows = list(grouped_rows.values())
+            rows.sort(
+                key=lambda row: tuple(
+                    "" if row.get(field) is None else str(row.get(field))
+                    for field in group_by
+                )
+            )
+            return {
+                "ok": True,
+                "rows": rows,
+                "totals": {
+                    "amount": total_amount,
+                    "total_amount": total_amount,
+                    "count": total_count,
+                },
+                "request_id": random_id(readable=False),
+            }
+        finally:
+            await session.close()
+
+    @schema_method
     async def get_event_stats(
         self,
         event_type: Optional[str] = Field(None, description="Event type"),
@@ -1111,7 +2010,9 @@ class WorkspaceManager:
         app_id: Optional[str] = Field(None, description="Application ID"),
         session_id: Optional[str] = Field(None, description="Session ID"),
         idempotency_key: Optional[str] = Field(None, description="Idempotency key"),
-        billing_account_id: Optional[str] = Field(None, description="Billing account ID"),
+        billing_account_id: Optional[str] = Field(
+            None, description="Billing account ID"
+        ),
         start_time: Optional[datetime.datetime] = Field(
             None, description="Start time for filtering events"
         ),
@@ -1149,7 +2050,9 @@ class WorkspaceManager:
                 if idempotency_key:
                     query = query.filter(EventLog.idempotency_key == idempotency_key)
                 if billing_account_id:
-                    query = query.filter(EventLog.billing_account_id == billing_account_id)
+                    query = query.filter(
+                        EventLog.billing_account_id == billing_account_id
+                    )
                 if start_time:
                     query = query.filter(EventLog.timestamp >= start_time)
                 if end_time:
@@ -1175,7 +2078,9 @@ class WorkspaceManager:
         app_id: Optional[str] = Field(None, description="Application ID"),
         session_id: Optional[str] = Field(None, description="Session ID"),
         idempotency_key: Optional[str] = Field(None, description="Idempotency key"),
-        billing_account_id: Optional[str] = Field(None, description="Billing account ID"),
+        billing_account_id: Optional[str] = Field(
+            None, description="Billing account ID"
+        ),
         start_time: Optional[datetime.datetime] = Field(
             None, description="Start time for filtering events"
         ),
@@ -1211,7 +2116,9 @@ class WorkspaceManager:
                 if idempotency_key:
                     query = query.filter(EventLog.idempotency_key == idempotency_key)
                 if billing_account_id:
-                    query = query.filter(EventLog.billing_account_id == billing_account_id)
+                    query = query.filter(
+                        EventLog.billing_account_id == billing_account_id
+                    )
                 if start_time:
                     query = query.filter(EventLog.timestamp >= start_time)
                 if end_time:
@@ -1266,10 +2173,18 @@ class WorkspaceManager:
         """Validate that clients can only subscribe to workspace-safe event types."""
         # Allow system events and custom events within own workspace
         allowed_system_events = [
-            "service_added", "service_removed", "service_updated",
-            "client_connected", "client_disconnected", "client_updated",
-            "workspace_loaded", "workspace_deleted", "workspace_changed",
-            "workspace_ready", "workspace_unloaded", "workspace_status_changed"
+            "service_added",
+            "service_removed",
+            "service_updated",
+            "client_connected",
+            "client_disconnected",
+            "client_updated",
+            "workspace_loaded",
+            "workspace_deleted",
+            "workspace_changed",
+            "workspace_ready",
+            "workspace_unloaded",
+            "workspace_status_changed",
         ]
 
         # If it's a system event, it's allowed
@@ -1320,7 +2235,9 @@ class WorkspaceManager:
     @schema_method
     async def subscribe(
         self,
-        event_type: Union[str, List[str]] = Field(..., description="Event type(s) to subscribe to"),
+        event_type: Union[str, List[str]] = Field(
+            ..., description="Event type(s) to subscribe to"
+        ),
         context: Optional[dict] = None,
     ):
         """Subscribe to event types for receiving broadcast messages."""
@@ -1331,15 +2248,17 @@ class WorkspaceManager:
         # Get the connection for this client
         connection = RedisRPCConnection.get_connection(workspace, client_id)
         if not connection:
-            raise RuntimeError(f"Connection not found for client {workspace}/{client_id}")
-        
+            raise RuntimeError(
+                f"Connection not found for client {workspace}/{client_id}"
+            )
+
         # Handle both single event type and list of event types
         event_types = event_type if isinstance(event_type, list) else [event_type]
-        
+
         # Validate all event types first
         for evt in event_types:
             self._validate_event_subscription(evt, workspace)
-        
+
         # If validation passes, subscribe to all events
         for evt in event_types:
             connection.subscribe(evt)
@@ -1350,19 +2269,23 @@ class WorkspaceManager:
     @schema_method
     async def unsubscribe(
         self,
-        event_type: Union[str, List[str]] = Field(..., description="Event type(s) to unsubscribe from"),
+        event_type: Union[str, List[str]] = Field(
+            ..., description="Event type(s) to unsubscribe from"
+        ),
         context: Optional[dict] = None,
     ):
         """Unsubscribe from event types to stop receiving broadcast messages."""
         assert context is not None
         workspace = context["ws"]
         client_id = context["from"].split("/")[-1]  # Extract client_id from full path
-        
+
         # Get the connection for this client
         connection = RedisRPCConnection.get_connection(workspace, client_id)
         if not connection:
-            raise RuntimeError(f"Connection not found for client {workspace}/{client_id}")
-        
+            raise RuntimeError(
+                f"Connection not found for client {workspace}/{client_id}"
+            )
+
         # Handle both single event type and list of event types
         if isinstance(event_type, list):
             for evt in event_type:
@@ -1526,21 +2449,21 @@ class WorkspaceManager:
         self,
         config: Union[dict, WorkspaceInfo] = Field(
             ...,
-            description="Workspace configuration dictionary or WorkspaceInfo object. Must include 'id' field. Optional fields: 'name', 'description', 'persistent', 'owners', 'config'."
+            description="Workspace configuration dictionary or WorkspaceInfo object. Must include 'id' field. Optional fields: 'name', 'description', 'persistent', 'owners', 'config'.",
         ),
         overwrite: bool = Field(
             False,
-            description="If True, overwrites an existing workspace with the same ID. If False, raises an error if workspace already exists."
+            description="If True, overwrites an existing workspace with the same ID. If False, raises an error if workspace already exists.",
         ),
         context: Optional[dict] = None,
     ):
         """Create a new workspace for organizing services and data.
-        
-        Workspaces provide isolated environments for services, applications, and data. 
-        They support multi-tenancy, access control, and resource management. Persistent 
-        workspaces have dedicated storage and can store artifacts, while non-persistent 
+
+        Workspaces provide isolated environments for services, applications, and data.
+        They support multi-tenancy, access control, and resource management. Persistent
+        workspaces have dedicated storage and can store artifacts, while non-persistent
         workspaces are temporary and cleaned up when inactive.
-        
+
         Returns:
             Dict[str, Any]: The created workspace information including:
                 - id: Workspace identifier
@@ -1549,13 +2472,13 @@ class WorkspaceManager:
                 - persistent: Whether workspace has persistent storage
                 - owners: List of user IDs who own the workspace
                 - status: Current workspace status
-                
+
         Examples:
             >>> # Create a basic workspace
             >>> workspace = await workspace_manager.create_workspace(
             ...     config={"id": "research-lab", "name": "Research Lab"}
             ... )
-            >>> 
+            >>>
             >>> # Create a persistent workspace with description
             >>> workspace = await workspace_manager.create_workspace(
             ...     config={
@@ -1580,9 +2503,11 @@ class WorkspaceManager:
         exists = False
         if overwrite:
             try:
-                existing_workspace = await self.load_workspace_info(config["id"], increment_counter=False)
+                existing_workspace = await self.load_workspace_info(
+                    config["id"], increment_counter=False
+                )
                 exists = True
-                
+
                 # Authorization check: verify user can overwrite this workspace
                 if not self._can_overwrite_workspace(user_info, existing_workspace):
                     logger.warning(
@@ -1593,15 +2518,17 @@ class WorkspaceManager:
                         f"Permission denied: user {user_info.id} cannot overwrite "
                         f"workspace {existing_workspace.id}"
                     )
-                
+
                 logger.info(
                     f"Authorized overwrite: user={user_info.id}, "
                     f"workspace={existing_workspace.id}"
                 )
-                
+
                 # Close the existing workspace to clean up resources (e.g., vector collections)
                 if existing_workspace.persistent and self._artifact_manager:
-                    logger.info(f"Closing existing workspace {config['id']} before overwriting")
+                    logger.info(
+                        f"Closing existing workspace {config['id']} before overwriting"
+                    )
                     await self._artifact_manager.close_workspace(existing_workspace)
             except KeyError:
                 pass
@@ -1660,7 +2587,9 @@ class WorkspaceManager:
 
             # For non-persistent workspaces or anonymous workspaces, set to ready immediately
             # For persistent workspaces, the status will be set by _prepare_workspace
-            if not workspace.persistent or workspace.id.startswith(ANONYMOUS_USER_WS_PREFIX):
+            if not workspace.persistent or workspace.id.startswith(
+                ANONYMOUS_USER_WS_PREFIX
+            ):
                 # Update status to ready for non-persistent workspaces
                 await self._set_workspace_status(workspace.id, WorkspaceStatus.READY)
 
@@ -1680,9 +2609,10 @@ class WorkspaceManager:
             )
         logger.info("Created workspace %s", workspace.id)
         # prepare the workspace for the user
-        if not workspace.id.startswith(
-            ANONYMOUS_USER_WS_PREFIX
-        ) and workspace.persistent:  # Only prepare persistent workspaces
+        if (
+            not workspace.id.startswith(ANONYMOUS_USER_WS_PREFIX)
+            and workspace.persistent
+        ):  # Only prepare persistent workspaces
             task = asyncio.create_task(self._prepare_workspace(workspace))
             try:
                 background_tasks.add(task)
@@ -1692,9 +2622,7 @@ class WorkspaceManager:
         elif workspace.persistent:
             # For persistent workspaces that don't need preparation, set to ready
             await self._set_workspace_status(workspace.id, WorkspaceStatus.READY)
-        
 
-        
         return workspace.model_dump()
 
     @schema_method
@@ -1707,7 +2635,9 @@ class WorkspaceManager:
         assert context is not None
         user_info = UserInfo.from_context(context)
         workspace_info = await self.load_workspace_info(workspace)
-        if not user_info.check_permission(workspace, UserPermission.admin) and not workspace_info.owned_by(user_info):
+        if not user_info.check_permission(
+            workspace, UserPermission.admin
+        ) and not workspace_info.owned_by(user_info):
             raise PermissionError(f"Permission denied for workspace {workspace}")
         # delete all the associated keys
         keys = await self._redis.keys(f"{workspace_info.id}:*")
@@ -1726,12 +2656,12 @@ class WorkspaceManager:
         user_workspace.config = user_workspace.config or {}
         if "bookmarks" in user_workspace.config:
             user_workspace.config["bookmarks"] = [
-                b for b in user_workspace.config["bookmarks"] if b["name"] != workspace_info.id
+                b
+                for b in user_workspace.config["bookmarks"]
+                if b["name"] != workspace_info.id
             ]
             await self._update_workspace(user_workspace, user_info)
         logger.info("Workspace %s removed by %s", workspace_info.id, user_info.id)
-        
-
 
     @schema_method
     async def register_service_type(
@@ -1846,26 +2776,26 @@ class WorkspaceManager:
         self,
         config: Optional[TokenConfig] = Field(
             None,
-            description="Configuration for token generation. Includes workspace, permission level, expiration time, client ID, and extra scopes. If not provided, uses defaults."
+            description="Configuration for token generation. Includes workspace, permission level, expiration time, client ID, and extra scopes. If not provided, uses defaults.",
         ),
         context: Optional[dict] = None,
     ):
         """Generate an authentication token for workspace access.
-        
-        Creates a JWT token with specified permissions and scopes for accessing 
-        workspace resources. Only workspace administrators can generate tokens. 
-        The token can be used for programmatic access to the workspace via API 
+
+        Creates a JWT token with specified permissions and scopes for accessing
+        workspace resources. Only workspace administrators can generate tokens.
+        The token can be used for programmatic access to the workspace via API
         clients or for delegating access to other users/services.
-        
+
         Returns:
             str: JWT authentication token that can be used in API requests.
-            
+
         Examples:
             >>> # Generate a read-only token for current workspace
             >>> token = await workspace_manager.generate_token(
             ...     config={"permission": "read", "expires_in": 3600}
             ... )
-            >>> 
+            >>>
             >>> # Generate admin token for specific workspace
             >>> token = await workspace_manager.generate_token(
             ...     config={
@@ -1937,7 +2867,9 @@ class WorkspaceManager:
         keys = []
         cursor = 0
         while True:
-            cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=500)
+            cursor, batch = await self._redis.scan(
+                cursor=cursor, match=pattern, count=500
+            )
             keys.extend(batch)
             if cursor == 0:
                 break
@@ -1974,7 +2906,7 @@ class WorkspaceManager:
                 if ":" in parts_after_ws:
                     client_id = parts_after_ws.split(":")[0]
                     client_keys.add(workspace + "/" + client_id)
-        
+
         # If no services found, check for client keys directly in Redis
         if not client_keys:
             # Try alternative pattern for clients
@@ -1986,7 +2918,7 @@ class WorkspaceManager:
                 if f"clients:{workspace}/" in key_str:
                     client_id = key_str.split(f"clients:{workspace}/")[1]
                     client_keys.add(workspace + "/" + client_id)
-        
+
         return list(client_keys)
 
     @schema_method
@@ -2001,30 +2933,34 @@ class WorkspaceManager:
         ws = context.get("ws", "")
         if not ws:
             return "Failed to ping client: no workspace in context"
-            
+
         if "/" not in client_id:
             client_id = ws + "/" + client_id
-        
+
         # Validate that the user has permission to access the target workspace
         target_workspace = client_id.split("/")[0]
-        
+
         # Only validate permissions if trying to ping a client in a different workspace
         # Skip permission check for internal system operations (e.g., check-client-exists)
         from_client = context.get("from", "")
         is_internal_check = from_client and (
-            from_client.endswith("/check-client-exists") or 
-            from_client == "check-client-exists"
+            from_client.endswith("/check-client-exists")
+            or from_client == "check-client-exists"
         )
         if target_workspace != ws and not is_internal_check:
             try:
                 self.validate_context(context, permission=UserPermission.read)
                 user_info = UserInfo.from_context(context)
-                if not user_info.check_permission(target_workspace, UserPermission.read):
-                    raise PermissionError(f"Permission denied for workspace {target_workspace}")
+                if not user_info.check_permission(
+                    target_workspace, UserPermission.read
+                ):
+                    raise PermissionError(
+                        f"Permission denied for workspace {target_workspace}"
+                    )
             except Exception as e:
                 logger.warning(f"Permission check failed in ping_client: {e}")
                 return f"Failed to ping client {client_id}: {e}"
-        
+
         # First try the built-in service
         try:
             svc = await self._rpc.get_remote_service(
@@ -2036,7 +2972,7 @@ class WorkspaceManager:
             workspace_id, client_name = client_id.split("/")
             pattern = f"services:*|*:{workspace_id}/{client_name}:*@*"
             keys = await self._redis.keys(pattern)
-            
+
             if keys:
                 # Try to ping using the first available service
                 for key in keys[:3]:  # Try up to 3 services
@@ -2055,14 +2991,18 @@ class WorkspaceManager:
                                 return await svc.ping("ping")
                             elif hasattr(svc, "echo"):
                                 result = await svc.echo("ping")
-                                return "pong" if result == "ping" else f"Client responded: {result}"
+                                return (
+                                    "pong"
+                                    if result == "ping"
+                                    else f"Client responded: {result}"
+                                )
                             else:
                                 # Just check if we can get service info - if yes, client is alive
                                 if hasattr(svc, "_config"):
                                     return "pong"  # Client is alive but no ping method
                     except Exception:
                         continue  # Try next service
-            
+
             # All attempts failed
             return f"Failed to ping client {client_id}: {e}"
 
@@ -2418,7 +3358,9 @@ class WorkspaceManager:
         for pattern in patterns:
             cursor = 0
             while True:
-                cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=500)
+                cursor, batch = await self._redis.scan(
+                    cursor=cursor, match=pattern, count=500
+                )
                 keys.extend(batch)
                 if cursor == 0:
                     break
@@ -2433,7 +3375,9 @@ class WorkspaceManager:
                 # Scan additional keys in current workspace to avoid blocking Redis
                 cursor = 0
                 while True:
-                    cursor, batch = await self._redis.scan(cursor=cursor, match=ws_pattern, count=500)
+                    cursor, batch = await self._redis.scan(
+                        cursor=cursor, match=ws_pattern, count=500
+                    )
                     keys.extend(batch)
                     if cursor == 0:
                         break
@@ -2473,10 +3417,17 @@ class WorkspaceManager:
                     # User doesn't have permission for this workspace
                     # Check if user's workspace is in authorized_workspaces for controlled access
                     config = service_dict.get("config", {})
-                    authorized_workspaces = config.get("authorized_workspaces") if isinstance(config, dict) else getattr(config, 'authorized_workspaces', None)
+                    authorized_workspaces = (
+                        config.get("authorized_workspaces")
+                        if isinstance(config, dict)
+                        else getattr(config, "authorized_workspaces", None)
+                    )
                     user_workspace = cws  # Current workspace from context
 
-                    if not (authorized_workspaces and user_workspace in authorized_workspaces):
+                    if not (
+                        authorized_workspaces
+                        and user_workspace in authorized_workspaces
+                    ):
                         # SECURITY: User doesn't have access - skip this protected service
                         # This ensures anonymous users (cws="ws-anonymous") cannot see protected services
                         continue
@@ -2486,7 +3437,7 @@ class WorkspaceManager:
                     if "authorized_workspaces" in service_dict.get("config", {}):
                         del service_dict["config"]["authorized_workspaces"]
                 # else: user has workspace permission, keep authorized_workspaces for owner
-            
+
             services.append(service_dict)
 
         # Include services from installed application artifacts if requested
@@ -2496,28 +3447,28 @@ class WorkspaceManager:
                 return services
             try:
                 # Build filters for querying artifacts with service_ids
-                artifact_filters = {
-                    "type": "application"
-                }
-                
+                artifact_filters = {"type": "application"}
+
                 # Add more specific filters based on query parameters
                 if service_id != "*":
                     # Build the full service ID pattern to match
                     # Note: service_ids in manifest don't have @app-id suffix
                     service_id_pattern = f"{workspace}/*:{service_id}"
                     # Use $in operator to check if the service_ids array contains this specific ID
-                    artifact_filters["manifest"] = {"service_ids": {"$in": [service_id_pattern]}}
-                
+                    artifact_filters["manifest"] = {
+                        "service_ids": {"$in": [service_id_pattern]}
+                    }
+
                 # Add app_id filter if specified
                 if app_id != "*":
                     artifact_filters["alias"] = app_id
-                
+
                 # Query applications collection for the current workspace only
                 # Use the workspace from the query, not from context
                 app_context = dict(context)
                 if workspace != "*":
                     app_context["workspace"] = workspace
-                
+
                 try:
                     # List children artifacts (installed apps) with filters
                     # Only query committed artifacts (stage=False)
@@ -2526,7 +3477,7 @@ class WorkspaceManager:
                         filters=artifact_filters,
                         limit=1000,  # Reasonable limit for apps
                         stage=False,  # Only query committed artifacts, not staged
-                        context=app_context
+                        context=app_context,
                     )
                 except KeyError as e:
                     logger.debug(f"KeyError checking applications collection: {e}")
@@ -2534,7 +3485,7 @@ class WorkspaceManager:
 
                 # Process artifacts to extract all services at once
                 existing_service_ids = {svc.get("id") for svc in services}
-                
+
                 # Build a map of concrete services for abstract filtering
                 concrete_services_map = {}
                 if prioritize_running_services:
@@ -2549,20 +3500,24 @@ class WorkspaceManager:
                                 client_service = parts[1].split(":")
                                 if len(client_service) == 2:
                                     client_part = client_service[0]
-                                    service_part = client_service[1].split("@")[0]  # Remove @app-id if present
+                                    service_part = client_service[1].split("@")[
+                                        0
+                                    ]  # Remove @app-id if present
                                     # Check if this is a concrete service (not containing *)
                                     if "*" not in client_part:
                                         # Create a key for the abstract version
                                         abstract_key = f"{ws_part}/*:{service_part}"
                                         if abstract_key not in concrete_services_map:
                                             concrete_services_map[abstract_key] = []
-                                        concrete_services_map[abstract_key].append(svc_id)
-                
+                                        concrete_services_map[abstract_key].append(
+                                            svc_id
+                                        )
+
                 for artifact in all_artifacts:
                     manifest = artifact.get("manifest", {})
                     app_services = manifest.get("services", [])
                     artifact_app_id = artifact.get("alias") or artifact.get("id")
-                    
+
                     # Process all services from this app
                     for app_service in app_services:
                         # Format service ID as <service_id>@<app-id> for lazy loading
@@ -2575,20 +3530,27 @@ class WorkspaceManager:
                                 # Reconstruct as workspace/client:service@app-id
                                 service_id_with_app = f"{':'.join(parts[:-1])}:{service_name}@{artifact_app_id}"
                             else:
-                                service_id_with_app = f"{original_service_id}@{artifact_app_id}"
+                                service_id_with_app = (
+                                    f"{original_service_id}@{artifact_app_id}"
+                                )
                         else:
                             continue  # Skip if no service ID
-                        
+
                         # Check if this is an abstract service and if we should exclude it
                         if prioritize_running_services and "*" in service_id_with_app:
                             # Check if a concrete version exists
                             # Extract the base pattern without @app-id
                             base_service_id = service_id_with_app.split("@")[0]
-                            if base_service_id in concrete_services_map and concrete_services_map[base_service_id]:
+                            if (
+                                base_service_id in concrete_services_map
+                                and concrete_services_map[base_service_id]
+                            ):
                                 # Concrete implementation exists, skip this abstract service
-                                logger.debug(f"Skipping abstract service {service_id_with_app} because concrete implementations exist: {concrete_services_map[base_service_id]}")
+                                logger.debug(
+                                    f"Skipping abstract service {service_id_with_app} because concrete implementations exist: {concrete_services_map[base_service_id]}"
+                                )
                                 continue
-                            
+
                         service_dict = {
                             "id": service_id_with_app,
                             "name": app_service.get("name"),
@@ -2596,67 +3558,89 @@ class WorkspaceManager:
                             "description": app_service.get("description"),
                             "config": app_service.get("config", {}),
                             "app_id": artifact_app_id,
-                            "_source": "app_manifest"
+                            "_source": "app_manifest",
                         }
-                        
+
                         # Skip if service ID is missing or already running
-                        if not service_dict["id"] or service_dict["id"] in existing_service_ids:
+                        if (
+                            not service_dict["id"]
+                            or service_dict["id"] in existing_service_ids
+                        ):
                             continue
-                        
+
                         # Apply type filter
-                        if type_filter != "*" and service_dict.get("type") != type_filter:
+                        if (
+                            type_filter != "*"
+                            and service_dict.get("type") != type_filter
+                        ):
                             continue
-                        
+
                         # Apply service_id filter (double-check since we already filtered at query level)
                         if service_id != "*":
                             svc_id_parts = service_dict["id"].split(":")
                             if len(svc_id_parts) > 1:
                                 svc_name = svc_id_parts[1].split("@")[0]
-                                logger.debug(f"DEBUG: Filtering service_id={service_id}, service={service_dict['id']}, svc_name={svc_name}")
+                                logger.debug(
+                                    f"DEBUG: Filtering service_id={service_id}, service={service_dict['id']}, svc_name={svc_name}"
+                                )
                                 if svc_name != service_id:
-                                    logger.debug(f"DEBUG: Skipping service {service_dict['id']} because {svc_name} != {service_id}")
+                                    logger.debug(
+                                        f"DEBUG: Skipping service {service_dict['id']} because {svc_name} != {service_id}"
+                                    )
                                     continue
-                        
+
                         # Get service visibility and workspace
-                        service_visibility = service_dict.get("config", {}).get("visibility", "public")
+                        service_visibility = service_dict.get("config", {}).get(
+                            "visibility", "public"
+                        )
                         service_workspace = (
-                            service_dict["id"].split("/")[0] 
-                            if "/" in service_dict["id"] 
+                            service_dict["id"].split("/")[0]
+                            if "/" in service_dict["id"]
                             else workspace
                         )
-                        
+
                         # Apply visibility filter
                         if visibility != "*" and service_visibility != visibility:
-                            if not (visibility == "protected" and service_visibility in ["protected", "public"]):
+                            if not (
+                                visibility == "protected"
+                                and service_visibility in ["protected", "public"]
+                            ):
                                 continue
-                        
+
                         # Check unlisted services
                         if service_visibility == "unlisted":
                             if not include_unlisted:
                                 continue
                             elif service_workspace != cws:
                                 continue
-                            
+
                         # Check protected services permissions
                         if service_visibility == "protected":
                             has_workspace_permission = user_info.check_permission(
                                 service_workspace, UserPermission.read
                             )
-                            
+
                             if not has_workspace_permission:
                                 config = service_dict.get("config", {})
-                                authorized_workspaces = config.get("authorized_workspaces", [])
-                                if not (authorized_workspaces and cws in authorized_workspaces):
+                                authorized_workspaces = config.get(
+                                    "authorized_workspaces", []
+                                )
+                                if not (
+                                    authorized_workspaces
+                                    and cws in authorized_workspaces
+                                ):
                                     continue
-                                
+
                                 # Remove authorized_workspaces for security
-                                if "authorized_workspaces" in service_dict.get("config", {}):
+                                if "authorized_workspaces" in service_dict.get(
+                                    "config", {}
+                                ):
                                     del service_dict["config"]["authorized_workspaces"]
-                        
+
                         services.append(service_dict)
-                
+
             except KeyError:
-                    # Applications collection doesn't exist yet
+                # Applications collection doesn't exist yet
                 logger.debug("Applications collection not found, skipping app services")
             except Exception as e:
                 raise e
@@ -2731,12 +3715,21 @@ class WorkspaceManager:
             service.config.created_by = user_info.model_dump()
         else:
             service.config.created_by = {"id": user_info.id}
-        
+
         # Validate authorized_workspaces is only used with protected visibility
-        if hasattr(service.config, 'authorized_workspaces') and service.config.authorized_workspaces is not None:
-            visibility = service.config.visibility.value if isinstance(service.config.visibility, VisibilityEnum) else service.config.visibility
+        if (
+            hasattr(service.config, "authorized_workspaces")
+            and service.config.authorized_workspaces is not None
+        ):
+            visibility = (
+                service.config.visibility.value
+                if isinstance(service.config.visibility, VisibilityEnum)
+                else service.config.visibility
+            )
             if visibility != "protected":
-                raise ValueError(f"authorized_workspaces can only be set when visibility is 'protected', got visibility='{visibility}'")
+                raise ValueError(
+                    f"authorized_workspaces can only be set when visibility is 'protected', got visibility='{visibility}'"
+                )
 
         # Check for existing singleton services
         if service.config.singleton:
@@ -2830,18 +3823,24 @@ class WorkspaceManager:
                 vector_data["workspace"] = service.config.workspace or ws
                 vector_data["visibility"] = visibility
                 # Convert bytes back to numpy array for vector search
-                if "service_embedding" in vector_data and isinstance(vector_data["service_embedding"], bytes):
-                    vector_data["service_embedding"] = np.frombuffer(vector_data["service_embedding"], dtype=np.float32)
-                logger.info(f"Adding new service to vector search: id={vector_data['id']}, workspace={vector_data['workspace']}, visibility={vector_data['visibility']}, has_embedding={'service_embedding' in vector_data}")
+                if "service_embedding" in vector_data and isinstance(
+                    vector_data["service_embedding"], bytes
+                ):
+                    vector_data["service_embedding"] = np.frombuffer(
+                        vector_data["service_embedding"], dtype=np.float32
+                    )
+                logger.info(
+                    f"Adding new service to vector search: id={vector_data['id']}, workspace={vector_data['workspace']}, visibility={vector_data['visibility']}, has_embedding={'service_embedding' in vector_data}"
+                )
                 try:
                     # Ensure the services collection exists before adding vectors
                     await self._ensure_services_collection()
                     await self._vector_search.add_vectors(
-                        "services",
-                        [vector_data],
-                        update=False
+                        "services", [vector_data], update=False
                     )
-                    logger.info(f"Successfully added service {vector_data['id']} to vector search")
+                    logger.info(
+                        f"Successfully added service {vector_data['id']} to vector search"
+                    )
                 except Exception as e:
                     logger.error(f"Failed to add service to vector search: {e}")
                     # Re-raise to maintain original behavior
@@ -2891,20 +3890,22 @@ class WorkspaceManager:
     ):
         """Get the service info."""
         # Don't validate context here - we'll check permissions after determining if service is public
-        assert isinstance(service_id, str), "Service ID must be a string."     
+        assert isinstance(service_id, str), "Service ID must be a string."
         assert service_id.count("/") <= 1, "Service id must contain at most one '/'"
         assert service_id.count(":") <= 1, "Service id must contain at most one ':'"
         assert service_id.count("@") <= 1, "Service id must contain at most one '@'"
         # Handle special "~" shortcut for workspace manager early
         # Check if the service_id is just "~" or contains "~" as the service name
-        if service_id == "~" or (isinstance(service_id, str) and service_id.endswith("/~")):
+        if service_id == "~" or (
+            isinstance(service_id, str) and service_id.endswith("/~")
+        ):
             # Return the stored service info from registration
             if not self._service_info:
                 raise RuntimeError("Workspace manager service info not available")
-            
+
             # Return the service info directly - no expansion needed
             return self._service_info
-        
+
         if "/" not in service_id:
             service_id = f"{context['ws']}/{service_id}"
         if ":" not in service_id:
@@ -2922,7 +3923,7 @@ class WorkspaceManager:
         assert (
             workspace != "*"
         ), "You must specify a workspace for the service query, otherwise please call list_services to find the service."
-        
+
         logger.info("Getting service: %s", service_id)
         config = config or {}
         mode = config.get("mode")
@@ -3033,7 +4034,9 @@ class WorkspaceManager:
             # For non-public services, validate context and permissions
             self.validate_context(context, permission=UserPermission.read)
             # First check if user has read permission in the service's workspace
-            has_workspace_permission = user_info.check_permission(workspace, UserPermission.read)
+            has_workspace_permission = user_info.check_permission(
+                workspace, UserPermission.read
+            )
 
             if not has_workspace_permission:
                 # Get service data to check authorized_workspaces
@@ -3041,11 +4044,17 @@ class WorkspaceManager:
                 service_info = ServiceInfo.from_redis_dict(service_data)
 
                 # Check if the service has authorized_workspaces configured
-                authorized_workspaces = getattr(service_info.config, 'authorized_workspaces', None)
+                authorized_workspaces = getattr(
+                    service_info.config, "authorized_workspaces", None
+                )
                 user_workspace = context.get("ws") if context else None
 
                 # Check if user's workspace is in the authorized_workspaces list
-                if not (authorized_workspaces and user_workspace and user_workspace in authorized_workspaces):
+                if not (
+                    authorized_workspaces
+                    and user_workspace
+                    and user_workspace in authorized_workspaces
+                ):
                     # SECURITY: User is not authorized - don't reveal any service information
                     # This blocks anonymous users (workspace="ws-anonymous") from accessing protected services
                     raise PermissionError(
@@ -3055,17 +4064,17 @@ class WorkspaceManager:
                 # User is authorized via authorized_workspaces
                 # For security, remove the authorized_workspaces list from the returned service info
                 # so that authorized users from other workspaces cannot see the full list
-                if hasattr(service_info.config, 'authorized_workspaces'):
-                    delattr(service_info.config, 'authorized_workspaces')
+                if hasattr(service_info.config, "authorized_workspaces"):
+                    delattr(service_info.config, "authorized_workspaces")
                 return service_info
-        
+
         # Either it's a public service or user has permission - fetch and return service data
         service_data = await self._redis.hgetall(key)
         service_info = ServiceInfo.from_redis_dict(service_data)
-        
+
         # Users with workspace permission can see authorized_workspaces
         # (Nothing to do here - just return the full service_info)
-        
+
         return service_info
 
     @schema_method
@@ -3121,8 +4130,6 @@ class WorkspaceManager:
         else:
             logger.warning(f"Service {key} does not exist and cannot be removed.")
             raise KeyError(f"Service not found: {service.id}")
-        
-
 
     def _create_rpc(
         self,
@@ -3205,19 +4212,26 @@ class WorkspaceManager:
                 )
                 # Reset activity timer for user workspaces when accessed
                 await self._activity_manager.reset_activity(workspace)
-                
+
                 # If workspace exists but isn't ready (status=None from unload), prepare it
                 if workspace_info.status is None and workspace_info.persistent:
-                    logger.info(f"Re-preparing previously unloaded workspace: {workspace}")
+                    logger.info(
+                        f"Re-preparing previously unloaded workspace: {workspace}"
+                    )
                     # Set loading status first
-                    workspace_info.status = {"ready": False, "status": WorkspaceStatus.LOADING}
-                    await self._redis.hset("workspaces", workspace, workspace_info.model_dump_json())
-                    
+                    workspace_info.status = {
+                        "ready": False,
+                        "status": WorkspaceStatus.LOADING,
+                    }
+                    await self._redis.hset(
+                        "workspaces", workspace, workspace_info.model_dump_json()
+                    )
+
                     # Trigger preparation in background
                     task = asyncio.create_task(self._prepare_workspace(workspace_info))
                     background_tasks.add(task)
                     task.add_done_callback(background_tasks.discard)
-                
+
                 return workspace_info
         except Exception as e:
             logger.error(f"Failed to load workspace info from Redis: {e}")
@@ -3268,8 +4282,6 @@ class WorkspaceManager:
             task = asyncio.create_task(self._prepare_workspace(workspace_info))
             background_tasks.add(task)
             task.add_done_callback(background_tasks.discard)
-
-
 
             await self._s3_controller.setup_workspace(workspace_info)
             await self._event_bus.broadcast(
@@ -3459,18 +4471,18 @@ class WorkspaceManager:
                 # Return the workspace manager service directly as a local service
                 if not self._rpc:
                     raise RuntimeError("Workspace manager RPC not initialized")
-                
+
                 # Get the workspace manager service from our own RPC as a LOCAL service
                 # Since we ARE the workspace manager, we return ourselves
                 # Pass the context to get_local_service (it's synchronous, not async)
                 return self._rpc.get_local_service("default", context=context)
-            
+
             service_api = await self._rpc.get_remote_service(
                 svc_info.id,
                 {"timeout": config.timeout, "case_conversion": config.case_conversion},
             )
             assert service_api, f"Failed to get service: {svc_info.id}"
-            
+
             workspace = svc_info.id.split("/")[0]
             service_api["config"]["workspace"] = workspace
             service_api["config"][
@@ -3479,14 +4491,22 @@ class WorkspaceManager:
             return service_api
         except asyncio.CancelledError:
             # Client disconnected during service retrieval
-            logger.warning(f"Service retrieval cancelled for {service_id}, likely due to client disconnection")
-            raise ConnectionError(f"Client disconnected while retrieving service: {service_id}")
+            logger.warning(
+                f"Service retrieval cancelled for {service_id}, likely due to client disconnection"
+            )
+            raise ConnectionError(
+                f"Client disconnected while retrieving service: {service_id}"
+            )
         except RemoteException as e:
             # Check if this is a wrapped CancelledError (common when client disconnects)
             error_str = str(e)
             if "CancelledError" in error_str and "TimeoutError" in error_str:
-                logger.warning(f"Service retrieval failed for {service_id}, likely due to client disconnection: {e}")
-                raise ConnectionError(f"Client disconnected while retrieving service: {service_id}") from e
+                logger.warning(
+                    f"Service retrieval failed for {service_id}, likely due to client disconnection: {e}"
+                )
+                raise ConnectionError(
+                    f"Client disconnected while retrieving service: {service_id}"
+                ) from e
             # Re-raise other RemoteExceptions as-is
             raise
         except KeyError as exp:
@@ -3550,12 +4570,9 @@ class WorkspaceManager:
                     ws_data = ws_data.decode()
                     workspace_info = WorkspaceInfo.model_validate(json.loads(ws_data))
 
-                    if (
-                        user_info.check_permission(
-                            workspace_info.id, UserPermission.read
-                        )
-                        or workspace_info.owned_by(user_info)
-                    ):
+                    if user_info.check_permission(
+                        workspace_info.id, UserPermission.read
+                    ) or workspace_info.owned_by(user_info):
                         match = match or {}
                         if not all(
                             getattr(workspace_info, k, None) == v
@@ -3585,31 +4602,31 @@ class WorkspaceManager:
     ) -> bool:
         """
         Check if user is authorized to overwrite an existing workspace.
-        
+
         Authorization is granted if any of these conditions are met:
         1. User is the root user (user_info.id == "root")
         2. User owns the workspace (id or email in owners list)
         3. User has admin permission on the workspace
-        
+
         Args:
             user_info: The user attempting the overwrite
             existing_workspace: The workspace being overwritten
-            
+
         Returns:
             True if authorized, False otherwise
         """
         # Root user can overwrite any workspace
         if user_info.id == "root":
             return True
-        
+
         # Owner can overwrite their workspace
         if existing_workspace.owned_by(user_info):
             return True
-        
+
         # User with admin permission can overwrite
         if user_info.check_permission(existing_workspace.id, UserPermission.admin):
             return True
-        
+
         return False
 
     async def _update_workspace(
@@ -3728,7 +4745,9 @@ class WorkspaceManager:
                     # For persistent workspaces, register with activity manager for intelligent cleanup
                     # System workspaces are protected and won't be registered
                     if await self._activity_manager.register_for_cleanup(ws):
-                        logger.debug(f"Registered persistent workspace {ws} for activity-based cleanup")
+                        logger.debug(
+                            f"Registered persistent workspace {ws} for activity-based cleanup"
+                        )
                     else:
                         # Either activity manager disabled or protected workspace - delete immediately
                         await self._redis.hdel("workspaces", ws)
@@ -3857,6 +4876,8 @@ class WorkspaceManager:
             "echo": self.echo,
             "log": self.log,
             "log_event": self.log_event,
+            "record_usage": self.record_usage,
+            "get_usage_summary": self.get_usage_summary,
             "get_event_stats": self.get_event_stats,
             "get_events": self.get_events,
             "register_interceptor": self.register_interceptor,
@@ -3919,7 +4940,9 @@ class WorkspaceManager:
                 await connection.disconnect("Client deleted by admin")
                 logger.debug(f"Disconnected RPC connection for {connection_key}")
         except Exception as e:
-            logger.warning(f"Failed to disconnect RPC connection for {cws}/{client_id}: {e}")
+            logger.warning(
+                f"Failed to disconnect RPC connection for {cws}/{client_id}: {e}"
+            )
 
         # Define a pattern to match all services for the given client_id in the current workspace
         pattern = f"services:*|*:{cws}/{client_id}:*@*"
@@ -3932,7 +4955,9 @@ class WorkspaceManager:
         keys = []
         cursor = 0
         while True:
-            cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=500)
+            cursor, batch = await self._redis.scan(
+                cursor=cursor, match=pattern, count=500
+            )
             keys.extend(batch)
             if cursor == 0:
                 break
@@ -4019,8 +5044,9 @@ class WorkspaceManager:
                 "workspaces", workspace_id, workspace_info.model_dump_json()
             )
             await self._event_bus.broadcast(
-                workspace_id, "workspace_status_changed",
-                {"workspace": workspace_id, "status": status}
+                workspace_id,
+                "workspace_status_changed",
+                {"workspace": workspace_id, "status": status},
             )
         except Exception as e:
             logger.error(f"Failed to set workspace status: {e}")
@@ -4082,40 +5108,40 @@ class WorkspaceManager:
 
     async def _select_native_service(self, keys: List[bytes]) -> bytes:
         """Select a native service (client connected to the same Hypha server).
-        
+
         Args:
             keys: List of Redis keys for services
-            
+
         Returns:
             bytes: The Redis key of the selected native service, or random fallback
         """
         if len(keys) == 1:
             return keys[0]
-        
+
         native_services = []
         all_services = []
-        
+
         for key in keys:
             try:
                 # Get service info
                 service_data = await self._redis.hgetall(key)
                 service_info = ServiceInfo.from_redis_dict(service_data)
-                
+
                 # Extract workspace and client_id from service ID
                 workspace = service_info.id.split("/")[0]
                 client_id = service_info.id.split("/")[1].split(":")[0]
-                
+
                 all_services.append((key, service_info))
-                
+
                 # Check if this client is local/native to this server
                 if self._event_bus.is_local_client(workspace, client_id):
                     native_services.append((key, service_info))
                     logger.debug(f"Found native service: {service_info.id}")
-                    
+
             except Exception as e:
                 logger.warning(f"Failed to check if service is native {key}: {e}")
                 continue
-        
+
         if native_services:
             # Prefer native services - pick randomly among them
             selected_key, service_info = random.choice(native_services)
@@ -4124,11 +5150,15 @@ class WorkspaceManager:
         elif all_services:
             # No native services found, fall back to random selection
             selected_key, service_info = random.choice(all_services)
-            logger.info(f"No native services found, selected random service: {service_info.id}")
+            logger.info(
+                f"No native services found, selected random service: {service_info.id}"
+            )
             return selected_key
         else:
             # Fallback to random if we couldn't process any services
-            logger.warning("Could not process any services, falling back to random selection")
+            logger.warning(
+                "Could not process any services, falling back to random selection"
+            )
             return random.choice(keys)
 
     async def _select_service_by_function(
