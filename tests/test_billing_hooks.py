@@ -1,6 +1,9 @@
 """Contract-first tests for billing hook APIs."""
 
+import datetime
+
 import pytest
+from sqlalchemy import MetaData
 from hypha_rpc import connect_to_server
 
 from . import SERVER_URL
@@ -134,6 +137,17 @@ def _sum_amount_for_billing_point(rows, billing_point):
         total += amount
         matched += 1
     return matched, total
+
+
+def _summary_total_amount(summary):
+    if not isinstance(summary, dict):
+        return None
+    totals = summary.get("totals")
+    if isinstance(totals, dict):
+        value = totals.get("amount", totals.get("total_amount"))
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None
 
 
 async def test_record_usage_validation_contract(fastapi_server, test_user_token):
@@ -379,3 +393,179 @@ async def test_usage_summary_workspace_isolation_contract(
         if api_ws2 is not None:
             await api_ws2.disconnect()
         await api_ws1.disconnect()
+
+
+async def test_usage_summary_totals_unchanged_for_non_intercepted_rows_contract(
+    fastapi_server,
+    test_user_token,
+):
+    """Contract: normal billing rows remain fully included in usage totals."""
+    api = await _connect_client(
+        token=test_user_token, client_id="contract-billing-non-intercepted-totals"
+    )
+
+    try:
+        billing_point = "contract.billing.non-intercepted"
+        await _record_or_xfail(
+            api,
+            _usage_payload(
+                key="contract-billing-non-intercepted-key-1",
+                point=billing_point,
+                amount=2,
+            ),
+        )
+        await _record_or_xfail(
+            api,
+            _usage_payload(
+                key="contract-billing-non-intercepted-key-2",
+                point=billing_point,
+                amount=5,
+            ),
+        )
+
+        summary = await _summary_or_xfail(
+            api,
+            {
+                "start_time": "2026-01-01T00:00:00Z",
+                "end_time": "2026-12-31T23:59:59Z",
+                "group_by": ["billing_point"],
+                "billing_point": billing_point,
+            },
+        )
+        rows = _extract_rows(summary)
+        if not rows:
+            pytest.xfail("get_usage_summary rows not implemented yet")
+
+        matched, total = _sum_amount_for_billing_point(rows, billing_point)
+        if matched == 0:
+            pytest.xfail("billing_point filtering/grouping not implemented yet")
+        assert total == pytest.approx(7.0)
+    finally:
+        await api.disconnect()
+
+
+async def test_usage_summary_excludes_intercepted_rows_contract_xfail_until_implemented(
+    fastapi_server,
+    test_user_token,
+    pg_engine,
+):
+    """Contract: intercepted billing rows must be excluded from usage summary totals."""
+    api = await _connect_client(
+        token=test_user_token, client_id="contract-billing-exclude-intercepted"
+    )
+
+    try:
+        workspace = api.config.workspace
+        billing_point = "contract.billing.exclude-intercepted"
+        await _record_or_xfail(
+            api,
+            _usage_payload(
+                key="contract-billing-exclude-intercepted-key-1",
+                point=billing_point,
+                amount=3,
+            ),
+        )
+        await _record_or_xfail(
+            api,
+            _usage_payload(
+                key="contract-billing-exclude-intercepted-key-2",
+                point=billing_point,
+                amount=4,
+            ),
+        )
+
+        base_summary = await _summary_or_xfail(
+            api,
+            {
+                "start_time": "2026-01-01T00:00:00Z",
+                "end_time": "2026-12-31T23:59:59Z",
+                "group_by": ["billing_point"],
+                "billing_point": billing_point,
+            },
+        )
+        base_rows = _extract_rows(base_summary)
+        if not base_rows:
+            pytest.xfail("get_usage_summary rows not implemented yet")
+        _, base_point_total = _sum_amount_for_billing_point(base_rows, billing_point)
+        base_total = _summary_total_amount(base_summary)
+        if base_total is None:
+            base_total = base_point_total
+
+        metadata = MetaData()
+        async with pg_engine.begin() as conn:
+            await conn.run_sync(metadata.reflect, only=["event_logs"])
+            event_logs = metadata.tables.get("event_logs")
+            assert event_logs is not None, "event_logs table must exist"
+
+            required_columns = {
+                "intercepted",
+                "interceptor_action",
+                "interceptor_reason",
+                "interceptor_code",
+                "interceptor_id",
+                "interceptor_name",
+                "intercepted_at",
+            }
+            missing_columns = [
+                col for col in required_columns if col not in event_logs.c.keys()
+            ]
+            if missing_columns:
+                pytest.xfail(
+                    "Intercepted columns are not present in event_logs yet "
+                    f"(missing: {', '.join(sorted(missing_columns))})"
+                )
+
+            await conn.execute(
+                event_logs.insert().values(
+                    event_type="billing.usage.recorded",
+                    category="billing",
+                    level="warning",
+                    workspace=workspace,
+                    user_id="contract-billing-intercepted-seed",
+                    app_id=None,
+                    session_id=None,
+                    idempotency_key="contract-billing-exclude-intercepted-seeded-stop",
+                    billing_account_id=None,
+                    retention_policy_id=None,
+                    timestamp=datetime.datetime(2026, 1, 2, 3, 4, 8),
+                    data={
+                        "billing_point": billing_point,
+                        "amount": 99.0,
+                        "unit": "token",
+                        "idempotency_key": "contract-billing-exclude-intercepted-seeded-stop",
+                        "dimensions": {"model": "contract-model-v1", "region": "test-us"},
+                        "occurred_at": "2026-01-02T03:04:08Z",
+                        "entitlement": {"key": billing_point, "limit": None},
+                    },
+                    intercepted=True,
+                    interceptor_action="stop",
+                    interceptor_reason="limit",
+                    interceptor_code="INTERCEPT_STOP_LIMIT",
+                    interceptor_id="contract-billing-stop-interceptor",
+                    interceptor_name="contract-billing-stop-interceptor",
+                    intercepted_at=datetime.datetime(2026, 1, 2, 3, 4, 8),
+                )
+            )
+
+        guarded_summary = await _summary_or_xfail(
+            api,
+            {
+                "start_time": "2026-01-01T00:00:00Z",
+                "end_time": "2026-12-31T23:59:59Z",
+                "group_by": ["billing_point"],
+                "billing_point": billing_point,
+            },
+        )
+        guarded_rows = _extract_rows(guarded_summary)
+        if not guarded_rows:
+            pytest.xfail("get_usage_summary rows not implemented yet")
+
+        _, guarded_point_total = _sum_amount_for_billing_point(guarded_rows, billing_point)
+        guarded_total = _summary_total_amount(guarded_summary)
+        if guarded_total is None:
+            guarded_total = guarded_point_total
+
+        assert guarded_point_total == pytest.approx(base_point_total)
+        assert guarded_total == pytest.approx(base_total)
+    finally:
+        await api.disconnect()

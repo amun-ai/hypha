@@ -126,6 +126,12 @@ class EventLog(SQLModel, table=True):
             "timestamp",
         ),
         Index(
+            "ix_event_logs_workspace_intercepted_timestamp",
+            "workspace",
+            "intercepted",
+            "timestamp",
+        ),
+        Index(
             "ux_event_logs_workspace_idempotency_key_billing",
             "workspace",
             "idempotency_key",
@@ -146,6 +152,13 @@ class EventLog(SQLModel, table=True):
     app_id: Optional[str] = Field(default=None)
     session_id: Optional[str] = Field(default=None)
     idempotency_key: Optional[str] = Field(default=None)
+    intercepted: bool = Field(default=False, nullable=False)
+    interceptor_action: Optional[str] = Field(default=None)
+    interceptor_reason: Optional[str] = Field(default=None)
+    interceptor_code: Optional[str] = Field(default=None)
+    interceptor_id: Optional[str] = Field(default=None)
+    interceptor_name: Optional[str] = Field(default=None)
+    intercepted_at: Optional[datetime.datetime] = Field(default=None)
     billing_account_id: Optional[str] = Field(
         default=None, foreign_key="billing_accounts.id", index=True
     )
@@ -169,6 +182,15 @@ class EventLog(SQLModel, table=True):
             "app_id": self.app_id,
             "session_id": self.session_id,
             "idempotency_key": self.idempotency_key,
+            "intercepted": self.intercepted,
+            "interceptor_action": self.interceptor_action,
+            "interceptor_reason": self.interceptor_reason,
+            "interceptor_code": self.interceptor_code,
+            "interceptor_id": self.interceptor_id,
+            "interceptor_name": self.interceptor_name,
+            "intercepted_at": (
+                self.intercepted_at.isoformat() if self.intercepted_at else None
+            ),
             "billing_account_id": self.billing_account_id,
             "retention_policy_id": self.retention_policy_id,
             "timestamp": self.timestamp.isoformat() if self.timestamp else None,
@@ -940,6 +962,54 @@ class WorkspaceManager:
             timestamp=naive_utc_now(),
         )
 
+    async def _mark_event_intercepted_stop(
+        self,
+        *,
+        event_log: EventLog,
+        interceptor: EventInterceptor,
+        reason: str,
+        error_code: str,
+    ) -> None:
+        if event_log.id is None:
+            raise RuntimeError("Cannot flag intercepted stop for event without id")
+
+        session = await self._get_sql_session()
+        try:
+            async with session.begin():
+                result = await session.execute(
+                    select(EventLog).filter(
+                        EventLog.id == event_log.id,
+                        EventLog.workspace == event_log.workspace,
+                    )
+                )
+                persisted_event = result.scalars().first()
+                if persisted_event is None:
+                    raise RuntimeError(
+                        f"Event log row not found for stop interception flagging: {event_log.id}"
+                    )
+
+                intercepted_at = naive_utc_now()
+                persisted_event.intercepted = True
+                persisted_event.interceptor_action = "stop"
+                persisted_event.interceptor_reason = reason
+                persisted_event.interceptor_code = error_code
+                persisted_event.interceptor_id = interceptor.id
+                persisted_event.interceptor_name = interceptor.name
+                persisted_event.intercepted_at = intercepted_at
+
+                event_log.intercepted = True
+                event_log.interceptor_action = "stop"
+                event_log.interceptor_reason = reason
+                event_log.interceptor_code = error_code
+                event_log.interceptor_id = interceptor.id
+                event_log.interceptor_name = interceptor.name
+                event_log.intercepted_at = intercepted_at
+
+                session.add(persisted_event)
+                await session.flush()
+        finally:
+            await session.close()
+
     async def _evaluate_interceptors(self, event_log: EventLog):
         session = await self._get_sql_session()
         try:
@@ -982,6 +1052,39 @@ class WorkspaceManager:
                 error_code = INTERCEPT_STOP_CODE_BY_REASON.get(
                     reason, "INTERCEPT_STOP_POLICY"
                 )
+                try:
+                    await self._mark_event_intercepted_stop(
+                        event_log=event_log,
+                        interceptor=interceptor,
+                        reason=reason,
+                        error_code=error_code,
+                    )
+                except Exception as exp:
+                    logger.exception(
+                        "Failed to persist interceptor stop metadata "
+                        "(event_id=%s, workspace=%s, interceptor_id=%s, "
+                        "interceptor_name=%s, reason=%s, code=%s): %s",
+                        event_log.id,
+                        event_log.workspace,
+                        interceptor.id,
+                        interceptor.name,
+                        reason,
+                        error_code,
+                        exp,
+                    )
+                    raise BillingContractError(
+                        "INTERNAL_ERROR",
+                        "Failed to persist interception stop metadata",
+                        reason="internal",
+                        details={
+                            "event_id": event_log.id,
+                            "workspace": event_log.workspace,
+                            "interceptor_id": interceptor.id,
+                            "interceptor_name": interceptor.name,
+                            "interceptor_reason": reason,
+                            "interceptor_code": error_code,
+                        },
+                    ) from exp
                 raise InterceptorStopError(
                     error_code,
                     f"Event blocked by interceptor '{interceptor.name}'",
@@ -1331,6 +1434,7 @@ class WorkspaceManager:
             EventLog.workspace == workspace,
             EventLog.category == "billing",
             EventLog.event_type == BILLING_USAGE_EVENT_TYPE,
+            EventLog.intercepted.is_(False),
         )
         if billing_account_id:
             query = query.filter(EventLog.billing_account_id == billing_account_id)
@@ -1967,6 +2071,7 @@ class WorkspaceManager:
                     EventLog.workspace == workspace,
                     EventLog.category == "billing",
                     EventLog.event_type == BILLING_USAGE_EVENT_TYPE,
+                    EventLog.intercepted.is_(False),
                     EventLog.timestamp >= start_time,
                     EventLog.timestamp <= end_time,
                 )

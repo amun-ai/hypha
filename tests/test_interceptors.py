@@ -1,7 +1,15 @@
 """Contract-first tests for interceptor APIs and behavior."""
 
+import datetime
+
 import pytest
 from hypha_rpc import connect_to_server
+from hypha.core.workspace import (
+    BillingContractError,
+    EventInterceptor,
+    EventLog,
+    WorkspaceManager,
+)
 
 from . import SERVER_URL
 
@@ -60,6 +68,12 @@ def _assert_error_code(exc: Exception, expected_code: str):
     assert expected_code in str(exc), (
         f"Expected error code {expected_code}, got {code}. " f"Error: {exc}"
     )
+
+
+def _latest_event(events):
+    if not events:
+        return None
+    return sorted(events, key=lambda item: item.get("id", 0))[-1]
 
 
 async def _connect_client(*, token=None, workspace=None, client_id=None):
@@ -391,7 +405,7 @@ async def test_interceptor_reason_to_error_code_contract(
     reason,
     expected_code,
 ):
-    """Contract: reason-specific stop actions map to stable error.code values."""
+    """Contract: reason-specific stop actions map to stable codes and persisted flags."""
     api = await _connect_client(
         token=test_user_token, client_id=f"contract-int-code-{reason}"
     )
@@ -419,6 +433,34 @@ async def test_interceptor_reason_to_error_code_contract(
         with pytest.raises(Exception) as exc_info:
             await api.log_event(event_type, {"reason": reason})
         _assert_error_code(exc_info.value, expected_code)
+
+        events = await api.get_events(event_type=event_type)
+        event = _latest_event(events)
+        assert event is not None, "Expected blocked event row to remain persisted"
+
+        required_fields = [
+            "intercepted",
+            "interceptor_action",
+            "interceptor_reason",
+            "interceptor_code",
+            "interceptor_id",
+            "interceptor_name",
+            "intercepted_at",
+        ]
+        missing_fields = [field for field in required_fields if field not in event]
+        if missing_fields:
+            pytest.xfail(
+                "Intercepted-stop event fields are not persisted yet "
+                f"(missing: {', '.join(missing_fields)})"
+            )
+
+        assert event.get("intercepted") is True
+        assert event.get("interceptor_action") == "stop"
+        assert event.get("interceptor_reason") == reason
+        assert event.get("interceptor_code") == expected_code
+        assert event.get("interceptor_id") == interceptor_id
+        assert event.get("interceptor_name") == f"reason-{reason}"
+        assert event.get("intercepted_at"), "Expected intercepted_at timestamp"
     finally:
         if interceptor_id is not None:
             try:
@@ -426,6 +468,98 @@ async def test_interceptor_reason_to_error_code_contract(
             except Exception:
                 pass
         await api.disconnect()
+
+
+async def test_interceptor_stop_flag_write_failure_returns_internal_error_unit_contract(
+    monkeypatch,
+):
+    """Contract: _mark_event_intercepted_stop failure maps to INTERNAL_ERROR."""
+
+    class _DummyScalarResult:
+        def __init__(self, items):
+            self._items = items
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return self._items
+
+    class _DummyBegin:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _DummySession:
+        def __init__(self, interceptors):
+            self._interceptors = interceptors
+
+        def begin(self):
+            return _DummyBegin()
+
+        async def execute(self, query):
+            return _DummyScalarResult(self._interceptors)
+
+        async def close(self):
+            return None
+
+    workspace = "contract-unit-interceptor-workspace"
+    event_type = "contract.interceptor.stop-flag-write-failure"
+    interceptor = EventInterceptor(
+        id="int-stop-write-failure",
+        name="stop-write-failure",
+        workspace=workspace,
+        app_id=None,
+        session_id=None,
+        enabled=True,
+        priority=100,
+        event_types=[event_type],
+        categories=["application"],
+        condition_field="event_type",
+        condition_op="eq",
+        condition_value=event_type,
+        action_type="stop",
+        action_reason="policy",
+        action_recovery=None,
+        created_by="contract-unit",
+        created_at=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None),
+        updated_at=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None),
+    )
+    event_log = EventLog(
+        id=123,
+        event_type=event_type,
+        category="application",
+        level="info",
+        workspace=workspace,
+        user_id="contract-unit-user",
+        data={"case": "stop-flag-write-failure"},
+    )
+
+    manager = object.__new__(WorkspaceManager)
+
+    async def _fake_get_sql_session():
+        return _DummySession([interceptor])
+
+    async def _raise_write_failure(*args, **kwargs):
+        raise RuntimeError("forced intercepted-stop flag write failure")
+
+    monkeypatch.setattr(manager, "_get_sql_session", _fake_get_sql_session)
+    monkeypatch.setattr(
+        manager, "_mark_event_intercepted_stop", _raise_write_failure
+    )
+
+    with pytest.raises(BillingContractError) as exc_info:
+        await manager._evaluate_interceptors(event_log)
+
+    assert exc_info.value.code == "INTERNAL_ERROR"
+    assert exc_info.value.reason == "internal"
+    details = exc_info.value.details
+    assert details.get("event_id") == 123
+    assert details.get("workspace") == workspace
+    assert details.get("interceptor_id") == interceptor.id
+    assert details.get("interceptor_code") == "INTERCEPT_STOP_POLICY"
 
 
 async def test_interceptor_recover_action_contract_xfail_until_implemented(

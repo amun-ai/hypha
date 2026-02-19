@@ -27,6 +27,13 @@ Hypha persists events with a shared schema:
 - `timestamp`
 - `data` (JSON payload)
 - `idempotency_key` (required for billing usage writes)
+- `intercepted` (`false` by default)
+- `interceptor_action` (`stop|recover`, nullable)
+- `interceptor_reason` (`policy|security|limit`, nullable)
+- `interceptor_code` (`INTERCEPT_STOP_*`, nullable)
+- `interceptor_id` (nullable)
+- `interceptor_name` (nullable)
+- `intercepted_at` (nullable UTC timestamp)
 
 ### System Default Events (Baseline)
 
@@ -62,6 +69,9 @@ Actions:
 
 Important behavior:
 - `stop` does not auto-stop app sessions.
+- when `stop` matches, the already-persisted source event is flagged in `event_logs`
+  with `intercepted=true` and interceptor metadata.
+- if stop-flag persistence fails, the caller gets `INTERNAL_ERROR` instead of a stop success.
 
 Workspace APIs:
 - `register_interceptor(...)`
@@ -146,6 +156,8 @@ Rules:
 Expected behavior:
 - First request with a new key is persisted.
 - Retries with the same key return deduped behavior and do not double count.
+- Aggregation excludes intercepted billing rows (`intercepted=true`) so blocked usage
+  never contributes to billable totals.
 
 Retry example (client-side):
 

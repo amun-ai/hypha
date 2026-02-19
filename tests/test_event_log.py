@@ -253,3 +253,47 @@ async def test_enriched_event_schema_contract_xfail_until_implemented(
             assert event.get(field) == expected
     finally:
         await api.disconnect()
+
+
+async def test_non_intercepted_event_fields_default_contract_xfail_until_implemented(
+    fastapi_server,
+    test_user_token,
+):
+    """Contract: non-intercepted events keep intercepted flag false and metadata null."""
+    api = await _connect_client(
+        token=test_user_token, client_id="contract-event-non-intercepted-defaults"
+    )
+
+    try:
+        event_type = "contract.event.non-intercepted.defaults"
+        await api.log_event(event_type, {"contract": "non-intercepted"})
+
+        events = await api.get_events(event_type=event_type)
+        assert events, "Expected persisted event for non-intercepted contract"
+        event = sorted(events, key=lambda item: item.get("id", 0))[-1]
+
+        required_fields = [
+            "intercepted",
+            "interceptor_action",
+            "interceptor_reason",
+            "interceptor_code",
+            "interceptor_id",
+            "interceptor_name",
+            "intercepted_at",
+        ]
+        missing = [field for field in required_fields if field not in event]
+        if missing:
+            pytest.xfail(
+                "Intercepted metadata fields are not persisted yet "
+                f"(missing: {', '.join(missing)})"
+            )
+
+        assert event.get("intercepted") is False
+        assert event.get("interceptor_action") is None
+        assert event.get("interceptor_reason") is None
+        assert event.get("interceptor_code") is None
+        assert event.get("interceptor_id") is None
+        assert event.get("interceptor_name") is None
+        assert event.get("intercepted_at") is None
+    finally:
+        await api.disconnect()
