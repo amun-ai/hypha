@@ -2359,10 +2359,12 @@ class WorkspaceManager:
             raise ValueError(
                 f"Invalid mode: {mode}. Mode must be 'random', 'first', 'last', 'exact', 'min_load', 'native:random', or 'select:criteria:function' format (e.g., 'select:min:get_load')"
             )
-        # SECURITY: Check access permissions for protected/unlisted services
-        # This ensures anonymous users can ONLY access public services via MCP/HTTP endpoints
-        if not key.startswith(b"services:public|"):
-            # For non-public services, validate context and permissions
+        # SECURITY: Check access permissions for protected services
+        # Public and unlisted services can be accessed by anyone who knows the service ID.
+        # Unlisted services are hidden from listings/search but accessible directly.
+        # Protected services require workspace read permission or authorized_workspaces.
+        if not key.startswith(b"services:public|") and not key.startswith(b"services:unlisted|"):
+            # For protected services, validate context and permissions
             self.validate_context(context, permission=UserPermission.read)
             # First check if user has read permission in the service's workspace
             has_workspace_permission = user_info.check_permission(workspace, UserPermission.read)

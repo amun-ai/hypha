@@ -583,3 +583,86 @@ async def test_anonymous_user_cross_workspace_listing(fastapi_server, test_user_
 
     await ws_api.disconnect()
     await api.disconnect()
+
+
+async def test_unlisted_service_direct_access(fastapi_server, test_user_token):
+    """Test that unlisted services are directly accessible without workspace permission.
+
+    Unlisted services should behave like public services for direct access
+    (anyone who knows the service ID can call it), but remain hidden from
+    all listing and search endpoints.
+    """
+    # Connect as authenticated user and create a workspace with services
+    api = await connect_to_server({
+        "client_id": "test-unlisted-access-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    # Create a workspace
+    ws_info = await api.create_workspace({
+        "name": f"test-unlisted-access-{uuid.uuid4()}",
+        "description": "Test workspace for unlisted direct access",
+    }, overwrite=True)
+    workspace = ws_info["id"]
+
+    # Generate token for the workspace
+    ws_token = await api.generate_token({"workspace": workspace})
+
+    # Connect to the workspace
+    ws_api = await connect_to_server({
+        "client_id": "test-unlisted-ws-client",
+        "workspace": workspace,
+        "server_url": WS_SERVER_URL,
+        "token": ws_token,
+    })
+
+    # Register an unlisted service with require_context=False so it can be called
+    unlisted_svc = await ws_api.register_service({
+        "id": "secret-unlisted-svc",
+        "name": "Secret Unlisted Service",
+        "config": {"visibility": "unlisted", "require_context": False},
+        "echo": lambda x: x,
+        "hello": lambda: "Hello from unlisted!",
+    })
+    unlisted_service_id = unlisted_svc["id"]
+
+    # Register a protected service for comparison
+    protected_svc = await ws_api.register_service({
+        "id": "secret-protected-svc",
+        "name": "Secret Protected Service",
+        "config": {"visibility": "protected", "require_context": False},
+        "echo": lambda x: x,
+    })
+    protected_service_id = protected_svc["id"]
+
+    # Connect as anonymous user (no token)
+    anon_api = await connect_to_server({
+        "client_id": "test-anon-access-client",
+        "server_url": WS_SERVER_URL,
+    })
+
+    # 1. Anonymous user should NOT see unlisted services in listings
+    anon_services = await anon_api.list_services({"workspace": workspace})
+    service_ids = [s["id"] for s in anon_services]
+    assert not any("secret-unlisted-svc" in sid for sid in service_ids), \
+        f"Anonymous user should NOT see unlisted services in listings, got: {service_ids}"
+
+    # 2. Anonymous user SHOULD be able to directly access unlisted service by ID
+    svc = await anon_api.get_service(unlisted_service_id)
+    result = await svc.hello()
+    assert result == "Hello from unlisted!", \
+        f"Anonymous user should be able to call unlisted service, got: {result}"
+
+    result2 = await svc.echo("test message")
+    assert result2 == "test message", \
+        f"Anonymous user should be able to call unlisted service echo, got: {result2}"
+
+    # 3. Anonymous user should NOT be able to access protected service directly
+    with pytest.raises(Exception, match="Permission denied"):
+        await anon_api.get_service(protected_service_id)
+
+    # Clean up
+    await anon_api.disconnect()
+    await ws_api.disconnect()
+    await api.disconnect()
