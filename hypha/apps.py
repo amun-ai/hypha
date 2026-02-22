@@ -448,7 +448,7 @@ class ServerAppController:
                 # after transient disconnections (e.g. WebSocket idle timeout).
                 # Do NOT stop them on disconnect — only explicit stop() calls
                 # or the inactivity tracker should terminate them.
-                is_daemon = session_data.get("daemon")
+                is_daemon = session_data.get("daemon") in (True, 1, "1")
                 if is_daemon:
                     logger.info(
                         f"Daemon session {full_client_id} disconnected, "
@@ -540,7 +540,9 @@ class ServerAppController:
                         redis_data[f"json_list:{k}"] = json.dumps(v)
                     elif isinstance(v, dict):
                         redis_data[f"json_dict:{k}"] = json.dumps(v)
-                    elif isinstance(v, (str, bytes, int, float, bool)):
+                    elif isinstance(v, bool):
+                        redis_data[k] = int(v)  # Redis doesn't accept bool
+                    elif isinstance(v, (str, bytes, int, float)):
                         redis_data[k] = v
                     else:
                         redis_data[k] = str(v)
