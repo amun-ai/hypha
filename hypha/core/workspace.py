@@ -18,7 +18,7 @@ from fakeredis import aioredis
 from hypha_rpc import RPC
 from hypha_rpc.utils.schema import schema_method
 from hypha_rpc.rpc import RemoteException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from hypha.core import RedisRPCConnection
 from sqlalchemy import (
     Column,
@@ -2077,8 +2077,19 @@ class WorkspaceManager:
             if len(peer_keys) > 0:
                 # If it's the same service being re-registered, allow it
                 for peer_key in peer_keys:
-                    peer_service = await self._redis.hgetall(peer_key)
-                    peer_service = ServiceInfo.from_redis_dict(peer_service)
+                    peer_service_data = await self._redis.hgetall(peer_key)
+                    try:
+                        peer_service = ServiceInfo.from_redis_dict(
+                            peer_service_data
+                        )
+                    except ValidationError:
+                        logger.warning(
+                            "Removing malformed service entry during "
+                            "singleton check: %s",
+                            peer_key,
+                        )
+                        await self._redis.delete(peer_key)
+                        continue
                     if (
                         peer_service.config.singleton
                         and peer_service.id == service.id
@@ -2096,8 +2107,19 @@ class WorkspaceManager:
         peer_keys = await self._redis.keys(key)
         if len(peer_keys) > 0:
             for peer_key in peer_keys:
-                peer_service = await self._redis.hgetall(peer_key)
-                peer_service = ServiceInfo.from_redis_dict(peer_service)
+                peer_service_data = await self._redis.hgetall(peer_key)
+                try:
+                    peer_service = ServiceInfo.from_redis_dict(
+                        peer_service_data
+                    )
+                except ValidationError:
+                    logger.warning(
+                        "Removing malformed service entry during peer "
+                        "validation: %s",
+                        peer_key,
+                    )
+                    await self._redis.delete(peer_key)
+                    continue
                 if peer_service.config.singleton:
                     raise ValueError(
                         f"A singleton service with the same name ({service_name}) has already exists in the workspace ({workspace}), please remove it first or use a different name."
