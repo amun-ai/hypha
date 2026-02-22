@@ -440,21 +440,32 @@ class ServerAppController:
             client_id = info["id"]
             workspace = info["workspace"]
             full_client_id = workspace + "/" + client_id
-            
+
             # Check if session exists in Redis for this specific client
             session_data = await self._get_session_from_redis(full_client_id)
             if session_data:
-                # Get worker from cache
-                worker = await self.get_worker_by_id(session_data["worker_id"])
-                # Create context for worker call
-                context = {
-                    "ws": workspace,
-                    "user": self.store.get_root_user().model_dump(),
-                }
-                await worker.stop(full_client_id, context=context)
-                
-                # Remove session from Redis
-                await self._remove_session_from_redis(full_client_id)
+                # Daemon sessions are long-lived and expected to reconnect
+                # after transient disconnections (e.g. WebSocket idle timeout).
+                # Do NOT stop them on disconnect — only explicit stop() calls
+                # or the inactivity tracker should terminate them.
+                is_daemon = session_data.get("daemon")
+                if is_daemon:
+                    logger.info(
+                        f"Daemon session {full_client_id} disconnected, "
+                        f"keeping alive (will reconnect)"
+                    )
+                else:
+                    # Get worker from cache
+                    worker = await self.get_worker_by_id(session_data["worker_id"])
+                    # Create context for worker call
+                    context = {
+                        "ws": workspace,
+                        "user": self.store.get_root_user().model_dump(),
+                    }
+                    await worker.stop(full_client_id, context=context)
+
+                    # Remove session from Redis
+                    await self._remove_session_from_redis(full_client_id)
             
             # Check if the disconnected client was a worker providing services to other sessions
             # Look for sessions that have this client as their worker
@@ -2224,7 +2235,8 @@ class ServerAppController:
             "source_hash": (
                 manifest.source_hash if hasattr(manifest, "source_hash") else None
             ),
-            "worker_id": worker.id
+            "worker_id": worker.id,
+            "daemon": manifest.daemon,
         }
         # Return session_data instead of just the client_id
         # The caller (start method) will store it in Redis after adding services
