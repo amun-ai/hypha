@@ -2542,11 +2542,9 @@ class WorkspaceManager:
 
     @schema_method
     async def echo(
-        self,
-        data: Any = Field(None, description="echo an object"),
-        context: Any = None,
+        self, data: Any = Field(..., description="echo an object"), context: Any = None
     ):
-        """Echo back the provided data."""
+        """Log a app message."""
         self.validate_context(context, permission=UserPermission.read_write)
         return data
 
