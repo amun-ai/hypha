@@ -544,7 +544,17 @@ class RedisStore:
                 key = key.decode()
                 logger.info(f"Upgrading service key: {key}")
                 service_data = await self._redis.hgetall(key)
-                service_info = ServiceInfo.from_redis_dict(service_data)
+                try:
+                    service_info = ServiceInfo.from_redis_dict(service_data)
+                except Exception as e:
+                    logger.warning(
+                        "Skipping corrupted service entry %s during upgrade: %s. "
+                        "Removing from Redis.",
+                        key,
+                        e,
+                    )
+                    await self._redis.delete(key)
+                    continue
                 service_info.type = service_info.type or "*"
                 new_key = key.replace(
                     "services:public:", f"services:public|{service_info.type}:"

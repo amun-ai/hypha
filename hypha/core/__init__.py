@@ -98,6 +98,11 @@ class ServiceInfo(BaseModel):
         """
         Serialize the model to a Redis-compatible dictionary based on field types.
         """
+        if not self.id:
+            raise ValueError(
+                "Cannot serialize service with missing 'id' to Redis. "
+                "This indicates a bug in service creation."
+            )
         data = self.model_dump()
         redis_data = {}
         # Note: Here we only store the fields that are in the model
@@ -127,9 +132,20 @@ class ServiceInfo(BaseModel):
     def from_redis_dict(cls, service_data: Dict[str, Any], in_bytes=True):
         """
         Deserialize a Redis-compatible dictionary back to a model instance.
+
+        Raises ValueError if required fields (e.g. 'id') are missing,
+        indicating a corrupted entry that should be removed from Redis.
         """
+        # Early validation: 'id' is required and must be present
+        id_key = b"id" if in_bytes else "id"
+        if id_key not in service_data or service_data[id_key] is None:
+            raise ValueError(
+                f"Corrupted service entry: missing required 'id' field. "
+                f"Available keys: {list(service_data.keys())}"
+            )
+
         converted_data = {}
-        
+
         # Check if config is stored as JSON (new format)
         config_key = b"config" if in_bytes else "config"
         if config_key in service_data:
