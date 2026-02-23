@@ -1276,7 +1276,18 @@ class WorkspaceManager:
         clients = []
         for key in set(keys):
             service_data = await self._redis.hgetall(key)
-            service = ServiceInfo.from_redis_dict(service_data)
+            try:
+                service = ServiceInfo.from_redis_dict(service_data)
+            except Exception as e:
+                key_str = key.decode("utf-8") if isinstance(key, bytes) else key
+                logger.warning(
+                    "Skipping corrupted service entry %s: %s. "
+                    "Removing from Redis.",
+                    key_str,
+                    e,
+                )
+                await self._redis.delete(key)
+                continue
             if "/" in service.id:
                 client_id = service.id.split("/")[1].split(":")[0]
             else:
@@ -1528,10 +1539,17 @@ class WorkspaceManager:
         )
 
         # Convert results to dictionaries and return
-        results["items"] = [
-            ServiceInfo.from_redis_dict(doc, in_bytes=False).model_dump()
-            for doc in results["items"]
-        ]
+        valid_items = []
+        for doc in results["items"]:
+            try:
+                valid_items.append(
+                    ServiceInfo.from_redis_dict(doc, in_bytes=False).model_dump()
+                )
+            except Exception as e:
+                logger.warning(
+                    "Skipping corrupted service entry in search results: %s", e
+                )
+        results["items"] = valid_items
         for item in results["items"]:
             item["id"] = re.sub(r"^[^|]+\|[^:]+:(.+)$", r"\1", item["id"]).split("@")[0]
 
@@ -1773,7 +1791,18 @@ class WorkspaceManager:
         services = []
         for key in set(keys):
             service_data = await self._redis.hgetall(key)
-            service_info = ServiceInfo.from_redis_dict(service_data)
+            try:
+                service_info = ServiceInfo.from_redis_dict(service_data)
+            except Exception as e:
+                key_str = key.decode("utf-8") if isinstance(key, bytes) else key
+                logger.warning(
+                    "Skipping corrupted service entry %s: %s. "
+                    "Removing from Redis.",
+                    key_str,
+                    e,
+                )
+                await self._redis.delete(key)
+                continue
             service_dict = service_info.model_dump()
             service_visibility = service_dict.get("config", {}).get("visibility")
             service_workspace = (
@@ -2078,7 +2107,18 @@ class WorkspaceManager:
                 # If it's the same service being re-registered, allow it
                 for peer_key in peer_keys:
                     peer_service = await self._redis.hgetall(peer_key)
-                    peer_service = ServiceInfo.from_redis_dict(peer_service)
+                    try:
+                        peer_service = ServiceInfo.from_redis_dict(peer_service)
+                    except Exception as e:
+                        key_str = peer_key.decode("utf-8") if isinstance(peer_key, bytes) else peer_key
+                        logger.warning(
+                            "Skipping corrupted service entry %s: %s. "
+                            "Removing from Redis.",
+                            key_str,
+                            e,
+                        )
+                        await self._redis.delete(peer_key)
+                        continue
                     if (
                         peer_service.config.singleton
                         and peer_service.id == service.id
@@ -2097,7 +2137,18 @@ class WorkspaceManager:
         if len(peer_keys) > 0:
             for peer_key in peer_keys:
                 peer_service = await self._redis.hgetall(peer_key)
-                peer_service = ServiceInfo.from_redis_dict(peer_service)
+                try:
+                    peer_service = ServiceInfo.from_redis_dict(peer_service)
+                except Exception as e:
+                    key_str = peer_key.decode("utf-8") if isinstance(peer_key, bytes) else peer_key
+                    logger.warning(
+                        "Skipping corrupted service entry %s: %s. "
+                        "Removing from Redis.",
+                        key_str,
+                        e,
+                    )
+                    await self._redis.delete(peer_key)
+                    continue
                 if peer_service.config.singleton:
                     raise ValueError(
                         f"A singleton service with the same name ({service_name}) has already exists in the workspace ({workspace}), please remove it first or use a different name."
@@ -2372,7 +2423,21 @@ class WorkspaceManager:
             if not has_workspace_permission:
                 # Get service data to check authorized_workspaces
                 service_data = await self._redis.hgetall(key)
-                service_info = ServiceInfo.from_redis_dict(service_data)
+                try:
+                    service_info = ServiceInfo.from_redis_dict(service_data)
+                except Exception as e:
+                    key_str = key.decode("utf-8") if isinstance(key, bytes) else key
+                    logger.warning(
+                        "Corrupted service entry %s: %s. "
+                        "Removing from Redis.",
+                        key_str,
+                        e,
+                    )
+                    await self._redis.delete(key)
+                    raise KeyError(
+                        f"Service not available (corrupted entry was removed, "
+                        f"please retry)"
+                    )
 
                 # Check if the service has authorized_workspaces configured
                 authorized_workspaces = getattr(service_info.config, 'authorized_workspaces', None)
@@ -2395,11 +2460,25 @@ class WorkspaceManager:
         
         # Either it's a public service or user has permission - fetch and return service data
         service_data = await self._redis.hgetall(key)
-        service_info = ServiceInfo.from_redis_dict(service_data)
-        
+        try:
+            service_info = ServiceInfo.from_redis_dict(service_data)
+        except Exception as e:
+            key_str = key.decode("utf-8") if isinstance(key, bytes) else key
+            logger.warning(
+                "Corrupted service entry %s: %s. "
+                "Removing from Redis.",
+                key_str,
+                e,
+            )
+            await self._redis.delete(key)
+            raise KeyError(
+                f"Service not available (corrupted entry was removed, "
+                f"please retry)"
+            )
+
         # Users with workspace permission can see authorized_workspaces
         # (Nothing to do here - just return the full service_info)
-        
+
         return service_info
 
     @schema_method
@@ -3159,20 +3238,45 @@ class WorkspaceManager:
             unload = True
         else:
             unload = False
-        for client in client_keys:
-            try:
-                assert (
-                    await self.ping_client(client, timeout=timeout, context=context)
-                    == "pong"
-                )
-            except Exception as e:
-                logger.error(f"Failed to ping client {client}: {e}")
-                user_info = UserInfo.from_context(context)
-                # Remove dead client
-                await self.delete_client(
-                    client, workspace, user_info, unload=unload, context=context
-                )
-                removed.append(client)
+
+        # Process clients in batches for efficiency (prevents timeout with many stale clients)
+        batch_size = 50
+        for batch_start in range(0, len(client_keys), batch_size):
+            batch = client_keys[batch_start : batch_start + batch_size]
+
+            async def _ping_client(client_id):
+                """Ping a single client and return (client_id, alive)."""
+                try:
+                    result = await self.ping_client(
+                        client_id, timeout=timeout, context=context
+                    )
+                    return (client_id, result == "pong")
+                except Exception:
+                    return (client_id, False)
+
+            # Ping all clients in the batch concurrently
+            results = await asyncio.gather(
+                *[_ping_client(c) for c in batch],
+                return_exceptions=True,
+            )
+
+            # Process results and remove dead clients
+            user_info = UserInfo.from_context(context)
+            for result in results:
+                if isinstance(result, Exception):
+                    continue
+                client_id, alive = result
+                if not alive:
+                    logger.error(f"Failed to ping client {client_id}, removing.")
+                    await self.delete_client(
+                        client_id,
+                        workspace,
+                        user_info,
+                        unload=unload,
+                        context=context,
+                    )
+                    removed.append(client_id)
+
         if removed:
             summary["removed_clients"] = removed
         return summary
