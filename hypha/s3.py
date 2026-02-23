@@ -217,8 +217,10 @@ class S3Controller:
                 break
             except botocore.exceptions.ClientError as e:
                 error_code = e.response['Error']['Code']
-                if error_code in ['BucketAlreadyExists', 'BucketAlreadyOwnedByYou']:
+                if error_code in ['BucketAlreadyExists', 'BucketAlreadyOwnedByYou', 'BucketNameUnavailable']:
                     # Bucket already exists, that's fine
+                    # Note: GCS returns 'BucketNameUnavailable' instead of
+                    # 'BucketAlreadyExists' when using the S3-compatible XML API
                     break
                 elif error_code == 'SlowDownWrite' and attempt < max_retries - 1:
                     # MinIO is still initializing, wait and retry
