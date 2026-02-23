@@ -182,6 +182,16 @@ class WebsocketServer:
                 await self.establish_websocket_communication(
                     websocket, workspace_info.id, client_id, user_info
                 )
+                # Normal return (idle timeout or server stopping) — still need
+                # to remove the client's services from Redis.
+                await self.handle_disconnection(
+                    websocket,
+                    workspace,
+                    client_id,
+                    user_info,
+                    status.WS_1000_NORMAL_CLOSURE,
+                    None,
+                )
             except RuntimeError as exp:
                 # this happens when the websocket is closed
                 logger.error(f"RuntimeError in establish_websocket_communication: {str(exp)}")

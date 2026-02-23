@@ -743,3 +743,201 @@ async def test_multiple_server_cleanup():
         for j in range(i + 1, 3):
             keys = await shared_redis.keys(f"services:*|*:*/test-multi-server-{j}*")
             assert len(keys) > 0, f"Server {j} services should still exist"
+
+
+@pytest.mark.asyncio
+async def test_normal_return_cleanup():
+    """Test that services are cleaned up when establish_websocket_communication
+    returns normally (e.g. idle timeout or server stopping).
+
+    Bug 1: Before the fix, handle_disconnection was only called in except blocks,
+    so a normal return path (idle timeout break → function returns) would leave
+    the client's services in Redis forever.
+    """
+    from hypha.core.store import RedisStore
+    from hypha.core import RedisEventBus
+    from fastapi import FastAPI
+
+    app = FastAPI()
+
+    store = RedisStore(
+        app,
+        server_id="test-normal-return",
+        redis_uri=None,
+    )
+    await store.init(reset_redis=True)
+
+    redis = store.get_redis()
+
+    # Simulate a user client by writing service keys directly into Redis
+    # This mimics what happens when a WebSocket client connects and registers
+    user_client_id = "user-idle-client"
+    workspace = "ws-test-idle"
+
+    # Register a workspace
+    await store.register_workspace(
+        {
+            "id": workspace,
+            "name": workspace,
+            "description": "Test workspace for idle timeout",
+            "persistent": True,
+            "owners": ["root"],
+            "read_only": False,
+        },
+        overwrite=False,
+    )
+
+    # Connect as a real client through the store's RPC mechanism
+    # silent=False ensures the client registers its built-in service
+    async with store.get_workspace_interface(
+        store._root_user, workspace, client_id=user_client_id, silent=False
+    ) as api:
+        # Register a test service
+        await api.register_service(
+            {
+                "id": "test-service",
+                "name": "Test Service",
+                "config": {"visibility": "public"},
+                "echo": lambda x: x,
+            }
+        )
+
+        # Verify the services exist in Redis
+        keys = await redis.keys(f"services:*|*:{workspace}/{user_client_id}:*@*")
+        assert len(keys) >= 2, (
+            f"Expected at least 2 services (built-in + test-service), found {len(keys)}: {keys}"
+        )
+
+    # After the context manager exits, RPC disconnects, but services should
+    # still be in Redis since we haven't called delete_client
+    keys_after_rpc_disconnect = await redis.keys(
+        f"services:*|*:{workspace}/{user_client_id}:*@*"
+    )
+    assert len(keys_after_rpc_disconnect) >= 2, (
+        "Services should still exist after RPC disconnect (no delete_client called)"
+    )
+
+    # Now simulate what handle_disconnection does: call remove_client
+    # This is the operation that Bug 1 fix ensures is called on normal return
+    await store.remove_client(user_client_id, workspace, store._root_user, unload=True)
+
+    # Verify all services for the user client are gone
+    keys_after_cleanup = await redis.keys(
+        f"services:*|*:{workspace}/{user_client_id}:*@*"
+    )
+    assert len(keys_after_cleanup) == 0, (
+        f"All user client services should be cleaned up, but found: {keys_after_cleanup}"
+    )
+
+    await store.teardown()
+
+
+@pytest.mark.asyncio
+async def test_orphaned_client_cleanup_on_startup():
+    """Test that orphaned client services are cleaned up when a new server starts.
+
+    Bug 2: When a server crashes without graceful shutdown, user-connected
+    WebSocket clients' services remain in Redis. These have random client IDs
+    that don't match the server_id pattern, so check_and_cleanup_servers misses them.
+    The _cleanup_orphaned_client_services method pings each client's built-in
+    service and removes services for unreachable clients.
+    """
+    from hypha.core.store import RedisStore
+    from hypha.core import RedisEventBus
+    from fastapi import FastAPI
+    from fakeredis import aioredis
+
+    app = FastAPI()
+
+    # Use shared fakeredis
+    shared_redis = aioredis.FakeRedis.from_url("redis://localhost:9999/15")
+
+    # Create and initialize server 1
+    store1 = RedisStore(
+        app,
+        server_id="orphan-test-server-1",
+        redis_uri=None,
+    )
+    store1._redis = shared_redis
+    store1._event_bus = RedisEventBus(shared_redis)
+    await store1.init(reset_redis=True)
+
+    # Connect a "user" client through the store and register services
+    user_workspace = "ws-orphan-test"
+    await store1.register_workspace(
+        {
+            "id": user_workspace,
+            "name": user_workspace,
+            "description": "Test workspace",
+            "persistent": True,
+            "owners": ["root"],
+            "read_only": False,
+        },
+        overwrite=False,
+    )
+
+    user_client_id = "random-user-abc123"
+    async with store1.get_workspace_interface(
+        store1._root_user, user_workspace, client_id=user_client_id, silent=False
+    ) as api:
+        await api.register_service(
+            {
+                "id": "user-svc",
+                "name": "User Service",
+                "config": {"visibility": "public"},
+                "process": lambda x: x,
+            }
+        )
+
+        # Verify services exist
+        user_keys = await shared_redis.keys(
+            f"services:*|*:{user_workspace}/{user_client_id}:*@*"
+        )
+        assert len(user_keys) >= 2, f"Expected at least 2 user services, found {user_keys}"
+
+    # Now "crash" server 1: stop event bus without teardown, leaving orphaned services
+    await store1.get_event_bus().stop()
+
+    # User's services should still be in Redis (this is the bug scenario)
+    orphaned_keys = await shared_redis.keys(
+        f"services:*|*:{user_workspace}/{user_client_id}:*@*"
+    )
+    assert len(orphaned_keys) >= 2, (
+        f"Orphaned services should still exist, found: {orphaned_keys}"
+    )
+
+    # Start server 2, which should detect and clean up orphaned services
+    store2 = RedisStore(
+        app,
+        server_id="orphan-test-server-2",
+        redis_uri=None,
+    )
+    store2._redis = shared_redis
+    store2._event_bus = RedisEventBus(shared_redis)
+    await store2._event_bus.init()
+    await store2.setup_root_user()
+
+    # Run dead server cleanup (handles server-owned services)
+    await store2.check_and_cleanup_servers()
+
+    # The orphaned user services should still exist after check_and_cleanup_servers
+    # because user client IDs don't match server_id patterns
+    orphaned_keys_after_server_cleanup = await shared_redis.keys(
+        f"services:*|*:{user_workspace}/{user_client_id}:*@*"
+    )
+    assert len(orphaned_keys_after_server_cleanup) >= 2, (
+        "Orphaned user services should NOT be cleaned by check_and_cleanup_servers"
+    )
+
+    # Now run the orphaned client cleanup — this should find and remove them
+    await store2._cleanup_orphaned_client_services()
+
+    # Verify orphaned services are now gone
+    keys_after_orphan_cleanup = await shared_redis.keys(
+        f"services:*|*:{user_workspace}/{user_client_id}:*@*"
+    )
+    assert len(keys_after_orphan_cleanup) == 0, (
+        f"Orphaned services should be cleaned up, but found: {keys_after_orphan_cleanup}"
+    )
+
+    await store2._event_bus.stop()
