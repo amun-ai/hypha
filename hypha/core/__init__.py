@@ -133,6 +133,9 @@ class ServiceInfo(BaseModel):
         """
         Deserialize a Redis-compatible dictionary back to a model instance.
 
+        Handles both new format (config as single JSON key) and old format
+        (config fields stored as flat hash keys: visibility, singleton, etc.).
+
         Raises ValueError if required fields (e.g. 'id') are missing,
         indicating a corrupted entry that should be removed from Redis.
         """
@@ -162,12 +165,47 @@ class ServiceInfo(BaseModel):
                 converted_data["config"] = ServiceConfig.model_validate(config_dict)
             # Remove config from service_data so it's not processed again
             del service_data[config_key]
+        else:
+            # Old format: config fields stored as flat hash keys
+            # Reconstruct ServiceConfig from flat keys
+            config_dict = {}
+            config_field_names = set(ServiceConfig.model_fields.keys())
+            for field_name in config_field_names:
+                key = field_name.encode("utf-8") if in_bytes else field_name
+                if key in service_data:
+                    value = service_data[key]
+                    if value is not None:
+                        val_str = (
+                            value.decode("utf-8")
+                            if isinstance(value, bytes)
+                            else str(value)
+                        )
+                        field_info = ServiceConfig.model_fields[field_name]
+                        if field_info.annotation in {str, Optional[str]}:
+                            config_dict[field_name] = val_str
+                        elif field_info.annotation in {
+                            list,
+                            List[str],
+                            Optional[List[str]],
+                        }:
+                            config_dict[field_name] = (
+                                val_str.split(",") if val_str else []
+                            )
+                        else:
+                            try:
+                                config_dict[field_name] = json.loads(val_str)
+                            except (json.JSONDecodeError, ValueError):
+                                config_dict[field_name] = val_str
+                    # Remove flat config key from service_data to avoid confusion
+                    del service_data[key]
+            if config_dict:
+                converted_data["config"] = ServiceConfig.model_validate(config_dict)
 
         for field_name, field_info in cls.model_fields.items():
             if field_name == "config":
                 # Config is already handled above
                 continue
-                
+
             if not in_bytes:
                 value = service_data.get(field_name)
             else:
@@ -187,6 +225,20 @@ class ServiceInfo(BaseModel):
             else:
                 value_str = value if isinstance(value, str) else value.decode("utf-8")
                 converted_data[field_name] = json.loads(value_str)
+
+        # Preserve extra fields (e.g. 'score' from vector search results)
+        # since ServiceInfo uses ConfigDict(extra="allow")
+        processed_keys = set(cls.model_fields.keys()) | {"config"}
+        for key, value in service_data.items():
+            field_name = key.decode("utf-8") if isinstance(key, bytes) else key
+            if field_name not in processed_keys and field_name not in converted_data:
+                if isinstance(value, bytes):
+                    value = value.decode("utf-8")
+                try:
+                    converted_data[field_name] = json.loads(value)
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    converted_data[field_name] = value
+
         return cls.model_validate(converted_data)
 
     @classmethod
