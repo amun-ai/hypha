@@ -127,9 +127,12 @@ class ServiceInfo(BaseModel):
     def from_redis_dict(cls, service_data: Dict[str, Any], in_bytes=True):
         """
         Deserialize a Redis-compatible dictionary back to a model instance.
+
+        Handles both new format (config as single JSON key) and old format
+        (config fields stored as flat hash keys: visibility, singleton, etc.).
         """
         converted_data = {}
-        
+
         # Check if config is stored as JSON (new format)
         config_key = b"config" if in_bytes else "config"
         if config_key in service_data:
@@ -146,12 +149,47 @@ class ServiceInfo(BaseModel):
                 converted_data["config"] = ServiceConfig.model_validate(config_dict)
             # Remove config from service_data so it's not processed again
             del service_data[config_key]
+        else:
+            # Old format: config fields stored as flat hash keys
+            # Reconstruct ServiceConfig from flat keys
+            config_dict = {}
+            config_field_names = set(ServiceConfig.model_fields.keys())
+            for field_name in config_field_names:
+                key = field_name.encode("utf-8") if in_bytes else field_name
+                if key in service_data:
+                    value = service_data[key]
+                    if value is not None:
+                        val_str = (
+                            value.decode("utf-8")
+                            if isinstance(value, bytes)
+                            else str(value)
+                        )
+                        field_info = ServiceConfig.model_fields[field_name]
+                        if field_info.annotation in {str, Optional[str]}:
+                            config_dict[field_name] = val_str
+                        elif field_info.annotation in {
+                            list,
+                            List[str],
+                            Optional[List[str]],
+                        }:
+                            config_dict[field_name] = (
+                                val_str.split(",") if val_str else []
+                            )
+                        else:
+                            try:
+                                config_dict[field_name] = json.loads(val_str)
+                            except (json.JSONDecodeError, ValueError):
+                                config_dict[field_name] = val_str
+                    # Remove flat config key from service_data to avoid confusion
+                    del service_data[key]
+            if config_dict:
+                converted_data["config"] = ServiceConfig.model_validate(config_dict)
 
         for field_name, field_info in cls.model_fields.items():
             if field_name == "config":
                 # Config is already handled above
                 continue
-                
+
             if not in_bytes:
                 value = service_data.get(field_name)
             else:

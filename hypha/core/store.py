@@ -22,6 +22,7 @@ from hypha import __version__
 from hypha.core import (
     RedisEventBus,
     RedisRPCConnection,
+    ServiceConfig,
     ServiceInfo,
     ServiceTypeInfo,
     UserInfo,
@@ -566,6 +567,58 @@ class RedisStore:
                         "change": f"Upgraded service key from {key} to {new_key}",
                     }
                 )
+
+        # Migrate old-format service entries where ServiceConfig fields
+        # were stored as flat hash keys (visibility, singleton, etc.)
+        # to the new format where config is a single JSON key.
+        all_service_keys = await self._redis.keys("services:*")
+        config_field_names = set(ServiceConfig.model_fields.keys())
+        migrated_count = 0
+        for key in all_service_keys:
+            service_data = await self._redis.hgetall(key)
+            has_config_key = b"config" in service_data
+            # Detect old format: has flat config fields but no 'config' key
+            has_flat_config = any(
+                field_name.encode("utf-8") in service_data
+                for field_name in config_field_names
+            )
+            if not has_config_key and has_flat_config:
+                key_str = key.decode("utf-8") if isinstance(key, bytes) else key
+                try:
+                    service_info = ServiceInfo.from_redis_dict(service_data)
+                    new_data = service_info.to_redis_dict()
+                    await self._redis.delete(key)
+                    await self._redis.hset(key, mapping=new_data)
+                    migrated_count += 1
+                    logger.info(
+                        f"Migrated old-format service entry: {key_str}"
+                    )
+                    change_time = datetime.datetime.now().isoformat()
+                    database_change_log.append(
+                        {
+                            "time": change_time,
+                            "version": __version__,
+                            "change": f"Migrated old-format service: {key_str}",
+                        }
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to migrate service entry {key_str}, "
+                        f"deleting invalid entry: {e}"
+                    )
+                    await self._redis.delete(key)
+                    change_time = datetime.datetime.now().isoformat()
+                    database_change_log.append(
+                        {
+                            "time": change_time,
+                            "version": __version__,
+                            "change": f"Deleted invalid service entry: {key_str}",
+                        }
+                    )
+        if migrated_count > 0:
+            logger.info(
+                f"Migrated {migrated_count} old-format service entries"
+            )
 
         await self._redis.set("hypha_version", __version__)
 
