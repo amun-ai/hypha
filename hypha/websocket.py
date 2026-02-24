@@ -113,6 +113,17 @@ class WebsocketServer:
                     user_info, workspace = await self.authenticate_user(
                         token, reconnection_token, client_id, workspace
                     )
+                    # Don't default to "public" workspace for regular users.
+                    # If the token doesn't explicitly scope to "public", redirect
+                    # to the token's workspace or the user's own workspace.
+                    if (
+                        workspace == "public"
+                        and user_info.scope.current_workspace != "public"
+                    ):
+                        workspace = (
+                            user_info.scope.current_workspace
+                            or user_info.get_workspace()
+                        )
                 else:
                     user_info = generate_anonymous_user()
                     # Each anonymous user gets their own workspace based on their ID
