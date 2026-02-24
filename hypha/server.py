@@ -801,10 +801,6 @@ if __name__ == "__main__":
             limit_max_requests=10000,  # Restart worker after 10k requests (prevents memory leaks)
             # Enable access log only if needed (disable for production performance)
             access_log=os.environ.get("HYPHA_ACCESS_LOG", "false").lower() == "true",
-            # Disable WS protocol-level ping/pong frames (avoids code 1011 disconnections).
-            # hypha-rpc clients already send application-level {"type":"ping"} every 30s,
-            # which resets the server's idle timeout just as effectively.
-            ws_ping_interval=None,
         )
 
 else:
