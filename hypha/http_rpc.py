@@ -49,8 +49,13 @@ class HTTPStreamingRPCServer:
     """HTTP Streaming RPC Server.
 
     Provides bidirectional RPC over HTTP using:
-    - GET /{workspace}/rpc - Streaming endpoint for server->client messages
-    - POST /{workspace}/rpc - Endpoint for client->server messages
+    - GET /rpc - Streaming endpoint for server->client messages
+    - POST /rpc - Endpoint for client->server messages
+
+    Workspace is resolved from:
+    1. The `workspace` query parameter (if provided)
+    2. The token's current_workspace scope
+    3. The user's own workspace (ws-user-{user_id})
     """
 
     def __init__(self, store: RedisStore, base_path: str = "/"):
@@ -187,34 +192,63 @@ class HTTPStreamingRPCServer:
         logger.info(f"HTTP client reconnected: {workspace}/{client_id} using reconnection token")
         return user_info, workspace
 
+    def _resolve_workspace(self, workspace: Optional[str], user_info: UserInfo, client_id: str):
+        """Resolve workspace when not explicitly provided or when "public" is used.
+
+        Resolution order:
+        1. If workspace is explicitly provided and not "public" for non-admin users -> use it
+        2. If token has current_workspace -> use it
+        3. Fall back to user's own workspace (user_info.get_workspace())
+
+        Returns:
+            tuple of (workspace, user_info) - user_info may have updated scope for anonymous users
+        """
+        user_workspace = user_info.get_workspace()
+        has_token_permissions = (
+            user_info.scope.workspaces
+            and any(
+                ws != "ws-anonymous" and ws.startswith("ws-user-")
+                for ws in user_info.scope.workspaces
+            )
+        )
+        if user_info.is_anonymous and not has_token_permissions:
+            # For anonymous users: use explicit workspace if provided and not "public",
+            # otherwise fall back to their own workspace
+            workspace = workspace if workspace and workspace != "public" else user_workspace
+            user_info.scope = create_scope(
+                current_workspace=workspace,
+                workspaces={user_workspace: UserPermission.admin},
+                client_id=client_id,
+            )
+        elif not workspace or workspace == "public":
+            # Workspace-less route (workspace=None) or "public" placeholder:
+            # Use the token's workspace or the user's own workspace.
+            if user_info.scope.current_workspace and user_info.scope.current_workspace != "public":
+                workspace = user_info.scope.current_workspace
+            else:
+                workspace = user_workspace
+        # else: workspace is explicitly provided and not "public", use as-is
+
+        return workspace, user_info
+
     def register_routes(self, app):
         """Register HTTP streaming RPC routes."""
 
-        @app.get(self._norm_url("/{workspace}/rpc"))
-        async def rpc_stream(
-            workspace: str,
+        async def _handle_rpc_stream(
+            workspace: Optional[str],
             request: Request,
-            client_id: str = None,
-            reconnection_token: str = None,  # Token for reconnecting to existing session
-            user_info: self.store.login_optional = Depends(self.store.login_optional),
+            client_id: Optional[str],
+            reconnection_token: Optional[str],
+            user_info: UserInfo,
         ):
-            """Streaming endpoint for server-to-client messages.
+            """Shared handler for GET /rpc.
 
-            This endpoint uses msgpack streaming format with length-prefixed frames.
+            Uses msgpack streaming format with length-prefixed frames.
             Each frame consists of a 4-byte big-endian length prefix followed by
             msgpack-encoded data.
 
-            Reconnection:
-            - Use `reconnection_token` query parameter to reconnect with same client_id
-            - The token contains the original workspace and client_id
-            - On reconnection, the server validates the token and re-uses the client identity
-
-            The client should:
-            1. Connect to this endpoint with a GET request
-            2. Read length-prefixed msgpack frames continuously
-            3. Parse each message
-            4. Handle the message (method call, response, event)
-            5. Reconnect if the connection is lost (using reconnection_token)
+            When workspace is None (from the workspace-less /rpc route), the workspace
+            is resolved from the user's token or defaults to the user's own workspace.
             """
             try:
                 # Generate client_id if not provided
@@ -240,26 +274,9 @@ class HTTPStreamingRPCServer:
                             },
                         )
 
-                # Handle anonymous users - determine if they need their own workspace
-                # Default anonymous users (without token) get redirected to their own workspace
-                # Anonymous users WITH tokens (child users) use the token's workspace permissions
+                # Handle workspace assignment for users
                 if not is_reconnection:
-                    user_workspace = user_info.get_workspace()
-                    has_token_permissions = (
-                        user_info.scope.workspaces
-                        and any(
-                            ws != "ws-anonymous" and ws.startswith("ws-user-")
-                            for ws in user_info.scope.workspaces
-                        )
-                    )
-                    if user_info.is_anonymous and not has_token_permissions:
-                        # Redirect to user's own workspace
-                        workspace = workspace if workspace and workspace != "public" else user_workspace
-                        user_info.scope = create_scope(
-                            current_workspace=workspace,
-                            workspaces={user_workspace: UserPermission.admin},
-                            client_id=client_id,
-                        )
+                    workspace, user_info = self._resolve_workspace(workspace, user_info, client_id)
 
                 # Load or create workspace (for both new connections and reconnections)
                 workspace_info = await self.store.load_or_create_workspace(
@@ -384,20 +401,19 @@ class HTTPStreamingRPCServer:
                     content={"success": False, "detail": str(e)},
                 )
 
-        @app.post(self._norm_url("/{workspace}/rpc"))
-        async def rpc_post(
-            workspace: str,
+        async def _handle_rpc_post(
+            workspace: Optional[str],
             request: Request,
-            client_id: str = None,
-            user_info: self.store.login_optional = Depends(self.store.login_optional),
+            client_id: Optional[str],
+            user_info: UserInfo,
         ):
-            """Endpoint for client-to-server RPC messages.
+            """Shared handler for POST /rpc.
 
-            This endpoint accepts msgpack-encoded RPC messages.
+            Accepts msgpack-encoded RPC messages.
             The message is routed through the event bus to the target service.
 
-            For stateless calls (no streaming connection), the response is returned directly.
-            For clients with an active stream, the response goes through the stream.
+            When workspace is None (from the workspace-less /rpc route), the workspace
+            is resolved from the user's token or defaults to the user's own workspace.
             """
             try:
                 if not client_id:
@@ -408,6 +424,10 @@ class HTTPStreamingRPCServer:
                             "detail": "client_id is required",
                         },
                     )
+
+                # Resolve workspace early if not provided
+                if not workspace:
+                    workspace, user_info = self._resolve_workspace(workspace, user_info, client_id)
 
                 connection_key = f"{workspace}/{client_id}"
 
@@ -518,6 +538,49 @@ class HTTPStreamingRPCServer:
                     status_code=500,
                     content={"success": False, "detail": str(e)},
                 )
+
+        # --- Route registrations ---
+        # Single /rpc endpoint; workspace is resolved from query param or token.
+
+        @app.get(self._norm_url("/rpc"))
+        async def rpc_stream(
+            request: Request,
+            workspace: str = None,
+            client_id: str = None,
+            reconnection_token: str = None,
+            user_info: self.store.login_optional = Depends(self.store.login_optional),
+        ):
+            """Streaming endpoint for server-to-client messages.
+
+            Workspace is resolved from the `workspace` query parameter,
+            the token's scope, or defaults to the user's own workspace.
+            """
+            return await _handle_rpc_stream(
+                workspace=workspace,
+                request=request,
+                client_id=client_id,
+                reconnection_token=reconnection_token,
+                user_info=user_info,
+            )
+
+        @app.post(self._norm_url("/rpc"))
+        async def rpc_post(
+            request: Request,
+            workspace: str = None,
+            client_id: str = None,
+            user_info: self.store.login_optional = Depends(self.store.login_optional),
+        ):
+            """Endpoint for client-to-server RPC messages.
+
+            Workspace is resolved from the `workspace` query parameter,
+            the token's scope, or defaults to the user's own workspace.
+            """
+            return await _handle_rpc_post(
+                workspace=workspace,
+                request=request,
+                client_id=client_id,
+                user_info=user_info,
+            )
 
     async def _handle_stateless_call(
         self,

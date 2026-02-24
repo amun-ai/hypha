@@ -434,8 +434,8 @@ class RedisStore:
                         "name": "public",
                         "description": "Public workspace",
                         "persistent": True,
-                        "owners": [],
-                        "read_only": False,
+                        "owners": ["root"],
+                        "read_only": True,
                     }
                 )
             elif workspace == user_info.get_workspace():

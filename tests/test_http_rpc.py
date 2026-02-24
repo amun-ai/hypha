@@ -83,8 +83,8 @@ class TestHTTPStreamingRPC:
                 # The endpoint should exist with proper auth
                 async with client.stream(
                     "GET",
-                    f"{SERVER_URL}/{workspace}/rpc",
-                    params={"client_id": "test-endpoint-exists"},
+                    f"{SERVER_URL}/rpc",
+                    params={"client_id": "test-endpoint-exists", "workspace": workspace},
                     headers={"Authorization": f"Bearer {token}"},
                     timeout=httpx.Timeout(10.0, connect=5.0),
                 ) as response:
@@ -113,8 +113,8 @@ class TestHTTPStreamingRPC:
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    f"{SERVER_URL}/{workspace}/rpc",
-                    params={"client_id": "test-client"},
+                    f"{SERVER_URL}/rpc",
+                    params={"client_id": "test-client", "workspace": workspace},
                     content=b"",  # Empty body
                     timeout=5.0,
                 )
@@ -140,8 +140,8 @@ class TestHTTPStreamingRPC:
                 # Connect with streaming using token
                 async with client.stream(
                     "GET",
-                    f"{SERVER_URL}/{workspace}/rpc",
-                    params={"client_id": "test-stream-client"},
+                    f"{SERVER_URL}/rpc",
+                    params={"client_id": "test-stream-client", "workspace": workspace},
                     headers={"Authorization": f"Bearer {token}"},
                     timeout=httpx.Timeout(30.0, connect=10.0),
                 ) as response:
@@ -395,8 +395,8 @@ class TestHTTPStreamingRPC:
             async with httpx.AsyncClient() as client:
                 async with client.stream(
                     "GET",
-                    f"{SERVER_URL}/{workspace}/rpc",
-                    params={"client_id": "test-ping-client"},
+                    f"{SERVER_URL}/rpc",
+                    params={"client_id": "test-ping-client", "workspace": workspace},
                     headers={"Authorization": f"Bearer {token}"},
                     timeout=httpx.Timeout(60.0, connect=10.0),
                 ) as response:
@@ -555,7 +555,7 @@ class TestHTTPReconnectionToken:
         # Try to connect with invalid token
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                f"{SERVER_URL}/public/rpc",
+                f"{SERVER_URL}/rpc",
                 params={
                     "client_id": "invalid-token-client",
                     "reconnection_token": "invalid-token-value",
@@ -586,9 +586,10 @@ class TestHTTPReconnectionToken:
         # Try to connect with token but different workspace
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                f"{SERVER_URL}/different-workspace/rpc",
+                f"{SERVER_URL}/rpc",
                 params={
                     "client_id": client_id,
+                    "workspace": "different-workspace",
                     "reconnection_token": reconnection_token,
                 },
                 timeout=5.0,
@@ -616,9 +617,10 @@ class TestHTTPReconnectionToken:
         # Try to connect with token but different client_id
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                f"{SERVER_URL}/{workspace}/rpc",
+                f"{SERVER_URL}/rpc",
                 params={
                     "client_id": "different-client-id",
+                    "workspace": workspace,
                     "reconnection_token": reconnection_token,
                 },
                 timeout=5.0,
