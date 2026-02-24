@@ -88,9 +88,10 @@ class FSFileResponse(FileResponse):
                 self.headers.setdefault(
                     "content-length", str(obj_info["ContentLength"])
                 )
-                self.headers.setdefault(
-                    "content-range", str(obj_info.get("ContentRange"))
-                )
+                content_range = obj_info.get("ContentRange")
+                if content_range:
+                    self.headers.setdefault("content-range", str(content_range))
+                    self.status_code = 206
                 self.headers.setdefault("last-modified", last_modified)
                 self.headers.setdefault("etag", obj_info["ETag"])
             except ClientError as err:
