@@ -1,3 +1,4 @@
+import io
 import logging
 import os
 import sys
@@ -424,7 +425,31 @@ class WebsocketServer:
                 self._last_seen[conn_key] = time.time()
                 if "bytes" in data:
                     data = data["bytes"]
-                    await conn.emit_message(data)
+                    try:
+                        await conn.emit_message(data)
+                    except Exception as emit_err:
+                        # Send error back to the client (e.g., dead-peer detection)
+                        # so the RPC promise is rejected immediately
+                        error_msg = str(emit_err)
+                        logger.error(f"Error: {error_msg}")
+                        try:
+                            # Unpack to get session ID for proper error routing
+                            unpacker = msgpack.Unpacker(io.BytesIO(data))
+                            msg = unpacker.unpack()
+                            error_response = msgpack.packb(
+                                {
+                                    "type": "peer_not_found",
+                                    "peer_id": msg.get("to", ""),
+                                    "session": msg.get("session"),
+                                    "error": error_msg,
+                                }
+                            )
+                            await websocket.send_bytes(error_response)
+                        except Exception:
+                            # If we can't send error back, log and continue
+                            logger.debug(
+                                "Could not send error response: %s", error_msg
+                            )
                 elif "text" in data:
                     try:
                         data = data["text"]

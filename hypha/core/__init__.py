@@ -841,23 +841,11 @@ class RedisRPCConnection:
                         await self._event_bus.client_exists_in_redis(target_id)
                     )
                 if not target_is_connected:
-                    session_id = message.get("session")
-                    error_response = msgpack.packb(
-                        {
-                            "type": "peer_not_found",
-                            "peer_id": target_id,
-                            "session": session_id,
-                            "error": f"Target peer {target_id} is not connected",
-                        }
+                    # Raise exception so hypha-rpc's emit_message error handler
+                    # rejects the caller's pending promise immediately
+                    raise Exception(
+                        f"Target peer {target_id} is not connected"
                     )
-                    await self._event_bus.emit(
-                        f"{source_id}:msg", error_response
-                    )
-                    logger.debug(
-                        f"Dead peer detected: {target_id}, "
-                        f"sent peer_not_found to {source_id}"
-                    )
-                    return
 
         # Use Redis event bus routing (local handlers are attached there)
         await self._event_bus.emit(f"{target_id}:msg", packed_message)
