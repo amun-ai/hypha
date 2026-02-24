@@ -517,6 +517,8 @@ class WebsocketServer:
         self, websocket, workspace: str, client_id: str, user_info: UserInfo, code, exp
     ):
         """Handle client disconnection with proper cleanup."""
+        # Track WebSocket client as recently disconnected for dead-peer detection
+        self.store._event_bus.track_recently_disconnected(workspace, client_id)
         cleanup_succeeded = False
         try:
             await self.store.remove_client(client_id, workspace, user_info, unload=True)

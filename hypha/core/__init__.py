@@ -826,26 +826,19 @@ class RedisRPCConnection:
 
         packed_message = msgpack.packb(message) + data[pos:]
 
-        # Dead-peer detection: check if target client is connected (skip for broadcasts)
+        # Dead-peer detection: reject messages to recently-disconnected clients
+        # Only uses the local recently-disconnected cache (fast, no Redis lookup).
+        # This catches the common case: client was on THIS server and disconnected.
         if target_id and "*" not in target_id and "/" in target_id:
             workspace_part, client_part = target_id.split("/", 1)
-            if not self._event_bus.is_local_client(workspace_part, client_part):
-                # Not a local client; check if recently disconnected (fast path)
-                if self._event_bus.is_recently_disconnected(
-                    workspace_part, client_part
-                ):
-                    target_is_connected = False
-                else:
-                    # Check Redis for multi-server deployments
-                    target_is_connected = (
-                        await self._event_bus.client_exists_in_redis(target_id)
-                    )
-                if not target_is_connected:
-                    # Raise exception so hypha-rpc's emit_message error handler
-                    # rejects the caller's pending promise immediately
-                    raise Exception(
-                        f"Target peer {target_id} is not connected"
-                    )
+            if not self._event_bus.is_local_client(
+                workspace_part, client_part
+            ) and self._event_bus.is_recently_disconnected(
+                workspace_part, client_part
+            ):
+                raise Exception(
+                    f"Target peer {target_id} is not connected"
+                )
 
         # Use Redis event bus routing (local handlers are attached there)
         await self._event_bus.emit(f"{target_id}:msg", packed_message)
@@ -1195,16 +1188,6 @@ class RedisEventBus:
         """Unregister a local client."""
         client_key = f"{workspace}/{client_id}"
         self._local_clients.discard(client_key)
-        # Track as recently disconnected for dead-peer detection
-        self._recently_disconnected[client_key] = time.time()
-        # Prune old entries (keep cache bounded)
-        if len(self._recently_disconnected) > 1000:
-            now = time.time()
-            self._recently_disconnected = {
-                k: v
-                for k, v in self._recently_disconnected.items()
-                if now - v < self._disconnected_ttl
-            }
         logger.debug(f"Unregistered local client: {client_key}")
         try:
             RedisEventBus._active_local_clients_gauge.set(len(self._local_clients))
@@ -1269,6 +1252,23 @@ class RedisEventBus:
         client_key = f"{workspace}/{client_id}"
         return client_key in self._local_clients
 
+    def track_recently_disconnected(self, workspace: str, client_id: str):
+        """Track a WebSocket client as recently disconnected.
+
+        Called from the WebSocket handler (not from unregister_local_client)
+        to avoid false positives for temporary internal RPC clients.
+        """
+        client_key = f"{workspace}/{client_id}"
+        self._recently_disconnected[client_key] = time.time()
+        # Prune old entries (keep cache bounded)
+        if len(self._recently_disconnected) > 1000:
+            now = time.time()
+            self._recently_disconnected = {
+                k: v
+                for k, v in self._recently_disconnected.items()
+                if now - v < self._disconnected_ttl
+            }
+
     def is_recently_disconnected(self, workspace: str, client_id: str) -> bool:
         """Check if a client was recently disconnected from this server."""
         client_key = f"{workspace}/{client_id}"
@@ -1280,12 +1280,6 @@ class RedisEventBus:
             return False
         return True
 
-    async def client_exists_in_redis(self, target_id: str) -> bool:
-        """Check if a client has services registered in Redis (multi-server)."""
-        pattern = f"services:*|*:{target_id}:built-in@*"
-        keys = await self._redis.keys(pattern)
-        return bool(keys)
-    
     async def cleanup_orphaned_patterns(self):
         """Clean up orphaned patterns that may have accumulated."""
         if not self._pubsub:
