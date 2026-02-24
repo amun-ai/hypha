@@ -801,6 +801,12 @@ if __name__ == "__main__":
             limit_max_requests=10000,  # Restart worker after 10k requests (prevents memory leaks)
             # Enable access log only if needed (disable for production performance)
             access_log=os.environ.get("HYPHA_ACCESS_LOG", "false").lower() == "true",
+            # Disable uvicorn's WebSocket protocol-level ping to prevent
+            # spurious disconnections (code 1011) when clients are busy.
+            # Hypha has its own application-level idle timeout (HYPHA_WS_IDLE_TIMEOUT)
+            # and clients send app-level pings to keep the connection alive.
+            ws_ping_interval=None,
+            ws_ping_timeout=None,
         )
 
 else:
