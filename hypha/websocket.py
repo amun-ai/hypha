@@ -428,27 +428,39 @@ class WebsocketServer:
                     try:
                         await conn.emit_message(data)
                     except Exception as emit_err:
-                        # Send error back to the client (e.g., dead-peer detection)
-                        # so the RPC promise is rejected immediately
+                        # Dead-peer detection: send RPC reject back to caller
+                        # Uses the standard RPC protocol so no hypha-rpc changes needed
                         error_msg = str(emit_err)
-                        logger.error(f"Error: {error_msg}")
+                        logger.warning("Message routing failed: %s", error_msg)
                         try:
-                            # Unpack to get session ID for proper error routing
                             unpacker = msgpack.Unpacker(io.BytesIO(data))
                             msg = unpacker.unpack()
-                            error_response = msgpack.packb(
-                                {
-                                    "type": "peer_not_found",
-                                    "peer_id": msg.get("to", ""),
-                                    "session": msg.get("session"),
-                                    "error": error_msg,
+                            session_id = msg.get("session")
+                            if session_id:
+                                # Construct a method call to {session}.reject
+                                # This invokes the caller's reject callback
+                                reject_main = {
+                                    "type": "method",
+                                    "from": msg.get("to", ""),
+                                    "to": msg.get("from", ""),
+                                    "method": f"{session_id}.reject",
                                 }
-                            )
-                            await websocket.send_bytes(error_response)
+                                reject_extra = {
+                                    "args": [
+                                        {
+                                            "_rtype": "error",
+                                            "_rvalue": error_msg,
+                                            "_rtrace": "",
+                                        }
+                                    ],
+                                }
+                                response = msgpack.packb(
+                                    reject_main
+                                ) + msgpack.packb(reject_extra)
+                                await websocket.send_bytes(response)
                         except Exception:
-                            # If we can't send error back, log and continue
                             logger.debug(
-                                "Could not send error response: %s", error_msg
+                                "Could not send reject response: %s", error_msg
                             )
                 elif "text" in data:
                     try:
