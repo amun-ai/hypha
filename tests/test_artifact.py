@@ -405,6 +405,80 @@ async def test_http_file_and_directory_endpoint(
     assert artifact["download_count"] == 6
 
 
+async def test_proxy_range_request_returns_206(
+    minio_server, fastapi_server_sqlite, test_user_token
+):
+    """Test that Range requests via use_proxy=true return HTTP 206 Partial Content."""
+
+    # Connect and get the artifact manager service
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL_SQLITE, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a collection
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest={
+            "name": "test-collection-range",
+            "description": "A test collection for range requests",
+        },
+        config={"permissions": {"*": "r", "@": "rw+"}},
+    )
+
+    # Create a dataset within the collection
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={
+            "name": "test-dataset-range",
+            "description": "A test dataset for range requests",
+        },
+        version="stage",
+    )
+
+    # Upload a file large enough to make range requests meaningful
+    file_contents = "A" * 4096  # 4KB file
+    put_url = await artifact_manager.put_file(
+        artifact_id=dataset.id,
+        file_path="testfile.bin",
+    )
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.put(put_url, data=file_contents)
+        assert response.status_code == 200
+
+    # Commit the dataset
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    # Make a Range request via proxy - should return 206 Partial Content
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(
+            f"{SERVER_URL_SQLITE}/{api.config.workspace}/artifacts/{dataset.alias}/files/testfile.bin?use_proxy=1",
+            headers={"Range": "bytes=0-1023"},
+        )
+        assert response.status_code == 206, (
+            f"Expected 206 Partial Content for Range request via proxy, got {response.status_code}"
+        )
+        assert "content-range" in response.headers
+        assert response.headers["content-range"].startswith("bytes 0-1023/")
+        assert len(response.content) == 1024
+
+    # Full request (no Range header) should still return 200
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(
+            f"{SERVER_URL_SQLITE}/{api.config.workspace}/artifacts/{dataset.alias}/files/testfile.bin?use_proxy=1",
+        )
+        assert response.status_code == 200
+        # content-range should NOT be present for full responses
+        assert "content-range" not in response.headers
+        assert len(response.content) == 4096
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=dataset.id)
+    await artifact_manager.delete(artifact_id=collection.id)
+    await api.disconnect()
+
+
 async def test_get_zip_file_content_endpoint(
     minio_server, fastapi_server, test_user_token
 ):
