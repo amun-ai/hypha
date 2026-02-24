@@ -698,6 +698,94 @@ class RedisStore:
         else:
             logger.info(f"No services found for server {self._server_id}")
 
+    async def _cleanup_orphaned_client_services(self):
+        """Remove services left by dead clients after a server crash/restart.
+
+        This handles the case where a server dies without graceful shutdown,
+        leaving user-connected WebSocket clients' services in Redis.
+        Unlike check_and_cleanup_servers (which only handles server-owned
+        services), this pings every unique client's built-in service.
+        If a client doesn't respond, its services are removed.
+
+        Safe for horizontal scaling: pings go through the Redis event bus,
+        so a client connected to ANY live server will respond.
+        """
+        # Collect all unique workspace/client_id pairs from service keys
+        pattern = "services:*|*:*/*:built-in@*"
+        keys = await self._redis.keys(pattern)
+        if not keys:
+            return
+
+        # Extract unique workspace/client_id from built-in service keys
+        # Key format: services:{vis}|{type}:{workspace}/{client_id}:built-in@{app_id}
+        clients = set()
+        for key in keys:
+            key_str = key.decode("utf-8") if isinstance(key, bytes) else key
+            # Split on ":" to get parts; the workspace/client_id is in part after visibility|type
+            # Example: services:public|built-in:myworkspace/abc123:built-in@default
+            parts = key_str.split(":")
+            if len(parts) >= 3:
+                ws_client = parts[2]  # "workspace/client_id"
+                if "/" in ws_client:
+                    clients.add(ws_client)
+
+        if not clients:
+            return
+
+        # Skip clients belonging to THIS server (they're being set up right now)
+        server_client_ids = {
+            f"public/{self._server_id}",
+            f"{self._root_user.get_workspace()}/{self._server_id}",
+        }
+
+        # Create a temporary RPC to ping clients
+        rpc = self.create_rpc(
+            "root", self._root_user, client_id="orphan-checker", silent=True
+        )
+        orphaned_clients = []
+        try:
+            for ws_client in clients:
+                if ws_client in server_client_ids:
+                    continue
+                workspace, client_id = ws_client.split("/", 1)
+                # Skip the manager and server-checker clients
+                if client_id.startswith("manager-") or client_id == "orphan-checker":
+                    continue
+                try:
+                    svc = await rpc.get_remote_service(
+                        f"{workspace}/{client_id}:built-in", {"timeout": 3}
+                    )
+                    await svc.ping("ping")
+                except Exception:
+                    orphaned_clients.append((workspace, client_id))
+
+            if orphaned_clients:
+                logger.warning(
+                    "Found %d orphaned clients, cleaning up their services...",
+                    len(orphaned_clients),
+                )
+                pipeline = self._redis.pipeline()
+                total_keys = 0
+                for workspace, client_id in orphaned_clients:
+                    svc_pattern = f"services:*|*:{workspace}/{client_id}:*@*"
+                    svc_keys = await self._redis.keys(svc_pattern)
+                    for k in svc_keys:
+                        pipeline.delete(k)
+                        total_keys += 1
+                if total_keys:
+                    await pipeline.execute()
+                    logger.info(
+                        "Removed %d service keys from %d orphaned clients",
+                        total_keys,
+                        len(orphaned_clients),
+                    )
+            else:
+                logger.info("No orphaned client services found")
+        except Exception as e:
+            logger.error("Error during orphaned client cleanup: %s", e)
+        finally:
+            await rpc.disconnect()
+
     async def init(self, reset_redis, startup_functions=None):
         """Setup the store."""
         self.loop = asyncio.get_running_loop()
@@ -735,6 +823,7 @@ class RedisStore:
                     )
             # Root token is already set in __init__
         await self.check_and_cleanup_servers()
+        await self._cleanup_orphaned_client_services()
         self._workspace_manager = await self.register_workspace_manager()
 
         try:
