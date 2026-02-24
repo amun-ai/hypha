@@ -582,39 +582,6 @@ class HTTPStreamingRPCServer:
                 user_info=user_info,
             )
 
-        # Backward-compatible /{workspace}/rpc routes for older hypha-rpc clients.
-        @app.get(self._norm_url("/{workspace}/rpc"))
-        async def rpc_stream_compat(
-            request: Request,
-            workspace: str,
-            client_id: str = None,
-            reconnection_token: str = None,
-            user_info: self.store.login_optional = Depends(self.store.login_optional),
-        ):
-            """Backward-compatible streaming endpoint with workspace in path."""
-            return await _handle_rpc_stream(
-                workspace=workspace,
-                request=request,
-                client_id=client_id,
-                reconnection_token=reconnection_token,
-                user_info=user_info,
-            )
-
-        @app.post(self._norm_url("/{workspace}/rpc"))
-        async def rpc_post_compat(
-            request: Request,
-            workspace: str,
-            client_id: str = None,
-            user_info: self.store.login_optional = Depends(self.store.login_optional),
-        ):
-            """Backward-compatible POST endpoint with workspace in path."""
-            return await _handle_rpc_post(
-                workspace=workspace,
-                request=request,
-                client_id=client_id,
-                user_info=user_info,
-            )
-
     async def _handle_stateless_call(
         self,
         workspace: str,
