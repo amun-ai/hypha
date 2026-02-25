@@ -11686,3 +11686,107 @@ async def test_create_zip_sqlite_content_length_and_integrity(
 
     await artifact_manager.delete(artifact_id=collection.id)
     await api.disconnect()
+
+
+@pytest.mark.timeout(100)
+async def test_stage_version_index_consistency(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test that get_file uses the same S3 version path as put_file when editing current version in staging mode.
+
+    Reproduces a bug where _get_version_index always returned len(artifact.versions)
+    for version="stage", which is the *next* version slot. Meanwhile put_file and
+    list_files had custom logic to check staging._intent and correctly used the
+    current version index when editing (not creating a new version).
+
+    This caused get_file to look in the wrong S3 path (e.g., v1/) while the file
+    was actually stored at v0/ — resulting in a 404 / FileNotFoundError.
+    """
+    api = await connect_to_server(
+        {"name": "test-stage-index", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Step 1: Create artifact and commit so we have v0
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Stage Index Test", "description": "Testing version index"},
+        version="v0",
+    )
+    assert len(artifact["versions"]) == 1
+    assert artifact["versions"][0]["version"] == "v0"
+
+    # Step 2: Edit in staging mode WITHOUT version="new" (editing current version)
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest={"name": "Stage Index Test", "description": "Editing current version"},
+        stage=True,
+        # No version="new" — this means we're editing the current version, not creating a new one
+    )
+
+    # Verify staging is set and intent is NOT "new_version"
+    staged = await artifact_manager.read(artifact_id=artifact.id, version="stage")
+    assert staged["staging"] is not None
+    # Staging is returned as a list for backward compat; _intent is embedded as a list item
+    staging_list = staged["staging"]
+    intent_items = [
+        item for item in staging_list
+        if isinstance(item, dict) and "_intent" in item
+    ]
+    assert not any(item.get("_intent") == "new_version" for item in intent_items), (
+        f"Expected intent to NOT be 'new_version' but got: {intent_items}"
+    )
+
+    # Step 3: Upload a file via put_file (which correctly targets v0/)
+    file_content = b"hello from staged edit"
+    put_url = await artifact_manager.put_file(
+        artifact_id=artifact.id, file_path="test_file.txt"
+    )
+    response = requests.put(put_url, data=file_content)
+    assert response.ok, f"Failed to upload file: {response.status_code}"
+
+    # Step 4: list_files should see the file (it had custom logic, so it works)
+    files = await artifact_manager.list_files(artifact_id=artifact.id, stage=True)
+    file_names = [f["name"] for f in files]
+    assert "test_file.txt" in file_names, (
+        f"list_files did not find 'test_file.txt', got: {file_names}"
+    )
+
+    # Step 5: get_file should also find the file
+    # BUG: Before the fix, _get_version_index("stage") returned len(versions)=1 (v1/)
+    # but the file was uploaded to v0/ by put_file's custom logic.
+    get_url = await artifact_manager.get_file(
+        artifact_id=artifact.id, file_path="test_file.txt", stage=True
+    )
+    response = requests.get(get_url)
+    assert response.status_code == 200, (
+        f"get_file returned {response.status_code} — likely reading from wrong version path"
+    )
+    assert response.content == file_content
+
+    # Step 6: Also test the HTTP endpoint for get_file
+    http_url = f"{SERVER_URL}/{artifact.id.split('/')[0]}/artifacts/{artifact.id.split('/')[-1]}/files/test_file.txt?stage=true&token={test_user_token}"
+    response = requests.get(http_url, allow_redirects=True)
+    assert response.status_code == 200, (
+        f"HTTP get_file returned {response.status_code} — likely reading from wrong version path"
+    )
+    assert response.content == file_content
+
+    # Step 7: Commit and verify everything works normally after commit
+    committed = await artifact_manager.commit(artifact_id=artifact.id)
+    assert committed["staging"] is None
+    # Should still be v0 (edited in place, not new version)
+    assert len(committed["versions"]) == 1
+    assert committed["versions"][0]["version"] == "v0"
+
+    # Verify file is accessible after commit
+    get_url = await artifact_manager.get_file(
+        artifact_id=artifact.id, file_path="test_file.txt"
+    )
+    response = requests.get(get_url)
+    assert response.status_code == 200
+    assert response.content == file_content
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=artifact.id)
+    await api.disconnect()

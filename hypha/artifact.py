@@ -4503,7 +4503,20 @@ class ArtifactController:
             version_index = len(artifact.versions) - 1
             return version_index
         elif version == "stage":
-            version_index = len(artifact.versions)
+            # Check intent to determine correct index for staging
+            if artifact.staging is not None:
+                staging = convert_legacy_staging(artifact.staging)
+                has_new_version_intent = (isinstance(staging, dict) and
+                                          staging.get("_intent") == "new_version")
+                if has_new_version_intent:
+                    # Creating new version - use next index
+                    version_index = len(artifact.versions or [])
+                else:
+                    # Editing current version - use current index
+                    version_index = max(0, len(artifact.versions or []) - 1)
+            else:
+                # No staging info, fall back to latest committed version
+                version_index = max(0, len(artifact.versions) - 1)
         elif isinstance(version, str):
             # find the version index
             version_index = -1
@@ -8044,24 +8057,11 @@ class ArtifactController:
                     )
                     return items
 
-                # Handle staging version - check intent to determine correct index
-                if version == "stage":
-                    # Convert legacy staging format if needed
-                    if artifact.staging is not None:
-                        artifact.staging = convert_legacy_staging(artifact.staging)
-                    
-                    # Check if there's intent to create a new version
-                    staging_dict = artifact.staging or {}
-                    has_new_version_intent = staging_dict.get("_intent") == "new_version"
-                    
-                    if has_new_version_intent:
-                        # Creating new version - use next index
-                        version_index = len(artifact.versions or [])
-                    else:
-                        # Editing current version - use current index
-                        version_index = max(0, len(artifact.versions or []) - 1)
-                else:
-                    version_index = self._get_version_index(artifact, version)
+                # Convert legacy staging format if needed
+                if version == "stage" and artifact.staging is not None:
+                    artifact.staging = convert_legacy_staging(artifact.staging)
+
+                version_index = self._get_version_index(artifact, version)
 
                 s3_config = self._get_s3_config(artifact, parent_artifact)
                 async with self._create_client_async(
