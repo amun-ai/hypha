@@ -23,7 +23,7 @@ The following table lists the main configurable parameters of the Hypha Server c
 |-----------|-------------|---------|
 | `replicaCount` | Number of replicas | `1` |
 | `image.repository` | Image repository | `ghcr.io/amun-ai/hypha` |
-| `image.tag` | Image tag | `0.21.54` |
+| `image.tag` | Image tag | `0.21.55` |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
 | `service.type` | Kubernetes service type | `ClusterIP` |
 | `service.port` | Service port | `9520` |

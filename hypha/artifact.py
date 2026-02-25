@@ -5325,8 +5325,9 @@ class ArtifactController:
                             artifact.staging["secrets"] = secrets
                         if type is not None:
                             artifact.staging["type"] = type
-                        # Always update intent based on version parameter
-                        artifact.staging["_intent"] = "new_version" if version == "new" else "edit_version"
+                        # Only update intent if version is explicitly specified
+                        if version is not None:
+                            artifact.staging["_intent"] = "new_version" if version == "new" else "edit_version"
                     
                     flag_modified(artifact, "staging")
                     

@@ -4386,7 +4386,9 @@ async def test_commit_version_override(minio_server, fastapi_server, test_user_t
         )
 
     # Test 4: Stage without version="new" and commit (should update existing)
-    # First, clear staging and stage normally
+    # First, discard the leftover staging from Test 3 (which had _intent="new_version")
+    # then stage normally without version="new"
+    await artifact_manager.discard(artifact_id=artifact.id)
     await artifact_manager.edit(
         artifact_id=artifact.id,
         manifest={"name": "Update Staged", "description": "Staged for update"},
@@ -11782,6 +11784,106 @@ async def test_stage_version_index_consistency(
     # Verify file is accessible after commit
     get_url = await artifact_manager.get_file(
         artifact_id=artifact.id, file_path="test_file.txt"
+    )
+    response = requests.get(get_url)
+    assert response.status_code == 200
+    assert response.content == file_content
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=artifact.id)
+    await api.disconnect()
+
+
+@pytest.mark.timeout(100)
+async def test_staging_intent_preserved_across_edits(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test that 'new_version' intent is not overwritten by subsequent staged edits without version param.
+
+    Reproduces a bug where edit()'s staging branch always overwrote _intent based on
+    the version parameter — even when version was None (the default). This meant:
+
+    1. edit(version="new", stage=True) → _intent = "new_version"
+    2. edit(manifest=..., stage=True)  → _intent overwritten to "edit_version" (BUG)
+    3. commit() checks _intent == "new_version" → False → updates v0 instead of creating v1
+    """
+    api = await connect_to_server(
+        {"name": "test-intent-preserve", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Step 1: Create artifact with v0
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Intent Test", "description": "Original"},
+        version="v0",
+    )
+    assert len(artifact["versions"]) == 1
+    assert artifact["versions"][0]["version"] == "v0"
+
+    # Step 2: Start staging with intent to create a new version
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest={"name": "Intent Test", "description": "New version content"},
+        stage=True,
+        version="new",
+    )
+
+    # Verify _intent is "new_version"
+    staged = await artifact_manager.read(artifact_id=artifact.id, version="stage")
+    assert staged["staging"] is not None
+    staging_list = staged["staging"]
+    intent_items = [
+        item for item in staging_list
+        if isinstance(item, dict) and "_intent" in item
+    ]
+    assert any(item.get("_intent") == "new_version" for item in intent_items), (
+        f"Expected 'new_version' intent after first edit, got: {intent_items}"
+    )
+
+    # Step 3: Make another staged edit WITHOUT version param (simulates file save / manifest update)
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest={"name": "Intent Test", "description": "Updated during staging"},
+        stage=True,
+        # No version parameter — should NOT change intent
+    )
+
+    # Verify _intent is STILL "new_version" (this is the bug: it was overwritten to "edit_version")
+    staged = await artifact_manager.read(artifact_id=artifact.id, version="stage")
+    assert staged["staging"] is not None
+    staging_list = staged["staging"]
+    intent_items = [
+        item for item in staging_list
+        if isinstance(item, dict) and "_intent" in item
+    ]
+    assert any(item.get("_intent") == "new_version" for item in intent_items), (
+        f"Expected 'new_version' intent preserved after second edit (no version param), "
+        f"but got: {intent_items}"
+    )
+
+    # Step 4: Upload a file during staging
+    file_content = b"data for new version"
+    put_url = await artifact_manager.put_file(
+        artifact_id=artifact.id, file_path="data.txt"
+    )
+    response = requests.put(put_url, data=file_content)
+    assert response.ok
+
+    # Step 5: Commit — should create v1 (new version), NOT update v0
+    committed = await artifact_manager.commit(artifact_id=artifact.id)
+    assert committed["staging"] is None
+    assert len(committed["versions"]) == 2, (
+        f"Expected 2 versions (v0 + v1) after commit with new_version intent, "
+        f"but got {len(committed['versions'])}: {committed['versions']}"
+    )
+    assert committed["versions"][0]["version"] == "v0"
+    assert committed["versions"][1]["version"] == "v1"
+    assert committed["manifest"]["description"] == "Updated during staging"
+
+    # Verify file is accessible in v1
+    get_url = await artifact_manager.get_file(
+        artifact_id=artifact.id, file_path="data.txt", version="v1"
     )
     response = requests.get(get_url)
     assert response.status_code == 200
