@@ -941,3 +941,46 @@ async def test_orphaned_client_cleanup_on_startup():
     )
 
     await store2._event_bus.stop()
+
+
+async def test_immediate_error_for_disconnected_peer(fastapi_server):
+    """Test that RPC calls to disconnected peers fail immediately (not timeout).
+
+    Regression test for https://github.com/amun-ai/hypha/issues/868
+    When a client disconnects, callers holding references to its services
+    should get an immediate error rather than waiting for the full RPC timeout.
+    """
+    api_a = await connect_to_server(
+        {"server_url": SERVER_URL, "method_timeout": 30}
+    )
+    api_b = await connect_to_server(
+        {"server_url": SERVER_URL, "method_timeout": 30}
+    )
+
+    # Register a service on client B
+    await api_b.register_service(
+        {
+            "id": "test-svc",
+            "config": {"visibility": "public", "require_context": False},
+            "hello": lambda name: f"Hello {name}",
+        }
+    )
+
+    svc = await api_a.get_service(f"{api_b.config.workspace}/test-svc")
+    assert await svc.hello("world") == "Hello world"
+
+    # Disconnect client B
+    await api_b.disconnect()
+    await asyncio.sleep(2)  # Allow server cleanup
+
+    # Call should fail fast (< 10s), not wait for 30s timeout
+    start = time.time()
+    with pytest.raises(Exception) as exc_info:
+        await svc.hello("world")
+    elapsed = time.time() - start
+    assert elapsed < 10, f"Call took {elapsed:.1f}s, expected < 10s (immediate error)"
+    assert "not connected" in str(exc_info.value).lower() or "peer" in str(
+        exc_info.value
+    ).lower(), f"Unexpected error: {exc_info.value}"
+
+    await api_a.disconnect()

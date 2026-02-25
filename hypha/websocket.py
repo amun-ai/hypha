@@ -1,3 +1,4 @@
+import io
 import logging
 import os
 import sys
@@ -424,7 +425,43 @@ class WebsocketServer:
                 self._last_seen[conn_key] = time.time()
                 if "bytes" in data:
                     data = data["bytes"]
-                    await conn.emit_message(data)
+                    try:
+                        await conn.emit_message(data)
+                    except Exception as emit_err:
+                        # Dead-peer detection: send RPC reject back to caller
+                        # Uses the standard RPC protocol so no hypha-rpc changes needed
+                        error_msg = str(emit_err)
+                        logger.warning("Message routing failed: %s", error_msg)
+                        try:
+                            unpacker = msgpack.Unpacker(io.BytesIO(data))
+                            msg = unpacker.unpack()
+                            session_id = msg.get("session")
+                            if session_id:
+                                # Construct a method call to {session}.reject
+                                # This invokes the caller's reject callback
+                                reject_main = {
+                                    "type": "method",
+                                    "from": msg.get("to", ""),
+                                    "to": msg.get("from", ""),
+                                    "method": f"{session_id}.reject",
+                                }
+                                reject_extra = {
+                                    "args": [
+                                        {
+                                            "_rtype": "error",
+                                            "_rvalue": error_msg,
+                                            "_rtrace": "",
+                                        }
+                                    ],
+                                }
+                                response = msgpack.packb(
+                                    reject_main
+                                ) + msgpack.packb(reject_extra)
+                                await websocket.send_bytes(response)
+                        except Exception:
+                            logger.debug(
+                                "Could not send reject response: %s", error_msg
+                            )
                 elif "text" in data:
                     try:
                         data = data["text"]
@@ -480,6 +517,8 @@ class WebsocketServer:
         self, websocket, workspace: str, client_id: str, user_info: UserInfo, code, exp
     ):
         """Handle client disconnection with proper cleanup."""
+        # Track WebSocket client as recently disconnected for dead-peer detection
+        self.store._event_bus.track_recently_disconnected(workspace, client_id)
         cleanup_succeeded = False
         try:
             await self.store.remove_client(client_id, workspace, user_info, unload=True)
