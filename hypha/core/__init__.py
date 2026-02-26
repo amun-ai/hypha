@@ -986,15 +986,22 @@ class RedisRPCConnection:
         
         # Standard disconnect logic (preserved)
         try:
-            # Unregister this connection from the global registry
             connection_key = f"{self._workspace}/{self._client_id}"
-            RedisRPCConnection._connections.pop(connection_key, None)
-            
-            # Update metrics
+
+            # Check if a newer connection has superseded this one.
+            # If so, skip registry/routing cleanup to avoid clobbering the new connection.
+            current_conn = RedisRPCConnection._connections.get(connection_key)
+            is_current = current_conn is self or current_conn is None
+
+            if is_current:
+                # Unregister this connection from the global registry
+                RedisRPCConnection._connections.pop(connection_key, None)
+
+            # Update metrics (always — this connection is closing regardless)
             RedisRPCConnection._connections_closed_total.inc()
             RedisRPCConnection._closed_total_int += 1
             RedisRPCConnection._active_connections_gauge.set(len(RedisRPCConnection._connections))
-            
+
             # Clean up direct message handler using saved event_bus reference
             if self._handle_message and event_bus_ref:
                 # Remove specific handler for this client's direct messages
@@ -1003,22 +1010,30 @@ class RedisRPCConnection:
             else:
                 # Just clear the reference if event_bus is not available
                 self._handle_message = None
-            
+
             # Unregister this client from local routing and unsubscribe from events
-            try:
-                # Cancel registration task if still running
-                if self._registration_task and not self._registration_task.done():
-                    self._registration_task.cancel()
-                
-                # Unsubscribe from client events and unregister using saved event_bus reference
-                if event_bus_ref:
-                    await event_bus_ref.unsubscribe_from_client_events(self._workspace, self._client_id)
-                    await event_bus_ref.unregister_local_client(self._workspace, self._client_id)
-                    logger.debug(f"Unsubscribed and unregistered {self._workspace}/{self._client_id}")
-                else:
-                    logger.debug(f"Event bus not available for {self._workspace}/{self._client_id}")
-            except Exception as e:
-                logger.warning(f"Error during client cleanup: {e}")
+            # Only if this is still the current connection — otherwise we'd break
+            # the newer connection's routing.
+            if is_current:
+                try:
+                    # Cancel registration task if still running
+                    if self._registration_task and not self._registration_task.done():
+                        self._registration_task.cancel()
+
+                    # Unsubscribe from client events and unregister using saved event_bus reference
+                    if event_bus_ref:
+                        await event_bus_ref.unsubscribe_from_client_events(self._workspace, self._client_id)
+                        await event_bus_ref.unregister_local_client(self._workspace, self._client_id)
+                        logger.debug(f"Unsubscribed and unregistered {self._workspace}/{self._client_id}")
+                    else:
+                        logger.debug(f"Event bus not available for {self._workspace}/{self._client_id}")
+                except Exception as e:
+                    logger.warning(f"Error during client cleanup: {e}")
+            else:
+                logger.info(
+                    "Skipping registry/routing cleanup for %s (superseded by newer connection)",
+                    connection_key,
+                )
         
             logger.debug(f"Redis Connection Disconnected: {self._workspace}/{self._client_id}")
             
