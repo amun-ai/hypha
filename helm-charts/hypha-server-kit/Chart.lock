@@ -1,7 +1,7 @@
 dependencies:
 - name: hypha-server
   repository: file://../hypha-server
-  version: 0.21.57
+  version: 0.21.58
 - name: minio
   repository: https://charts.bitnami.com/bitnami
   version: 17.0.16

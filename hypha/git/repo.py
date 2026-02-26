@@ -193,6 +193,39 @@ class S3GitRepo(BaseRepo):
             await self.initialize()
         return await self._refs.set_ref_async(name, value, old_value)
 
+    async def delete_ref_async(
+        self,
+        name: bytes,
+        old_value: Optional[ObjectID] = None,
+    ) -> bool:
+        """Delete a reference.
+
+        Args:
+            name: Reference name (e.g., b"refs/heads/feature")
+            old_value: Expected current value (for CAS). None to skip check.
+
+        Returns:
+            True if deleted successfully.
+        """
+        if not self._initialized:
+            await self.initialize()
+        return await self._refs.delete_ref_async(name, old_value)
+
+    async def ensure_packs_loaded(self):
+        """Pre-load all pack files into memory.
+
+        This must be called before using synchronous dulwich operations
+        (like tree_changes, find_merge_base) that access the object store
+        via __getitem__ or __contains__.
+        """
+        if not self._initialized:
+            await self.initialize()
+        # Force pack cache update
+        await self._object_store._update_pack_cache_async()
+        # Load all packs into memory
+        for pack in self._object_store._pack_cache.values():
+            await pack._ensure_loaded()
+
     async def generate_info_refs_async(self) -> bytes:
         """Generate info/refs content for HTTP protocol."""
         if not self._initialized:

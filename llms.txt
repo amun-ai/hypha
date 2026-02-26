@@ -15,6 +15,7 @@ Hypha enables building distributed applications with Python and JavaScript. It f
 - [Launch Service](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/launch-service.md): How to launch services in Hypha
 - [Operate Files](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/operate-files.md): File operations in Hypha
 - [Artifact Manager](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/artifact-manager.md): Managing artifacts with Hypha
+- [Git Storage & Pull Requests](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/git-pull-requests.md): Git-backed artifacts with branch operations, pull requests, structured diffs, code reviews, and merge for AI agent collaboration
 - [Vector Search](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/vector-search.md): Using vector search capabilities in Hypha
 
 ## Optional

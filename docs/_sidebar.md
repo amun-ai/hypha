@@ -9,6 +9,7 @@
  * [Serve ASGI Web Apps](/asgi-apps)
  * [Autoscaling](/autoscaling)
  * [Operate Files](/operate-files)
+ * [Git Storage & Pull Requests](/git-pull-requests)
  * [Zip Streaming](/zip-streaming)
  * [Agent2Agent](/a2a)
  * [Model Context Protocol](/mcp)

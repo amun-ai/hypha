@@ -2873,6 +2873,36 @@ class ArtifactController:
 
         return versions
 
+    async def _get_git_repo(self, artifact, parent_artifact):
+        """Create and initialize an S3GitRepo for a git-storage artifact.
+
+        Args:
+            artifact: The artifact model instance (must have config.storage == "git")
+            parent_artifact: Parent artifact for S3 config inheritance
+
+        Returns:
+            Initialized S3GitRepo instance
+
+        Raises:
+            ValueError: If artifact does not use git storage
+        """
+        from hypha.git.repo import S3GitRepo
+
+        config = artifact.config or {}
+        if config.get("storage") != "git":
+            raise ValueError(
+                f"Artifact '{artifact.workspace}/{artifact.alias}' does not use git storage."
+            )
+
+        s3_config = self._get_s3_config(artifact, parent_artifact)
+        s3_client_factory = partial(self._create_client_async, s3_config)
+        prefix = f"{s3_config['prefix']}/{artifact.id}/.git"
+        repo = S3GitRepo(
+            s3_client_factory, s3_config["bucket"], prefix, s3_config=s3_config
+        )
+        await repo.initialize()
+        return repo
+
     async def _resolve_git_version(
         self,
         repo,
@@ -3764,6 +3794,7 @@ class ArtifactController:
         comment: Optional[str],
         user_info,
         session,
+        target_branch: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Commit staged changes to a git-storage artifact.
 
@@ -3782,6 +3813,7 @@ class ArtifactController:
             comment: Commit message
             user_info: User info for commit authorship
             session: Database session
+            target_branch: Branch to commit to. Defaults to the default branch (usually "main").
 
         Returns:
             Commit result dict with status, version, commit_sha
@@ -3796,6 +3828,11 @@ class ArtifactController:
         prefix = f"{s3_config['prefix']}/{artifact.id}/.git"
         repo = S3GitRepo(s3_client_factory, s3_config["bucket"], prefix, s3_config=s3_config)
         await repo.initialize()
+
+        # Resolve target branch
+        config = artifact.config or {}
+        branch_name = target_branch or config.get("git_default_branch", "main")
+        branch_ref = f"refs/heads/{branch_name}".encode()
 
         # Get staged files from artifact.staging (for removal tracking and download weights)
         staging_dict = artifact.staging or {}
@@ -3886,8 +3923,15 @@ class ArtifactController:
                 "artifact_id": f"{artifact.workspace}/{artifact.alias}",
             }
 
-        # Get current HEAD (if exists)
-        current_head = await repo.head_async()
+        # Get current branch tip (if exists)
+        refs = await repo.get_refs_async()
+        current_head = refs.get(branch_ref)
+        # Filter out symbolic refs
+        if current_head and current_head.startswith(b"ref: "):
+            current_head = None
+        # Fallback to HEAD for new repos where the branch may not exist yet
+        if current_head is None:
+            current_head = await repo.head_async()
 
         # Build the tree structure
         # We need to merge new files with existing tree if there's a parent commit
@@ -3998,7 +4042,7 @@ class ArtifactController:
         await repo._object_store.add_objects_async(blobs_to_add)
 
         # Update refs
-        await repo.set_ref_async(b"refs/heads/main", commit.id)
+        await repo.set_ref_async(branch_ref, commit.id)
 
         # Create tag if version specified
         if version:
@@ -4052,12 +4096,13 @@ class ArtifactController:
             flag_modified(artifact, "versions")
 
         # Invalidate static site cache if this artifact is configured as a static site
-        target_branch = version or "main"
-        await self._invalidate_static_site_cache(artifact, target_branch)
+        cache_branch = version or branch_name
+        await self._invalidate_static_site_cache(artifact, cache_branch)
 
         return {
             "status": "committed",
-            "version": version or "main",
+            "branch": branch_name,
+            "version": version or branch_name,
             "commit_sha": commit.id.hex() if isinstance(commit.id, bytes) else commit.id,
             "artifact_id": f"{artifact.workspace}/{artifact.alias}",
             "files_added": len(files_to_commit),
@@ -5188,6 +5233,11 @@ class ArtifactController:
             False,
             description="Edit in staging mode. Changes are not immediately visible and must be committed. Useful for multi-step edits."
         ),
+        branch: Optional[str] = PydanticField(
+            None,
+            description="Target branch for git-storage artifacts (e.g., 'feature-auth'). "
+                        "Stored in staging and used when commit is called. Ignored for non-git artifacts."
+        ),
         context: Optional[dict] = PydanticField(
             None,
             description="Context containing user info and workspace. Usually provided automatically by the system."
@@ -5315,12 +5365,15 @@ class ArtifactController:
                             "files": [],
                             "_intent": "new_version" if version == "new" else "edit_version"
                         }
+                        # Store target branch for git artifacts
+                        if branch is not None:
+                            artifact.staging["_branch"] = branch
                     else:
                         # Already in staging, update staged values
                         if manifest is not None:
                             artifact.staging["manifest"] = manifest
                         if config is not None:
-                            artifact.staging["config"] = config  
+                            artifact.staging["config"] = config
                         if secrets is not None:
                             artifact.staging["secrets"] = secrets
                         if type is not None:
@@ -5328,6 +5381,9 @@ class ArtifactController:
                         # Only update intent if version is explicitly specified
                         if version is not None:
                             artifact.staging["_intent"] = "new_version" if version == "new" else "edit_version"
+                        # Update branch if specified
+                        if branch is not None:
+                            artifact.staging["_branch"] = branch
                     
                     flag_modified(artifact, "staging")
                     
@@ -5649,6 +5705,11 @@ class ArtifactController:
             None,
             description="Commit message or changelog entry describing the changes. Stored with version metadata for tracking."
         ),
+        branch: Optional[str] = PydanticField(
+            None,
+            description="Target branch for git-storage artifacts (e.g., 'main', 'feature-auth'). "
+                        "Defaults to the default branch. Ignored for non-git artifacts."
+        ),
         context: Optional[dict] = PydanticField(
             None,
             description="Context containing user info and workspace. Usually provided automatically by the system."
@@ -5723,6 +5784,11 @@ class ArtifactController:
                 config = artifact.config or {}
                 if config.get("storage") == "git":
                     # Handle git-storage artifacts
+                    # Use branch from parameter, or from staging dict, or default
+                    target_branch = branch
+                    if target_branch is None:
+                        staging_dict = artifact.staging or {}
+                        target_branch = staging_dict.get("_branch")
                     result = await self._commit_git(
                         artifact,
                         parent_artifact,
@@ -5730,6 +5796,7 @@ class ArtifactController:
                         comment,
                         user_info,
                         session,
+                        target_branch=target_branch,
                     )
 
                     # Update manifest if staged
@@ -9615,6 +9682,862 @@ class ArtifactController:
         finally:
             await session.close()
 
+    # ──────────────────────────────────────────────────────────────────────
+    # Git Branch Operations
+    # ──────────────────────────────────────────────────────────────────────
+
+    @schema_method
+    async def create_branch(
+        self,
+        artifact_id: str = PydanticField(
+            ...,
+            description="Git artifact identifier. Format: 'workspace/alias' or just 'alias'."
+        ),
+        branch: str = PydanticField(
+            ...,
+            description="Name of the branch to create (e.g., 'feature-auth', 'fix-bug-123')."
+        ),
+        source: Optional[str] = PydanticField(
+            None,
+            description="Source ref to branch from: branch name, tag name, or commit SHA. Defaults to default branch."
+        ),
+        context: Optional[dict] = PydanticField(None, description="Auto-provided context."),
+    ) -> Dict[str, Any]:
+        """Create a new branch on a git-storage artifact.
+
+        Returns:
+            Dict with branch name, sha, and artifact_id.
+
+        Raises:
+            ValueError: If branch already exists or source ref not found.
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.from_context(context)
+
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "edit", session
+                )
+                repo = await self._get_git_repo(artifact, parent_artifact)
+
+                if await repo.is_empty():
+                    raise ValueError("Cannot create branch on an empty repository. Push an initial commit first.")
+
+                # Check branch doesn't already exist
+                refs = await repo.get_refs_async()
+                new_ref = f"refs/heads/{branch}".encode()
+                if new_ref in refs:
+                    raise ValueError(f"Branch '{branch}' already exists.")
+
+                # Resolve source to SHA
+                if source is None:
+                    # Default to HEAD
+                    source_sha = await repo.head_async()
+                    if source_sha is None:
+                        raise ValueError("Repository HEAD is not set.")
+                else:
+                    from hypha.git.merge import resolve_ref_to_sha
+                    source_sha = await resolve_ref_to_sha(repo, source)
+
+                # Create the branch ref
+                success = await repo.set_ref_async(new_ref, source_sha)
+                if not success:
+                    raise ValueError(f"Failed to create branch '{branch}'.")
+
+                sha_hex = source_sha.decode() if isinstance(source_sha, bytes) else source_sha
+
+                return {
+                    "branch": branch,
+                    "sha": sha_hex,
+                    "artifact_id": f"{artifact.workspace}/{artifact.alias}",
+                }
+        except Exception:
+            raise
+        finally:
+            await session.close()
+
+    @schema_method
+    async def delete_branch(
+        self,
+        artifact_id: str = PydanticField(
+            ...,
+            description="Git artifact identifier."
+        ),
+        branch: str = PydanticField(
+            ...,
+            description="Branch name to delete. Cannot delete the default branch."
+        ),
+        context: Optional[dict] = PydanticField(None, description="Auto-provided context."),
+    ) -> Dict[str, str]:
+        """Delete a branch from a git-storage artifact.
+
+        Returns:
+            Dict with status and deleted branch name.
+
+        Raises:
+            ValueError: If branch is the default branch or doesn't exist.
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.from_context(context)
+
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "edit", session
+                )
+                repo = await self._get_git_repo(artifact, parent_artifact)
+
+                # Get default branch from HEAD symref
+                refs = await repo.get_refs_async()
+                head_value = refs.get(b"HEAD")
+                default_branch = "main"
+                if head_value and head_value.startswith(b"ref: refs/heads/"):
+                    default_branch = head_value[16:].decode("utf-8")
+
+                if branch == default_branch:
+                    raise ValueError(f"Cannot delete the default branch '{default_branch}'.")
+
+                branch_ref = f"refs/heads/{branch}".encode()
+                if branch_ref not in refs:
+                    raise ValueError(f"Branch '{branch}' does not exist.")
+
+                success = await repo.delete_ref_async(branch_ref)
+                if not success:
+                    raise ValueError(f"Failed to delete branch '{branch}'.")
+
+                return {
+                    "status": "deleted",
+                    "branch": branch,
+                    "artifact_id": f"{artifact.workspace}/{artifact.alias}",
+                }
+        except Exception:
+            raise
+        finally:
+            await session.close()
+
+    @schema_method
+    async def list_branches(
+        self,
+        artifact_id: str = PydanticField(
+            ...,
+            description="Git artifact identifier."
+        ),
+        context: Optional[dict] = PydanticField(None, description="Auto-provided context."),
+    ) -> List[Dict[str, Any]]:
+        """List all branches on a git-storage artifact.
+
+        Returns:
+            List of dicts with 'name', 'sha', 'default' (bool) fields.
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.from_context(context)
+
+        session = await self._get_session(read_only=True)
+        try:
+            async with session.begin():
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "read", session
+                )
+                repo = await self._get_git_repo(artifact, parent_artifact)
+
+                if await repo.is_empty():
+                    return []
+
+                refs = await repo.get_refs_async()
+
+                # Determine default branch
+                head_value = refs.get(b"HEAD")
+                default_branch = None
+                if head_value and head_value.startswith(b"ref: refs/heads/"):
+                    default_branch = head_value[16:].decode("utf-8")
+
+                branches = []
+                for ref_name, sha in sorted(refs.items()):
+                    if ref_name.startswith(b"refs/heads/"):
+                        if sha.startswith(b"ref: "):
+                            continue
+                        name = ref_name[11:].decode("utf-8")
+                        sha_hex = sha.decode("utf-8") if isinstance(sha, bytes) else sha
+                        entry = {"name": name, "sha": sha_hex}
+                        if name == default_branch:
+                            entry["default"] = True
+                        branches.append(entry)
+
+                return branches
+        except Exception:
+            raise
+        finally:
+            await session.close()
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Git Diff
+    # ──────────────────────────────────────────────────────────────────────
+
+    @schema_method
+    async def get_diff(
+        self,
+        artifact_id: str = PydanticField(
+            ...,
+            description="Git artifact identifier."
+        ),
+        base: str = PydanticField(
+            ...,
+            description="Base ref for comparison: branch name, tag, or commit SHA."
+        ),
+        head: str = PydanticField(
+            ...,
+            description="Head ref for comparison: branch name, tag, or commit SHA."
+        ),
+        include_content: bool = PydanticField(
+            False,
+            description="Include full file content (old/new) for changed files. Can be large."
+        ),
+        path_filter: Optional[str] = PydanticField(
+            None,
+            description="Restrict diff to files matching this path prefix (e.g., 'src/')."
+        ),
+        context: Optional[dict] = PydanticField(None, description="Auto-provided context."),
+    ) -> Dict[str, Any]:
+        """Compute diff between two git refs. Returns structured data optimized for AI agents.
+
+        Returns:
+            Dict with base_sha, head_sha, files (list of file changes), and stats.
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.from_context(context)
+
+        session = await self._get_session(read_only=True)
+        try:
+            async with session.begin():
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "read", session
+                )
+                repo = await self._get_git_repo(artifact, parent_artifact)
+
+                from hypha.git.merge import resolve_ref_to_sha, compute_diff_async
+
+                base_sha = await resolve_ref_to_sha(repo, base)
+                head_sha = await resolve_ref_to_sha(repo, head)
+
+                return await compute_diff_async(
+                    repo, base_sha, head_sha,
+                    include_content=include_content,
+                    path_filter=path_filter,
+                )
+        except Exception:
+            raise
+        finally:
+            await session.close()
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Pull Request Operations
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _get_pr_store(self, artifact):
+        """Get the pull_requests dict from artifact config, initializing if needed."""
+        config = artifact.config or {}
+        if "pull_requests" not in config:
+            config["pull_requests"] = {"next_pr_number": 1, "prs": {}}
+            artifact.config = config
+        return config["pull_requests"]
+
+    @schema_method
+    async def create_pr(
+        self,
+        artifact_id: str = PydanticField(
+            ...,
+            description="Git artifact identifier."
+        ),
+        title: str = PydanticField(
+            ...,
+            description="PR title summarizing the changes."
+        ),
+        source_branch: str = PydanticField(
+            ...,
+            description="Branch containing the changes to merge."
+        ),
+        target_branch: str = PydanticField(
+            "main",
+            description="Branch to merge into. Defaults to 'main'."
+        ),
+        description: Optional[str] = PydanticField(
+            None,
+            description="Detailed description of changes, rationale, and context."
+        ),
+        context: Optional[dict] = PydanticField(None, description="Auto-provided context."),
+    ) -> Dict[str, Any]:
+        """Create a pull request for a git-storage artifact.
+
+        Returns:
+            Full PR object dict with pr_number, title, status, branches, etc.
+
+        Raises:
+            ValueError: If source branch doesn't exist or is same as target.
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.from_context(context)
+
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "edit", session
+                )
+                repo = await self._get_git_repo(artifact, parent_artifact)
+
+                if source_branch == target_branch:
+                    raise ValueError("Source and target branches must be different.")
+
+                # Verify both branches exist
+                refs = await repo.get_refs_async()
+                source_ref = f"refs/heads/{source_branch}".encode()
+                target_ref = f"refs/heads/{target_branch}".encode()
+
+                if source_ref not in refs:
+                    raise ValueError(f"Source branch '{source_branch}' does not exist.")
+                if target_ref not in refs:
+                    raise ValueError(f"Target branch '{target_branch}' does not exist.")
+
+                source_sha = refs[source_ref]
+                target_sha = refs[target_ref]
+
+                # Get PR store and allocate number
+                pr_store = self._get_pr_store(artifact)
+                pr_number = pr_store["next_pr_number"]
+                pr_store["next_pr_number"] = pr_number + 1
+
+                now = int(time.time())
+                pr_data = {
+                    "pr_number": pr_number,
+                    "title": title,
+                    "description": description,
+                    "source_branch": source_branch,
+                    "target_branch": target_branch,
+                    "source_sha": source_sha.decode() if isinstance(source_sha, bytes) else source_sha,
+                    "target_sha": target_sha.decode() if isinstance(target_sha, bytes) else target_sha,
+                    "status": "open",
+                    "created_by": user_info.id,
+                    "created_at": now,
+                    "updated_at": now,
+                    "merged_at": None,
+                    "closed_at": None,
+                    "merge_sha": None,
+                    "merge_type": None,
+                    "reviews": [],
+                }
+
+                pr_store["prs"][str(pr_number)] = pr_data
+                flag_modified(artifact, "config")
+                session.add(artifact)
+                await session.commit()
+
+                return pr_data
+        except Exception:
+            raise
+        finally:
+            await session.close()
+
+    @schema_method
+    async def get_pr(
+        self,
+        artifact_id: str = PydanticField(
+            ...,
+            description="Git artifact identifier."
+        ),
+        pr_number: int = PydanticField(
+            ...,
+            description="PR number."
+        ),
+        context: Optional[dict] = PydanticField(None, description="Auto-provided context."),
+    ) -> Dict[str, Any]:
+        """Get details of a pull request including reviews and current branch SHAs.
+
+        Returns:
+            Full PR object dict.
+
+        Raises:
+            KeyError: If PR not found.
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.from_context(context)
+
+        session = await self._get_session(read_only=True)
+        try:
+            async with session.begin():
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "read", session
+                )
+
+                config = artifact.config or {}
+                pr_store = config.get("pull_requests", {})
+                prs = pr_store.get("prs", {})
+                pr_key = str(pr_number)
+
+                if pr_key not in prs:
+                    raise KeyError(f"PR #{pr_number} not found.")
+
+                pr_data = prs[pr_key]
+
+                # Enrich with current branch SHAs if PR is open
+                if pr_data["status"] == "open":
+                    repo = await self._get_git_repo(artifact, parent_artifact)
+                    refs = await repo.get_refs_async()
+                    source_ref = f"refs/heads/{pr_data['source_branch']}".encode()
+                    target_ref = f"refs/heads/{pr_data['target_branch']}".encode()
+                    if source_ref in refs:
+                        pr_data["current_source_sha"] = refs[source_ref].decode() if isinstance(refs[source_ref], bytes) else refs[source_ref]
+                    if target_ref in refs:
+                        pr_data["current_target_sha"] = refs[target_ref].decode() if isinstance(refs[target_ref], bytes) else refs[target_ref]
+
+                return pr_data
+        except Exception:
+            raise
+        finally:
+            await session.close()
+
+    @schema_method
+    async def list_prs(
+        self,
+        artifact_id: str = PydanticField(
+            ...,
+            description="Git artifact identifier."
+        ),
+        status: Optional[str] = PydanticField(
+            None,
+            description="Filter by status: 'open', 'merged', 'closed'. None returns all."
+        ),
+        limit: int = PydanticField(50, description="Maximum PRs to return.", ge=1, le=200),
+        offset: int = PydanticField(0, description="Pagination offset.", ge=0),
+        context: Optional[dict] = PydanticField(None, description="Auto-provided context."),
+    ) -> List[Dict[str, Any]]:
+        """List pull requests for a git-storage artifact.
+
+        Returns:
+            List of PR summary dicts ordered by creation time (newest first).
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.from_context(context)
+
+        session = await self._get_session(read_only=True)
+        try:
+            async with session.begin():
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "read", session
+                )
+
+                config = artifact.config or {}
+                pr_store = config.get("pull_requests", {})
+                prs = pr_store.get("prs", {})
+
+                # Collect and filter
+                result = []
+                for pr_data in prs.values():
+                    if status is not None and pr_data.get("status") != status:
+                        continue
+                    result.append(pr_data)
+
+                # Sort by creation time, newest first
+                result.sort(key=lambda x: x.get("created_at", 0), reverse=True)
+
+                # Paginate
+                return result[offset:offset + limit]
+        except Exception:
+            raise
+        finally:
+            await session.close()
+
+    @schema_method
+    async def update_pr(
+        self,
+        artifact_id: str = PydanticField(
+            ...,
+            description="Git artifact identifier."
+        ),
+        pr_number: int = PydanticField(
+            ...,
+            description="PR number to update."
+        ),
+        title: Optional[str] = PydanticField(None, description="New title."),
+        description: Optional[str] = PydanticField(None, description="New description."),
+        context: Optional[dict] = PydanticField(None, description="Auto-provided context."),
+    ) -> Dict[str, Any]:
+        """Update a pull request's title or description. Only open PRs can be updated.
+
+        Returns:
+            Updated PR object dict.
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.from_context(context)
+
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "edit", session
+                )
+
+                pr_store = self._get_pr_store(artifact)
+                pr_key = str(pr_number)
+                if pr_key not in pr_store["prs"]:
+                    raise KeyError(f"PR #{pr_number} not found.")
+
+                pr_data = pr_store["prs"][pr_key]
+                if pr_data["status"] != "open":
+                    raise ValueError(f"Cannot update PR #{pr_number}: status is '{pr_data['status']}'.")
+
+                if title is not None:
+                    pr_data["title"] = title
+                if description is not None:
+                    pr_data["description"] = description
+                pr_data["updated_at"] = int(time.time())
+
+                flag_modified(artifact, "config")
+                session.add(artifact)
+                await session.commit()
+
+                return pr_data
+        except Exception:
+            raise
+        finally:
+            await session.close()
+
+    @schema_method
+    async def close_pr(
+        self,
+        artifact_id: str = PydanticField(
+            ...,
+            description="Git artifact identifier."
+        ),
+        pr_number: int = PydanticField(
+            ...,
+            description="PR number to close."
+        ),
+        comment: Optional[str] = PydanticField(
+            None,
+            description="Reason for closing."
+        ),
+        context: Optional[dict] = PydanticField(None, description="Auto-provided context."),
+    ) -> Dict[str, Any]:
+        """Close a pull request without merging.
+
+        Returns:
+            Updated PR object dict with status='closed'.
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.from_context(context)
+
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "edit", session
+                )
+
+                pr_store = self._get_pr_store(artifact)
+                pr_key = str(pr_number)
+                if pr_key not in pr_store["prs"]:
+                    raise KeyError(f"PR #{pr_number} not found.")
+
+                pr_data = pr_store["prs"][pr_key]
+                if pr_data["status"] != "open":
+                    raise ValueError(f"Cannot close PR #{pr_number}: status is '{pr_data['status']}'.")
+
+                now = int(time.time())
+                pr_data["status"] = "closed"
+                pr_data["closed_at"] = now
+                pr_data["updated_at"] = now
+                if comment:
+                    pr_data.setdefault("close_comment", comment)
+
+                flag_modified(artifact, "config")
+                session.add(artifact)
+                await session.commit()
+
+                return pr_data
+        except Exception:
+            raise
+        finally:
+            await session.close()
+
+    @schema_method
+    async def merge_pr(
+        self,
+        artifact_id: str = PydanticField(
+            ...,
+            description="Git artifact identifier."
+        ),
+        pr_number: int = PydanticField(
+            ...,
+            description="PR number to merge."
+        ),
+        merge_strategy: str = PydanticField(
+            "auto",
+            description="Merge strategy: 'auto' (fast-forward if possible, else 3-way merge), "
+                        "'fast-forward' (fail if not possible), 'merge' (always create merge commit)."
+        ),
+        comment: Optional[str] = PydanticField(
+            None,
+            description="Custom merge commit message. Defaults to 'Merge PR #N: {title}'."
+        ),
+        delete_branch: bool = PydanticField(
+            True,
+            description="Delete the source branch after successful merge."
+        ),
+        context: Optional[dict] = PydanticField(None, description="Auto-provided context."),
+    ) -> Dict[str, Any]:
+        """Merge a pull request.
+
+        Returns:
+            Dict with status, merge_sha, merge_type ('fast-forward' or 'merge'), artifact_id.
+
+        Raises:
+            ValueError: If PR not open, has conflicts, or fast-forward not possible when required.
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.from_context(context)
+
+        if merge_strategy not in ("auto", "fast-forward", "merge"):
+            raise ValueError(f"Invalid merge_strategy '{merge_strategy}'. Must be 'auto', 'fast-forward', or 'merge'.")
+
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "commit", session
+                )
+
+                pr_store = self._get_pr_store(artifact)
+                pr_key = str(pr_number)
+                if pr_key not in pr_store["prs"]:
+                    raise KeyError(f"PR #{pr_number} not found.")
+
+                pr_data = pr_store["prs"][pr_key]
+                if pr_data["status"] != "open":
+                    raise ValueError(f"Cannot merge PR #{pr_number}: status is '{pr_data['status']}'.")
+
+                repo = await self._get_git_repo(artifact, parent_artifact)
+
+                # Verify branches still exist
+                refs = await repo.get_refs_async()
+                source_ref = f"refs/heads/{pr_data['source_branch']}".encode()
+                target_ref = f"refs/heads/{pr_data['target_branch']}".encode()
+
+                if source_ref not in refs:
+                    raise ValueError(f"Source branch '{pr_data['source_branch']}' no longer exists.")
+                if target_ref not in refs:
+                    raise ValueError(f"Target branch '{pr_data['target_branch']}' no longer exists.")
+
+                # Perform the merge
+                from hypha.git.merge import perform_merge_async
+
+                merge_message = comment or f"Merge PR #{pr_number}: {pr_data['title']}"
+                author_name = getattr(user_info, "name", None) or user_info.id or "Anonymous"
+                author_email = getattr(user_info, "email", None) or "anonymous@hypha"
+
+                merge_result = await perform_merge_async(
+                    repo,
+                    target_branch=pr_data["target_branch"],
+                    source_branch=pr_data["source_branch"],
+                    strategy=merge_strategy,
+                    author_name=author_name,
+                    author_email=author_email,
+                    message=merge_message,
+                )
+
+                if merge_result["status"] == "conflict":
+                    return {
+                        "status": "conflict",
+                        "pr_number": pr_number,
+                        "conflicts": merge_result["conflicts"],
+                        "message": "Resolve conflicts by pushing commits to the source branch, then retry.",
+                    }
+
+                # Update PR metadata
+                now = int(time.time())
+                pr_data["status"] = "merged"
+                pr_data["merged_at"] = now
+                pr_data["updated_at"] = now
+                pr_data["merge_sha"] = merge_result.get("merge_sha")
+                pr_data["merge_type"] = merge_result.get("merge_type")
+
+                # Delete source branch if requested
+                if delete_branch:
+                    await repo.delete_ref_async(source_ref)
+                    pr_data["source_branch_deleted"] = True
+
+                flag_modified(artifact, "config")
+
+                # Update file count from target branch
+                target_sha_bytes = refs[target_ref]
+                # After merge, re-read to get updated ref
+                updated_refs = await repo.get_refs_async()
+                if target_ref in updated_refs:
+                    new_target_sha = updated_refs[target_ref]
+                    if not new_target_sha.startswith(b"ref: "):
+                        all_items = await repo.list_tree_async("", new_target_sha)
+                        artifact.file_count = len([i for i in all_items if i["type"] == "blob"])
+
+                session.add(artifact)
+                await session.commit()
+
+                return {
+                    "status": "merged",
+                    "pr_number": pr_number,
+                    "merge_sha": merge_result.get("merge_sha"),
+                    "merge_type": merge_result.get("merge_type"),
+                    "artifact_id": f"{artifact.workspace}/{artifact.alias}",
+                    "source_branch_deleted": delete_branch,
+                }
+        except Exception:
+            raise
+        finally:
+            await session.close()
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Pull Request Review Operations
+    # ──────────────────────────────────────────────────────────────────────
+
+    @schema_method
+    async def submit_review(
+        self,
+        artifact_id: str = PydanticField(
+            ...,
+            description="Git artifact identifier."
+        ),
+        pr_number: int = PydanticField(
+            ...,
+            description="PR number to review."
+        ),
+        verdict: str = PydanticField(
+            ...,
+            description="Review verdict: 'approve', 'request_changes', or 'comment'."
+        ),
+        comment: Optional[str] = PydanticField(
+            None,
+            description="Review comment explaining the verdict."
+        ),
+        context: Optional[dict] = PydanticField(None, description="Auto-provided context."),
+    ) -> Dict[str, Any]:
+        """Submit a review on a pull request. Only open PRs can be reviewed.
+
+        Returns:
+            Review object dict with review_id, verdict, comment, reviewer, created_at.
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.from_context(context)
+
+        if verdict not in ("approve", "request_changes", "comment"):
+            raise ValueError(f"Invalid verdict '{verdict}'. Must be 'approve', 'request_changes', or 'comment'.")
+
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "read", session
+                )
+
+                pr_store = self._get_pr_store(artifact)
+                pr_key = str(pr_number)
+                if pr_key not in pr_store["prs"]:
+                    raise KeyError(f"PR #{pr_number} not found.")
+
+                pr_data = pr_store["prs"][pr_key]
+                if pr_data["status"] != "open":
+                    raise ValueError(f"Cannot review PR #{pr_number}: status is '{pr_data['status']}'.")
+
+                now = int(time.time())
+                review_id = f"r_{uuid.uuid7().hex[:12]}"
+                review = {
+                    "review_id": review_id,
+                    "reviewer": user_info.id,
+                    "verdict": verdict,
+                    "comment": comment,
+                    "created_at": now,
+                }
+
+                pr_data.setdefault("reviews", []).append(review)
+                pr_data["updated_at"] = now
+
+                flag_modified(artifact, "config")
+                session.add(artifact)
+                await session.commit()
+
+                return review
+        except Exception:
+            raise
+        finally:
+            await session.close()
+
+    @schema_method
+    async def list_reviews(
+        self,
+        artifact_id: str = PydanticField(
+            ...,
+            description="Git artifact identifier."
+        ),
+        pr_number: int = PydanticField(
+            ...,
+            description="PR number."
+        ),
+        context: Optional[dict] = PydanticField(None, description="Auto-provided context."),
+    ) -> List[Dict[str, Any]]:
+        """List all reviews for a pull request, ordered by creation time.
+
+        Returns:
+            List of review dicts.
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.from_context(context)
+
+        session = await self._get_session(read_only=True)
+        try:
+            async with session.begin():
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "read", session
+                )
+
+                config = artifact.config or {}
+                pr_store = config.get("pull_requests", {})
+                prs = pr_store.get("prs", {})
+                pr_key = str(pr_number)
+
+                if pr_key not in prs:
+                    raise KeyError(f"PR #{pr_number} not found.")
+
+                reviews = prs[pr_key].get("reviews", [])
+                return sorted(reviews, key=lambda x: x.get("created_at", 0))
+        except Exception:
+            raise
+        finally:
+            await session.close()
+
     def get_artifact_service(self):
         """Return the artifact service definition."""
         return {
@@ -9650,4 +10573,20 @@ class ArtifactController:
             "set_secret": self.set_secret,
             "set_parent": self.set_parent,
             "set_download_weight": self.set_download_weight,
+            # Git branch operations
+            "create_branch": self.create_branch,
+            "delete_branch": self.delete_branch,
+            "list_branches": self.list_branches,
+            # Git diff
+            "get_diff": self.get_diff,
+            # Pull request operations
+            "create_pr": self.create_pr,
+            "get_pr": self.get_pr,
+            "list_prs": self.list_prs,
+            "update_pr": self.update_pr,
+            "close_pr": self.close_pr,
+            "merge_pr": self.merge_pr,
+            # PR review operations
+            "submit_review": self.submit_review,
+            "list_reviews": self.list_reviews,
         }
