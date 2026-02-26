@@ -3585,7 +3585,7 @@ class ArtifactController:
         """Get file content or directory listing from git staging area.
 
         For git storage, staged files are uploaded to:
-        {prefix}/{artifact.id}/staging/{file_path}
+        {prefix}/{artifact.id}/staging/{branch}/{file_path}
 
         Args:
             artifact: The artifact model instance
@@ -3603,6 +3603,11 @@ class ArtifactController:
         from fastapi.responses import Response, StreamingResponse
         import mimetypes
 
+        # Resolve the staging branch
+        config = artifact.config or {}
+        default_branch = config.get("git_default_branch", "main")
+        target_branch = resolve_staging_branch(artifact.staging, None, default_branch)
+
         # Normalize path
         path = path.strip("/") if path else ""
 
@@ -3616,7 +3621,7 @@ class ArtifactController:
                 # Check if it might be a file
                 staging_key = safe_join(
                     s3_config["prefix"],
-                    f"{artifact.id}/staging/{path}",
+                    f"{artifact.id}/staging/{target_branch}/{path}",
                 )
                 async with self._create_client_async(s3_config) as s3_client:
                     try:
@@ -3657,7 +3662,7 @@ class ArtifactController:
         # It's a file request - get file from staging area
         staging_key = safe_join(
             s3_config["prefix"],
-            f"{artifact.id}/staging/{path}",
+            f"{artifact.id}/staging/{target_branch}/{path}",
         )
 
         async with self._create_client_async(s3_config) as s3_client:
