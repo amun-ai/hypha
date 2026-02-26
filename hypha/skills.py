@@ -898,12 +898,13 @@ Comprehensive examples for workspace `{workspace}`.
 2. [Service Management](#service-examples)
 3. [Token & Permission Management](#token--permission-management)
 4. [Artifact Management](#artifact-examples)
-5. [S3 Storage Operations](#s3-storage-examples)
-6. [Server Applications](#server-app-examples)
-7. [MCP Integration](#mcp-integration-examples)
-8. [A2A Protocol](#a2a-agent-to-agent-examples)
-9. [Vector Search](#vector-search-examples)
-10. [Error Handling](#error-handling-examples)
+5. [Git Storage & Pull Requests](#git-storage--pull-request-examples)
+6. [S3 Storage Operations](#s3-storage-examples)
+7. [Server Applications](#server-app-examples)
+8. [MCP Integration](#mcp-integration-examples)
+9. [A2A Protocol](#a2a-agent-to-agent-examples)
+10. [Vector Search](#vector-search-examples)
+11. [Error Handling](#error-handling-examples)
 
 ---
 
@@ -1242,6 +1243,104 @@ async def main():
             path="config.json"
         )
         print(f"Config: {{content}}")
+```
+
+---
+
+## Git Storage & Pull Request Examples
+
+Git-storage artifacts provide full Git repository functionality backed by S3. The PR system enables
+multiple AI agents to collaborate on shared codebases through branches, diffs, reviews, and merges.
+
+### Create a Git Repository and Work with Branches
+
+```python
+async def main():
+    async with connect_to_server({{"server_url": "{server_url}"}}) as server:
+        svc = await server.get_service("public/artifact-manager")
+
+        # Create a git-storage artifact
+        await svc.create(
+            alias="my-repo",
+            manifest={{"name": "My Project"}},
+            config={{"storage": "git"}},
+        )
+
+        # Push initial files
+        await svc.edit("my-repo", stage=True)
+        await svc.write_file("my-repo", "README.md", "# My Project\\n")
+        await svc.write_file("my-repo", "src/main.py", "print('hello')\\n")
+        await svc.commit("my-repo", comment="Initial commit")
+
+        # Create a feature branch
+        await svc.create_branch("my-repo", branch="feature-auth")
+
+        # Write files to the feature branch
+        await svc.edit("my-repo", stage=True, branch="feature-auth")
+        await svc.write_file("my-repo", "src/auth.py", "import jwt\\n...")
+        await svc.commit("my-repo", comment="Add auth module", branch="feature-auth")
+
+        # List branches
+        branches = await svc.list_branches("my-repo")
+        for b in branches:
+            print(f"  {{b['name']}} ({{b['sha'][:8]}}) {{'[default]' if b.get('default') else ''}}")
+```
+
+### Pull Request Workflow (Create, Diff, Review, Merge)
+
+```python
+async def main():
+    async with connect_to_server({{"server_url": "{server_url}"}}) as server:
+        svc = await server.get_service("public/artifact-manager")
+
+        # Create a PR from feature branch to main
+        pr = await svc.create_pr(
+            "my-repo",
+            title="Add authentication module",
+            source_branch="feature-auth",
+            target_branch="main",
+            description="JWT-based auth with refresh tokens.",
+        )
+        print(f"PR #{{pr['pr_number']}} created")
+
+        # Get the structured diff
+        diff = await svc.get_diff("my-repo", base="main", head="feature-auth", include_content=True)
+        print(f"Files changed: {{diff['stats']['files_changed']}}")
+        for f in diff["files"]:
+            print(f"  {{f['status']:10s}} {{f['path']}}")
+
+        # Submit a review
+        await svc.submit_review("my-repo", pr["pr_number"], verdict="approve", comment="LGTM")
+
+        # Merge the PR (auto strategy: fast-forward if possible, else 3-way merge)
+        result = await svc.merge_pr("my-repo", pr["pr_number"])
+        print(f"Merged via {{result['merge_type']}}: {{result['merge_sha']}}")
+```
+
+### Handle Merge Conflicts
+
+```python
+async def main():
+    async with connect_to_server({{"server_url": "{server_url}"}}) as server:
+        svc = await server.get_service("public/artifact-manager")
+
+        # Attempt merge
+        result = await svc.merge_pr("my-repo", pr_number=3)
+
+        if result["status"] == "conflict":
+            for conflict in result["conflicts"]:
+                # Read both versions
+                ours = await svc.read_file("my-repo", conflict["path"], version="main")
+                theirs = await svc.read_file("my-repo", conflict["path"], version="feature-x")
+
+                # Resolve and push to source branch
+                resolved = resolve_conflict(ours["content"], theirs["content"])
+                await svc.edit("my-repo", stage=True, branch="feature-x")
+                await svc.write_file("my-repo", conflict["path"], resolved)
+                await svc.commit("my-repo", comment="Resolve conflict", branch="feature-x")
+
+            # Retry merge
+            result = await svc.merge_pr("my-repo", pr_number=3)
 ```
 
 ---
