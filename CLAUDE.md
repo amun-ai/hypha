@@ -625,6 +625,10 @@ When bumping the version (e.g., `0.21.44` -> `0.21.45`), search the entire proje
 
 **Process**: `grep -r "OLD_VERSION" .` to find all occurrences, replace each, then verify with `grep -r "OLD_VERSION" .` returning no results.
 
+### Upgrading hypha-rpc Dependency
+
+To upgrade hypha-rpc: first release it in `../hypha-rpc` (bump version in `javascript/package.json`, `python/pyproject.toml`, AND `python/hypha_rpc/VERSION`), then update `hypha/__init__.py`, `setup.py`, `requirements.txt` here and run `python3 scripts/upgrade_rpc_assets.py` to download JS static assets. Use `grep -r "OLD_VERSION"` to find all occurrences.
+
 ## Compound Engineering
 
 **Philosophy**: Maximize productivity through tight feedback loops and knowledge accumulation.

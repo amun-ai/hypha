@@ -1887,7 +1887,7 @@ class WorkspaceManager:
                         limit=1000,  # Reasonable limit for apps
                         stage=False,  # Only query committed artifacts, not staged
                         context=app_context
-                    )
+                    ) or []  # Guard against None return
                 except KeyError as e:
                     logger.debug(f"KeyError checking applications collection: {e}")
                     all_artifacts = []

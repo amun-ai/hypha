@@ -2747,12 +2747,13 @@ class HTTPStreamingRPCConnection {
   async open() {
     console.info(`Opening HTTP streaming connection to ${this._server_url}`);
 
-    // Build stream URL
-    // At this point, _workspace should be set from: user config, or token extraction.
-    // For anonymous users (no token, no workspace), fall back to "public" which the
-    // server redirects to the user's own workspace via connection_info.
-    const ws = this._workspace || "public";
-    const stream_url = `${this._server_url}/${ws}/rpc?client_id=${this._client_id}`;
+    // Build stream URL using the workspace-less /rpc endpoint.
+    // Workspace is passed as a query parameter when available.
+    // On first connection, workspace may be null (server assigns one via connection_info).
+    let stream_url = `${this._server_url}/rpc?client_id=${this._client_id}`;
+    if (this._workspace) {
+      stream_url += `&workspace=${encodeURIComponent(this._workspace)}`;
+    }
 
     // Start streaming in background
     this._startStreamLoop(stream_url);
@@ -2838,9 +2839,10 @@ class HTTPStreamingRPCConnection {
     if (this._closed) return;
     try {
       // After open(), _workspace is always set from connection_info
-      const ws = this._workspace;
-      if (!ws) return;
-      const url = `${this._server_url}/${ws}/rpc?client_id=${this._client_id}`;
+      let url = `${this._server_url}/rpc?client_id=${this._client_id}`;
+      if (this._workspace) {
+        url += `&workspace=${encodeURIComponent(this._workspace)}`;
+      }
       const body = (0,_msgpack_msgpack__WEBPACK_IMPORTED_MODULE_3__.encode)({ type: "refresh_token" });
       const response = await fetch(url, {
         method: "POST",
@@ -2848,7 +2850,7 @@ class HTTPStreamingRPCConnection {
         body: body,
       });
       if (response.ok) {
-        console.debug("Token refresh requested successfully");
+        // console.debug("Token refresh requested successfully");
       } else {
         console.warn(`Token refresh request failed: ${response.status}`);
       }
@@ -2874,9 +2876,12 @@ class HTTPStreamingRPCConnection {
 
     while (!this._closed && retry < MAX_RETRY) {
       try {
-        // Update URL with current workspace (set from connection_info after initial open)
-        const ws = this._workspace || "public";
-        let stream_url = `${this._server_url}/${ws}/rpc?client_id=${this._client_id}`;
+        // Update URL with current workspace (set from connection_info after initial open).
+        // Workspace is passed as a query parameter when available.
+        let stream_url = `${this._server_url}/rpc?client_id=${this._client_id}`;
+        if (this._workspace) {
+          stream_url += `&workspace=${encodeURIComponent(this._workspace)}`;
+        }
         if (this._reconnection_token) {
           stream_url += `&reconnection_token=${encodeURIComponent(this._reconnection_token)}`;
         }
@@ -3111,12 +3116,12 @@ class HTTPStreamingRPCConnection {
       throw new Error("Connection is closed");
     }
 
-    // Build POST URL - workspace is always set after open() from connection_info
-    const ws = this._workspace;
-    if (!ws) {
+    // Build POST URL using the workspace-less /rpc endpoint.
+    // Workspace is passed as a query parameter when available.
+    if (!this._workspace) {
       throw new Error("Workspace not set - connection not established");
     }
-    let post_url = `${this._server_url}/${ws}/rpc?client_id=${this._client_id}`;
+    let post_url = `${this._server_url}/rpc?client_id=${this._client_id}&workspace=${encodeURIComponent(this._workspace)}`;
 
     // Ensure data is Uint8Array
     const body = data instanceof Uint8Array ? data : new Uint8Array(data);
@@ -3255,6 +3260,7 @@ async function _connectToServerHTTP(config) {
     client_id: clientId,
     workspace,
     default_context: { connection_type: "http_streaming" },
+    silent: config.silent || false,
     name: config.name,
     method_timeout: config.method_timeout,
     app_id: config.app_id,
@@ -3271,6 +3277,33 @@ async function _connectToServerHTTP(config) {
     case_conversion: "camel",
   });
   wm.rpc = rpc;
+
+  // Auto-refresh workspace manager proxy after reconnection.
+  // See websocket-client.js for detailed explanation.
+  let isInitialRefresh = true;
+  rpc.on("manager_refreshed", async ({ manager: internalManager }) => {
+    if (isInitialRefresh) {
+      isInitialRefresh = false;
+      return;
+    }
+    try {
+      const freshWm = internalManager;
+      for (const key of Object.keys(freshWm)) {
+        if (typeof freshWm[key] === "function") {
+          wm[key] = freshWm[key];
+        }
+      }
+      console.info(
+        "Workspace manager proxy refreshed after reconnection (new manager_id:",
+        rpc._connection?.manager_id + ")",
+      );
+    } catch (err) {
+      console.warn(
+        "Failed to refresh workspace manager after reconnection:",
+        err,
+      );
+    }
+  });
 
   // Add standard methods
   wm.disconnect = (0,_utils_schema_js__WEBPACK_IMPORTED_MODULE_2__.schemaFunction)(rpc.disconnect.bind(rpc), {
@@ -3796,6 +3829,8 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
     };
     // Index: target_id -> Set of top-level session keys for fast cleanup
     this._targetIdIndex = {};
+    // Track last known manager_id for stale call rejection on reconnection
+    this._last_manager_id = null;
 
     // Encryption support (X25519 ECDH + AES-256-GCM)
     this._encryption_enabled = false;
@@ -3842,10 +3877,10 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
           reasonStr.includes("Client disconnected") ||
           reasonStr.includes("RPC connection closed")
         ) {
-          console.debug(
-            "Ignoring expected disconnection/method error:",
-            reason,
-          );
+          // console.debug(
+            // "Ignoring expected disconnection/method error:",
+            // reason,
+          // );
           event.preventDefault();
           return;
         }
@@ -3902,6 +3937,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       this._boundHandleError = console.error;
       this.on("method", this._boundHandleMethod);
       this.on("error", this._boundHandleError);
+      this.on("peer_not_found", this._handlePeerNotFound.bind(this));
 
       (0,_utils_index_js__WEBPACK_IMPORTED_MODULE_0__.assert)(connection.emit_message && connection.on_message);
       (0,_utils_index_js__WEBPACK_IMPORTED_MODULE_0__.assert)(
@@ -3913,13 +3949,38 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       this._connection = connection;
       const onConnected = async (connectionInfo) => {
         if (!this._silent && this._connection.manager_id) {
-          console.debug("Connection established, reporting services...");
+          // Immediately reject all pending calls targeting the old manager.
+          // After server restart, the manager_id changes. Any in-flight RPC
+          // calls to the old manager will never get a response (the server
+          // silently drops messages to unknown */{id} targets). Rejecting
+          // them here avoids waiting for the full method timeout (~10-30s).
+          const currentManagerId = this._connection.manager_id;
+          if (
+            this._last_manager_id &&
+            this._last_manager_id !== currentManagerId
+          ) {
+            const oldTarget = `*/${this._last_manager_id}`;
+            const cleaned = this._cleanupSessionsForClient(oldTarget);
+            if (cleaned > 0) {
+              console.info(
+                `Rejected ${cleaned} stale call(s) to old manager ${this._last_manager_id}`,
+              );
+            }
+          }
+          this._last_manager_id = currentManagerId;
+
           try {
-            // Retry getting manager service with exponential backoff
+            // Get fresh manager service (one RPC roundtrip, ~50-100ms)
             const manager = await this.get_manager_service({
               timeout: 20,
               case_conversion: "camel",
             });
+
+            // Fire manager_refreshed IMMEDIATELY — before service re-registration.
+            // This allows connectToServer's wm proxy to be updated as soon as
+            // possible, minimizing the window where stale methods exist.
+            this._fire("manager_refreshed", { manager });
+
             const services = Object.values(this._services);
             const servicesCount = services.length;
             let registeredCount = 0;
@@ -3938,9 +3999,6 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
                   `Timeout registering service ${service.id || "unknown"}`,
                 );
                 registeredCount++;
-                console.debug(
-                  `Successfully registered service: ${service.id || "unknown"}`,
-                );
               } catch (serviceError) {
                 failedServices.push(service.id || "unknown");
                 if (
@@ -3981,23 +4039,51 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
                 manager.subscribe &&
                 typeof manager.subscribe === "function"
               ) {
-                console.debug("Subscribing to client_disconnected events");
+                // Clean up previous subscription and handler to prevent
+                // duplicates on reconnection (listener leak fix)
+                if (this._clientDisconnectedSubscription) {
+                  try {
+                    if (
+                      typeof this._clientDisconnectedSubscription.unsubscribe ===
+                      "function"
+                    ) {
+                      this._clientDisconnectedSubscription.unsubscribe();
+                    }
+                  } catch (e) {
+                    // console.debug(`Error unsubscribing old client_disconnected: ${e}`);
+                  }
+                  this._clientDisconnectedSubscription = null;
+                }
+                if (this._boundHandleClientDisconnected) {
+                  try {
+                    this.off(
+                      "client_disconnected",
+                      this._boundHandleClientDisconnected,
+                    );
+                  } catch (e) {
+                    // Handler may not be in list if previous setup was interrupted
+                  }
+                  this._boundHandleClientDisconnected = null;
+                }
 
-                const handleClientDisconnected = async (event) => {
+                // console.debug("Subscribing to client_disconnected events");
+
+                // Store handler at instance level so it can be removed later
+                this._boundHandleClientDisconnected = async (event) => {
                   // The client ID is in event.data.id based on the event structure
                   const clientId = event.data?.id || event.client;
                   const workspace = event.data?.workspace;
                   if (clientId && workspace) {
                     // Construct the full client path with workspace prefix
                     const fullClientId = `${workspace}/${clientId}`;
-                    console.debug(
-                      `Client ${fullClientId} disconnected, cleaning up sessions`,
-                    );
+                    // console.debug(
+                      // `Client ${fullClientId} disconnected, cleaning up sessions`,
+                    // );
                     await this._handleClientDisconnected(fullClientId);
                   } else if (clientId) {
-                    console.debug(
-                      `Client ${clientId} disconnected, cleaning up sessions`,
-                    );
+                    // console.debug(
+                      // `Client ${clientId} disconnected, cleaning up sessions`,
+                    // );
                     await this._handleClientDisconnected(clientId);
                   }
                 };
@@ -4010,21 +4096,24 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
                 );
 
                 // Then register the local event handler
-                this.on("client_disconnected", handleClientDisconnected);
+                this.on(
+                  "client_disconnected",
+                  this._boundHandleClientDisconnected,
+                );
 
-                console.debug(
-                  "Successfully subscribed to client_disconnected events",
-                );
+                // console.debug(
+                  // "Successfully subscribed to client_disconnected events",
+                // );
               } else {
-                console.debug(
-                  "Manager does not support subscribe method, skipping client_disconnected handling",
-                );
+                // console.debug(
+                  // "Manager does not support subscribe method, skipping client_disconnected handling",
+                // );
                 this._clientDisconnectedSubscription = null;
               }
             } catch (subscribeError) {
-              console.debug(
-                `Failed to subscribe to client_disconnected events: ${subscribeError}`,
-              );
+              // console.debug(
+                // `Failed to subscribe to client_disconnected events: ${subscribeError}`,
+              // );
               this._clientDisconnectedSubscription = null;
             }
           } catch (managerError) {
@@ -4321,7 +4410,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       this._boundHandleError = null;
     }
 
-    // Clean up client_disconnected subscription
+    // Clean up client_disconnected subscription and handler
     if (this._clientDisconnectedSubscription) {
       try {
         if (
@@ -4330,10 +4419,13 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
           this._clientDisconnectedSubscription.unsubscribe();
         }
       } catch (e) {
-        console.debug(`Error unsubscribing client_disconnected: ${e}`);
+        // console.debug(`Error unsubscribing client_disconnected: ${e}`);
       }
-      this.off("client_disconnected");
       this._clientDisconnectedSubscription = null;
+    }
+    if (this._boundHandleClientDisconnected) {
+      this.off("client_disconnected", this._boundHandleClientDisconnected);
+      this._boundHandleClientDisconnected = null;
     }
 
     // Remove the global unhandled rejection handler
@@ -4350,13 +4442,13 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
           try {
             task.cancel();
           } catch (e) {
-            console.debug(`Error canceling background task: ${e}`);
+            // console.debug(`Error canceling background task: ${e}`);
           }
         }
       }
       this._background_tasks.clear();
     } catch (e) {
-      console.debug(`Error cleaning up background tasks: ${e}`);
+      // console.debug(`Error cleaning up background tasks: ${e}`);
     }
 
     // Clear session sweep interval
@@ -4369,11 +4461,11 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
     try {
       this._connection = null;
       this._emit_message = function () {
-        console.debug("RPC connection closed, ignoring message");
+        // console.debug("RPC connection closed, ignoring message");
         return Promise.reject(new Error("Connection is closed"));
       };
     } catch (e) {
-      console.debug(`Error during connection cleanup: ${e}`);
+      // console.debug(`Error during connection cleanup: ${e}`);
     }
 
     this._fire("disconnected");
@@ -4381,15 +4473,15 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
 
   async _handleClientDisconnected(clientId) {
     try {
-      console.debug(`Handling disconnection for client: ${clientId}`);
+      // console.debug(`Handling disconnection for client: ${clientId}`);
 
       // Clean up all sessions for the disconnected client
       const sessionsCleaned = this._cleanupSessionsForClient(clientId);
 
       if (sessionsCleaned > 0) {
-        console.debug(
-          `Cleaned up ${sessionsCleaned} sessions for disconnected client: ${clientId}`,
-        );
+        // console.debug(
+          // `Cleaned up ${sessionsCleaned} sessions for disconnected client: ${clientId}`,
+        // );
       }
 
       // Fire an event to notify about the client disconnection
@@ -4401,6 +4493,35 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       console.error(
         `Error handling client disconnection for ${clientId}: ${e}`,
       );
+    }
+  }
+
+  _handlePeerNotFound(data) {
+    /**
+     * Handle server notification that target peer is not connected.
+     *
+     * When the server detects that an RPC message targets a disconnected
+     * client, it sends back a 'peer_not_found' message instead of silently
+     * dropping it. This allows pending calls to fail immediately.
+     */
+    const sessionId = data.session;
+    const peerId = data.peer_id || data.from || "unknown";
+    const errorMsg = data.error || `Peer ${peerId} is not connected`;
+    // console.debug(`Peer not found: ${peerId} (session=${sessionId})`);
+
+    // Reject the specific pending call identified by sessionId
+    if (sessionId) {
+      const session = this._object_store[sessionId];
+      if (session && typeof session === "object") {
+        this._cleanupSessionEntry(session, errorMsg);
+        delete this._object_store[sessionId];
+        this._removeFromTargetIdIndex(sessionId);
+      }
+    }
+
+    // Also clean up all other sessions targeting this peer
+    if (peerId) {
+      this._cleanupSessionsForClient(peerId);
     }
   }
 
@@ -4438,7 +4559,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       try {
         session.reject(new Error(rejectReason));
       } catch (e) {
-        console.debug(`Error rejecting session: ${e}`);
+        // console.debug(`Error rejecting session: ${e}`);
       }
     }
     if (session.heartbeat_task) {
@@ -4477,7 +4598,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       this._cleanupSessionEntry(session, reason);
       delete this._object_store[sessionKey];
       sessionsCleaned++;
-      console.debug(`Cleaned up session: ${sessionKey}`);
+      // console.debug(`Cleaned up session: ${sessionKey}`);
     }
 
     delete this._targetIdIndex[clientId];
@@ -4513,7 +4634,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
 
   _cleanupOnDisconnect() {
     try {
-      console.debug("Cleaning up all sessions due to local RPC disconnection");
+      // console.debug("Cleaning up all sessions due to local RPC disconnection");
 
       const keysToDelete = [];
       for (const key of Object.keys(this._object_store)) {
@@ -4543,7 +4664,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       try {
         await connection.disconnect();
       } catch (e) {
-        console.debug(`Error disconnecting underlying connection: ${e}`);
+        // console.debug(`Error disconnecting underlying connection: ${e}`);
       }
     }
   }
@@ -5037,14 +5158,14 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
      * Clean session management - all logic in one place.
      */
     if (!session_id) {
-      console.debug("Cannot cleanup session: session_id is empty");
+      // console.debug("Cannot cleanup session: session_id is empty");
       return;
     }
 
     try {
       const store = this._get_session_store(session_id, false);
       if (!store) {
-        console.debug(`Session ${session_id} not found for cleanup`);
+        // console.debug(`Session ${session_id} not found for cleanup`);
         return;
       }
 
@@ -5062,9 +5183,9 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
               promise_manager.settle();
             }
             should_cleanup = true;
-            console.debug(
-              `Promise session ${session_id} settled and marked for cleanup`,
-            );
+            // console.debug(
+              // `Promise session ${session_id} settled and marked for cleanup`,
+            // );
           }
         } catch (e) {
           console.warn(
@@ -5082,9 +5203,9 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
           Object.keys(store._callbacks).includes(callback_name)
         ) {
           should_cleanup = true;
-          console.debug(
-            `Regular session ${session_id} marked for cleanup after ${callback_name}`,
-          );
+          // console.debug(
+            // `Regular session ${session_id} marked for cleanup after ${callback_name}`,
+          // );
         }
       }
 
@@ -5106,7 +5227,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
 
       const store = this._get_session_store(session_id, false);
       if (!store) {
-        console.debug(`Session ${session_id} already cleaned up`);
+        // console.debug(`Session ${session_id} already cleaned up`);
         return;
       }
 
@@ -5148,9 +5269,9 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       for (let i = 0; i < levels.length - 1; i++) {
         const level = levels[i];
         if (!current_store[level]) {
-          console.debug(
-            `Session path ${session_id} not found at level ${level}`,
-          );
+          // console.debug(
+            // `Session path ${session_id} not found at level ${level}`,
+          // );
           return;
         }
         current_store = current_store[level];
@@ -5160,7 +5281,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       const final_key = levels[levels.length - 1];
       if (current_store[final_key]) {
         delete current_store[final_key];
-        console.debug(`Cleaned up session ${session_id}`);
+        // console.debug(`Cleaned up session ${session_id}`);
 
         // Clean up empty parent containers
         this._cleanup_empty_containers(levels.slice(0, -1));
@@ -5198,9 +5319,9 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
           Object.keys(container).length === 0
         ) {
           delete current_store[container_key];
-          console.debug(
-            `Cleaned up empty container at depth ${depth}: ${path_levels.slice(0, depth + 1).join(".")}`,
-          );
+          // console.debug(
+            // `Cleaned up empty container at depth ${depth}: ${path_levels.slice(0, depth + 1).join(".")}`,
+          // );
         } else {
           // Container is not empty, stop cleanup
           break;
@@ -5275,7 +5396,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
      * Force cleanup all sessions (for testing purposes).
      */
     if (!this._object_store) {
-      console.debug("Force cleaning up 0 sessions");
+      // console.debug("Force cleaning up 0 sessions");
       return;
     }
 
@@ -5305,7 +5426,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
     // Clear the target_id index since all sessions are removed
     this._targetIdIndex = {};
 
-    console.debug(`Force cleaning up ${cleaned_count} sessions`);
+    // console.debug(`Force cleaning up ${cleaned_count} sessions`);
   }
 
   _sweepStaleSessions() {
@@ -5341,7 +5462,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       }
     }
     if (swept > 0) {
-      console.debug(`Swept ${swept} stale session(s)`);
+      // console.debug(`Swept ${swept} stale session(s)`);
     }
   }
 
@@ -5363,7 +5484,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       },
       settle: () => {
         // Promise is settled (resolved or rejected)
-        console.debug("Promise settled");
+        // console.debug("Promise settled");
       },
     };
   }
@@ -5634,9 +5755,9 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
                 // Clean up target_id index before deleting the session
                 self._removeFromTargetIdIndex(local_session_id);
                 delete self._object_store[local_session_id];
-                console.debug(
-                  `Cleaned up session ${local_session_id} after timeout`,
-                );
+                // console.debug(
+                  // `Cleaned up session ${local_session_id} after timeout`,
+                // );
               }
             };
 
@@ -5919,9 +6040,9 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       } catch (e) {
         // Clean promise method detection - TYPE-BASED, not string-based
         if (this._is_promise_method_call(data["method"])) {
-          console.debug(
-            `Promise method ${data["method"]} not available (detected by session type), ignoring: ${method_name}`,
-          );
+          // console.debug(
+            // `Promise method ${data["method"]} not available (detected by session type), ignoring: ${method_name}`,
+          // );
           return;
         }
 
@@ -5931,18 +6052,18 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
           const session_id = method_parts[0];
           // Check if the session exists but the specific method doesn't
           if (session_id in this._object_store) {
-            console.debug(
-              `Session ${session_id} exists but method ${data["method"]} not found, likely expired callback: ${method_name}`,
-            );
+            // console.debug(
+              // `Session ${session_id} exists but method ${data["method"]} not found, likely expired callback: ${method_name}`,
+            // );
             // For expired callbacks, don't throw an exception, just log and return
             if (typeof reject === "function") {
               reject(new Error(`Method expired or not found: ${method_name}`));
             }
             return;
           } else {
-            console.debug(
-              `Session ${session_id} not found for method ${data["method"]}, likely cleaned up: ${method_name}`,
-            );
+            // console.debug(
+              // `Session ${session_id} not found for method ${data["method"]}, likely cleaned up: ${method_name}`,
+            // );
             // For cleaned up sessions, just log and return without throwing
             if (typeof reject === "function") {
               reject(new Error(`Session not found: ${method_name}`));
@@ -5951,9 +6072,9 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
           }
         }
 
-        console.debug(
-          `Failed to find method ${method_name} at ${this._client_id}`,
-        );
+        // console.debug(
+          // `Failed to find method ${method_name} at ${this._client_id}`,
+        // );
         const error = new Error(
           `Method not found: ${method_name} at ${this._client_id}`,
         );
@@ -7615,6 +7736,7 @@ async function _setupRPC(config) {
     workspace: config.workspace,
     app_id: config.app_id,
     long_message_chunk_size: config.long_message_chunk_size,
+    silent: config.silent || false,
   });
   return rpc;
 }
@@ -9895,6 +10017,7 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony export */   HTTPStreamingRPCConnection: () => (/* reexport safe */ _http_client_js__WEBPACK_IMPORTED_MODULE_5__.HTTPStreamingRPCConnection),
 /* harmony export */   LocalWebSocket: () => (/* binding */ LocalWebSocket),
 /* harmony export */   RPC: () => (/* reexport safe */ _rpc_js__WEBPACK_IMPORTED_MODULE_0__.RPC),
+/* harmony export */   WebsocketRPCConnection: () => (/* binding */ WebsocketRPCConnection),
 /* harmony export */   connectToServer: () => (/* binding */ connectToServer),
 /* harmony export */   connectToServerHTTP: () => (/* reexport safe */ _http_client_js__WEBPACK_IMPORTED_MODULE_5__.connectToServerHTTP),
 /* harmony export */   decryptPayload: () => (/* reexport safe */ _crypto_js__WEBPACK_IMPORTED_MODULE_1__.decryptPayload),
@@ -9950,6 +10073,7 @@ class WebsocketRPCConnection {
     WebSocketClass = null,
     token_refresh_interval = 2 * 60 * 60,
     additional_headers = null,
+    ping_interval = 30,
   ) {
     (0,_utils_index_js__WEBPACK_IMPORTED_MODULE_2__.assert)(server_url && client_id, "server_url and client_id are required");
     this._server_url = server_url;
@@ -9970,9 +10094,12 @@ class WebsocketRPCConnection {
     this._token_refresh_interval = token_refresh_interval;
     this.manager_id = null;
     this._refresh_token_task = null;
+    this._ping_task = null;
+    this._ping_interval = ping_interval;
     this._reconnect_timeouts = new Set(); // Track reconnection timeouts
     this._additional_headers = additional_headers;
     this._reconnecting = false; // Mutex to prevent overlapping reconnection attempts
+    this._closedDuringReconnect = false; // Flag for close events during reconnection
     this._disconnectedNotified = false;
   }
 
@@ -9990,6 +10117,12 @@ class WebsocketRPCConnection {
     if (this._refresh_token_task) {
       clearInterval(this._refresh_token_task);
       this._refresh_token_task = null;
+    }
+
+    // Clear ping keepalive interval
+    if (this._ping_task) {
+      clearInterval(this._ping_task);
+      this._ping_task = null;
     }
 
     // Clear all reconnection timeouts
@@ -10074,6 +10207,10 @@ class WebsocketRPCConnection {
     return new Promise((resolve, reject) => {
       this._websocket.onmessage = (event) => {
         const data = event.data;
+        if (typeof data !== "string") {
+          // Binary message received before connection info, ignore it
+          return;
+        }
         const first_message = JSON.parse(data);
         if (first_message.type == "connection_info") {
           this.connection_info = first_message;
@@ -10164,6 +10301,19 @@ class WebsocketRPCConnection {
           }, this._token_refresh_interval * 1000);
         }, 2000);
       }
+      // Start periodic ping to keep the connection alive.
+      // Browser WebSocket API doesn't support protocol-level ping frames,
+      // so we send application-level {"type": "ping"} messages that the
+      // Hypha server recognizes and responds to with {"type": "pong"}.
+      // Without this, idle connections are closed by the server's
+      // HYPHA_WS_IDLE_TIMEOUT (default 600s).
+      if (this._ping_interval > 0) {
+        this._ping_task = setInterval(() => {
+          if (!this._closed) {
+            this._send_ping();
+          }
+        }, this._ping_interval * 1000);
+      }
       // Listen to messages from the server
       this._enable_reconnect = true;
       this._closed = false;
@@ -10171,10 +10321,10 @@ class WebsocketRPCConnection {
       this._websocket.onmessage = (event) => {
         if (typeof event.data === "string") {
           const parsedData = JSON.parse(event.data);
-          // Check if the message is a reconnection token
           if (parsedData.type === "reconnection_token") {
             this._reconnection_token = parsedData.reconnection_token;
-            // console.log("Reconnection token received");
+          } else if (parsedData.type === "pong") {
+            // Keepalive response, no action needed
           } else {
             console.log("Received message from the server:", parsedData);
           }
@@ -10192,7 +10342,9 @@ class WebsocketRPCConnection {
       this._websocket.onclose = this._handle_close.bind(this);
 
       if (this._handle_connected) {
-        this._handle_connected(this.connection_info);
+        // Await async callbacks so errors (e.g. service re-registration
+        // failures) propagate instead of becoming unhandled rejections.
+        await this._handle_connected(this.connection_info);
       }
       return this.connection_info;
     } catch (error) {
@@ -10204,6 +10356,12 @@ class WebsocketRPCConnection {
         error,
       );
       throw error;
+    }
+  }
+
+  _send_ping() {
+    if (this._websocket && this._websocket.readyState === WebSocket.OPEN) {
+      this._websocket.send(JSON.stringify({ type: "ping" }));
     }
   }
 
@@ -10252,9 +10410,10 @@ class WebsocketRPCConnection {
         // Notify the RPC layer immediately so it can reject pending calls
         this._notifyDisconnected(event.reason);
 
-        // Prevent overlapping reconnection attempts
+        // If a reconnection is already in progress, signal it so the
+        // reconnect loop can detect that the newly-opened socket died and retry.
         if (this._reconnecting) {
-          console.debug("Reconnection already in progress, skipping");
+          this._closedDuringReconnect = true;
           return;
         }
         this._reconnecting = true;
@@ -10276,6 +10435,10 @@ class WebsocketRPCConnection {
             console.warn(
               `Reconnecting to ${this._server_url.split("?")[0]} (attempt #${retry})`,
             );
+            // Reset the flag before each attempt so we can detect new close
+            // events that arrive while open() and the settle period run.
+            this._closedDuringReconnect = false;
+
             // Open the connection, this will trigger the on_connected callback
             await this.open();
 
@@ -10283,6 +10446,22 @@ class WebsocketRPCConnection {
             // This gives time for the on_connected callback to complete
             // which includes re-registering all services to the server
             await new Promise((resolve) => setTimeout(resolve, 500));
+
+            // Check if the WebSocket died during the settle period.
+            // This handles the race where _handle_close fires while
+            // _reconnecting is true and sets _closedDuringReconnect.
+            if (
+              this._closedDuringReconnect ||
+              !this._websocket ||
+              this._websocket.readyState !== WebSocket.OPEN
+            ) {
+              console.warn(
+                "WebSocket closed during reconnection settle period, retrying...",
+              );
+              this._closedDuringReconnect = false;
+              // Fall through to the retry logic below
+              throw new Error("Connection lost during reconnection settle");
+            }
 
             console.warn(
               `Successfully reconnected to server ${this._server_url} (services re-registered)`,
@@ -10306,18 +10485,19 @@ class WebsocketRPCConnection {
             }
 
             // Log specific error types for better debugging
-            if (e.name === "NetworkError" || e.message.includes("network")) {
-              console.error(`Network error during reconnection: ${e.message}`);
+            // Convert to string first to safely handle non-standard error objects
+            const errStr = `${e}`;
+            if (errStr.includes("NetworkError") || errStr.includes("network")) {
+              console.error(`Network error during reconnection: ${errStr}`);
             } else if (
-              e.name === "TimeoutError" ||
-              e.message.includes("timeout")
+              errStr.includes("TimeoutError") || errStr.includes("timeout")
             ) {
               console.error(
-                `Connection timeout during reconnection: ${e.message}`,
+                `Connection timeout during reconnection: ${errStr}`,
               );
             } else {
               console.error(
-                `Unexpected error during reconnection: ${e.message}`,
+                `Unexpected error during reconnection: ${errStr}`,
               );
             }
 
@@ -10327,9 +10507,7 @@ class WebsocketRPCConnection {
             const jitter = (Math.random() * 2 - 1) * maxJitter * delay;
             const finalDelay = Math.max(100, delay + jitter);
 
-            console.debug(
-              `Waiting ${(finalDelay / 1000).toFixed(2)}s before next reconnection attempt`,
-            );
+            // console.debug(`Waiting ${(finalDelay / 1000).toFixed(2)}s before next reconnection attempt`);
 
             // Track the reconnection timeout to prevent leaks
             const timeoutId = setTimeout(async () => {
@@ -10394,6 +10572,7 @@ class WebsocketRPCConnection {
   disconnect(reason) {
     this._closed = true;
     this._reconnecting = false;
+    this._closedDuringReconnect = false;
     // Ensure websocket is closed if it exists and is not already closed or closing
     if (
       this._websocket &&
@@ -10623,6 +10802,7 @@ async function connectToServer(config) {
     config.WebSocketClass,
     config.token_refresh_interval,
     config.additional_headers,
+    config.ping_interval,
   );
   const connection_info = await connection.open();
   (0,_utils_index_js__WEBPACK_IMPORTED_MODULE_2__.assert)(
@@ -10662,6 +10842,7 @@ async function connectToServer(config) {
     client_id: clientId,
     workspace,
     default_context: { connection_type: "websocket" },
+    silent: config.silent || false,
     name: config.name,
     method_timeout: config.method_timeout,
     app_id: config.app_id,
@@ -10678,6 +10859,56 @@ async function connectToServer(config) {
     kwargs_expansion: config.kwargs_expansion || false,
   });
   wm.rpc = rpc;
+
+  // Auto-refresh workspace manager proxy after reconnection.
+  // When the server restarts, it assigns a new manager_id. The wm proxy
+  // returned to the caller has methods bound to the old manager_id.
+  //
+  // The RPC layer fires "manager_refreshed" IMMEDIATELY after getting the
+  // fresh manager service — before service re-registration. This minimizes
+  // the window where stale methods exist (~100ms instead of ~2-3s).
+  //
+  // Combined with the RPC layer's immediate rejection of pending calls to
+  // the old manager_id, recovery is near-instant.
+  let isInitialRefresh = true;
+  rpc.on("manager_refreshed", async ({ manager: internalManager }) => {
+    if (isInitialRefresh) {
+      isInitialRefresh = false;
+      return; // Skip the first event (initial connection, wm is already fresh)
+    }
+    try {
+      let freshWm;
+      if (config.kwargs_expansion) {
+        // kwargs_expansion changes the method signatures, so we need to
+        // fetch a new manager with matching config
+        freshWm = await rpc.get_manager_service({
+          timeout: config.method_timeout || 30,
+          case_conversion: "camel",
+          kwargs_expansion: config.kwargs_expansion,
+        });
+      } else {
+        // The internal manager already uses case_conversion: "camel",
+        // so we can copy directly without an extra RPC call
+        freshWm = internalManager;
+      }
+      // Copy all function properties from fresh wm onto existing wm object.
+      // This preserves the caller's reference while updating method targets.
+      for (const key of Object.keys(freshWm)) {
+        if (typeof freshWm[key] === "function") {
+          wm[key] = freshWm[key];
+        }
+      }
+      console.info(
+        "Workspace manager proxy refreshed after reconnection (new manager_id:",
+        rpc._connection?.manager_id + ")",
+      );
+    } catch (err) {
+      console.warn(
+        "Failed to refresh workspace manager after reconnection:",
+        err,
+      );
+    }
+  });
 
   async function _export(api) {
     api.id = "default";
@@ -11066,6 +11297,8 @@ class LocalWebSocket {
 // hypha-core's deno build does: import { hyphaWebsocketClient } from 'hypha-rpc'
 // The UMD build wraps everything under this name via webpack's `library` option,
 // but the ESM build exports flat, so we need this explicit re-export.
+
+
 const hyphaWebsocketClient = {
   RPC: _rpc_js__WEBPACK_IMPORTED_MODULE_0__.RPC,
   API_VERSION: _rpc_js__WEBPACK_IMPORTED_MODULE_0__.API_VERSION,
