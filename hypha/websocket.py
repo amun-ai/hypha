@@ -40,7 +40,8 @@ class WebsocketServer:
         app = store._app
         self.store.set_websocket_server(self)
         self._stop = False
-        self._websockets = {}
+        self._websockets = {}  # {conn_key: websocket} — current websocket per client
+        self._ws_generation = {}  # {conn_key: int} — monotonic counter to detect stale cleanups
         # Track last activity per connection (workspace/client_id)
         self._last_seen = {}
         # Idle timeout in seconds (applied to all connections, especially effective for anonymous churn)
@@ -374,8 +375,11 @@ class WebsocketServer:
         is_readonly = user_permission == UserPermission.read if user_permission else False
         
         conn = RedisRPCConnection(event_bus, workspace, client_id, user_info, self.store.get_manager_id(), readonly=is_readonly)
-        self._websockets[f"{workspace}/{client_id}"] = websocket
         conn_key = f"{workspace}/{client_id}"
+        # Bump generation counter so stale cleanups from old connections are skipped
+        gen = self._ws_generation.get(conn_key, 0) + 1
+        self._ws_generation[conn_key] = gen
+        self._websockets[conn_key] = websocket
         self._last_seen[conn_key] = time.time()
         try:
             _gauge.inc()  # Increment total connections without workspace label
@@ -499,24 +503,51 @@ class WebsocketServer:
                 _gauge.dec()  # Decrement total connections without workspace label
             except Exception:
                 pass  # Gauge may not have been incremented
-            
+
+            # Check if a newer connection has taken over this client_id.
+            # If so, skip cleanup to avoid clobbering the new connection.
+            is_current = self._ws_generation.get(conn_key) == gen
+
             # Ensure proper cleanup even if conn was not created
             if conn:
                 await conn.disconnect("disconnected")
             event_bus.off_local(f"unload:{workspace}", force_disconnect)
-            if (
-                workspace
-                and client_id
-                and f"{workspace}/{client_id}" in self._websockets
-            ):
-                del self._websockets[f"{workspace}/{client_id}"]
-            # Clear last seen
-            self._last_seen.pop(conn_key, None)
+            if is_current:
+                if conn_key in self._websockets:
+                    del self._websockets[conn_key]
+                # Clear last seen
+                self._last_seen.pop(conn_key, None)
+            else:
+                logger.info(
+                    "Skipping websocket dict cleanup for %s (superseded by newer connection, gen %s vs current %s)",
+                    conn_key, gen, self._ws_generation.get(conn_key),
+                )
 
     async def handle_disconnection(
         self, websocket, workspace: str, client_id: str, user_info: UserInfo, code, exp
     ):
-        """Handle client disconnection with proper cleanup."""
+        """Handle client disconnection with proper cleanup.
+
+        If a newer WebSocket connection has already taken over for this
+        client_id (reconnection race), skip the remove_client call to
+        avoid deleting the new connection's services.
+        """
+        conn_key = f"{workspace}/{client_id}"
+        current_ws = self._websockets.get(conn_key)
+        if current_ws is not None and current_ws is not websocket:
+            # A newer connection has taken over — do NOT remove services
+            logger.info(
+                "Skipping remove_client for %s: superseded by a newer connection",
+                conn_key,
+            )
+            # Still close this old websocket gracefully
+            await self.disconnect(
+                websocket,
+                f"Old connection for {conn_key} superseded",
+                code,
+            )
+            return
+
         # Track WebSocket client as recently disconnected for dead-peer detection
         self.store._event_bus.track_recently_disconnected(workspace, client_id)
         cleanup_succeeded = False
@@ -531,7 +562,7 @@ class WebsocketServer:
                 )
         except Exception as e:
             logger.error(
-                f"Error handling disconnection, client: {workspace}/{client_id}, error: {str(e)}", 
+                f"Error handling disconnection, client: {workspace}/{client_id}, error: {str(e)}",
                 exc_info=True
             )
             # Re-raise if cleanup failed critically to ensure we're aware of persistent issues
