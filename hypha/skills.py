@@ -90,9 +90,13 @@ def format_schema_as_markdown(schema: Dict[str, Any], method_name: str, docstrin
     properties = params.get("properties", {})
     required = params.get("required", [])
 
-    if properties:
+    # Filter out server-injected parameters that users should not pass
+    SERVER_INJECTED_PARAMS = {"context"}
+    user_properties = {k: v for k, v in properties.items() if k not in SERVER_INJECTED_PARAMS}
+
+    if user_properties:
         lines.append("\n**Parameters:**\n")
-        for param_name, param_info in properties.items():
+        for param_name, param_info in user_properties.items():
             param_type = param_info.get("type", "any")
             param_desc = param_info.get("description", "")
             is_required = param_name in required
@@ -630,6 +634,23 @@ rw_token = await server.generate_token({{
 ```
 
 Permission levels: `read` (view only), `read_write` (modify data), `admin` (full control including workspace deletion and token generation).
+
+### How Authorization Works (Context Injection)
+
+Hypha uses a **context injection** mechanism for authorization. When a service sets `require_context: True` in its config, the Hypha server automatically injects a `context` dictionary into every service method call. This context contains the caller's identity, workspace, and permissions — derived from the authentication token used during connection.
+
+**Key points for API consumers:**
+- You do **NOT** pass `context` when calling service methods — the server injects it automatically based on your token.
+- The `context` parameter is intentionally omitted from the API reference documentation for this reason.
+- Each service method receives the caller's identity and can enforce fine-grained permission checks server-side.
+
+**What happens internally:**
+1. You connect with a token (via WebSocket SDK or HTTP `Authorization: Bearer` header).
+2. The server validates the token and associates your connection with a `UserInfo` (identity, roles, permissions).
+3. When you call a service method, the server appends `context` (containing `ws`, `from`, `user`) before forwarding to the service.
+4. The service method can check `context["user"]` permissions to authorize the operation.
+
+This means **the permission level of your token determines what you can do** — you don't need to handle authorization yourself when calling services, but you may get `PermissionError` if your token lacks the required permission.
 
 ## Step 3: Connect and Use Services
 

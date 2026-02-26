@@ -629,6 +629,22 @@ When bumping the version (e.g., `0.21.44` -> `0.21.45`), search the entire proje
 
 To upgrade hypha-rpc: first release it in `../hypha-rpc` (bump version in `javascript/package.json`, `python/pyproject.toml`, AND `python/hypha_rpc/VERSION`), then update `hypha/__init__.py`, `setup.py`, `requirements.txt` here and run `python3 scripts/upgrade_rpc_assets.py` to download JS static assets. Use `grep -r "OLD_VERSION"` to find all occurrences.
 
+### Keeping Agent Skills Documentation in Sync
+
+When adding or removing features (services, API methods, capabilities), you **must** update the agent skills documentation in `hypha/skills.py`. The agent skills module (`hypha/skills.py`) dynamically generates documentation served at `/{workspace}/agent-skills/` endpoints. Key areas to check:
+
+- **`get_skill_md()`**: Main SKILL.md — update if adding/removing core capabilities (e.g., new service types, auth modes, protocol support)
+- **`get_reference_md()`** / **`generate_api_reference()`**: REFERENCE.md — auto-generated from `@schema_method` decorators, but the `SERVICE_CLASS_MAP` and `DynamicDocGenerator` detection methods (`_is_*_enabled()`) may need updating for new services
+- **`get_examples_md()`**: EXAMPLES.md — add code examples for new features
+- **`SERVICE_CLASS_MAP`**: Maps service IDs to their implementation classes for doc extraction — add new services here
+- **`format_schema_as_markdown()`**: Formats method parameters — note that the `context` parameter is intentionally filtered out (it's server-injected, not user-supplied)
+
+**Checklist for feature changes:**
+- [ ] New service added? Add entry to `SERVICE_CLASS_MAP` and add a `_is_*_enabled()` method if conditional
+- [ ] New API method? Ensure it uses `@schema_method` with `Field` descriptions for auto-documentation
+- [ ] Service removed? Remove from `SERVICE_CLASS_MAP` and examples
+- [ ] New capability/protocol? Update the "Core Capabilities" section in `get_skill_md()`
+
 ## Compound Engineering
 
 **Philosophy**: Maximize productivity through tight feedback loops and knowledge accumulation.
