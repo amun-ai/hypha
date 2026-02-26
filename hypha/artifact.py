@@ -211,6 +211,91 @@ def convert_legacy_staging(staging):
     return staging  # Return as-is if unknown format
 
 
+def convert_to_branched_staging(staging, default_branch="main"):
+    """Convert flat git staging dict to per-branch format.
+
+    Old flat format: {manifest, config, files, _intent, _branch}
+    New branched format: {_active_branch: "main", "main": {manifest, config, files, _intent}}
+
+    Non-git artifacts should NOT use this function; they keep flat staging.
+    If already in branched format (has _active_branch key), returns as-is.
+    """
+    if staging is None:
+        return None
+
+    # First ensure it's a dict (handles legacy list format)
+    staging = convert_legacy_staging(staging)
+
+    if not isinstance(staging, dict):
+        return staging
+
+    # Already in branched format
+    if "_active_branch" in staging:
+        return staging
+
+    # Flat format — convert to branched
+    branch_data = dict(staging)
+    branch = branch_data.pop("_branch", default_branch)
+    return {
+        "_active_branch": branch,
+        branch: branch_data,
+    }
+
+
+def get_branch_staging(staging, branch=None):
+    """Get staging data for a specific branch from branched staging dict.
+
+    Args:
+        staging: The staging dict (branched format with _active_branch).
+        branch: Branch name. If None, uses _active_branch.
+
+    Returns:
+        Branch-specific staging dict, or None if no staging for this branch.
+    """
+    if staging is None or not isinstance(staging, dict):
+        return None
+
+    # Branched format
+    if "_active_branch" in staging:
+        target = branch or staging.get("_active_branch")
+        return staging.get(target)
+
+    # Flat format (legacy, shouldn't happen for git artifacts after migration)
+    return staging
+
+
+def resolve_staging_branch(staging, branch=None, default_branch="main"):
+    """Resolve which branch to use for staging operations.
+
+    Priority: explicit branch > _active_branch from staging > default_branch.
+    """
+    if branch:
+        return branch
+    if staging and isinstance(staging, dict) and "_active_branch" in staging:
+        return staging["_active_branch"]
+    return default_branch
+
+
+def _clear_branch_staging(staging, branch):
+    """Remove a branch's staging data. Returns None if no branches remain."""
+    if staging is None or not isinstance(staging, dict):
+        return None
+    if "_active_branch" not in staging:
+        return None  # Flat format — just clear entirely
+
+    if branch in staging:
+        del staging[branch]
+
+    remaining = [k for k in staging if not k.startswith("_")]
+    if not remaining:
+        return None
+
+    # Update active branch to first remaining
+    if staging.get("_active_branch") == branch:
+        staging["_active_branch"] = remaining[0]
+    return staging
+
+
 def _calculate_zip_size(file_info):
     """Calculate exact zip file size for NO_COMPRESSION_32 mode.
 
@@ -2112,12 +2197,14 @@ class ArtifactController:
                     "add_vectors",
                     "remove_file",
                     "remove_vectors",
+                    "discard_changes",
                     "detach",  # Can detach from parent (for rw and higher)
                     "mutate",  # Can modify existing committed versions
                 ],
                 "rd+": [
                     "read",
                     "get_file",
+                    "get_status",
                     "get_vector",
                     "search_vectors",
                     "list_files",
@@ -2129,11 +2216,13 @@ class ArtifactController:
                     "add_vectors",
                     "remove_file",
                     "remove_vectors",
+                    "discard_changes",
                     "draft",  # Can create drafts
                 ],
                 "rw+": [
                     "read",
                     "get_file",
+                    "get_status",
                     "get_vector",
                     "search_vectors",
                     "list_files",
@@ -2145,6 +2234,7 @@ class ArtifactController:
                     "add_vectors",
                     "remove_file",
                     "remove_vectors",
+                    "discard_changes",
                     "draft",  # Can create drafts
                     "attach",  # Can attach drafts to become children
                     "detach",  # Can detach from parent
@@ -2153,6 +2243,7 @@ class ArtifactController:
                 "*": [
                     "read",
                     "get_file",
+                    "get_status",
                     "get_vector",
                     "search_vectors",
                     "list_files",
@@ -2164,6 +2255,7 @@ class ArtifactController:
                     "add_vectors",
                     "remove_file",
                     "remove_vectors",
+                    "discard_changes",
                     "create",  # Full create permission (legacy, includes draft+attach)
                     "draft",  # Can create drafts
                     "attach",  # Can attach drafts to become children
@@ -2279,6 +2371,7 @@ class ArtifactController:
             "read": UserPermission.read,
             "get_vector": UserPermission.read,
             "get_file": UserPermission.read,
+            "get_status": UserPermission.read,
             "list_files": UserPermission.read,
             "list_vectors": UserPermission.read,
             "search_vectors": UserPermission.read,
@@ -2292,6 +2385,7 @@ class ArtifactController:
             "put_file": UserPermission.read_write,
             "remove_vectors": UserPermission.read_write,
             "remove_file": UserPermission.read_write,
+            "discard_changes": UserPermission.read_write,
             "set_secret": UserPermission.read_write,
             "set_download_weight": UserPermission.read_write,
             "delete": UserPermission.admin,
@@ -3219,8 +3313,13 @@ class ArtifactController:
         limit: int,
         offset: int,
         version: Optional[str],
+        branch: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """List files from a git-storage artifact.
+
+        Supports overlay mode: when version='stage', merges staging files
+        on top of committed git tree for the target branch, with staging
+        overriding committed files and removals hiding committed files.
 
         Args:
             artifact: The artifact model instance
@@ -3228,7 +3327,8 @@ class ArtifactController:
             dir_path: Directory path to list (None for root)
             limit: Maximum number of files to return
             offset: Number of files to skip
-            version: Git ref/commit to list from ("stage" for staging area)
+            version: Git ref/commit to list from ("stage" for overlay staging+git)
+            branch: Branch for staging overlay (resolved from staging if None)
 
         Returns:
             List of file metadata dictionaries
@@ -3236,14 +3336,61 @@ class ArtifactController:
         from hypha.git.repo import S3GitRepo
 
         s3_config = self._get_s3_config(artifact, parent_artifact)
+        config = artifact.config or {}
+        default_branch = config.get("git_default_branch", "main")
 
-        # Handle staging version - list from S3 staging area
+        # Handle staging version — overlay: staging on top of git branch
         if version == "stage":
-            return await self._list_git_staging_files(
-                artifact, s3_config, dir_path, limit, offset
+            target_branch = resolve_staging_branch(artifact.staging, branch, default_branch)
+
+            # Get staging files for this branch
+            staging_items = await self._list_git_staging_files(
+                artifact, s3_config, dir_path, limit + offset, 0, branch=target_branch
             )
 
-        # Create S3 client factory for the git repo
+            # Get files marked for removal in staging
+            branch_staging = get_branch_staging(artifact.staging, target_branch)
+            removed_paths = set()
+            if branch_staging:
+                for f in branch_staging.get("files", []):
+                    if f.get("_remove") and "path" in f:
+                        removed_paths.add(f["path"])
+
+            # Get committed files from git branch for overlay
+            s3_client_factory = partial(self._create_client_async, s3_config)
+            prefix = f"{s3_config['prefix']}/{artifact.id}/.git"
+            repo = S3GitRepo(s3_client_factory, s3_config["bucket"], prefix, s3_config=s3_config)
+            await repo.initialize()
+
+            git_items = []
+            if not await repo.is_empty():
+                try:
+                    commit_sha = await self._resolve_git_version(repo, target_branch)
+                    path = dir_path.strip("/") if dir_path else ""
+                    raw_items = await repo.list_tree_async(path, commit_sha)
+                    for item in raw_items:
+                        git_items.append({
+                            "name": item["name"],
+                            "type": "directory" if item["type"] == "tree" else "file",
+                            **({"size": item["size"]} if item["size"] is not None else {}),
+                            **({"sha": item["sha"]} if item.get("sha") else {}),
+                        })
+                except (ValueError, Exception):
+                    pass  # Branch doesn't exist in git yet
+
+            # Merge: staging overrides git, removals hide git files
+            staging_names = {item["name"] for item in staging_items}
+            merged = list(staging_items)
+            for item in git_items:
+                full_path = f"{dir_path.strip('/')}/{item['name']}" if dir_path else item["name"]
+                if item["name"] not in staging_names and full_path not in removed_paths:
+                    merged.append(item)
+
+            # Apply pagination
+            merged = merged[offset: offset + limit]
+            return merged
+
+        # Non-staging: read directly from git
         s3_client_factory = partial(self._create_client_async, s3_config)
         prefix = f"{s3_config['prefix']}/{artifact.id}/.git"
         repo = S3GitRepo(s3_client_factory, s3_config["bucket"], prefix, s3_config=s3_config)
@@ -3292,11 +3439,12 @@ class ArtifactController:
         dir_path: Optional[str],
         limit: int,
         offset: int,
+        branch: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """List files from the git staging area in S3.
 
         For git storage, staged files are uploaded to:
-        {prefix}/{artifact.id}/staging/{file_path}
+        {prefix}/{artifact.id}/staging/{branch}/{file_path}
 
         Args:
             artifact: The artifact model instance
@@ -3304,20 +3452,26 @@ class ArtifactController:
             dir_path: Directory path to list (None for root)
             limit: Maximum number of files to return
             offset: Number of files to skip
+            branch: Branch name for per-branch staging
 
         Returns:
             List of file metadata dictionaries
         """
-        # Staging area path: {prefix}/{artifact.id}/staging/
+        # Resolve branch from staging
+        config = artifact.config or {}
+        default_branch = config.get("git_default_branch", "main")
+        target_branch = resolve_staging_branch(artifact.staging, branch, default_branch)
+
+        # Staging area path: {prefix}/{artifact.id}/staging/{branch}/
         if dir_path:
             staging_prefix = safe_join(
                 s3_config["prefix"],
-                f"{artifact.id}/staging/{dir_path.strip('/')}",
+                f"{artifact.id}/staging/{target_branch}/{dir_path.strip('/')}",
             ) + "/"
         else:
             staging_prefix = safe_join(
                 s3_config["prefix"],
-                f"{artifact.id}/staging",
+                f"{artifact.id}/staging/{target_branch}",
             ) + "/"
 
         async with self._create_client_async(s3_config) as s3_client:
@@ -3343,11 +3497,12 @@ class ArtifactController:
         expires_in: int,
         use_proxy: Optional[bool],
         use_local_url: bool,
+        branch: Optional[str] = None,
     ) -> str:
         """Get a presigned URL for a staged file in git-storage artifact.
 
         For git storage, staged files are uploaded to:
-        {prefix}/{artifact.id}/staging/{file_path}
+        {prefix}/{artifact.id}/staging/{branch}/{file_path}
 
         Args:
             artifact: The artifact model instance
@@ -3356,6 +3511,7 @@ class ArtifactController:
             expires_in: URL expiration time in seconds
             use_proxy: Whether to use proxy URL
             use_local_url: Whether to return localhost URL
+            branch: Branch name for per-branch staging
 
         Returns:
             Presigned URL for downloading the staged file
@@ -3363,10 +3519,15 @@ class ArtifactController:
         Raises:
             FileNotFoundError: If the staged file does not exist
         """
-        # Staging area path: {prefix}/{artifact.id}/staging/{file_path}
+        # Resolve branch from staging
+        config = artifact.config or {}
+        default_branch = config.get("git_default_branch", "main")
+        target_branch = resolve_staging_branch(artifact.staging, branch, default_branch)
+
+        # Staging area path: {prefix}/{artifact.id}/staging/{branch}/{file_path}
         staging_key = safe_join(
             s3_config["prefix"],
-            f"{artifact.id}/staging/{file_path}",
+            f"{artifact.id}/staging/{target_branch}/{file_path}",
         )
 
         async with self._create_client_async(s3_config) as s3_client:
@@ -3557,23 +3718,26 @@ class ArtifactController:
         use_proxy: Optional[bool],
         use_local_url: bool,
         user_info: UserInfo = None,
+        branch: Optional[str] = None,
     ) -> str:
         """Get a URL for a file from git-storage artifact.
 
         For LFS files, returns a presigned URL directly to S3.
         For regular git files, returns an HTTP endpoint URL with embedded token
         that serves the file content.
-        For staged files (version='stage'), returns presigned URL to S3 staging area.
+        For staged files (version='stage'), uses overlay: checks staging first,
+        falls through to git branch if not found.
 
         Args:
             artifact: The artifact model instance
             parent_artifact: Parent artifact for S3 config inheritance
             file_path: Path to the file
-            version: Git ref/commit to read from, or 'stage' for staging area
+            version: Git ref/commit to read from, or 'stage' for overlay
             expires_in: URL expiration time in seconds
             use_proxy: Whether to use proxy URL
             use_local_url: Whether to return localhost URL
             user_info: User info for generating auth token
+            branch: Branch for staging overlay (resolved from staging if None)
 
         Returns:
             URL string (either presigned S3 URL for LFS or HTTP endpoint URL)
@@ -3587,17 +3751,29 @@ class ArtifactController:
         from urllib.parse import quote, urlencode
 
         s3_config = self._get_s3_config(artifact, parent_artifact)
+        config = artifact.config or {}
+        default_branch = config.get("git_default_branch", "main")
 
-        # Handle staging version - files are in S3 staging area, not in git
+        # Handle staging version — overlay: try staging first, fall through to git
         if version == "stage":
-            return await self._get_git_staging_file_url(
-                artifact,
-                s3_config,
-                file_path,
-                expires_in,
-                use_proxy,
-                use_local_url,
-            )
+            target_branch = resolve_staging_branch(artifact.staging, branch, default_branch)
+
+            # Check if file is marked for removal in staging
+            branch_staging = get_branch_staging(artifact.staging, target_branch)
+            if branch_staging:
+                removed = {f["path"] for f in branch_staging.get("files", []) if f.get("_remove")}
+                if file_path in removed:
+                    raise FileNotFoundError(f"File '{file_path}' has been removed in staging")
+
+            # Try staging first
+            try:
+                return await self._get_git_staging_file_url(
+                    artifact, s3_config, file_path, expires_in,
+                    use_proxy, use_local_url, branch=target_branch,
+                )
+            except FileNotFoundError:
+                # Not in staging — fall through to git branch
+                version = target_branch
 
         # Create S3 client factory for the git repo
         s3_client_factory = partial(self._create_client_async, s3_config)
@@ -3727,10 +3903,11 @@ class ArtifactController:
         expires_in: int,
         use_proxy: Optional[bool],
         use_local_url: bool,
+        branch: Optional[str] = None,
     ) -> str:
         """Stage a file for upload to a git-storage artifact.
 
-        For git storage, files are uploaded to a staging area in S3,
+        For git storage, files are uploaded to a per-branch staging area in S3,
         then on commit they are added to the git repository.
 
         Args:
@@ -3741,17 +3918,23 @@ class ArtifactController:
             expires_in: URL expiration time
             use_proxy: Whether to use proxy URL
             use_local_url: Whether to return localhost URL
+            branch: Target branch for staging
 
         Returns:
             Presigned URL for uploading the file
         """
         s3_config = self._get_s3_config(artifact, parent_artifact)
 
-        # For git storage, upload to a staging area
-        # The staging area is: {prefix}/{artifact.id}/staging/{file_path}
+        # Resolve target branch
+        config = artifact.config or {}
+        default_branch = config.get("git_default_branch", "main")
+        target_branch = resolve_staging_branch(artifact.staging, branch, default_branch)
+
+        # For git storage, upload to a per-branch staging area
+        # The staging area is: {prefix}/{artifact.id}/staging/{branch}/{file_path}
         staging_key = safe_join(
             s3_config["prefix"],
-            f"{artifact.id}/staging/{file_path}",
+            f"{artifact.id}/staging/{target_branch}/{file_path}",
         )
 
         async with self._create_client_async(s3_config) as s3_client:
@@ -3831,12 +4014,16 @@ class ArtifactController:
 
         # Resolve target branch
         config = artifact.config or {}
-        branch_name = target_branch or config.get("git_default_branch", "main")
+        default_branch = config.get("git_default_branch", "main")
+        branch_name = target_branch or default_branch
         branch_ref = f"refs/heads/{branch_name}".encode()
 
-        # Get staged files from artifact.staging (for removal tracking and download weights)
-        staging_dict = artifact.staging or {}
-        staged_files_manifest = staging_dict.get("files", [])
+        # Get staged files from the branch-specific staging data
+        # Convert to branched format if needed (handles legacy flat staging)
+        if artifact.staging is not None:
+            artifact.staging = convert_to_branched_staging(artifact.staging, default_branch)
+        branch_staging = get_branch_staging(artifact.staging, branch_name) or {}
+        staged_files_manifest = branch_staging.get("files", [])
 
         # Build lookup for file metadata from manifest
         manifest_lookup = {}
@@ -3847,10 +4034,10 @@ class ArtifactController:
             elif "path" in file_info:
                 manifest_lookup[file_info["path"]] = file_info
 
-        # List all files from S3 staging area directly
+        # List all files from the branch-specific S3 staging area
         # This ensures all uploaded files are committed, even if the manifest
         # is incomplete due to race conditions in concurrent put_file calls
-        staging_prefix = f"{s3_config['prefix']}/{artifact.id}/staging/"
+        staging_prefix = f"{s3_config['prefix']}/{artifact.id}/staging/{branch_name}/"
         files_to_commit = []
 
         async with self._create_client_async(s3_config) as s3_client:
@@ -3908,8 +4095,8 @@ class ArtifactController:
                 artifact.versions = versions
                 flag_modified(artifact, "versions")
 
-            # Clear staging
-            artifact.staging = None
+            # Clear only this branch's staging (other branches keep their staging)
+            artifact.staging = _clear_branch_staging(artifact.staging, branch_name)
             flag_modified(artifact, "staging")
 
             # Count files in repository from HEAD if available
@@ -4075,8 +4262,8 @@ class ArtifactController:
             artifact.config["download_weights"] = existing_weights
             flag_modified(artifact, "config")
 
-        # Clear artifact staging
-        artifact.staging = None
+        # Clear only this branch's staging (other branches keep their staging)
+        artifact.staging = _clear_branch_staging(artifact.staging, branch_name)
         flag_modified(artifact, "staging")
 
         # Count files in repository
@@ -4114,28 +4301,36 @@ class ArtifactController:
         artifact,
         parent_artifact,
         file_path: str,
+        branch: Optional[str] = None,
     ) -> Dict[str, str]:
         """Mark a file for removal from a git-storage artifact.
 
-        For git storage, file removal is staged and applied on commit.
+        For git storage, file removal is staged per-branch and applied on commit.
 
         Args:
             artifact: The artifact model instance
             parent_artifact: Parent artifact for S3 config inheritance
             file_path: Path to the file to remove
+            branch: Target branch for the removal
 
         Returns:
             Status dict
         """
-        # Just mark the file for removal in staging
-        # The actual git commit will handle the tree update
-        staging_dict = artifact.staging or {}
-        if artifact.staging is None:
-            artifact.staging = {}
-            staging_dict = artifact.staging
+        config = artifact.config or {}
+        default_branch = config.get("git_default_branch", "main")
 
-        staging_dict = convert_legacy_staging(staging_dict)
-        staging_files = staging_dict.get("files", [])
+        # Ensure branched staging format
+        if artifact.staging is None:
+            target_branch = branch or default_branch
+            artifact.staging = {"_active_branch": target_branch, target_branch: {"files": []}}
+        else:
+            artifact.staging = convert_to_branched_staging(artifact.staging, default_branch)
+
+        target_branch = resolve_staging_branch(artifact.staging, branch, default_branch)
+
+        # Get or create branch staging data
+        branch_staging = artifact.staging.get(target_branch, {"files": []})
+        staging_files = branch_staging.get("files", [])
 
         # Check if file was added in this staging session
         file_in_staging = any(
@@ -4145,7 +4340,7 @@ class ArtifactController:
 
         if file_in_staging:
             # Remove from staging list (file was added but not committed yet)
-            staging_dict["files"] = [
+            branch_staging["files"] = [
                 f for f in staging_files if f.get("path") != file_path
             ]
 
@@ -4153,7 +4348,7 @@ class ArtifactController:
             s3_config = self._get_s3_config(artifact, parent_artifact)
             staging_key = safe_join(
                 s3_config["prefix"],
-                f"{artifact.id}/staging/{file_path}",
+                f"{artifact.id}/staging/{target_branch}/{file_path}",
             )
             async with self._create_client_async(s3_config) as s3_client:
                 try:
@@ -4166,9 +4361,10 @@ class ArtifactController:
         else:
             # Mark for removal (file exists in git repo)
             staging_files.append({"path": file_path, "_remove": True})
-            staging_dict["files"] = staging_files
+            branch_staging["files"] = staging_files
 
-        artifact.staging = staging_dict
+        artifact.staging[target_branch] = branch_staging
+        artifact.staging["_active_branch"] = target_branch
         flag_modified(artifact, "staging")
 
         return {"status": "staged_for_removal", "path": file_path}
@@ -5347,60 +5543,99 @@ class ArtifactController:
                 if stage:
                     # Handle staging mode
                     logger.info(f"Artifact {artifact_id} entering/in staging mode")
-                    
+
                     # Validate version parameter for staging
                     if version not in [None, "new", "stage"]:
                         raise ValueError(
                             f"When in staging mode, version must be None, 'new', or 'stage', got '{version}'"
                         )
-                    
-                    # Initialize or update staging dict
-                    if artifact.staging is None:
-                        # First time entering staging mode - preserve current state as published
-                        artifact.staging = {
-                            "manifest": manifest or artifact.manifest,
-                            "config": config or artifact.config,
-                            "secrets": secrets or artifact.secrets,
-                            "type": type or artifact.type,
-                            "files": [],
-                            "_intent": "new_version" if version == "new" else "edit_version"
-                        }
-                        # Store target branch for git artifacts
-                        if branch is not None:
-                            artifact.staging["_branch"] = branch
+
+                    artifact_config = artifact.config or {}
+                    is_git = artifact_config.get("storage") == "git"
+
+                    if is_git:
+                        # Git artifact — use per-branch staging
+                        default_branch = artifact_config.get("git_default_branch", "main")
+                        target_branch = branch or default_branch
+
+                        # Migrate to branched format if needed
+                        if artifact.staging is not None:
+                            artifact.staging = convert_to_branched_staging(artifact.staging, default_branch)
+                        else:
+                            artifact.staging = {"_active_branch": target_branch}
+
+                        # Get or create branch staging data
+                        branch_data = artifact.staging.get(target_branch, {})
+                        if not branch_data:
+                            branch_data = {
+                                "manifest": manifest or artifact.manifest,
+                                "config": config or artifact_config,
+                                "secrets": secrets or artifact.secrets,
+                                "type": type or artifact.type,
+                                "files": [],
+                                "_intent": "new_version" if version == "new" else "edit_version",
+                            }
+                        else:
+                            if manifest is not None:
+                                branch_data["manifest"] = manifest
+                            if config is not None:
+                                branch_data["config"] = config
+                            if secrets is not None:
+                                branch_data["secrets"] = secrets
+                            if type is not None:
+                                branch_data["type"] = type
+                            if version is not None:
+                                branch_data["_intent"] = "new_version" if version == "new" else "edit_version"
+
+                        artifact.staging[target_branch] = branch_data
+                        artifact.staging["_active_branch"] = target_branch
                     else:
-                        # Already in staging, update staged values
-                        if manifest is not None:
-                            artifact.staging["manifest"] = manifest
-                        if config is not None:
-                            artifact.staging["config"] = config
-                        if secrets is not None:
-                            artifact.staging["secrets"] = secrets
-                        if type is not None:
-                            artifact.staging["type"] = type
-                        # Only update intent if version is explicitly specified
-                        if version is not None:
-                            artifact.staging["_intent"] = "new_version" if version == "new" else "edit_version"
-                        # Update branch if specified
-                        if branch is not None:
-                            artifact.staging["_branch"] = branch
-                    
+                        # Non-git artifact — flat staging (unchanged)
+                        if artifact.staging is None:
+                            artifact.staging = {
+                                "manifest": manifest or artifact.manifest,
+                                "config": config or artifact_config,
+                                "secrets": secrets or artifact.secrets,
+                                "type": type or artifact.type,
+                                "files": [],
+                                "_intent": "new_version" if version == "new" else "edit_version",
+                            }
+                        else:
+                            if manifest is not None:
+                                artifact.staging["manifest"] = manifest
+                            if config is not None:
+                                artifact.staging["config"] = config
+                            if secrets is not None:
+                                artifact.staging["secrets"] = secrets
+                            if type is not None:
+                                artifact.staging["type"] = type
+                            if version is not None:
+                                artifact.staging["_intent"] = "new_version" if version == "new" else "edit_version"
+
                     flag_modified(artifact, "staging")
-                    
-                    # Calculate version_index for file storage
-                    if artifact.staging.get("_intent") == "new_version":
+
+                    # Calculate version_index for file storage (non-git only)
+                    if is_git:
+                        version_index = 0  # Not used for git, but set for consistency
+                    elif artifact.staging.get("_intent") == "new_version":
                         version_index = len(artifact.versions or [])
                     else:
                         version_index = max(0, len(artifact.versions or []) - 1)
-                    
-                    logger.info(f"Staging mode: version_index={version_index}, intent={artifact.staging.get('_intent')}")
+
+                    logger.info(f"Staging mode: version_index={version_index}, git={is_git}")
                 else:
                     # Not in staging mode OR committing previously staged changes
                     if is_already_staged:
                         logger.info(f"Artifact {artifact_id} was in staging mode, now committing staged changes")
 
-                        # Apply staged changes first (if not overridden by new edits)
-                        staging_dict = artifact.staging
+                        # For git artifacts with branched staging, extract the target branch's data
+                        artifact_config = artifact.config or {}
+                        if artifact_config.get("storage") == "git" and "_active_branch" in (artifact.staging or {}):
+                            default_branch = artifact_config.get("git_default_branch", "main")
+                            target_branch = branch or resolve_staging_branch(artifact.staging, branch, default_branch)
+                            staging_dict = get_branch_staging(artifact.staging, target_branch) or {}
+                        else:
+                            staging_dict = artifact.staging or {}
 
                         # Use staged values if new values not provided
                         if manifest is None and staging_dict.get("manifest") is not None:
@@ -5777,18 +6012,22 @@ class ArtifactController:
                     artifact.staging is not None
                 ), "Artifact must be in staging mode to commit."
 
-                # Convert legacy staging format if needed
-                artifact.staging = convert_legacy_staging(artifact.staging)
-
                 # Check if this is a git-storage artifact
                 config = artifact.config or {}
                 if config.get("storage") == "git":
-                    # Handle git-storage artifacts
-                    # Use branch from parameter, or from staging dict, or default
-                    target_branch = branch
-                    if target_branch is None:
-                        staging_dict = artifact.staging or {}
-                        target_branch = staging_dict.get("_branch")
+                    # Git artifacts use per-branch staging
+                    default_branch = config.get("git_default_branch", "main")
+                    artifact.staging = convert_to_branched_staging(artifact.staging, default_branch)
+                    target_branch = resolve_staging_branch(artifact.staging, branch, default_branch)
+
+                    # Verify this branch has staging data
+                    branch_staging = get_branch_staging(artifact.staging, target_branch)
+                    if branch_staging is None:
+                        raise ValueError(
+                            f"No staged changes for branch '{target_branch}'. "
+                            f"Call edit(stage=True, branch='{target_branch}') first."
+                        )
+
                     result = await self._commit_git(
                         artifact,
                         parent_artifact,
@@ -5799,15 +6038,14 @@ class ArtifactController:
                         target_branch=target_branch,
                     )
 
-                    # Update manifest if staged
-                    staging_dict = artifact.staging or {}
-                    staged_manifest = staging_dict.get("manifest")
+                    # Update manifest if staged (from branch-specific staging)
+                    staged_manifest = branch_staging.get("manifest")
                     if staged_manifest is not None:
                         artifact.manifest = staged_manifest
                         flag_modified(artifact, "manifest")
 
-                    # Clear staging after successful commit
-                    artifact.staging = None
+                    # _commit_git already cleared this branch's staging via _clear_branch_staging
+                    # but we need to ensure the flag is set
                     flag_modified(artifact, "staging")
 
                     # Update artifact timestamp
@@ -6043,6 +6281,176 @@ class ArtifactController:
                 return self._generate_artifact_data(artifact, parent_artifact)
         except Exception as e:
             raise e
+        finally:
+            await session.close()
+
+    @schema_method
+    async def get_status(
+        self,
+        artifact_id: str = PydanticField(
+            ...,
+            description="Artifact identifier to check staging status. Format: 'workspace/alias' or just 'alias'."
+        ),
+        branch: Optional[str] = PydanticField(
+            None,
+            description="Branch to check status for. If None, shows all branches with staged changes."
+        ),
+        context: Optional[dict] = PydanticField(
+            None,
+            description="Context containing user info and workspace."
+        ),
+    ) -> Dict[str, Any]:
+        """Get staging status for a git-storage artifact.
+
+        Shows which branches have staged changes, what files are staged,
+        and which files are marked for removal.
+
+        Returns:
+            Dictionary with active_branch, branches with staging data, and file details.
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.from_context(context)
+
+        session = await self._get_session(read_only=True)
+        try:
+            async with session.begin():
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "get_file", session
+                )
+
+                config = artifact.config or {}
+                if config.get("storage") != "git":
+                    # Non-git: simple staging status
+                    if artifact.staging is None:
+                        return {"staged": False}
+                    return {"staged": True, "files": (artifact.staging or {}).get("files", [])}
+
+                if artifact.staging is None:
+                    return {"staged": False, "active_branch": None, "branches": {}}
+
+                # Convert to branched format
+                default_branch = config.get("git_default_branch", "main")
+                staging = convert_to_branched_staging(artifact.staging, default_branch)
+
+                active = staging.get("_active_branch")
+                branches_status = {}
+                for key, data in staging.items():
+                    if key.startswith("_") or not isinstance(data, dict):
+                        continue
+                    files = data.get("files", [])
+                    added = [f["path"] for f in files if not f.get("_remove") and "path" in f]
+                    removed = [f["path"] for f in files if f.get("_remove") and "path" in f]
+                    branches_status[key] = {
+                        "files_added": added,
+                        "files_removed": removed,
+                        "intent": data.get("_intent"),
+                    }
+
+                if branch:
+                    # Filter to specific branch
+                    if branch in branches_status:
+                        return {
+                            "staged": True,
+                            "active_branch": active,
+                            "branch": branch,
+                            **branches_status[branch],
+                        }
+                    return {"staged": False, "active_branch": active, "branch": branch}
+
+                return {
+                    "staged": bool(branches_status),
+                    "active_branch": active,
+                    "branches": branches_status,
+                }
+        finally:
+            await session.close()
+
+    @schema_method
+    async def discard_changes(
+        self,
+        artifact_id: str = PydanticField(
+            ...,
+            description="Artifact identifier. Format: 'workspace/alias' or just 'alias'."
+        ),
+        branch: Optional[str] = PydanticField(
+            None,
+            description="Branch to discard changes for. If None, discards ALL staged changes."
+        ),
+        context: Optional[dict] = PydanticField(
+            None,
+            description="Context containing user info and workspace."
+        ),
+    ) -> Dict[str, str]:
+        """Discard staged changes for a git-storage artifact.
+
+        Removes staging data and cleans up S3 staging files for the specified
+        branch, or all branches if none specified.
+
+        Returns:
+            Status dict with discarded branch info.
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.from_context(context)
+
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "edit", session
+                )
+
+                if artifact.staging is None:
+                    return {"status": "nothing_to_discard"}
+
+                config = artifact.config or {}
+                s3_config = self._get_s3_config(artifact, parent_artifact)
+
+                if config.get("storage") == "git":
+                    default_branch = config.get("git_default_branch", "main")
+                    artifact.staging = convert_to_branched_staging(artifact.staging, default_branch)
+
+                    if branch:
+                        # Discard specific branch
+                        branches_to_clean = [branch]
+                        artifact.staging = _clear_branch_staging(artifact.staging, branch)
+                    else:
+                        # Discard all branches
+                        branches_to_clean = [k for k in artifact.staging if not k.startswith("_")]
+                        artifact.staging = None
+
+                    # Clean up S3 staging files
+                    async with self._create_client_async(s3_config) as s3_client:
+                        for b in branches_to_clean:
+                            staging_prefix = f"{s3_config['prefix']}/{artifact.id}/staging/{b}/"
+                            staged_files = await list_objects_async(
+                                s3_client, s3_config["bucket"], staging_prefix, delimiter="",
+                            )
+                            for sf in staged_files:
+                                if sf.get("type") == "file":
+                                    try:
+                                        await s3_client.delete_object(
+                                            Bucket=s3_config["bucket"], Key=sf["name"],
+                                        )
+                                    except Exception:
+                                        pass
+                else:
+                    # Non-git: clear all staging
+                    artifact.staging = None
+
+                flag_modified(artifact, "staging")
+                session.add(artifact)
+                await session.commit()
+
+                return {
+                    "status": "discarded",
+                    "branch": branch or "all",
+                }
+        except Exception:
+            raise
         finally:
             await session.close()
 
@@ -6739,6 +7147,10 @@ class ArtifactController:
             ge=60,
             le=604800
         ),
+        branch: Optional[str] = PydanticField(
+            None,
+            description="Target branch for git-storage artifacts. Uses active branch from staging if not specified. Ignored for non-git artifacts."
+        ),
         context: Optional[dict] = PydanticField(
             None,
             description="Context containing user info and workspace. Usually provided automatically by the system."
@@ -6828,15 +7240,16 @@ class ArtifactController:
                 # Check if this is a git-storage artifact
                 config = artifact.config or {}
                 if config.get("storage") == "git":
-                    # Handle git-storage artifacts
-                    # Note: We don't need row locking here because:
-                    # 1. File uploads go directly to S3 staging area
-                    # 2. Commit now lists files from S3 directly, not from manifest
-                    # The manifest update below is best-effort for metadata tracking
-                    presigned_urls = {}
-                    staging_dict = artifact.staging
-                    staging_files = staging_dict.get("files", [])
+                    # Git artifacts use per-branch staging
+                    default_branch = config.get("git_default_branch", "main")
+                    artifact.staging = convert_to_branched_staging(artifact.staging, default_branch)
+                    target_branch = resolve_staging_branch(artifact.staging, branch, default_branch)
 
+                    # Get or create branch staging data
+                    branch_staging = artifact.staging.get(target_branch, {"files": []})
+                    staging_files = branch_staging.get("files", [])
+
+                    presigned_urls = {}
                     for fpath, dweight in zip(file_paths, download_weights):
                         url = await self._put_git_file(
                             artifact,
@@ -6846,17 +7259,19 @@ class ArtifactController:
                             expires_in,
                             use_proxy,
                             use_local_url,
+                            branch=target_branch,
                         )
                         presigned_urls[fpath] = url
 
-                        # Add file to staging dict for tracking
+                        # Add file to branch staging for tracking
                         if not any(f.get("path") == fpath for f in staging_files):
                             file_info = {"path": fpath}
                             if dweight > 0:
                                 file_info["download_weight"] = dweight
                             staging_files.append(file_info)
-                            staging_dict["files"] = staging_files
 
+                    branch_staging["files"] = staging_files
+                    artifact.staging[target_branch] = branch_staging
                     flag_modified(artifact, "staging")
 
                     # Save to S3 for git artifacts
@@ -7178,17 +7593,21 @@ class ArtifactController:
             ...,
             description="Path to the file to remove. Use forward slashes for nested paths (e.g., 'data/old.csv', 'temp/cache.bin')."
         ),
+        branch: Optional[str] = PydanticField(
+            None,
+            description="Target branch for git-storage artifacts. Uses active branch from staging if not specified. Ignored for non-git artifacts."
+        ),
         context: Optional[dict] = PydanticField(
             None,
             description="Context containing user info and workspace. Usually provided automatically by the system."
         ),
     ) -> Dict[str, str]:
         """Remove a file from an artifact.
-        
+
         This method removes a file from the artifact's storage. The removal is staged
         and must be committed to take permanent effect. File removal updates the
         artifact's file count in the staging manifest.
-        
+
         Returns:
             Dictionary with status message confirming file removal
             
@@ -7231,11 +7650,12 @@ class ArtifactController:
                 # Check if this is a git-storage artifact
                 config = artifact.config or {}
                 if config.get("storage") == "git":
-                    # Handle git-storage artifacts
+                    # Handle git-storage artifacts (per-branch staging)
                     result = await self._remove_git_file(
                         artifact,
                         parent_artifact,
                         file_path,
+                        branch=branch,
                     )
                     session.add(artifact)
                     await session.commit()
@@ -7372,7 +7792,11 @@ class ArtifactController:
         ),
         stage: bool = PydanticField(
             False,
-            description="Download from staged (uncommitted) files. Cannot be used with version parameter."
+            description="Download from staged (uncommitted) files. For git artifacts, uses overlay: staged files take priority, then falls through to committed git content."
+        ),
+        branch: Optional[str] = PydanticField(
+            None,
+            description="Branch for git-storage artifacts when using stage=True. Uses active branch if not specified. Ignored for non-git artifacts."
         ),
         use_proxy: Optional[bool] = PydanticField(
             None,
@@ -7454,7 +7878,7 @@ class ArtifactController:
                 # Check if this is a git-storage artifact
                 config = artifact.config or {}
                 if config.get("storage") == "git":
-                    # Handle git-storage artifacts
+                    # Handle git-storage artifacts (with overlay for stage mode)
                     presigned_urls = {}
                     for fpath in file_paths:
                         url = await self._get_git_file_url(
@@ -7466,6 +7890,7 @@ class ArtifactController:
                             use_proxy,
                             use_local_url,
                             user_info,
+                            branch=branch,
                         )
                         presigned_urls[fpath] = url
 
@@ -7598,7 +8023,11 @@ class ArtifactController:
         ),
         stage: bool = PydanticField(
             False,
-            description="Read from staged (uncommitted) storage. Cannot be used with version parameter."
+            description="Read from staged (uncommitted) storage. For git artifacts, uses overlay: staged files take priority, then falls through to committed git content."
+        ),
+        branch: Optional[str] = PydanticField(
+            None,
+            description="Branch for git-storage artifacts when using stage=True. Uses active branch if not specified. Ignored for non-git artifacts."
         ),
         context: Optional[dict] = PydanticField(
             None,
@@ -7680,9 +8109,10 @@ class ArtifactController:
                 config = artifact.config or {}
 
                 if config.get("storage") == "git":
-                    # Handle git storage
+                    # Handle git storage (with overlay for stage mode)
                     data_bytes = await self._read_git_file_content(
-                        artifact, parent_artifact, file_path, version, offset, read_limit
+                        artifact, parent_artifact, file_path, version, offset, read_limit,
+                        branch=branch,
                     )
                 else:
                     # Handle raw S3 storage
@@ -7739,16 +8169,21 @@ class ArtifactController:
         version: Optional[str],
         offset: int,
         limit: int,
+        branch: Optional[str] = None,
     ) -> bytes:
         """Read file content from a git-storage artifact.
+
+        Supports overlay mode: when version='stage', tries staging first,
+        falls through to committed git content on the target branch.
 
         Args:
             artifact: The artifact model instance
             parent_artifact: Parent artifact for S3 config inheritance
             file_path: Path within the git repository
-            version: Git ref/commit (defaults to HEAD), or 'stage' for staging area
+            version: Git ref/commit (defaults to HEAD), or 'stage' for overlay
             offset: Byte offset to start reading from
             limit: Maximum bytes to read
+            branch: Branch for staging overlay (resolved from staging if None)
 
         Returns:
             File content as bytes (sliced according to offset/limit)
@@ -7757,13 +8192,27 @@ class ArtifactController:
         from hypha.git.lfs import LFSPointer
 
         s3_config = self._get_s3_config(artifact, parent_artifact)
+        config = artifact.config or {}
+        default_branch = config.get("git_default_branch", "main")
 
-        # Check if reading from staging area
+        # Check if reading from staging area (overlay mode)
         if version == "stage":
-            # Read from git staging area in S3
+            target_branch = resolve_staging_branch(artifact.staging, branch, default_branch)
+
+            # Check if file is marked for removal in staging
+            branch_staging = get_branch_staging(artifact.staging, target_branch)
+            if branch_staging:
+                removed = {f["path"] for f in branch_staging.get("files", []) if f.get("_remove")}
+                if file_path in removed:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"File '{file_path}' has been removed in staging."
+                    )
+
+            # Try reading from per-branch staging in S3
             staging_key = safe_join(
                 s3_config["prefix"],
-                f"{artifact.id}/staging/{file_path}",
+                f"{artifact.id}/staging/{target_branch}/{file_path}",
             )
             async with self._create_client_async(s3_config) as s3_client:
                 try:
@@ -7776,11 +8225,10 @@ class ArtifactController:
                     return await response["Body"].read()
                 except ClientError as e:
                     if e.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
-                        raise HTTPException(
-                            status_code=404,
-                            detail=f"Staged file '{file_path}' not found."
-                        )
-                    raise
+                        # Not in staging — fall through to git branch
+                        version = target_branch
+                    else:
+                        raise
 
         # Read from git repository
         s3_client_factory = partial(self._create_client_async, s3_config)
@@ -7855,6 +8303,10 @@ class ArtifactController:
         encoding: str = PydanticField(
             "utf-8",
             description="Text encoding to use when format='text' or 'json'. Common values: 'utf-8', 'ascii', 'latin-1'."
+        ),
+        branch: Optional[str] = PydanticField(
+            None,
+            description="Target branch for git-storage artifacts. Uses active branch from staging if not specified. Ignored for non-git artifacts."
         ),
         context: Optional[dict] = PydanticField(
             None,
@@ -7949,10 +8401,15 @@ class ArtifactController:
                 s3_config = self._get_s3_config(artifact, parent_artifact)
 
                 if config.get("storage") == "git":
-                    # For git storage, write to staging area
+                    # Git artifacts use per-branch staging
+                    default_branch = config.get("git_default_branch", "main")
+                    artifact.staging = convert_to_branched_staging(artifact.staging, default_branch)
+                    target_branch = resolve_staging_branch(artifact.staging, branch, default_branch)
+
+                    # Write to per-branch staging area
                     staging_key = safe_join(
                         s3_config["prefix"],
-                        f"{artifact.id}/staging/{file_path}",
+                        f"{artifact.id}/staging/{target_branch}/{file_path}",
                     )
                     async with self._create_client_async(s3_config) as s3_client:
                         content_type, _ = mimetypes.guess_type(file_path)
@@ -7963,14 +8420,14 @@ class ArtifactController:
                             **({"ContentType": content_type} if content_type else {}),
                         )
 
-                    # Track file in staging manifest
-                    staging_dict = artifact.staging or {}
-                    staged_files = staging_dict.get("files", [])
+                    # Track file in branch-specific staging manifest
+                    branch_staging = artifact.staging.get(target_branch, {"files": []})
+                    staged_files = branch_staging.get("files", [])
                     # Remove existing entry for this path if present
                     staged_files = [f for f in staged_files if f.get("path") != file_path]
                     staged_files.append({"path": file_path})
-                    staging_dict["files"] = staged_files
-                    artifact.staging = staging_dict
+                    branch_staging["files"] = staged_files
+                    artifact.staging[target_branch] = branch_staging
                     flag_modified(artifact, "staging")
 
                 else:
@@ -8038,7 +8495,11 @@ class ArtifactController:
         ),
         stage: bool = PydanticField(
             False,
-            description="List files from staged (uncommitted) storage. Cannot be used with version parameter."
+            description="List files from staged (uncommitted) storage. For git artifacts, uses overlay: merges staged files on top of committed git tree."
+        ),
+        branch: Optional[str] = PydanticField(
+            None,
+            description="Branch for git-storage artifacts when using stage=True. Uses active branch if not specified. Ignored for non-git artifacts."
         ),
         include_pending: bool = PydanticField(
             False,
@@ -8055,7 +8516,7 @@ class ArtifactController:
         ),
     ) -> Dict[str, Any]:
         """List files stored in an artifact.
-        
+
         This method lists all files within an artifact or a specific directory. Returns
         file metadata including names, sizes, and modification times. Supports listing
         from specific versions or staged storage. Results include both regular files
@@ -8114,7 +8575,7 @@ class ArtifactController:
                 # Check if this is a git-storage artifact
                 config = artifact.config or {}
                 if config.get("storage") == "git":
-                    # Handle git-storage artifacts
+                    # Handle git-storage artifacts (with overlay for stage mode)
                     items = await self._list_git_files(
                         artifact,
                         parent_artifact,
@@ -8122,6 +8583,7 @@ class ArtifactController:
                         limit,
                         offset,
                         version,
+                        branch=branch,
                     )
                     return items
 
@@ -10573,6 +11035,9 @@ class ArtifactController:
             "set_secret": self.set_secret,
             "set_parent": self.set_parent,
             "set_download_weight": self.set_download_weight,
+            # Git staging operations
+            "get_status": self.get_status,
+            "discard_changes": self.discard_changes,
             # Git branch operations
             "create_branch": self.create_branch,
             "delete_branch": self.delete_branch,
