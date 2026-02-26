@@ -34,7 +34,7 @@ from starlette.datastructures import Headers, MutableHeaders
 from hypha_rpc import RPC
 from hypha import hypha_rpc_version
 from hypha.core import UserPermission
-from hypha.core.auth import AUTH0_DOMAIN, extract_token_from_scope
+from hypha.core.auth import AUTH0_DOMAIN, extract_token_from_scope, update_user_scope
 from hypha.core.store import RedisStore
 from hypha.utils import safe_join, is_safe_path
 from hypha.s3 import FSFileResponse
@@ -1007,11 +1007,56 @@ class HTTPProxy:
             """
             try:
                 workspace, service_id, function_key = function_info
-                # The workspace should always be the user's current workspace
-                # derived from the token
-                # We should never trust the workspace specified in the url or query
+                # Determine the target workspace for the RPC connection.
+                # There are two types of tokens:
+                # 1. Workspace-scoped tokens (with wid: in scope, e.g. from
+                #    generate_token) - always use the token's workspace.
+                # 2. Generic user tokens (no wid:, e.g. Auth0 cookies) - these
+                #    represent the user in general and should work in any
+                #    workspace the user has permission for. Use the URL workspace.
+                target_workspace = user_info.scope.current_workspace
+                workspace_from_token = user_info.get_metadata(
+                    "workspace_from_token"
+                )
+                if (
+                    not workspace_from_token
+                    and workspace != target_workspace
+                    and not user_info.is_anonymous
+                ):
+                    # Generic token accessing a different workspace via URL.
+                    # Validate that the workspace exists and the user has access.
+                    workspace_info = await self.store.get_workspace_info(
+                        workspace, load=True
+                    )
+                    if workspace_info is None:
+                        return JSONResponse(
+                            status_code=404,
+                            content={
+                                "success": False,
+                                "detail": f"Workspace '{workspace}' not found",
+                            },
+                        )
+                    # Update user scope for target workspace and check permission
+                    user_info.scope = update_user_scope(
+                        user_info, workspace_info
+                    )
+                    if not user_info.check_permission(
+                        workspace, UserPermission.read
+                    ):
+                        return JSONResponse(
+                            status_code=403,
+                            content={
+                                "success": False,
+                                "detail": (
+                                    f"Permission denied for workspace"
+                                    f" '{workspace}'"
+                                ),
+                            },
+                        )
+                    target_workspace = workspace
+
                 async with self.store.get_workspace_interface(
-                    user_info, user_info.scope.current_workspace
+                    user_info, target_workspace
                 ) as api:
                     if service_id == "ws":
                         service = api

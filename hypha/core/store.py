@@ -1008,6 +1008,15 @@ class RedisStore:
         if token:
             # Token was provided - it must be valid, no fallback to anonymous
             user_info = await self.parse_user_token(token)
+            # Track whether the token had an explicit workspace (wid: in scope).
+            # Generic tokens (e.g. Auth0) have no wid: and current_workspace is None.
+            # Workspace-scoped tokens (from generate_token) have wid: set.
+            # This distinction is used by the HTTP service endpoint to decide
+            # whether to use the URL workspace or the token's workspace.
+            user_info.set_metadata(
+                "workspace_from_token",
+                user_info.scope.current_workspace is not None,
+            )
             if user_info.scope.current_workspace is None:
                 user_info.scope.current_workspace = user_info.get_workspace()
             logger.info(f"login_optional: parsed user_info: id={user_info.id}, is_anonymous={user_info.is_anonymous}")
@@ -1039,6 +1048,10 @@ class RedisStore:
         if not token:
             raise HTTPException(status_code=401, detail="Authentication required")
         user_info = await self.parse_user_token(token)
+        user_info.set_metadata(
+            "workspace_from_token",
+            user_info.scope.current_workspace is not None,
+        )
         if user_info.scope.current_workspace is None:
             user_info.scope.current_workspace = user_info.get_workspace()
         return user_info
