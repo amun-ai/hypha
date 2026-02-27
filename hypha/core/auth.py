@@ -519,6 +519,13 @@ def update_user_scope(
         # infer permission from workspace
         if user_info.get_workspace() == workspace_info.id or workspace_info.owned_by(user_info):
             permission = UserPermission.admin
+        elif workspace_info.id == "public" and not user_info.is_anonymous:
+            # The 'public' workspace is accessible by all authenticated users.
+            # Services within it use their own visibility settings for access
+            # control, but the workspace itself should allow read access so
+            # that HTTP endpoints (e.g. /public/services/hypha-login/report)
+            # are reachable by any authenticated user.
+            permission = UserPermission.read
 
     if permission:
         ws_scopes[workspace_info.id] = permission
