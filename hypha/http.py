@@ -321,6 +321,25 @@ class ASGIRoutingMiddleware:
                             service, workspace, path, scope, receive, send
                         )
                         return
+                except PermissionError as exp:
+                    logger.warning(f"Permission denied in ASGI service: {exp}")
+                    await send(
+                        {
+                            "type": "http.response.start",
+                            "status": 403,
+                            "headers": [
+                                [b"content-type", b"text/plain"],
+                            ],
+                        }
+                    )
+                    await send(
+                        {
+                            "type": "http.response.body",
+                            "body": str(exp).encode(),
+                            "more_body": False,
+                        }
+                    )
+                    return
                 except Exception as exp:
                     logger.exception(f"Error in ASGI service: {exp}")
                     await send(
@@ -648,6 +667,19 @@ class HTTPProxy:
                     status_code=200,
                     content=info.model_dump(),
                 )
+            except PermissionError as exp:
+                return JSONResponse(
+                    status_code=403,
+                    content={"success": False, "detail": str(exp)},
+                )
+            except KeyError:
+                return JSONResponse(
+                    status_code=404,
+                    content={
+                        "success": False,
+                        "detail": f"Workspace '{workspace}' not found",
+                    },
+                )
             except Exception as exp:
                 return JSONResponse(
                     status_code=500,
@@ -680,6 +712,11 @@ class HTTPProxy:
                     status_code=200,
                     content=info,
                 )
+            except PermissionError as exp:
+                return JSONResponse(
+                    status_code=403,
+                    content={"success": False, "detail": str(exp)},
+                )
             except Exception as exp:
                 return JSONResponse(
                     status_code=404,
@@ -706,6 +743,11 @@ class HTTPProxy:
                 return JSONResponse(
                     status_code=200,
                     content=serialize(service_info),
+                )
+            except PermissionError as exp:
+                return JSONResponse(
+                    status_code=403,
+                    content={"success": False, "detail": str(exp)},
                 )
             except Exception as exp:
                 return JSONResponse(
@@ -1108,6 +1150,11 @@ class HTTPProxy:
                         content=results,
                     )
 
+            except PermissionError as e:
+                return JSONResponse(
+                    status_code=403,
+                    content={"success": False, "detail": str(e)},
+                )
             except Exception as e:
                 # SECURITY: Log full traceback server-side, send sanitized message to client
                 logger.error(f"Error in service function endpoint: {e}\n{traceback.format_exc()}")
