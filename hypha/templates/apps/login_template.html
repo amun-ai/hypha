@@ -237,10 +237,8 @@
             // Build token configuration
             const tokenConfig = { expires_in, workspace };
             
-            if (permission && permission !== 'read_write') {
-                // Map user-friendly permission names to enum values
-                const permissionMap = { "read": "r", "read_write": "rw", "admin": "a" };
-                tokenConfig.permission = permissionMap[permission] || permission;
+            if (permission) {
+                tokenConfig.permission = permission;
             }
             
             if (extraScopes && extraScopes.length > 0) {
