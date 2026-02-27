@@ -265,7 +265,7 @@ def generate_root_user_token():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        token = loop.run_until_complete(generate_auth_token(root_user_info, 1800))
+        token = loop.run_until_complete(generate_auth_token(root_user_info, 18000))
         yield token
     finally:
         loop.close()
