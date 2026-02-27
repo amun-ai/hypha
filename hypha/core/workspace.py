@@ -2178,10 +2178,19 @@ class WorkspaceManager:
                 )
                 logger.info(f"Updating built-in service: {service.id}")
             else:
+                service_data = service.model_dump(mode="json")
+                if service.config and service.config.service_embedding is not None:
+                    service.config.service_embedding = None
+                # Emit service_removed + service_added so subscribers
+                # can clean up stale references (e.g. _rintf listeners)
+                # before re-discovering the replaced service.
                 await self._event_bus.broadcast(
-                    ws, "service_updated", service.model_dump()
+                    ws, "service_removed", service_data
                 )
-                logger.info(f"Updating service: {service.id}")
+                await self._event_bus.broadcast(
+                    ws, "service_added", service_data
+                )
+                logger.info(f"Replacing service: {service.id}")
         else:
             if self._enable_service_search:
                 redis_data = await self._embed_service(service.to_redis_dict())
