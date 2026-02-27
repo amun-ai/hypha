@@ -648,6 +648,19 @@ class HTTPProxy:
                     status_code=200,
                     content=info.model_dump(),
                 )
+            except PermissionError as exp:
+                return JSONResponse(
+                    status_code=403,
+                    content={"success": False, "detail": str(exp)},
+                )
+            except KeyError:
+                return JSONResponse(
+                    status_code=404,
+                    content={
+                        "success": False,
+                        "detail": f"Workspace '{workspace}' not found",
+                    },
+                )
             except Exception as exp:
                 return JSONResponse(
                     status_code=500,
