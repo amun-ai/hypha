@@ -11,14 +11,22 @@ import tempfile
 from pathlib import Path
 from hypha_rpc import connect_to_server, login
 import requests
+import socket
 
 
-@pytest.mark.asyncio 
+def _find_free_port():
+    """Find a free port by binding to port 0 and letting the OS assign one."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+@pytest.mark.asyncio
 async def test_unified_auth_with_templates(tmp_path):
     """Test that templates work with unified authentication approach."""
-    
+
     # Start server with local auth enabled
-    port = 39777
+    port = _find_free_port()
     server_proc = subprocess.Popen(
         [sys.executable, "-m", "hypha.server", 
          f"--port={port}", 
@@ -157,7 +165,7 @@ async def test_unified_auth_with_templates(tmp_path):
 async def test_login_function_compatibility():
     """Test that the login() function works with local auth."""
     
-    port = 39778
+    port = _find_free_port()
     server_proc = subprocess.Popen(
         [sys.executable, "-m", "hypha.server",
          f"--port={port}",
