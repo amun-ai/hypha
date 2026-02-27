@@ -1108,6 +1108,15 @@ class RedisStore:
             )
             if user_info.scope.current_workspace is None:
                 user_info.scope.current_workspace = user_info.get_workspace()
+            # Grant read access to the 'public' workspace for all authenticated
+            # users. This is done centrally here so that every endpoint
+            # automatically has the correct permission, rather than requiring
+            # each endpoint to individually call update_user_scope().
+            if (
+                not user_info.is_anonymous
+                and "public" not in user_info.scope.workspaces
+            ):
+                user_info.scope.workspaces["public"] = UserPermission.read
             logger.info(f"login_optional: parsed user_info: id={user_info.id}, is_anonymous={user_info.is_anonymous}")
             return user_info
         # No token provided - use anonymous user
@@ -1143,6 +1152,12 @@ class RedisStore:
         )
         if user_info.scope.current_workspace is None:
             user_info.scope.current_workspace = user_info.get_workspace()
+        # Grant read access to the 'public' workspace (same as login_optional)
+        if (
+            not user_info.is_anonymous
+            and "public" not in user_info.scope.workspaces
+        ):
+            user_info.scope.workspaces["public"] = UserPermission.read
         return user_info
 
     async def get_all_workspace(self):
