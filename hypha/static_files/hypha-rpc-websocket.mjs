@@ -3268,25 +3268,25 @@ async function _connectToServerHTTP(config) {
   // Auto-refresh workspace manager proxy after reconnection.
   // See websocket-client.js for detailed explanation.
   let isInitialRefresh = true;
-  rpc.on("manager_refreshed", async ({ manager: internalManager }) => {
+  rpc.on("manager_refreshed", async () => {
     if (isInitialRefresh) {
       isInitialRefresh = false;
       return;
     }
     try {
-      const freshWm = internalManager;
-      for (const key of Object.keys(freshWm)) {
-        if (typeof freshWm[key] === "function") {
-          wm[key] = freshWm[key];
+      const newTarget = `*/${rpc._connection.manager_id}`;
+      for (const key of Object.keys(wm)) {
+        if (typeof wm[key] === "function" && wm[key].__rpc_object__) {
+          wm[key].__rpc_object__._rtarget = newTarget;
         }
       }
       console.info(
-        "Workspace manager proxy refreshed after reconnection (new manager_id:",
+        "Workspace manager proxy retargeted after reconnection (new manager_id:",
         rpc._connection?.manager_id + ")",
       );
     } catch (err) {
       console.warn(
-        "Failed to refresh workspace manager after reconnection:",
+        "Failed to retarget workspace manager after reconnection:",
         err,
       );
     }
@@ -5705,6 +5705,10 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
     function remote_method() {
       return new Promise(async (resolve, reject) => {
         try {
+          // Read target_id from encoded_method at call time (not captured
+          // at generation time) so that _rtarget can be updated after
+          // reconnection without regenerating the method closures.
+          const target_id = encoded_method._rtarget;
           let local_session_id = (0,_utils_index_js__WEBPACK_IMPORTED_MODULE_0__.randId)();
           if (local_parent) {
             // Store the children session under the parent
@@ -10933,50 +10937,34 @@ async function connectToServer(config) {
   wm.rpc = rpc;
 
   // Auto-refresh workspace manager proxy after reconnection.
-  // When the server restarts, it assigns a new manager_id. The wm proxy
-  // returned to the caller has methods bound to the old manager_id.
-  //
-  // The RPC layer fires "manager_refreshed" IMMEDIATELY after getting the
-  // fresh manager service — before service re-registration. This minimizes
-  // the window where stale methods exist (~100ms instead of ~2-3s).
-  //
-  // Combined with the RPC layer's immediate rejection of pending calls to
-  // the old manager_id, recovery is near-instant.
+  // When the server restarts, it assigns a new manager_id. The remote
+  // methods on wm have their target baked into __rpc_object__._rtarget.
+  // Since remote_method() reads _rtarget at call time (not generation
+  // time), we just update _rtarget on every existing method — no need
+  // to regenerate methods or copy from a fresh proxy. This preserves
+  // locally-overridden methods (registerService, unregisterService, etc.)
+  // that would otherwise be lost by wholesale function copying.
   let isInitialRefresh = true;
-  rpc.on("manager_refreshed", async ({ manager: internalManager }) => {
+  rpc.on("manager_refreshed", async () => {
     if (isInitialRefresh) {
       isInitialRefresh = false;
       return; // Skip the first event (initial connection, wm is already fresh)
     }
     try {
-      let freshWm;
-      if (config.kwargs_expansion) {
-        // kwargs_expansion changes the method signatures, so we need to
-        // fetch a new manager with matching config
-        freshWm = await rpc.get_manager_service({
-          timeout: config.method_timeout || 30,
-          case_conversion: "camel",
-          kwargs_expansion: config.kwargs_expansion,
-        });
-      } else {
-        // The internal manager already uses case_conversion: "camel",
-        // so we can copy directly without an extra RPC call
-        freshWm = internalManager;
-      }
-      // Copy all function properties from fresh wm onto existing wm object.
-      // This preserves the caller's reference while updating method targets.
-      for (const key of Object.keys(freshWm)) {
-        if (typeof freshWm[key] === "function") {
-          wm[key] = freshWm[key];
+      const newTarget = `*/${rpc._connection.manager_id}`;
+      // Retarget all remote methods on the wm proxy to the new manager
+      for (const key of Object.keys(wm)) {
+        if (typeof wm[key] === "function" && wm[key].__rpc_object__) {
+          wm[key].__rpc_object__._rtarget = newTarget;
         }
       }
       console.info(
-        "Workspace manager proxy refreshed after reconnection (new manager_id:",
+        "Workspace manager proxy retargeted after reconnection (new manager_id:",
         rpc._connection?.manager_id + ")",
       );
     } catch (err) {
       console.warn(
-        "Failed to refresh workspace manager after reconnection:",
+        "Failed to retarget workspace manager after reconnection:",
         err,
       );
     }
