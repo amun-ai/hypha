@@ -3829,6 +3829,8 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
     };
     // Index: target_id -> Set of top-level session keys for fast cleanup
     this._targetIdIndex = {};
+    // Index: allowed_caller -> Set of _rintf service IDs for lifecycle cleanup
+    this._rintfCallerIndex = {};
     // Track last known manager_id for stale call rejection on reconnection
     this._last_manager_id = null;
 
@@ -4471,23 +4473,55 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
     this._fire("disconnected");
   }
 
+  /**
+   * Unregister a single _rintf service and remove it from the caller index.
+   * Safe to call even if the service was already removed.
+   */
+  _unregisterRintfService(serviceId, allowedCaller) {
+    if (this._services[serviceId]) {
+      delete this._services[serviceId];
+    }
+    if (allowedCaller && this._rintfCallerIndex[allowedCaller]) {
+      this._rintfCallerIndex[allowedCaller].delete(serviceId);
+      if (this._rintfCallerIndex[allowedCaller].size === 0) {
+        delete this._rintfCallerIndex[allowedCaller];
+      }
+    }
+  }
+
+  /**
+   * Remove all _rintf services whose allowed caller is the given client.
+   * Passive lifecycle cleanup: when a client disconnects, any _rintf
+   * callbacks that only it could invoke become dead resources.
+   * @returns {number} Number of _rintf services cleaned up
+   */
+  _cleanupRintfForCaller(clientId) {
+    const serviceIds = this._rintfCallerIndex[clientId];
+    if (!serviceIds) return 0;
+    delete this._rintfCallerIndex[clientId];
+    let cleaned = 0;
+    for (const sid of serviceIds) {
+      if (this._services[sid]) {
+        delete this._services[sid];
+        cleaned++;
+      }
+    }
+    return cleaned;
+  }
+
   async _handleClientDisconnected(clientId) {
     try {
-      // console.debug(`Handling disconnection for client: ${clientId}`);
-
       // Clean up all sessions for the disconnected client
       const sessionsCleaned = this._cleanupSessionsForClient(clientId);
 
-      if (sessionsCleaned > 0) {
-        // console.debug(
-          // `Cleaned up ${sessionsCleaned} sessions for disconnected client: ${clientId}`,
-        // );
-      }
+      // Clean up _rintf services whose allowed caller is the disconnected client
+      const rintfCleaned = this._cleanupRintfForCaller(clientId);
 
       // Fire an event to notify about the client disconnection
       this._fire("remote_client_disconnected", {
         client_id: clientId,
         sessions_cleaned: sessionsCleaned,
+        rintf_cleaned: rintfCleaned,
       });
     } catch (e) {
       console.error(
@@ -4649,6 +4683,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       }
 
       this._targetIdIndex = {};
+      this._rintfCallerIndex = {};
     } catch (e) {
       console.error(`Error during cleanup on disconnect: ${e}`);
     }
@@ -4821,6 +4856,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
     visibility,
     authorized_workspaces,
     trusted_keys,
+    rintf_allowed_caller,
   ) {
     if (typeof aObject === "function") {
       // mark the method as a remote method that requires context
@@ -4834,6 +4870,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
         visibility: visibility,
         authorized_workspaces: authorized_workspaces,
         trusted_keys: trusted_keys,
+        rintf_allowed_caller: rintf_allowed_caller,
       });
     } else if (aObject instanceof Array || aObject instanceof Object) {
       for (let key of Object.keys(aObject)) {
@@ -4867,6 +4904,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
           visibility,
           authorized_workspaces,
           trusted_keys,
+          rintf_allowed_caller,
         );
       }
     }
@@ -4951,6 +4989,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
         trusted_keys.add(keyHex);
       }
     }
+    const rintf_allowed_caller = api.config._rintf_allowed_caller || null;
     this._annotate_service_methods(
       api,
       api["id"],
@@ -4959,6 +4998,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       visibility,
       authorized_workspaces,
       trusted_keys,
+      rintf_allowed_caller,
     );
 
     if (this._services[api.id]) {
@@ -5078,6 +5118,13 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
     // Auto-detect _rintf services (local-only, never registered with server)
     if (service_id.startsWith("_rintf_")) {
       notify = false;
+      // Also clean up from the caller index
+      for (const [caller, sids] of Object.entries(this._rintfCallerIndex)) {
+        sids.delete(service_id);
+        if (sids.size === 0) {
+          delete this._rintfCallerIndex[caller];
+        }
+      }
     }
     if (notify) {
       const manager = await this.get_manager_service({
@@ -5425,6 +5472,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
 
     // Clear the target_id index since all sessions are removed
     this._targetIdIndex = {};
+    this._rintfCallerIndex = {};
 
     // console.debug(`Force cleaning up ${cleaned_count} sessions`);
   }
@@ -6118,6 +6166,25 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
             remote_client_id === this._connection.manager_id
           ) {
             // Access granted
+          }
+          // Allow _rintf callbacks from the specific client they were sent to
+          else if (
+            this._method_annotations.get(method).rintf_allowed_caller
+          ) {
+            const allowed =
+              this._method_annotations.get(method).rintf_allowed_caller;
+            const caller = data.from || "";
+            if (caller !== allowed) {
+              throw new Error(
+                "Permission denied for _rintf callback " +
+                  method_name +
+                  ", caller " +
+                  caller +
+                  " is not the allowed caller " +
+                  allowed,
+              );
+            }
+            // Access granted — caller matches the _rintf target
           } else {
             throw new Error(
               "Permission denied for invoking protected method " +
@@ -6613,13 +6680,45 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
         )
       ) {
         const serviceId = `_rintf_${(0,_utils_index_js__WEBPACK_IMPORTED_MODULE_0__.randId)()}`;
+        // Resolve the allowed caller from the session's target_id.
+        // Only the client this _rintf is being sent to can call it back.
+        let allowedCaller = null;
+        if (session_id) {
+          const topKey = session_id.split(".")[0];
+          const sessionStore = this._object_store[topKey];
+          if (sessionStore && sessionStore.target_id) {
+            allowedCaller = sessionStore.target_id;
+          }
+        }
         const serviceApi = { id: serviceId };
+        if (allowedCaller) {
+          serviceApi.config = {
+            visibility: "protected",
+            _rintf_allowed_caller: allowedCaller,
+          };
+        }
+
+        // Add _dispose method for active lifecycle management.
+        // The remote side (allowed caller) can call _dispose() to
+        // actively unregister this _rintf service when it's done.
+        const self = this;
+        serviceApi._dispose = () => {
+          self._unregisterRintfService(serviceId, allowedCaller);
+        };
+
         for (const k of Object.keys(aObject)) {
           if (!k.startsWith("_") && typeof aObject[k] === "function") {
             serviceApi[k] = aObject[k];
           }
         }
         this.add_service(serviceApi, true);
+        // Track in caller index for passive cleanup on disconnect
+        if (allowedCaller) {
+          if (!this._rintfCallerIndex[allowedCaller]) {
+            this._rintfCallerIndex[allowedCaller] = new Set();
+          }
+          this._rintfCallerIndex[allowedCaller].add(serviceId);
+        }
         // Store service_id back on the original object so the caller
         // can later call rpc.unregister_service(serviceId) to clean up.
         aObject._rintf_service_id = serviceId;
@@ -6632,6 +6731,12 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
             local_workspace,
           );
         }
+        // Encode _dispose so the remote side can call it
+        bObject._dispose = await this._encode(
+          serviceApi._dispose,
+          session_id,
+          local_workspace,
+        );
         bObject._rintf_service_id = serviceId;
         return bObject;
       }
