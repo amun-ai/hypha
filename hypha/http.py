@@ -632,6 +632,26 @@ class HTTPProxy:
         ):
             """Route for checking details of a workspace."""
             try:
+                info = await self.store.get_workspace_info(workspace, load=True)
+                if info is None:
+                    return JSONResponse(
+                        status_code=404,
+                        content={
+                            "success": False,
+                            "detail": f"Workspace '{workspace}' not found",
+                        },
+                    )
+                # For generic tokens (e.g. Auth0 cookies without workspace scope),
+                # update user scope so permission check works for the target workspace
+                workspace_from_token = user_info.get_metadata(
+                    "workspace_from_token"
+                )
+                if (
+                    not workspace_from_token
+                    and not user_info.is_anonymous
+                    and workspace != user_info.scope.current_workspace
+                ):
+                    user_info.scope = update_user_scope(user_info, info)
                 if not user_info.check_permission(workspace, UserPermission.read):
                     return JSONResponse(
                         status_code=403,
@@ -643,7 +663,6 @@ class HTTPProxy:
                             ),
                         },
                     )
-                info = await self.store.get_workspace_info(workspace, load=True)
                 return JSONResponse(
                     status_code=200,
                     content=info.model_dump(),
@@ -841,6 +860,23 @@ class HTTPProxy:
             user_info: store.login_optional = Depends(store.login_optional),
         ) -> Response:
             """Route for getting browser app files."""
+            # For generic tokens (e.g. Auth0 cookies without workspace scope),
+            # update user scope so permission check works for the target workspace
+            workspace_from_token = user_info.get_metadata(
+                "workspace_from_token"
+            )
+            if (
+                not workspace_from_token
+                and not user_info.is_anonymous
+                and workspace != user_info.scope.current_workspace
+            ):
+                workspace_info = await self.store.get_workspace_info(
+                    workspace, load=True
+                )
+                if workspace_info:
+                    user_info.scope = update_user_scope(
+                        user_info, workspace_info
+                    )
             if not user_info.check_permission(workspace, UserPermission.read):
                 return JSONResponse(
                     status_code=403,
