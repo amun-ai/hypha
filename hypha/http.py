@@ -1036,23 +1036,27 @@ class HTTPProxy:
                                 "detail": f"Workspace '{workspace}' not found",
                             },
                         )
-                    # Update user scope for target workspace and check permission
-                    user_info.scope = update_user_scope(
-                        user_info, workspace_info
-                    )
-                    if not user_info.check_permission(
-                        workspace, UserPermission.read
-                    ):
-                        return JSONResponse(
-                            status_code=403,
-                            content={
-                                "success": False,
-                                "detail": (
-                                    f"Permission denied for workspace"
-                                    f" '{workspace}'"
-                                ),
-                            },
+                    # For the 'public' workspace, skip the workspace-level
+                    # permission check. Service visibility (public/protected)
+                    # controls access to individual services, and the public
+                    # workspace exists to host publicly accessible services.
+                    if workspace != "public":
+                        user_info.scope = update_user_scope(
+                            user_info, workspace_info
                         )
+                        if not user_info.check_permission(
+                            workspace, UserPermission.read
+                        ):
+                            return JSONResponse(
+                                status_code=403,
+                                content={
+                                    "success": False,
+                                    "detail": (
+                                        f"Permission denied for workspace"
+                                        f" '{workspace}'"
+                                    ),
+                                },
+                            )
                     target_workspace = workspace
 
                 async with self.store.get_workspace_interface(
