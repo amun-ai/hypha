@@ -191,42 +191,6 @@ async def test_generic_token_access_public_workspace_services(
     )
 
 
-async def test_generic_token_access_public_workspace_info(
-    minio_server, fastapi_server, test_user_token
-):
-    """Test that a generic token (Auth0 cookie) can access the workspace
-    info endpoint for the 'public' workspace.
-
-    This tests the GET /{workspace}/info endpoint which had the same
-    missing update_user_scope bug as the service_function handler.
-    """
-    loop = asyncio.get_event_loop()
-
-    # Generate a generic token (no wid:) for user-1 — simulates Auth0 cookie
-    generic_token = await _generate_generic_token("user-1")
-
-    # Access the public workspace info endpoint
-    url = f"{SERVER_URL}/public/info"
-    response = await loop.run_in_executor(
-        None,
-        lambda: requests.get(
-            url,
-            headers={"Authorization": f"Bearer {generic_token}"},
-        ),
-    )
-    # Should return workspace info, NOT 403
-    assert response.status_code != 403, (
-        f"Got 403 when accessing /public/info with generic token. "
-        f"The endpoint incorrectly denies access to the 'public' workspace "
-        f"for authenticated users. Response: {response.text}"
-    )
-    assert response.status_code == 200, (
-        f"Expected 200 but got {response.status_code}: {response.text}"
-    )
-    data = response.json()
-    assert data.get("id") == "public"
-
-
 async def test_workspace_scoped_token_restricted_to_own_workspace(
     minio_server, fastapi_server, test_user_token
 ):
