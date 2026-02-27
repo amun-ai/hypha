@@ -144,6 +144,53 @@ async def test_generic_token_cross_workspace_http_access(
     await api.disconnect()
 
 
+async def test_generic_token_access_public_workspace_services(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test that a generic token (Auth0 cookie) can access public services
+    in the 'public' workspace via HTTP.
+
+    This reproduces the login flow bug where:
+    1. User authenticates via Auth0, gets a generic token (no wid:)
+    2. Auth0 callback redirects to /public/services/hypha-login/report
+    3. The HTTP handler checks workspace permissions for 'public'
+    4. update_user_scope doesn't grant permission for 'public' to non-owners
+    5. User gets 403 Forbidden instead of the report succeeding
+
+    The 'public' workspace should be accessible by all authenticated users.
+    """
+    loop = asyncio.get_event_loop()
+
+    # Generate a generic token (no wid:) for user-1 — simulates Auth0 cookie
+    generic_token = await _generate_generic_token("user-1")
+
+    # The 'public' workspace always exists and has the hypha-login service.
+    # Try to access a public service in the 'public' workspace via HTTP GET.
+    # Using the 'check' endpoint as a simple GET test (it will return an error
+    # about invalid key, but NOT a 403 permission error).
+    url = f"{SERVER_URL}/public/services/hypha-login/check?key=nonexistent-test-key&timeout=1"
+    response = await loop.run_in_executor(
+        None,
+        lambda: requests.get(
+            url,
+            headers={"Authorization": f"Bearer {generic_token}"},
+        ),
+    )
+    # The key "nonexistent-test-key" won't exist, so we expect a 400 (bad request)
+    # from the check_login function — NOT a 403 permission denied.
+    # If we get 403, it means the HTTP handler is blocking access to the 'public'
+    # workspace for authenticated users with generic tokens.
+    assert response.status_code != 403, (
+        f"Got 403 when accessing public workspace service with generic token. "
+        f"This means the HTTP handler incorrectly denies access to the 'public' "
+        f"workspace for authenticated users. Response: {response.text}"
+    )
+    # Should be 400 (invalid key) not 403 (permission denied)
+    assert response.status_code == 400, (
+        f"Expected 400 (invalid key) but got {response.status_code}: {response.text}"
+    )
+
+
 async def test_workspace_scoped_token_restricted_to_own_workspace(
     minio_server, fastapi_server, test_user_token
 ):
