@@ -16,9 +16,22 @@ logger = logging.getLogger("queue")
 logger.setLevel(LOGLEVEL)
 
 
+import re
+
+_QUEUE_NAME_PATTERN = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_\-\.]{0,127}$')
+
+def _validate_queue_name(queue_name: str):
+    """Validate queue name format."""
+    if not queue_name or not _QUEUE_NAME_PATTERN.match(queue_name):
+        raise ValueError(
+            f"Invalid queue name: '{queue_name}'. "
+            "Queue names must be 1-128 characters, start with alphanumeric, "
+            "and contain only alphanumeric, hyphens, underscores, and dots."
+        )
+
 def create_queue_service(store: RedisStore):
     """Create a distributed task queue service for Hypha.
-    
+
     This service provides a Redis-backed queue system for asynchronous task processing,
     enabling reliable task distribution across workers in a workspace.
     """
@@ -59,6 +72,7 @@ def create_queue_service(store: RedisStore):
                 "format": "csv"
             })
         """
+        _validate_queue_name(queue_name)
         workspace = context["ws"]
         await redis.lpush(workspace + ":q:" + queue_name, json.dumps(task))
 
@@ -102,6 +116,7 @@ def create_queue_service(store: RedisStore):
             # Non-blocking pop
             task = await pop_task("image-processing", timeout=0)
         """
+        _validate_queue_name(queue_name)
         workspace = context["ws"]
         task = await redis.brpop(workspace + ":q:" + queue_name, timeout=int(timeout))
         if task is None:
@@ -133,6 +148,7 @@ def create_queue_service(store: RedisStore):
             if length < 100:
                 await push_task("batch-jobs", new_task)
         """
+        _validate_queue_name(queue_name)
         workspace = context["ws"]
         length = await redis.llen(workspace + ":q:" + queue_name)
         return length
@@ -172,6 +188,7 @@ def create_queue_service(store: RedisStore):
             - Maximum 100 tasks can be peeked at once
             - Does not modify the queue state
         """
+        _validate_queue_name(queue_name)
         workspace = context["ws"]
         tasks = await redis.lrange(workspace + ":q:" + queue_name, 0, n - 1)
         # Reverse to match pop (BRPOP) order: LPUSH adds to left, BRPOP reads from right,

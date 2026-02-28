@@ -32,6 +32,7 @@ import jose
 from starlette.datastructures import Headers, MutableHeaders
 
 from hypha_rpc import RPC
+from hypha_rpc.rpc import RemoteException
 from hypha import hypha_rpc_version
 from hypha.core import UserPermission
 from hypha.core.auth import AUTH0_DOMAIN, extract_token_from_scope, update_user_scope
@@ -94,6 +95,18 @@ def _get_safe_error_detail(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc_msg}"
 
 
+def _get_status_for_remote_exception(exc: RemoteException) -> int:
+    """Map a RemoteException to an appropriate HTTP status code based on the wrapped error type."""
+    msg = str(exc)
+    if "KeyError:" in msg or "not found" in msg.lower():
+        return 404
+    if "PermissionError:" in msg or "Permission denied" in msg:
+        return 403
+    if "TypeError:" in msg or "ValueError:" in msg:
+        return 400
+    return 500
+
+
 class MsgpackResponse(Response):
     """Response class for msgpack encoding."""
 
@@ -138,7 +151,9 @@ def get_value(keys, service):
     """Get service function by a key string."""
     keys = keys.split(".")
     key = keys[0]
-    value = service[key]
+    value = service.get(key)
+    if value is None:
+        return None
     if len(keys) > 1:
         for key in keys[1:]:
             value = value.get(key)
@@ -1037,7 +1052,13 @@ class HTTPProxy:
             user_info: store.login_optional = Depends(store.login_optional),
         ):
             """Run service function by keys."""
-            function_kwargs = await extracted_kwargs(request, use_function_kwargs=False)
+            try:
+                function_kwargs = await extracted_kwargs(request, use_function_kwargs=False)
+            except (json.JSONDecodeError, ValueError) as e:
+                return JSONResponse(
+                    status_code=400,
+                    content={"success": False, "detail": f"Invalid request body: {e}"},
+                )
             response_type = detected_response_type(request)
             try:
                 return await service_function(
@@ -1055,6 +1076,19 @@ class HTTPProxy:
             except KeyError as e:
                 return JSONResponse(
                     status_code=404,
+                    content={"success": False, "detail": _get_safe_error_detail(e)},
+                )
+            except json.JSONDecodeError as e:
+                return JSONResponse(
+                    status_code=400,
+                    content={"success": False, "detail": f"Invalid JSON in request body: {e.msg}"},
+                )
+            except RemoteException as e:
+                status_code = _get_status_for_remote_exception(e)
+                if status_code >= 500:
+                    logger.error(f"RemoteException in service call: {e}\n{traceback.format_exc()}")
+                return JSONResponse(
+                    status_code=status_code,
                     content={"success": False, "detail": _get_safe_error_detail(e)},
                 )
             except Exception as e:
@@ -1169,6 +1203,17 @@ class HTTPProxy:
                                 "detail": _get_safe_error_detail(e),
                             },
                         )
+                    except RemoteException as e:
+                        status_code = _get_status_for_remote_exception(e)
+                        if status_code >= 500:
+                            logger.error(f"RemoteException calling service function: {e}\n{traceback.format_exc()}")
+                        return JSONResponse(
+                            status_code=status_code,
+                            content={
+                                "success": False,
+                                "detail": _get_safe_error_detail(e),
+                            },
+                        )
                     except Exception as e:
                         # SECURITY: Log full traceback server-side, send sanitized message to client
                         logger.error(f"Error calling service function: {e}\n{traceback.format_exc()}")
@@ -1199,6 +1244,14 @@ class HTTPProxy:
                 return JSONResponse(
                     status_code=403,
                     content={"success": False, "detail": str(e)},
+                )
+            except RemoteException as e:
+                status_code = _get_status_for_remote_exception(e)
+                if status_code >= 500:
+                    logger.error(f"RemoteException in service endpoint: {e}\n{traceback.format_exc()}")
+                return JSONResponse(
+                    status_code=status_code,
+                    content={"success": False, "detail": _get_safe_error_detail(e)},
                 )
             except Exception as e:
                 # SECURITY: Log full traceback server-side, send sanitized message to client

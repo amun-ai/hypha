@@ -886,7 +886,7 @@ Key built-in services:
    - **Python/JS SDK** (recommended): Full bidirectional communication, callbacks, streaming. Use `pip install hypha-rpc`.
    - **HTTP REST**: Stateless, works with `curl`/`fetch`. Good for calling existing services. Cannot register services or receive callbacks.
 3. **Check workspace status** — `check_status` verifies the workspace is ready and shows your permission level
-4. **Discover services** — `list_services` shows all available services in the workspace
+4. **Discover services** — Use `GET /{workspace}/services/` (note trailing slash) to list services via HTTP. The RPC `list_services()` method returns services in your *own* workspace, not the target workspace.
 5. **Access public services** — Built-in services like `artifact-manager`, `queue`, `server-apps` are in the `public` workspace. Use `public/` prefix in HTTP URLs.
 6. **Handle errors** — Check the Error Handling section below for common issues and solutions
 
