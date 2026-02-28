@@ -845,10 +845,54 @@ curl -X POST "{server_url}/{workspace}/services/%7E/check_status" \\\\
 - Upload/download files with presigned URLs
 - HTTP proxy endpoint: `{server_url}/{workspace}/files/`
 
-### 5. Server Applications
-- Install and manage serverless applications (web-worker, web-python, window, iframe)
-- Deploy HTTP endpoints via ASGI (FastAPI) or serverless functions
-- Access apps at: `{server_url}/{workspace}/apps/{{app_id}}/`
+### 5. Server Applications & HTTP Endpoints
+
+Hypha provides **two approaches** for deploying HTTP endpoints:
+
+**A) ASGI Applications** — Deploy full web frameworks (FastAPI, Django, Starlette) as Hypha services.
+- Register with `type: "asgi"` and a `serve` function that handles ASGI scope/receive/send
+- Ideal for complex web apps, file uploads, WebSocket endpoints, middleware
+- URL pattern: `{server_url}/{workspace}/apps/{{service_id}}/{{path}}`
+- See full guide: [ASGI Apps Guide](GUIDE/asgi-apps.md)
+
+**B) Serverless Functions** — Define simple HTTP handler functions with automatic URL routing.
+- Register with `type: "functions"` and named handler functions
+- Ideal for REST APIs, webhooks, microservices, quick prototypes
+- Supports nested paths (e.g., `api/v1/users`) and default fallback handlers
+- URL pattern: `{server_url}/{workspace}/apps/{{service_id}}/{{function_name}}/`
+- See full guide: [Serverless Functions Guide](GUIDE/serverless-functions.md)
+
+**C) Managed Server Apps** — Install and manage applications via the `server-apps` controller.
+- Application types: `web-worker` (JavaScript), `web-python` (Pyodide), `window`, `iframe`
+- Auto-scaling, lifecycle management, and on-demand startup
+- Use `server-apps` service to install, start, stop, and uninstall apps
+- See [REFERENCE/server-apps.md](REFERENCE/server-apps.md) for the full API
+
+Quick example — direct ASGI registration (no server-apps needed):
+```python
+from hypha_rpc import connect_to_server
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/hello")
+async def hello():
+    return {{"message": "Hello from Hypha!"}}
+
+async def serve(args):
+    await app(args["scope"], args["receive"], args["send"])
+
+async with connect_to_server({{"server_url": "{server_url}"}}) as server:
+    await server.register_service({{
+        "id": "my-api",
+        "type": "asgi",
+        "serve": serve,
+        "config": {{"visibility": "public"}}
+    }})
+    # Accessible at: {server_url}/{workspace}/apps/my-api/hello
+    print("Service registered. Press Ctrl+C to stop.")
+    await asyncio.sleep(float("inf"))  # Keep alive
+```
 
 ### 6. MCP Integration (if enabled)
 - Expose Hypha services as MCP endpoints for AI tools (Claude, Cursor, etc.)
@@ -922,6 +966,8 @@ These URLs provide general Hypha documentation accessible without authentication
 - **API Reference**: `{server_url}/ws/agent-skills/REFERENCE.md`
 - **Per-Service Reference**: `{server_url}/ws/agent-skills/REFERENCE/{{service-id}}.md`
 - **Examples**: `{server_url}/ws/agent-skills/EXAMPLES.md`
+- **ASGI Apps Guide**: `{server_url}/ws/agent-skills/GUIDE/asgi-apps.md`
+- **Serverless Functions Guide**: `{server_url}/ws/agent-skills/GUIDE/serverless-functions.md`
 
 ### Workspace-Specific Documentation (Auth Required)
 
@@ -933,6 +979,8 @@ For documentation tailored to a specific workspace (includes workspace services,
 - **Examples**: `{server_url}/{{workspace}}/agent-skills/EXAMPLES.md`
 - **Workspace Context**: `{server_url}/{{workspace}}/agent-skills/WORKSPACE_CONTEXT.md`
 - **Source Code**: `{server_url}/{{workspace}}/agent-skills/SOURCE/{{service-id}}/{{method-name}}`
+- **ASGI Apps Guide**: `{server_url}/{{workspace}}/agent-skills/GUIDE/asgi-apps.md`
+- **Serverless Functions Guide**: `{server_url}/{{workspace}}/agent-skills/GUIDE/serverless-functions.md`
 
 Replace `{{workspace}}` with the target workspace ID and provide a Bearer token via the `Authorization` header.
 
@@ -946,6 +994,12 @@ For detailed API documentation, see:
 - [REFERENCE/s3-storage.md](REFERENCE/s3-storage.md) - S3 Storage full API
 - [EXAMPLES.md](EXAMPLES.md) - Code examples for every feature
 - [WORKSPACE_CONTEXT.md](WORKSPACE_CONTEXT.md) - This workspace's specific configuration
+
+### Guides
+
+In-depth guides for building HTTP endpoints and web applications:
+- [GUIDE/asgi-apps.md](GUIDE/asgi-apps.md) - Deploy FastAPI, Django, and ASGI frameworks as Hypha services
+- [GUIDE/serverless-functions.md](GUIDE/serverless-functions.md) - Simple HTTP functions with automatic routing
 """
 
 
@@ -1338,10 +1392,11 @@ Comprehensive examples for workspace `{workspace}`.
 5. [Git Storage & Pull Requests](#git-storage--pull-request-examples)
 6. [S3 Storage Operations](#s3-storage-examples)
 7. [Server Applications](#server-app-examples)
-8. [MCP Integration](#mcp-integration-examples)
-9. [A2A Protocol](#a2a-agent-to-agent-examples)
-10. [Vector Search](#vector-search-examples)
-11. [Error Handling](#error-handling-examples)
+8. [Direct ASGI & Functions Registration](#direct-asgi--functions-registration)
+9. [MCP Integration](#mcp-integration-examples)
+10. [A2A Protocol](#a2a-agent-to-agent-examples)
+11. [Vector Search](#vector-search-examples)
+12. [Error Handling](#error-handling-examples)
 
 ---
 
@@ -2061,6 +2116,159 @@ async def main():
 | `window` | Full browser context | DOM manipulation |
 | `iframe` | Isolated iframe | Legacy/untrusted apps |
 | Custom types | Via custom workers | Specialized runtimes |
+
+---
+
+## Direct ASGI & Functions Registration
+
+You can register ASGI services and serverless functions **directly** without using the `server-apps` controller. This is useful when you have a running Python/JavaScript client that stays connected.
+
+> **Note**: Services registered this way are ephemeral — they exist only while your client is connected. For persistent deployment, use the `server-apps` controller above.
+
+For comprehensive guides, see:
+- [ASGI Apps Guide](GUIDE/asgi-apps.md) — Full guide with streaming, Pyodide, OpenAI emulation, and more
+- [Serverless Functions Guide](GUIDE/serverless-functions.md) — Functions vs ASGI comparison, nested paths, fallbacks
+
+### Direct ASGI Registration (FastAPI)
+
+```python
+from hypha_rpc import connect_to_server
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+import asyncio
+
+app = FastAPI(title="My Direct API")
+
+@app.get("/", response_class=HTMLResponse)
+async def home():
+    return "<h1>Hello from Hypha!</h1><p>This is a directly registered ASGI service.</p>"
+
+@app.get("/api/greet/{{name}}")
+async def greet(name: str):
+    return {{"greeting": f"Hello, {{name}}!", "service": "direct-asgi"}}
+
+@app.post("/api/echo")
+async def echo(data: dict):
+    return {{"echo": data}}
+
+async def serve(args):
+    \"\"\"ASGI serve function — receives scope, receive, send from Hypha.\"\"\"
+    await app(args["scope"], args["receive"], args["send"])
+
+async def main():
+    async with connect_to_server({{"server_url": "{server_url}"}}) as server:
+        await server.register_service({{
+            "id": "my-direct-api",
+            "type": "asgi",
+            "serve": serve,
+            "config": {{"visibility": "public"}}
+        }})
+        print("ASGI service registered!")
+        print(f"Access at: {server_url}/{workspace}/apps/my-direct-api/")
+        print(f"API: {server_url}/{workspace}/apps/my-direct-api/api/greet/World")
+        # Keep the connection alive
+        await asyncio.sleep(float("inf"))
+
+asyncio.run(main())
+```
+
+### Direct Serverless Functions Registration (JavaScript)
+
+```javascript
+// Register serverless functions with nested routing
+const {{ connectToServer }} = require('hypha-rpc');
+
+const server = await connectToServer({{
+    server_url: "{server_url}"
+}});
+
+await server.registerService({{
+    id: "my-functions",
+    type: "functions",
+    config: {{ visibility: "public" }},
+    // Simple endpoint
+    "hello": async (event) => {{
+        return {{
+            status: 200,
+            headers: {{ "Content-Type": "application/json" }},
+            body: JSON.stringify({{ message: "Hello World!" }})
+        }};
+    }},
+    // Nested API routes
+    "api": {{
+        "v1": {{
+            "users": async (event) => {{
+                if (event.method === "GET") {{
+                    return {{ status: 200, body: JSON.stringify({{ users: ["alice", "bob"] }}) }};
+                }} else if (event.method === "POST") {{
+                    const data = JSON.parse(event.body);
+                    return {{ status: 201, body: JSON.stringify({{ created: data }}) }};
+                }}
+            }}
+        }}
+    }},
+    // Default fallback for unmatched paths
+    "default": async (event) => {{
+        return {{
+            status: 404,
+            body: JSON.stringify({{
+                error: "Not found",
+                path: event.function_path,
+                method: event.method
+            }})
+        }};
+    }}
+}});
+
+// Access via HTTP:
+// GET {server_url}/{workspace}/apps/my-functions/hello/
+// GET {server_url}/{workspace}/apps/my-functions/api/v1/users/
+// POST {server_url}/{workspace}/apps/my-functions/api/v1/users/
+// GET {server_url}/{workspace}/apps/my-functions/anything-else/  (hits default)
+```
+
+### Direct Serverless Functions Registration (Python)
+
+```python
+from hypha_rpc import connect_to_server
+import json, asyncio
+
+async def main():
+    async with connect_to_server({{"server_url": "{server_url}"}}) as server:
+        async def hello(event):
+            return {{
+                "status": 200,
+                "headers": {{"Content-Type": "application/json"}},
+                "body": json.dumps({{"message": "Hello from Python!"}})
+            }}
+
+        async def handle_data(event):
+            if event.get("method") == "POST":
+                body = event.get("body", b"")
+                if isinstance(body, bytes):
+                    body = body.decode()
+                data = json.loads(body) if body else {{}}
+                return {{
+                    "status": 200,
+                    "body": json.dumps({{"received": data}})
+                }}
+            return {{
+                "status": 200,
+                "body": json.dumps({{"info": "POST data to this endpoint"}})
+            }}
+
+        await server.register_service({{
+            "id": "python-functions",
+            "type": "functions",
+            "config": {{"visibility": "public"}},
+            "hello": hello,
+            "data": handle_data,
+        }})
+        print(f"Functions at: {server_url}/{workspace}/apps/python-functions/hello/")
+        await asyncio.sleep(float("inf"))
+
+asyncio.run(main())
+```
 
 ---
 
@@ -3314,6 +3522,16 @@ For high-level usage, refer to REFERENCE.md and EXAMPLES.md.
             return await handle_create_zip(
                 scope, services=services, public_services=public_services
             )
+        elif path.startswith("GUIDE/") and path.endswith(".md"):
+            # Serve guide documents from the docs/ directory
+            guide_name = path[len("GUIDE/"):]
+            content = load_documentation_file(guide_name)
+            if content is None:
+                return {
+                    "status": 404,
+                    "headers": {"Content-Type": "text/plain"},
+                    "body": f"Guide not found: {guide_name}"
+                }
         else:
             return {
                 "status": 404,
@@ -3570,10 +3788,11 @@ Store and manage files, datasets, models, and applications with Git-like version
 - Upload/download via presigned S3 URLs
 - **Reference**: [REFERENCE/artifact-manager.md](REFERENCE/artifact-manager.md)
 
-### 3. Server Applications
-Deploy serverless applications that run in browser workers, Python sandboxes, or custom runtimes. Applications expose HTTP endpoints via ASGI (e.g., FastAPI) or serverless functions.
-- Install apps from source code or URLs
-- Start/stop/scale worker instances
+### 3. Server Applications & HTTP Endpoints
+Deploy HTTP endpoints and web applications using two approaches:
+- **ASGI Applications**: Deploy FastAPI, Django, or other ASGI frameworks — [ASGI Apps Guide](GUIDE/asgi-apps.md)
+- **Serverless Functions**: Simple HTTP handler functions with automatic URL routing — [Functions Guide](GUIDE/serverless-functions.md)
+- **Managed Server Apps**: Install and manage applications via the `server-apps` controller
 - Access apps at: `{server_url}/WORKSPACE/apps/{{app_id}}/`
 - **Reference**: [REFERENCE/server-apps.md](REFERENCE/server-apps.md)
 
@@ -3639,6 +3858,8 @@ These URLs serve general Hypha documentation accessible without authentication:
 | Server Apps API | `{server_url}/ws/agent-skills/REFERENCE/server-apps.md` |
 | S3 Storage API | `{server_url}/ws/agent-skills/REFERENCE/s3-storage.md` |
 | Code Examples | `{server_url}/ws/agent-skills/EXAMPLES.md` |
+| ASGI Apps Guide | `{server_url}/ws/agent-skills/GUIDE/asgi-apps.md` |
+| Serverless Functions Guide | `{server_url}/ws/agent-skills/GUIDE/serverless-functions.md` |
 
 ### Workspace-Specific Documentation (Auth Required)
 
@@ -3650,6 +3871,8 @@ For documentation tailored to a specific workspace (includes workspace services,
 | API Reference Overview | `{server_url}/{{workspace}}/agent-skills/REFERENCE.md` |
 | Per-Service API | `{server_url}/{{workspace}}/agent-skills/REFERENCE/{{service-id}}.md` |
 | Code Examples | `{server_url}/{{workspace}}/agent-skills/EXAMPLES.md` |
+| ASGI Apps Guide | `{server_url}/{{workspace}}/agent-skills/GUIDE/asgi-apps.md` |
+| Serverless Functions Guide | `{server_url}/{{workspace}}/agent-skills/GUIDE/serverless-functions.md` |
 | Workspace Context | `{server_url}/{{workspace}}/agent-skills/WORKSPACE_CONTEXT.md` |
 | Source Code | `{server_url}/{{workspace}}/agent-skills/SOURCE/{{service-id}}/{{method}}` |
 | Download All (ZIP) | `{server_url}/{{workspace}}/agent-skills/create-zip-file` |
@@ -3771,6 +3994,22 @@ def setup_global_agent_skills_routes(app, store, base_path: str = ""):
             return JSONResponse(
                 status_code=404,
                 content={"error": f"Service not found or not enabled: {service_id}"},
+                headers=cors_headers,
+            )
+
+        # Serve guide documents from the docs/ directory
+        if path.startswith("GUIDE/") and path.endswith(".md"):
+            guide_name = path[len("GUIDE/"):]
+            content = load_documentation_file(guide_name)
+            if content:
+                return Response(
+                    content=content,
+                    media_type="text/markdown; charset=utf-8",
+                    headers=cors_headers,
+                )
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"Guide not found: {guide_name}"},
                 headers=cors_headers,
             )
 

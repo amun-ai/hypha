@@ -721,6 +721,63 @@ async def test_skills_global_skill_md_content(fastapi_server):
     assert "Bearer" in content
 
 
+@pytest.mark.asyncio
+async def test_skills_guide_endpoint(fastapi_server):
+    """Test that GUIDE/ route serves documentation files from docs/ directory."""
+    # ASGI apps guide should be accessible via global endpoint
+    response = requests.get(f"{SERVER_URL}/ws/agent-skills/GUIDE/asgi-apps.md")
+    assert response.status_code == 200, f"GUIDE/asgi-apps.md returned {response.status_code}"
+    content = response.text
+    assert "ASGI" in content
+    assert "FastAPI" in content
+
+    # Serverless functions guide
+    response = requests.get(
+        f"{SERVER_URL}/ws/agent-skills/GUIDE/serverless-functions.md"
+    )
+    assert response.status_code == 200
+    assert "functions" in content.lower() or "Functions" in content
+
+    # Non-existent guide should return 404
+    response = requests.get(
+        f"{SERVER_URL}/ws/agent-skills/GUIDE/nonexistent-guide.md"
+    )
+    assert response.status_code == 404
+
+    # Global SKILL.md should link to the guides
+    response = requests.get(f"{SERVER_URL}/ws/agent-skills/SKILL.md")
+    assert response.status_code == 200
+    skill_content = response.text
+    assert "GUIDE/asgi-apps.md" in skill_content
+    assert "GUIDE/serverless-functions.md" in skill_content
+
+
+@pytest.mark.asyncio
+async def test_skills_guide_via_workspace(fastapi_server, root_user_token):
+    """Test that GUIDE/ route works via workspace-specific endpoint too."""
+    from hypha_rpc import connect_to_server
+
+    async with connect_to_server(
+        {"name": "test-guide-client", "server_url": SERVER_URL, "token": root_user_token}
+    ) as api:
+        workspace = api.config["workspace"]
+
+        # ASGI guide via workspace endpoint (use root_user_token for HTTP auth)
+        response = requests.get(
+            f"{SERVER_URL}/{workspace}/agent-skills/GUIDE/asgi-apps.md",
+            headers={"Authorization": f"Bearer {root_user_token}"},
+        )
+        assert response.status_code == 200
+        assert "ASGI" in response.text
+
+        # Non-existent guide should return 404
+        response = requests.get(
+            f"{SERVER_URL}/{workspace}/agent-skills/GUIDE/no-such-file.md",
+            headers={"Authorization": f"Bearer {root_user_token}"},
+        )
+        assert response.status_code == 404
+
+
 # ============================================================================
 # Utility Tests: Verifying the agent skills documentation is actually useful
 # for AI agents to bootstrap and interact with Hypha
