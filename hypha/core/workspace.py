@@ -2671,6 +2671,10 @@ class WorkspaceManager:
     ) -> dict:
         """Get the workspace info."""
         self.validate_context(context, permission=UserPermission.read)
+        if workspace is None:
+            workspace = context.get("ws") if context else None
+        if workspace is None:
+            raise ValueError("workspace parameter is required")
         workspace_info = await self.load_workspace_info(workspace)
         return workspace_info.model_dump()
 

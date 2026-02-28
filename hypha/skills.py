@@ -1585,10 +1585,14 @@ async def main():
         token_info = await server.parse_token("eyJ...")
 
         print(f"User ID: {{token_info.get('id')}}")
-        print(f"Workspace: {{token_info.get('workspace')}}")
-        print(f"Permission: {{token_info.get('permission')}}")
+        print(f"Current workspace: {{token_info.get('current_workspace')}}")
+        print(f"Roles: {{token_info.get('roles')}}")
+        print(f"Is anonymous: {{token_info.get('is_anonymous')}}")
         print(f"Expires: {{token_info.get('expires_at')}}")
-        print(f"Scopes: {{token_info.get('scopes')}}")
+        # Permission scope: token_info["scope"]["workspaces"] is a dict
+        # mapping workspace IDs to permission codes ("r", "rw", "rwa")
+        scope = token_info.get("scope", {{}})
+        print(f"Workspace permissions: {{scope.get('workspaces', {{}})}}")
 
         # Check if token has specific permission
         if token_info.get("permission") in ["read_write", "admin"]:
@@ -1605,9 +1609,6 @@ async def main():
     }}) as server:
         # Revoke a specific token
         await server.revoke_token("token_to_revoke")
-
-        # Revoke all tokens for the workspace
-        await server.revoke_all_tokens()
 ```
 
 ### Login Flow (Interactive)
@@ -1640,11 +1641,12 @@ async def main():
         "server_url": "{server_url}",
         "token": "YOUR_TOKEN"
     }}) as server:
-        # Get current user info
-        user = await server.get_user_info()
+        # User info is available on the server config object
+        user = server.config.user
         print(f"User ID: {{user.get('id')}}")
         print(f"Email: {{user.get('email')}}")
         print(f"Roles: {{user.get('roles')}}")
+        print(f"Is anonymous: {{user.get('is_anonymous')}}")
 
         # Check workspace status and permissions
         status = await server.check_status()
@@ -1677,21 +1679,24 @@ async def main():
         )
         print(f"Created artifact: {{dataset['id']}}")
 
-        # Upload a file
-        put_info = await artifact_manager.put_file(
+        # Stage the artifact for editing (required before uploading files)
+        await artifact_manager.edit(artifact_id=dataset["id"], stage=True)
+
+        # Upload a file — put_file returns a presigned URL string
+        upload_url = await artifact_manager.put_file(
             artifact_id=dataset["id"],
             file_path="images/sample.jpg"
         )
 
-        # Actually upload the file
+        # Actually upload the file using the presigned URL
         async with httpx.AsyncClient() as client:
             with open("local_sample.jpg", "rb") as f:
-                await client.put(put_info["put_url"], content=f.read())
+                await client.put(upload_url, content=f.read())
 
-        # Commit the changes
+        # Commit the changes (use comment=, not message=)
         await artifact_manager.commit(
             artifact_id=dataset["id"],
-            message="Added sample image"
+            comment="Added sample image"
         )
 ```
 
@@ -1702,15 +1707,15 @@ async def main():
     async with connect_to_server({{"server_url": "{server_url}"}}) as server:
         artifact_manager = await server.get_service("public/artifact-manager")
 
-        # Get download URL
-        file_info = await artifact_manager.get_file(
+        # Get download URL — get_file returns a presigned URL string
+        download_url = await artifact_manager.get_file(
             artifact_id="{workspace}/my-dataset",
             file_path="images/sample.jpg"
         )
 
-        # Download the file
+        # Download the file using the presigned URL
         async with httpx.AsyncClient() as client:
-            response = await client.get(file_info["get_url"])
+            response = await client.get(download_url)
             with open("downloaded_sample.jpg", "wb") as f:
                 f.write(response.content)
 ```
@@ -1722,19 +1727,28 @@ async def main():
     async with connect_to_server({{"server_url": "{server_url}"}}) as server:
         artifact_manager = await server.get_service("public/artifact-manager")
 
-        # Write a small file directly
+        # Stage the artifact first (required for non-git artifacts)
+        await artifact_manager.edit(artifact_id="{workspace}/my-dataset", stage=True)
+
+        # Write a small file directly (use file_path=, not path=)
         await artifact_manager.write_file(
             artifact_id="{workspace}/my-dataset",
-            path="config.json",
+            file_path="config.json",
             content='{{"setting": "value"}}'
         )
 
-        # Read the file content directly
-        content = await artifact_manager.read_file(
+        # Commit after writing
+        await artifact_manager.commit(
             artifact_id="{workspace}/my-dataset",
-            path="config.json"
+            comment="Added config file"
         )
-        print(f"Config: {{content}}")
+
+        # Read the file content directly (returns {{"name": ..., "content": ...}})
+        result = await artifact_manager.read_file(
+            artifact_id="{workspace}/my-dataset",
+            file_path="config.json"
+        )
+        print(f"Config: {{result['content']}}")
 ```
 
 ---
@@ -1840,6 +1854,8 @@ async def main():
 ## Server App Examples
 
 Server Apps enable serverless computing with applications that start on-demand and auto-scale.
+
+> **Authentication Required**: Installing and managing server apps requires a non-anonymous authenticated connection. Anonymous users cannot install apps. Use `token=` in `connect_to_server()` or the interactive `login()` flow first.
 
 ### Install and Run a Web Worker App
 
@@ -1965,7 +1981,9 @@ api.register_service({{
             return {{ users: ["alice", "bob", "charlie"] }};
         }},
         "get": async (event) => {{
-            const id = event.path_params?.id || event.query_params?.id;
+            // Parse query string for parameters (path_params is not available)
+            const params = new URLSearchParams(event.query_string || "");
+            const id = params.get("id") || "unknown";
             return {{ user: id, name: "User " + id }};
         }},
         "create": async (event) => {{
@@ -2102,8 +2120,7 @@ async def main():
 
         # Commit changes (creates new version)
         await controller.commit_app(
-            app_id="my-app",
-            message="Updated configuration"
+            app_id="my-app"
         )
 ```
 
@@ -2163,9 +2180,10 @@ async def main():
             "serve": serve,
             "config": {{"visibility": "public"}}
         }})
+        ws = server.config.workspace
         print("ASGI service registered!")
-        print(f"Access at: {server_url}/{workspace}/apps/my-direct-api/")
-        print(f"API: {server_url}/{workspace}/apps/my-direct-api/api/greet/World")
+        print(f"Access at: {server_url}/{{ws}}/apps/my-direct-api/")
+        print(f"API: {server_url}/{{ws}}/apps/my-direct-api/api/greet/World")
         # Keep the connection alive
         await asyncio.sleep(float("inf"))
 
@@ -2264,7 +2282,8 @@ async def main():
             "hello": hello,
             "data": handle_data,
         }})
-        print(f"Functions at: {server_url}/{workspace}/apps/python-functions/hello/")
+        ws = server.config.workspace
+        print(f"Functions at: {server_url}/{{ws}}/apps/python-functions/hello/")
         await asyncio.sleep(float("inf"))
 
 asyncio.run(main())
@@ -2285,29 +2304,26 @@ async def main():
     async with connect_to_server({{"server_url": "{server_url}"}}) as server:
         s3 = await server.get_service("public/s3-storage")
 
-        # Upload a file - get presigned URL
-        put_info = await s3.put_file(
-            workspace="{workspace}",
-            path="data/sample.json",
-            options={{"content_type": "application/json"}}
+        # Upload a file — put_file returns a presigned URL string (single file)
+        upload_url = await s3.put_file(
+            file_path="data/sample.json"
         )
 
         # Upload using the presigned URL
         async with httpx.AsyncClient() as client:
             content = '{{"key": "value", "data": [1, 2, 3]}}'
-            await client.put(put_info["put_url"], content=content)
+            await client.put(upload_url, content=content)
 
-        print(f"Uploaded to: {{put_info['path']}}")
+        print(f"Uploaded to: data/sample.json")
 
-        # Download a file - get presigned URL
-        get_info = await s3.get_file(
-            workspace="{workspace}",
-            path="data/sample.json"
+        # Download a file — get_file returns a presigned URL string (single file)
+        download_url = await s3.get_file(
+            file_path="data/sample.json"
         )
 
         # Download using the presigned URL
         async with httpx.AsyncClient() as client:
-            response = await client.get(get_info["get_url"])
+            response = await client.get(download_url)
             print(f"Downloaded: {{response.text}}")
 ```
 
@@ -2318,11 +2334,10 @@ async def main():
     async with connect_to_server({{"server_url": "{server_url}"}}) as server:
         s3 = await server.get_service("public/s3-storage")
 
-        # List files in a directory
+        # List files in a directory (workspace is auto-injected from your connection)
         files = await s3.list_files(
-            workspace="{workspace}",
             path="data/",
-            max_keys=100
+            max_length=100
         )
 
         print(f"Found {{len(files.get('items', []))}} files:")
@@ -2331,7 +2346,6 @@ async def main():
 
         # Remove a file
         await s3.remove_file(
-            workspace="{workspace}",
             path="data/old-file.json"
         )
 ```
@@ -2343,11 +2357,10 @@ async def main():
     async with connect_to_server({{"server_url": "{server_url}"}}) as server:
         s3 = await server.get_service("public/s3-storage")
 
-        # Start multipart upload
+        # Start multipart upload (returns upload_id and presigned URLs for all parts)
         upload_info = await s3.put_file_start_multipart(
-            workspace="{workspace}",
-            path="data/large-file.bin",
-            options={{"content_type": "application/octet-stream"}}
+            file_path="data/large-file.bin",
+            part_count=3  # Number of parts to split the file into
         )
 
         upload_id = upload_info["upload_id"]
@@ -2355,29 +2368,19 @@ async def main():
 
         # Upload parts (5MB+ each, except last)
         async with httpx.AsyncClient() as client:
-            for part_number in range(1, 4):
-                # Get presigned URL for this part
-                part_info = await s3.put_file_upload_part(
-                    workspace="{workspace}",
-                    path="data/large-file.bin",
-                    upload_id=upload_id,
-                    part_number=part_number
-                )
-
-                # Upload the part
+            for i, part_url in enumerate(upload_info["urls"]):
+                # Upload the part using the presigned URL
                 chunk = b"x" * (5 * 1024 * 1024)  # 5MB chunk
-                response = await client.put(part_info["put_url"], content=chunk)
+                response = await client.put(part_url, content=chunk)
 
                 # Record the ETag for completion
                 parts.append({{
-                    "PartNumber": part_number,
-                    "ETag": response.headers["ETag"]
+                    "part_number": i + 1,
+                    "etag": response.headers["ETag"]
                 }})
 
         # Complete the upload
         await s3.put_file_complete_multipart(
-            workspace="{workspace}",
-            path="data/large-file.bin",
             upload_id=upload_id,
             parts=parts
         )
@@ -2761,7 +2764,7 @@ async def main():
         # Commit the changes
         await artifact_manager.commit(
             artifact_id="{workspace}/knowledge-base",
-            message="Added documentation entries"
+            comment="Added documentation entries"
         )
 ```
 
