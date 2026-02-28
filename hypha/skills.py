@@ -774,8 +774,12 @@ const server = await connectToServer({{
 
 const services = await server.listServices();
 const svc = await server.getService("service-id");
-const result = await svc.someFunction({{ param1: "value" }});
+
+// IMPORTANT: Use _rkwargs: true when passing named arguments to Python services
+const result = await svc.someFunction({{ param1: "value", _rkwargs: true }});
 ```
+
+> **Critical: `_rkwargs: true` for JavaScript callers.** Python services use keyword arguments (e.g., `def method(param1, param2)`), but JavaScript has no native named-argument syntax. When calling a Python service from JavaScript, add `_rkwargs: true` to the **last object argument** to convert it into Python keyword arguments. Without it, the call will fail with a missing-argument error. The `_rkwargs` flag is stripped before sending — it never reaches the Python function.
 
 ### HTTP API (curl / fetch / any HTTP client)
 
@@ -1526,13 +1530,53 @@ async def main():
         print(f"Processed: {{processed}}")
 ```
 
+### Use a Service from JavaScript (`_rkwargs`)
+
+When calling Python services from JavaScript, you **must** add `_rkwargs: true` to any object argument that contains named parameters. This converts the JavaScript object into Python keyword arguments.
+
+```javascript
+const {{ connectToServer }} = require('hypha-rpc');
+
+async function main() {{
+    const server = await connectToServer({{ server_url: "{server_url}" }});
+    const calc = await server.getService("my-calculator");
+
+    // Positional arguments — no _rkwargs needed
+    const sum = await calc.add(5, 3);
+    console.log(`5 + 3 = ${{sum}}`);
+
+    // Named arguments — MUST use _rkwargs: true
+    const processed = await calc.process({{ data: {{ key: "value" }}, _rkwargs: true }});
+    console.log("Processed:", processed);
+
+    // Another example: calling a method with named parameters
+    // Python: def create(name, type, config=None)
+    // JavaScript:
+    const result = await svc.create({{ name: "test", type: "dataset", config: {{}}, _rkwargs: true }});
+
+    // WRONG — without _rkwargs, Python receives the object as a single positional arg
+    // and fails with: TypeError: create() missing required argument 'name'
+    // const result = await svc.create({{ name: "test", type: "dataset" }});  // FAILS!
+}}
+```
+
+**When to use `_rkwargs: true`:**
+- Calling a Python function with named/keyword parameters from JavaScript
+- Always add it to the **last** argument if it's an object containing named params
+- The `_rkwargs` flag is automatically stripped before sending — it never reaches the Python function
+
+**When you do NOT need `_rkwargs`:**
+- Calling functions with only positional arguments: `calc.add(5, 3)`
+- Calling from Python (Python natively supports keyword arguments)
+- Calling via HTTP API (JSON body is always treated as keyword arguments)
+
 ### Call Service via HTTP
 
 ```bash
 # GET request
 curl "{server_url}/{workspace}/services/my-calculator/add?a=5&b=3"
 
-# POST request
+# POST request (JSON body params are automatically keyword arguments — no _rkwargs needed)
 curl -X POST "{server_url}/{workspace}/services/my-calculator/process" \\
   -H "Content-Type: application/json" \\
   -d '{{"data": {{"key": "value"}}}}'
@@ -3767,11 +3811,19 @@ svc = await server.get_service("service-id")
 result = await svc.some_function(param1="value")
 ```
 
+```javascript
+// JavaScript — use _rkwargs: true for named arguments
+const svc = await server.getService("service-id");
+const result = await svc.someFunction({{ param1: "value", _rkwargs: true }});
+```
+
+> **JavaScript note:** Add `_rkwargs: true` to the last object argument when calling Python services with named parameters. Without it, Python receives the object as a single positional argument and the call fails. See [EXAMPLES.md](EXAMPLES.md) for details.
+
 ```bash
 # HTTP: List services
 curl "{server_url}/YOUR_WORKSPACE/services"
 
-# HTTP: Call a service function
+# HTTP: Call a service function (JSON body = keyword arguments automatically)
 curl -X POST "{server_url}/YOUR_WORKSPACE/services/SERVICE_ID/FUNCTION" \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer YOUR_TOKEN" \\
