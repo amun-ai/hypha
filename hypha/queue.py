@@ -68,32 +68,44 @@ def create_queue_service(store: RedisStore):
             ...,
             description="Name of the queue to pop a task from. The queue is automatically scoped to the current workspace."
         ),
+        timeout: float = Field(
+            30,
+            description="Maximum time in seconds to wait for a task. 0 means non-blocking (return immediately if empty). Default: 30 seconds.",
+            ge=0,
+            le=300
+        ),
         context: Optional[dict] = Field(
             None,
             description="Context containing workspace information. Usually provided automatically by the system."
         )
-    ) -> Dict[str, Any]:
-        """Pop and retrieve a task from a queue (blocking).
-        
+    ) -> Optional[Dict[str, Any]]:
+        """Pop and retrieve a task from a queue.
+
         This method removes and returns a task from the specified queue using BRPOP
-        (blocking right pop). It will wait until a task is available. Tasks are
-        processed in FIFO order (first in, first out).
-        
+        (blocking right pop). Tasks are processed in FIFO order (first in, first out).
+
+        If the queue is empty:
+        - With timeout > 0: waits up to `timeout` seconds for a task, returns None if no task arrives.
+        - With timeout = 0: returns None immediately (non-blocking).
+
         Returns:
-            The task data as a dictionary.
-            
-        Note:
-            This is a blocking operation that will wait indefinitely until a task
-            is available. Use with caution in async contexts.
-            
+            The task data as a dictionary, or None if no task is available within the timeout.
+
         Examples:
-            # Pop a task from the processing queue
+            # Pop a task, wait up to 30 seconds (default)
             task = await pop_task("image-processing")
-            # Process the task
-            print(f"Processing task: {task['type']}")
+            if task:
+                print(f"Processing: {task['type']}")
+            else:
+                print("No tasks available")
+
+            # Non-blocking pop
+            task = await pop_task("image-processing", timeout=0)
         """
         workspace = context["ws"]
-        task = await redis.brpop(workspace + ":q:" + queue_name)
+        task = await redis.brpop(workspace + ":q:" + queue_name, timeout=int(timeout))
+        if task is None:
+            return None
         return json.loads(task[1])
 
     @schema_function
@@ -162,7 +174,9 @@ def create_queue_service(store: RedisStore):
         """
         workspace = context["ws"]
         tasks = await redis.lrange(workspace + ":q:" + queue_name, 0, n - 1)
-        return [json.loads(task) for task in tasks]
+        # Reverse to match pop (BRPOP) order: LPUSH adds to left, BRPOP reads from right,
+        # so LRANGE(0,n) returns newest-first but pop returns oldest-first.
+        return [json.loads(task) for task in reversed(tasks)]
 
     return {
         "id": "queue",

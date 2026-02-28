@@ -704,7 +704,9 @@ asyncio.run(main())
 
 ### Generating Tokens for Programmatic Access
 
-Once authenticated, generate tokens for use by scripts or AI agents:
+Once authenticated, generate tokens for use by scripts or AI agents.
+
+**Important**: `generate_token` requires **admin** permission on the workspace. Tokens obtained from the login flow typically have admin permission on the user's own workspace. If you get a PermissionError (HTTP 403), your current token lacks admin access.
 
 ```python
 # Generate a read-only token (safe to share)
@@ -888,14 +890,27 @@ Key built-in services:
 5. **Access public services** — Built-in services like `artifact-manager`, `queue`, `server-apps` are in the `public` workspace. Use `public/` prefix in HTTP URLs.
 6. **Handle errors** — Check the Error Handling section below for common issues and solutions
 
+## Service Lifecycle
+
+**Services are ephemeral by default.** When a client disconnects (e.g., WebSocket closes), all services it registered are automatically unregistered. This means:
+
+- Services registered via the SDK exist only as long as the client connection is alive
+- If your script exits or the connection drops, the services disappear
+- To create persistent services, use **server apps** (`server-apps` service) which manage worker lifecycle
+- Built-in services (workspace manager, artifact-manager, queue, etc.) are persistent — they are registered by the server itself
+
+To re-register a service on reconnect, use the `overwrite` option: `await server.register_service(svc, {{"overwrite": True}})`
+
 ## Error Handling
 
-Common errors and solutions:
+Common errors and HTTP status codes:
 
-- `PermissionError`: User lacks required permission level. Generate a new token with higher permission.
-- `KeyError: Workspace not found`: Workspace doesn't exist or was unloaded due to inactivity.
-- `KeyError: Service not found`: Service not registered. Try `list_services()` first, or start the app.
-- `TimeoutError`: Service didn't respond in time. Increase timeout or check if the service is running.
+| Error | HTTP Status | Meaning |
+|-------|-------------|---------|
+| `PermissionError` | **403** Forbidden | User lacks required permission level. Check `check_status()` for your current permission. |
+| `KeyError: not found` | **404** Not Found | Service, method, or workspace not found. Use `list_services()` to discover available services. |
+| `TypeError` / `ValueError` | **500** Server Error | Invalid arguments passed to service method. Check the REFERENCE docs for parameter types. |
+| `TimeoutError` | **500** Server Error | Service didn't respond in time. Check if the service is running. |
 
 ## Documentation URLs
 

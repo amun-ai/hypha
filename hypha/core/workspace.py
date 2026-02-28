@@ -3155,24 +3155,27 @@ class WorkspaceManager:
         assert context is not None, "Context cannot be None"
         self.validate_context(context, permission=UserPermission.read)
         ws = context["ws"]
+        user_info = UserInfo.from_context(context)
+        permission = user_info.get_permission(ws)
+        user_permission = permission.value if permission else None
 
         # Check if workspace exists
         try:
             workspace_info = await self.load_workspace_info(ws, load=False)
         except KeyError:
-            return {"status": "not_found", "error": f"Workspace {ws} not found"}
+            return {"status": "not_found", "error": f"Workspace {ws} not found", "user_permission": user_permission}
 
         # Check workspace status
         if not workspace_info.status:
-            return {"status": "loading"}
+            return {"status": "loading", "user_permission": user_permission}
 
         if workspace_info.status.get("ready"):
             errors = workspace_info.status.get("errors", {})
-            return {"status": "ready", "errors": errors if errors else None}
+            return {"status": "ready", "errors": errors if errors else None, "user_permission": user_permission}
         elif workspace_info.status.get("error"):
-            return {"status": "error", "error": workspace_info.status["error"]}
+            return {"status": "error", "error": workspace_info.status["error"], "user_permission": user_permission}
         else:
-            return {"status": "loading"}
+            return {"status": "loading", "user_permission": user_permission}
 
     @schema_method
     async def cleanup(

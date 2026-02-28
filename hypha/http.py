@@ -927,7 +927,7 @@ class HTTPProxy:
                         status_code=403,
                         content={
                             "success": False,
-                            "detail": f"Unsafe path: {file_path}",
+                            "detail": f"Unsafe path requested",
                         },
                     )
                 if not os.path.exists(file_path):
@@ -1047,11 +1047,21 @@ class HTTPProxy:
                     user_info,
                     _mode=_mode,
                 )
+            except PermissionError as e:
+                return JSONResponse(
+                    status_code=403,
+                    content={"success": False, "detail": str(e)},
+                )
+            except KeyError as e:
+                return JSONResponse(
+                    status_code=404,
+                    content={"success": False, "detail": _get_safe_error_detail(e)},
+                )
             except Exception as e:
                 # SECURITY: Log full traceback server-side, send sanitized message to client
                 logger.error(f"Error in get service function: {e}\n{traceback.format_exc()}")
                 return JSONResponse(
-                    status_code=400,
+                    status_code=500,
                     content={"success": False, "detail": _get_safe_error_detail(e)},
                 )
 
@@ -1143,11 +1153,27 @@ class HTTPProxy:
 
                     try:
                         results = await _call_service_function(func, function_kwargs)
+                    except PermissionError as e:
+                        return JSONResponse(
+                            status_code=403,
+                            content={
+                                "success": False,
+                                "detail": str(e),
+                            },
+                        )
+                    except KeyError as e:
+                        return JSONResponse(
+                            status_code=404,
+                            content={
+                                "success": False,
+                                "detail": _get_safe_error_detail(e),
+                            },
+                        )
                     except Exception as e:
                         # SECURITY: Log full traceback server-side, send sanitized message to client
                         logger.error(f"Error calling service function: {e}\n{traceback.format_exc()}")
                         return JSONResponse(
-                            status_code=400,
+                            status_code=500,
                             content={
                                 "success": False,
                                 "detail": _get_safe_error_detail(e),
@@ -1545,14 +1571,14 @@ class HTTPProxy:
             if not is_safe_path(str(self.templates_dir), file_path):
                 return JSONResponse(
                     status_code=403,
-                    content={"success": False, "detail": f"Unsafe path: {file_path}"},
+                    content={"success": False, "detail": f"Unsafe path: {page}"},
                 )
             if not os.path.exists(file_path):
                 return JSONResponse(
                     status_code=404,
                     content={
                         "success": False,
-                        "detail": f"File not found: {file_path}",
+                        "detail": f"File not found: {page}",
                     },
                 )
             assert os.path.basename(file_path) not in [

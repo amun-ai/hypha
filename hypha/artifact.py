@@ -1504,7 +1504,7 @@ class ArtifactController:
                                 except ClientError:
                                     raise HTTPException(
                                         status_code=404,
-                                        detail=f"File not found: {file_path} (absolute path: {abs_file_path})",
+                                        detail=f"File not found: {file_path}",
                                     )
 
                         # Prepare Jinja2 template context
