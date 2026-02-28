@@ -1103,6 +1103,39 @@ async def test_skills_agent_can_call_service_via_http(fastapi_server):
 
 
 @pytest.mark.asyncio
+async def test_skills_post_without_body_works(fastapi_server):
+    """Test that POST requests without a body work for no-parameter methods.
+
+    This is a common pattern for HTTP agents — sending POST with no body
+    to call a method that takes no parameters. Previously this returned 500.
+    """
+    # POST with no body and no content-type
+    response = requests.post(f"{SERVER_URL}/public/services/~/check_status")
+    assert response.status_code == 200, (
+        f"POST without body should work, got {response.status_code}: {response.text}"
+    )
+    status = response.json()
+    assert isinstance(status, dict)
+    assert "status" in status
+
+    # POST with content-type but no body
+    response = requests.post(
+        f"{SERVER_URL}/public/services/~/check_status",
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+
+    # POST with empty JSON body (should also work)
+    response = requests.post(
+        f"{SERVER_URL}/public/services/~/check_status",
+        json={},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+
+
+@pytest.mark.asyncio
 async def test_skills_index_is_valid_discovery_document(fastapi_server):
     """Test that the index endpoint serves as a valid discovery document.
 

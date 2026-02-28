@@ -777,31 +777,54 @@ const result = await svc.someFunction({{ param1: "value" }});
 
 ### HTTP API (curl / fetch / any HTTP client)
 
+**Important HTTP conventions:**
+- Always use a **trailing slash** on path endpoints (e.g., `/services/`), or use `curl -L` to follow the automatic redirect.
+- **POST** is recommended for all service method calls. Send parameters as a JSON object in the body.
+- **GET** works for methods with no parameters or simple query-string parameters.
+- Parameters are passed as **keyword arguments** in the JSON body: `{{"param_name": value}}`.
+- Authenticated requests require the `Authorization: Bearer YOUR_TOKEN` header.
+
 ```bash
-# List all services
-curl "{server_url}/{workspace}/services"
+# List all services in your workspace
+curl -L "{server_url}/{workspace}/services/"
 
-# Get service details
-curl "{server_url}/{workspace}/services/{{service_id}}"
-
-# Call a service function (GET for simple params)
-curl "{server_url}/{workspace}/services/{{service_id}}/{{function_name}}?param1=value"
-
-# Call a service function (POST for complex params)
-curl -X POST "{server_url}/{workspace}/services/{{service_id}}/{{function_name}}" \\
-  -H "Content-Type: application/json" \\
+# Call a service method (POST with JSON body — recommended)
+curl -X POST "{server_url}/{workspace}/services/{{service_id}}/{{method_name}}" \\\\
+  -H "Content-Type: application/json" \\\\
+  -H "Authorization: Bearer YOUR_TOKEN" \\\\
   -d '{{"param1": "value1", "param2": 42}}'
 
-# With authentication
-curl -H "Authorization: Bearer YOUR_TOKEN" \\
-  "{server_url}/{workspace}/services/{{service_id}}/{{function_name}}"
+# Call a method with no parameters
+curl -X POST "{server_url}/{workspace}/services/{{service_id}}/{{method_name}}" \\\\
+  -H "Authorization: Bearer YOUR_TOKEN"
+
+# GET works for simple cases (parameters as query string)
+curl -L "{server_url}/{workspace}/services/{{service_id}}/{{method_name}}?param1=value"
 ```
+
+**Accessing public services via HTTP:** Public services (like `queue`, `artifact-manager`, `server-apps`) are accessed using the `public` workspace prefix:
+
+```bash
+# Call a public service method
+curl -X POST "{server_url}/public/services/queue/get_length" \\\\
+  -H "Authorization: Bearer YOUR_TOKEN"
+
+# The workspace manager is special — use `~` (URL: %7E) as the service ID:
+curl -X POST "{server_url}/{workspace}/services/%7E/check_status" \\\\
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+**HTTP limitations:** The HTTP API is **stateless** — each request is independent. This means:
+- You **cannot register callable services** via HTTP (services with functions need a persistent WebSocket connection).
+- You **cannot receive callbacks** or streaming responses via HTTP.
+- For bidirectional communication, use the Python/JS SDK with WebSocket transport.
+- HTTP is ideal for: calling existing services, managing artifacts, checking status, and one-shot operations.
 
 ## Core Capabilities
 
 ### 1. Service Management
 - List, discover, and call remote services
-- Register new services with custom functions
+- Register new services with custom functions (SDK only — requires WebSocket)
 - Search services using semantic similarity (vector search)
 
 ### 2. Token & Permission Management
@@ -839,28 +862,31 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \\
 
 ## Available Services
 
-{service_list if service_list else "Use `list_services()` or `GET /{workspace}/services` to discover all services."}
+{service_list if service_list else "Use `list_services()` or `GET /{workspace}/services/` (note trailing slash) to discover all services."}
 
 {"## Public Services (Available from Any Workspace)" + chr(10) + chr(10) + public_service_list if public_service_list else ""}
 
 Key built-in services:
 
-| Service | ID | Reference |
-|---------|-----|-----------|
-| Workspace Manager | `~` or `default` | [REFERENCE/workspace-manager.md](REFERENCE/workspace-manager.md) |
-| Artifact Manager | `public/artifact-manager` | [REFERENCE/artifact-manager.md](REFERENCE/artifact-manager.md) |
-| Server Apps | `public/server-apps` | [REFERENCE/server-apps.md](REFERENCE/server-apps.md) |
-| S3 Storage | `public/s3-storage` | [REFERENCE/s3-storage.md](REFERENCE/s3-storage.md) |
+| Service | SDK ID | HTTP URL Pattern | Reference |
+|---------|--------|-----------------|-----------|
+| Workspace Manager | `~` or `default` | `/{workspace}/services/%7E/{{method}}` | [REFERENCE/workspace-manager.md](REFERENCE/workspace-manager.md) |
+| Artifact Manager | `public/artifact-manager` | `/public/services/artifact-manager/{{method}}` | [REFERENCE/artifact-manager.md](REFERENCE/artifact-manager.md) |
+| Server Apps | `public/server-apps` | `/public/services/server-apps/{{method}}` | [REFERENCE/server-apps.md](REFERENCE/server-apps.md) |
+| S3 Storage | `public/s3-storage` | `/public/services/s3-storage/{{method}}` | [REFERENCE/s3-storage.md](REFERENCE/s3-storage.md) |
+
+> **Note on service access**: The workspace manager (`~`) lives in your workspace. All other built-in services are in the `public` workspace — via HTTP, use the `/public/services/` prefix. Via SDK, use `await server.get_service("public/artifact-manager")`.
 
 ## Instructions for AI Agents
 
-1. **Bootstrap first** - Install `hypha-rpc` (`pip install hypha-rpc`), then connect
-2. **Check workspace status** - `await server.check_status()` to verify workspace is ready
-3. **Discover services** - `await server.list_services()` to see what's available
-4. **Read service docs** - Check `REFERENCE/{{service-id}}.md` for the specific service you need
-5. **Choose transport** - Use Python/JS SDK for bidirectional real-time calls; use HTTP for simple stateless calls
-6. **Handle permissions** - Check user has required permissions before operations
-7. **HTTP fallback** - If you can't install libraries, all services work via HTTP REST endpoints
+1. **Read the docs first** — Start with this SKILL.md, then check `REFERENCE/{{service-id}}.md` for the specific service you need
+2. **Choose your transport**:
+   - **Python/JS SDK** (recommended): Full bidirectional communication, callbacks, streaming. Use `pip install hypha-rpc`.
+   - **HTTP REST**: Stateless, works with `curl`/`fetch`. Good for calling existing services. Cannot register services or receive callbacks.
+3. **Check workspace status** — `check_status` verifies the workspace is ready and shows your permission level
+4. **Discover services** — `list_services` shows all available services in the workspace
+5. **Access public services** — Built-in services like `artifact-manager`, `queue`, `server-apps` are in the `public` workspace. Use `public/` prefix in HTTP URLs.
+6. **Handle errors** — Check the Error Handling section below for common issues and solutions
 
 ## Error Handling
 

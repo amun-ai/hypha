@@ -167,10 +167,14 @@ async def extracted_kwargs(
                         kwargs[key] = json.loads(kwargs[key])
 
     elif request.method == "POST":
-        if content_type == "application/msgpack":
-            kwargs = msgpack.loads(await request.body())
+        body = await request.body()
+        if not body:
+            # Empty POST body is treated as no arguments (e.g., calling a method with no parameters)
+            kwargs = {}
+        elif content_type == "application/msgpack":
+            kwargs = msgpack.loads(body)
         elif content_type == "application/json":
-            kwargs = json.loads(await request.body())
+            kwargs = json.loads(body)
         else:
             raise RuntimeError(
                 "Invalid content-type (supported types: "
@@ -212,10 +216,13 @@ async def extracted_call_info(request: Request):
     """Extract workspace, service_id, function_key from the request."""
     content_type = request.headers.get("content-type", "application/json")
     if request.method == "POST":
-        if content_type == "application/msgpack":
-            kwargs = msgpack.loads(await request.body())
+        body = await request.body()
+        if not body:
+            kwargs = {}
+        elif content_type == "application/msgpack":
+            kwargs = msgpack.loads(body)
         elif content_type == "application/json":
-            kwargs = json.loads(await request.body())
+            kwargs = json.loads(body)
         else:
             raise RuntimeError(
                 "Invalid content-type (supported types: "
