@@ -116,6 +116,28 @@ def _normalize_service_slug(service_id: str) -> str:
     return service_id
 
 
+# Service slugs that are internal infrastructure and should not appear
+# in agent-facing documentation. These services exist for the server's
+# own operation and have no useful API for external consumers.
+_INTERNAL_SERVICE_SLUGS = frozenset({
+    "built-in",       # Internal get_service/ping — duplicates workspace-manager
+    "agent-skills",   # The doc system itself — meta/circular
+    "hypha-login",    # Browser-only OAuth flow handlers
+})
+
+
+def _is_agent_visible_service(service_dict: dict) -> bool:
+    """Check if a service should be shown in agent-facing documentation.
+
+    A service is visible if it has meaningful schema AND is not an internal
+    infrastructure service (built-in, agent-skills, hypha-login).
+    """
+    slug = _normalize_service_slug(service_dict.get("id", ""))
+    if slug in _INTERNAL_SERVICE_SLUGS:
+        return False
+    return _service_has_schema(service_dict)
+
+
 def format_schema_as_markdown(schema: Dict[str, Any], method_name: str, docstring: str = "") -> str:
     """Format a JSON schema as markdown documentation."""
     lines = [f"### {method_name}\n"]
@@ -534,25 +556,26 @@ def get_skill_md(workspace: str, server_url: str, workspace_info: dict = None, s
     # Load quick start documentation
     quick_start_doc = load_documentation_file("quick-start.md") or ""
 
-    # Format available services (with reference links for those with schemas)
+    # Format available services (only agent-visible, with clean slugs)
     service_list = ""
     for svc in services[:20]:  # Limit to 20 services for readability
-        svc_id = svc.get("id", "unknown")
+        svc_slug = _normalize_service_slug(svc.get("id", "unknown"))
+        if svc_slug in _INTERNAL_SERVICE_SLUGS:
+            continue
         svc_name = svc.get("name", "")
         svc_desc = (svc.get("description") or "")[:100]
-        svc_slug = _normalize_service_slug(svc_id)
-        service_list += f"- `{svc_id}`: {svc_name}"
+        service_list += f"- `{svc_slug}`: {svc_name}"
         if svc_desc:
             service_list += f" - {svc_desc}"
         if _service_has_schema(svc):
             service_list += f" | [Reference](REFERENCE/{svc_slug}.md)"
         service_list += "\n"
 
-    # Format public services (only those with schemas, accessible from any workspace)
+    # Format public services (only agent-visible with schemas)
     public_service_list = ""
     if public_services:
-        schema_services = [s for s in public_services if _service_has_schema(s)]
-        for svc in schema_services[:20]:
+        visible_services = [s for s in public_services if _is_agent_visible_service(s)]
+        for svc in visible_services[:20]:
             svc_slug = _normalize_service_slug(svc.get("id", ""))
             svc_name = svc.get("name") or svc_slug
             svc_desc = (svc.get("description") or "")[:100]
@@ -1019,7 +1042,7 @@ def generate_reference_from_service_schema(
     )
 
     lines = [
-        f"# {service_name} API Reference\n\n**Service ID:** `{service_id}`\n"
+        f"# {service_name} API Reference\n\n**Service ID:** `{slug}`\n"
     ]
 
     if service_desc:
@@ -1094,19 +1117,18 @@ async def get_reference_md(
         )
     service_table = "\n".join(service_rows)
 
-    # Build dynamic services tables (workspace + public)
+    # Build dynamic services rows (workspace + public), filtering internal services
     builtin_ids = {svc["id"] for svc in enabled_services}
-    ws_service_rows = []
-    pub_service_rows = []
-    for svc_list, target_rows, source_label in [
-        (services, ws_service_rows, "workspace"),
-        (public_services, pub_service_rows, "public"),
-    ]:
+    dynamic_service_rows = []
+    for svc_list in [services, public_services]:
         for svc in svc_list:
-            if not _service_has_schema(svc):
+            if not _is_agent_visible_service(svc):
                 continue
             slug = _normalize_service_slug(svc.get("id", ""))
             if slug in builtin_ids:
+                continue
+            # Avoid duplicates (same service in both workspace and public)
+            if any(slug in row for row in dynamic_service_rows):
                 continue
             svc_name = svc.get("name") or slug
             svc_desc = (svc.get("description") or "")[:80]
@@ -1115,11 +1137,9 @@ async def get_reference_md(
                 1 for m in schema.values()
                 if isinstance(m, dict) and m.get("type") == "function"
             )
-            target_rows.append(
+            dynamic_service_rows.append(
                 f"| [{svc_name}](REFERENCE/{slug}.md) | `{slug}` | {svc_desc} | {method_count} |"
             )
-
-    enabled_list = "\n".join(f"- {svc['name']} (`{svc['id']}`)" for svc in enabled_services)
 
     lines = [f"""# Hypha API Reference
 
@@ -1128,35 +1148,20 @@ Complete API reference for workspace `{workspace}` at `{server_url}`.
 This documentation is automatically generated from the service API schemas.
 Each service has its own detailed reference document with full method signatures and descriptions.
 
-## Built-in Services
+## Services
 
 | Service | ID | Description | Methods |
 |---------|-----|-------------|---------|
 {service_table}
-
-Click on any service name above to view its full API reference.
-
 """]
 
-    # Add workspace services section if any have schemas
-    if ws_service_rows:
-        ws_table = "\n".join(ws_service_rows)
-        lines.append(f"""## Workspace Services
+    # Append dynamic service rows to the same table
+    if dynamic_service_rows:
+        lines.append("\n".join(dynamic_service_rows))
+        lines.append("")
 
-| Service | ID | Description | Methods |
-|---------|-----|-------------|---------|
-{ws_table}
-
-""")
-
-    # Add public services section if any have schemas
-    if pub_service_rows:
-        pub_table = "\n".join(pub_service_rows)
-        lines.append(f"""## Public Services (Available from Any Workspace)
-
-| Service | ID | Description | Methods |
-|---------|-----|-------------|---------|
-{pub_table}
+    lines.append("""
+Click on any service name above to view its full API reference.
 
 """)
 
@@ -2684,14 +2689,16 @@ def get_workspace_context_md(workspace: str, server_url: str, workspace_info: di
     is_read_only = workspace_info.get("read_only", False)
     owners = workspace_info.get("owners", [])
 
-    # Format services list with schemas
+    # Format services list, filtering out internal infrastructure services
     service_list = ""
     for svc in services[:50]:  # Limit to 50 services
-        svc_id = svc.get("id", "unknown")
+        svc_slug = _normalize_service_slug(svc.get("id", "unknown"))
+        if svc_slug in _INTERNAL_SERVICE_SLUGS:
+            continue
         svc_name = svc.get("name", "unnamed")
         svc_type = svc.get("type", "unknown")
         svc_desc = (svc.get("description") or "")[:100]
-        service_list += f"\n### {svc_name or svc_id}\n- **ID**: `{svc_id}`\n- **Type**: {svc_type}\n"
+        service_list += f"\n### {svc_name or svc_slug}\n- **ID**: `{svc_slug}`\n- **Type**: {svc_type}\n"
         if svc_desc:
             service_list += f"- **Description**: {svc_desc}\n"
 
@@ -2905,11 +2912,11 @@ def create_agent_skills_service(store) -> dict:
             files.append(ref_file)
             reference_files.append(ref_file)
 
-        # Add dynamic service references (workspace + public)
+        # Add dynamic service references (workspace + public), filtering internal
         builtin_ids = {svc["id"] for svc in enabled_services}
         dynamic_slugs = []
         for svc in services + public_services:
-            if _service_has_schema(svc):
+            if _is_agent_visible_service(svc):
                 slug = _normalize_service_slug(svc.get("id", ""))
                 if slug not in builtin_ids and slug not in dynamic_slugs:
                     dynamic_slugs.append(slug)
@@ -3093,7 +3100,7 @@ For high-level usage, refer to REFERENCE.md and EXAMPLES.md.
 
             # Add per-service reference docs for dynamic services
             for svc in services + public_services:
-                if not _service_has_schema(svc):
+                if not _is_agent_visible_service(svc):
                     continue
                 slug = _normalize_service_slug(svc.get("id", ""))
                 if slug in builtin_ids:
@@ -3232,7 +3239,7 @@ For high-level usage, refer to REFERENCE.md and EXAMPLES.md.
                     if _normalize_service_slug(svc.get("id", "")) == service_slug:
                         matching_service = svc
                         break
-                if matching_service and _service_has_schema(matching_service):
+                if matching_service and _is_agent_visible_service(matching_service):
                     content = generate_reference_from_service_schema(
                         matching_service, ws, server_url
                     )
@@ -3242,7 +3249,7 @@ For high-level usage, refer to REFERENCE.md and EXAMPLES.md.
                 available = [svc["id"] for svc in enabled_services]
                 for svc in services + public_services:
                     slug = _normalize_service_slug(svc.get("id", ""))
-                    if _service_has_schema(svc) and slug not in available:
+                    if _is_agent_visible_service(svc) and slug not in available:
                         available.append(slug)
                 return {
                     "status": 404,

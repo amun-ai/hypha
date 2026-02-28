@@ -416,8 +416,8 @@ async def test_skills_reference_shows_enabled_services(fastapi_server):
 
     content = response.text
 
-    # Verify built-in services section
-    assert "## Built-in Services" in content
+    # Verify services section
+    assert "## Services" in content
     assert "Workspace Manager" in content
     assert "workspace-manager" in content
 
