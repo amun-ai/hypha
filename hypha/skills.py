@@ -1023,15 +1023,19 @@ def generate_reference_from_service_schema(
         has_params = bool(function_def.get("parameters", {}).get("properties", {}))
         if not has_description and not has_params:
             continue
-        # Convert to format expected by format_schema_as_markdown
+        # Convert to format expected by format_schema_as_markdown.
+        # Put the full description only in docstring to avoid duplication:
+        # format_schema_as_markdown prints schema["description"] as summary
+        # and docstring details as the rest.
+        full_desc = function_def.get("description", "")
         schema = {
-            "description": function_def.get("description", ""),
+            "description": "",
             "parameters": function_def.get("parameters", {}),
         }
         methods[method_name] = {
             "name": method_name,
             "schema": schema,
-            "docstring": function_def.get("description", ""),
+            "docstring": full_desc,
         }
 
     if not methods:
