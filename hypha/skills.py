@@ -142,17 +142,26 @@ def format_schema_as_markdown(schema: Dict[str, Any], method_name: str, docstrin
     """Format a JSON schema as markdown documentation."""
     lines = [f"### {method_name}\n"]
 
-    # Add description from schema or docstring
-    description = schema.get("description") or docstring.split("\n")[0] if docstring else ""
-    if description:
-        lines.append(f"{description}\n")
-
-    # Add detailed docstring if available
-    if docstring and "\n" in docstring:
-        # Get everything after the first line
-        details = "\n".join(docstring.split("\n")[1:]).strip()
-        if details:
-            lines.append(f"\n{details}\n")
+    # Add description from schema or docstring (avoid duplication)
+    schema_desc = schema.get("description", "")
+    if schema_desc:
+        lines.append(f"{schema_desc}\n")
+        # Add docstring details only if they go beyond the schema description
+        if docstring and "\n" in docstring:
+            first_line = docstring.split("\n")[0].strip()
+            # Only add extra details if the docstring has more than just the first line
+            # and the first line matches what we already printed from schema
+            details = "\n".join(docstring.split("\n")[1:]).strip()
+            if details:
+                lines.append(f"\n{details}\n")
+    elif docstring:
+        first_line = docstring.split("\n")[0].strip()
+        if first_line:
+            lines.append(f"{first_line}\n")
+        if "\n" in docstring:
+            details = "\n".join(docstring.split("\n")[1:]).strip()
+            if details:
+                lines.append(f"\n{details}\n")
 
     # Add parameters
     params = schema.get("parameters", {})
@@ -722,7 +731,15 @@ rw_token = await server.generate_token({{
 }})
 ```
 
-Permission levels: `read` (view only), `read_write` (modify data), `admin` (full control including workspace deletion and token generation).
+**Permission Levels:**
+
+| `generate_token` value | Code in `parse_token` scope | Meaning |
+|------------------------|---------------------------|---------|
+| `"read"` | `"r"` | View workspace resources and services |
+| `"read_write"` | `"rw"` | Create/modify services and data |
+| `"admin"` | `"a"` | Full control: workspace deletion, token generation |
+
+When you call `generate_token({{"permission": "read_write"}})`, the resulting token's scope will contain `"rw"` in `scope.workspaces["<workspace-id>"]`.
 
 ### How Authorization Works (Context Injection)
 
@@ -1634,13 +1651,15 @@ async def main():
         print(f"Is anonymous: {{token_info.get('is_anonymous')}}")
         print(f"Expires: {{token_info.get('expires_at')}}")
         # Permission scope: token_info["scope"]["workspaces"] is a dict
-        # mapping workspace IDs to permission codes ("r", "rw", "rwa")
+        # mapping workspace IDs to permission codes: "r" (read), "rw" (read_write), "a" (admin)
         scope = token_info.get("scope", {{}})
-        print(f"Workspace permissions: {{scope.get('workspaces', {{}})}}")
+        workspaces = scope.get("workspaces", {{}})
+        print(f"Workspace permissions: {{workspaces}}")
 
-        # Check if token has specific permission
-        if token_info.get("permission") in ["read_write", "admin"]:
-            print("Token can modify data")
+        # Check if token has write or admin permission on a workspace
+        for ws_name, perm_code in workspaces.items():
+            if perm_code in ["rw", "a"]:
+                print(f"Token can modify data in {{ws_name}}")
 ```
 
 ### Revoke Tokens
@@ -1793,6 +1812,67 @@ async def main():
             file_path="config.json"
         )
         print(f"Config: {{result['content']}}")
+```
+
+### Create a Collection and Add Items
+
+```python
+async def main():
+    async with connect_to_server({{"server_url": "{server_url}"}}) as server:
+        artifact_manager = await server.get_service("public/artifact-manager")
+
+        # Create a collection (container for other artifacts)
+        collection = await artifact_manager.create(
+            type="collection",
+            alias="my-models",
+            manifest={{
+                "name": "ML Models",
+                "description": "Collection of trained models"
+            }}
+        )
+        print(f"Collection ID: {{collection['id']}}")
+
+        # Add a child artifact to the collection
+        model = await artifact_manager.create(
+            type="model",
+            alias="classifier-v1",
+            parent_id=collection["id"],
+            manifest={{
+                "name": "Image Classifier",
+                "accuracy": 0.95,
+                "framework": "pytorch"
+            }}
+        )
+
+        # List items in the collection
+        items = await artifact_manager.list(parent_id=collection["id"])
+        print(f"Collection has {{len(items)}} items")
+
+        # Search by manifest fields
+        results = await artifact_manager.list(
+            parent_id=collection["id"],
+            manifest_filter={{"accuracy": {{"$gte": 0.9}}}}
+        )
+```
+
+### Update Artifact Manifest
+
+```python
+async def main():
+    async with connect_to_server({{"server_url": "{server_url}"}}) as server:
+        artifact_manager = await server.get_service("public/artifact-manager")
+
+        # IMPORTANT: edit() REPLACES the entire manifest, it does NOT merge.
+        # Read the current manifest first, modify it, then pass the full manifest.
+        artifact = await artifact_manager.read("{workspace}/my-dataset")
+        current_manifest = artifact["manifest"]
+        current_manifest["version"] = "2.0"
+        current_manifest["updated"] = True
+
+        await artifact_manager.edit(
+            artifact_id="{workspace}/my-dataset",
+            manifest=current_manifest
+        )
 ```
 
 ---
@@ -2384,8 +2464,8 @@ async def main():
             max_length=100
         )
 
-        print(f"Found {{len(files.get('items', []))}} files:")
-        for item in files.get("items", []):
+        print(f"Found {{len(files)}} files:")
+        for item in files:
             print(f"  - {{item['name']}} ({{item.get('size', 0)}} bytes)")
 
         # Remove a file

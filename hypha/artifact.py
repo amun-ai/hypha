@@ -5408,7 +5408,7 @@ class ArtifactController:
         ),
         manifest: Optional[Dict[str, Any]] = PydanticField(
             None,
-            description="Updated manifest metadata. Merged with existing manifest. Set individual fields to update them."
+            description="Updated manifest metadata. Replaces the entire existing manifest when provided. To update individual fields, read the current manifest first, modify it, then pass the full manifest."
         ),
         type: Optional[str] = PydanticField(
             None,
@@ -5445,10 +5445,12 @@ class ArtifactController:
         ),
     ) -> Dict[str, Any]:
         """Edit an existing artifact's metadata, configuration, or type.
-        
+
         This method updates an artifact's properties. Changes can be staged for later commit
         or applied immediately. When editing in stage mode, changes accumulate until committed
-        or discarded. Manifest and config updates are merged with existing values.
+        or discarded. Note: manifest and config values fully replace existing values when provided
+        (they are not deep-merged). To update a single field, read the current manifest first,
+        modify the desired field, and pass the complete manifest.
         
         Returns:
             Dictionary containing updated artifact information
@@ -8519,39 +8521,39 @@ class ArtifactController:
             None,
             description="Context containing user info and workspace. Usually provided automatically by the system."
         ),
-    ) -> Dict[str, Any]:
+    ) -> List[Dict[str, Any]]:
         """List files stored in an artifact.
 
         This method lists all files within an artifact or a specific directory. Returns
         file metadata including names, sizes, and modification times. Supports listing
         from specific versions or staged storage. Results include both regular files
         and directories.
-        
+
         Returns:
-            Dictionary containing:
-            - items: List of file/directory objects with metadata
-            - truncated: Boolean indicating if results were truncated due to limit
-            
+            List of file/directory objects, each containing:
+            - name: File or directory name
+            - type: "file" or "directory"
+            - size: File size in bytes
+            - last_modified: Timestamp of last modification
+
         Examples:
             # List all files in artifact
             files = await list_files("my-dataset")
-            
+            for f in files:
+                print(f"{f['name']} ({f['type']}, {f['size']} bytes)")
+
             # List files in subdirectory
             files = await list_files("my-project", dir_path="data/processed")
-            
+
             # List files from specific version
             files = await list_files("my-model", version="v1.0")
-            
+
             # List staged files
             files = await list_files("work-in-progress", stage=True)
-            
-            # List with pagination
-            files = await list_files("large-dataset", limit=100)
-            if files['truncated']:
-                print("More files available")
 
-            # List next page with offset
-            next_page = await list_files("large-dataset", limit=100, offset=100)
+            # List with pagination
+            page1 = await list_files("large-dataset", limit=100)
+            page2 = await list_files("large-dataset", limit=100, offset=100)
             
         Raises:
             ValueError: If artifact_id invalid or stage used with version
