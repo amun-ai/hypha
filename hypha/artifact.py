@@ -5416,7 +5416,7 @@ class ArtifactController:
         ),
         config: Optional[Dict[str, Any]] = PydanticField(
             None,
-            description="Updated configuration including permissions. Merged with existing config. Example: {'permissions': {'user123': 'rw'}} to grant read-write access."
+            description="Updated configuration including permissions. Replaces the entire existing config when provided. Example: {'permissions': {'user123': 'rw'}} to grant read-write access."
         ),
         secrets: Optional[Dict[str, str]] = PydanticField(
             None,

@@ -918,6 +918,7 @@ async with connect_to_server({{"server_url": "{server_url}"}}) as server:
 ### 6. MCP Integration (if enabled)
 - Expose Hypha services as MCP endpoints for AI tools (Claude, Cursor, etc.)
 - MCP endpoint: `{server_url}/{workspace}/mcp/{{service_id}}/mcp`
+- [MCP Integration Guide](GUIDE/mcp.md)
 
 ### 7. A2A Protocol (if enabled)
 - Agent-to-Agent protocol for multi-agent communication
@@ -1614,26 +1615,21 @@ async def main():
         # Generate a read-only token (expires in 24 hours)
         read_token = await server.generate_token({{
             "permission": "read",          # read, read_write, or admin
-            "expires_in": 86400,           # 24 hours in seconds
-            "description": "Read-only access for monitoring"
+            "expires_in": 86400            # 24 hours in seconds
         }})
         print(f"Read token: {{read_token}}")
 
         # Generate a read-write token for service operations
         rw_token = await server.generate_token({{
             "permission": "read_write",
-            "expires_in": 3600,            # 1 hour
-            "extra_scopes": [              # Optional: limit to specific operations
-                {{"workspace": "{workspace}", "resource": "artifact:my-dataset:*"}}
-            ]
+            "expires_in": 3600             # 1 hour
         }})
         print(f"RW token: {{rw_token}}")
 
         # Generate admin token for workspace management
         admin_token = await server.generate_token({{
             "permission": "admin",
-            "expires_in": 600,             # Short-lived for security
-            "description": "Temporary admin access"
+            "expires_in": 600              # Short-lived for security
         }})
 ```
 
@@ -1848,11 +1844,18 @@ async def main():
         items = await artifact_manager.list(parent_id=collection["id"])
         print(f"Collection has {{len(items)}} items")
 
-        # Search by manifest fields
+        # Search by manifest fields (use filters with "manifest" key)
         results = await artifact_manager.list(
             parent_id=collection["id"],
-            manifest_filter={{"accuracy": {{"$gte": 0.9}}}}
+            filters={{"manifest": {{"framework": "pytorch"}}}}
         )
+        # Supported manifest operators: exact match, $like (wildcard), $in, $all
+        # For numeric ranges, use order_by + client-side filtering:
+        all_models = await artifact_manager.list(
+            parent_id=collection["id"],
+            order_by="-manifest.accuracy"
+        )
+        high_accuracy = [m for m in all_models if m["manifest"].get("accuracy", 0) >= 0.9]
 ```
 
 ### Update Artifact Manifest
@@ -1873,6 +1876,50 @@ async def main():
             artifact_id="{workspace}/my-dataset",
             manifest=current_manifest
         )
+```
+
+### Share an Artifact Across Workspaces
+
+```python
+async def main():
+    async with connect_to_server({{"server_url": "{server_url}"}}) as server:
+        artifact_manager = await server.get_service("public/artifact-manager")
+
+        # Grant read access to all authenticated users
+        await artifact_manager.edit(
+            artifact_id="{workspace}/my-dataset",
+            config={{"permissions": {{"@": "r"}}}}  # @ = all authenticated users
+        )
+        # Permission codes: "r" (read), "r+" (read + list), "rw" (read-write), "*" (all)
+        # Special targets: "*" (everyone including anonymous), "@" (all authenticated)
+
+        # From another workspace, access by full ID:
+        # data = await artifact_manager.read("{workspace}/my-dataset")
+```
+
+### Delete Old Versions to Save Storage
+
+```python
+async def main():
+    async with connect_to_server({{"server_url": "{server_url}"}}) as server:
+        artifact_manager = await server.get_service("public/artifact-manager")
+
+        # Read artifact to see all versions
+        info = await artifact_manager.read("{workspace}/my-dataset")
+        versions = info.get("versions", [])
+        print(f"Total versions: {{len(versions)}}")
+
+        # Delete old versions, keep only the latest 2
+        for v in versions[:-2]:
+            await artifact_manager.delete(
+                artifact_id="{workspace}/my-dataset",
+                version=v["version"],
+                delete_files=True  # Also delete files from S3
+            )
+            print(f"Deleted version {{v['version']}}")
+
+        # Delete an entire artifact with all files
+        # await artifact_manager.delete("{workspace}/old-artifact", delete_files=True)
 ```
 
 ---
@@ -2967,8 +3014,12 @@ async def main():
         print(f"Collection: {{info['manifest']['name']}}")
         print(f"Vector count: {{info.get('vector_count', 0)}}")
 
-        # Update vectors
-        await artifact_manager.update_vectors(
+        # Update vectors (remove old, then add new — no update_vectors method)
+        await artifact_manager.remove_vectors(
+            artifact_id="{workspace}/knowledge-base",
+            ids=["doc-001"]
+        )
+        await artifact_manager.add_vectors(
             artifact_id="{workspace}/knowledge-base",
             vectors=[
                 {{"id": "doc-001", "text": "Updated content here"}}
