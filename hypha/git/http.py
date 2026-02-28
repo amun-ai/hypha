@@ -15,7 +15,7 @@ import logging
 from typing import AsyncIterator, Callable, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Header, Query, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 
 from dulwich.objects import DEFAULT_OBJECT_FORMAT, ObjectID, ShaFile
 from dulwich.pack import (
@@ -1082,15 +1082,28 @@ def create_git_router(
 
         media_type = f"application/x-{service}-advertisement"
 
-        async def generate():
-            try:
-                async for chunk in handler.generate_refs_advertisement(service.encode()):
-                    yield chunk
-            finally:
-                # Clean up resources after streaming completes
-                await cleanup_repo(repo)
+        # Collect the full response body instead of streaming.
+        # The refs advertisement is small and buffering it allows us to set
+        # Content-Length, avoiding HTTP chunked transfer encoding.
+        # This improves compatibility with libgit2/wasm-git clients and
+        # CORS proxies that may not handle chunked encoding correctly.
+        try:
+            body_parts = []
+            async for chunk in handler.generate_refs_advertisement(service.encode()):
+                body_parts.append(chunk)
+            response_body = b"".join(body_parts)
+        finally:
+            await cleanup_repo(repo)
 
-        return StreamingResponse(generate(), media_type=media_type)
+        return Response(
+            content=response_body,
+            media_type=media_type,
+            headers={
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+                "Expires": "Fri, 01 Jan 1980 00:00:00 GMT",
+            },
+        )
 
     @router.post("/{workspace}/git/{alias}/git-upload-pack")
     async def git_upload_pack(
@@ -1113,25 +1126,32 @@ def create_git_router(
 
         handler = GitHTTPHandler(repo)
 
-        # IMPORTANT: Read the entire request body BEFORE starting StreamingResponse
-        # Reading from request.stream() inside a StreamingResponse generator causes
-        # a deadlock because the response streaming and request reading happen on
-        # the same HTTP connection.
-        logger.info("git_upload_pack: reading request body before streaming response")
+        # Read the entire request body before processing
+        logger.info("git_upload_pack: reading request body")
         body = await request.body()
         logger.info(f"git_upload_pack: received {len(body)} bytes")
 
-        async def generate():
-            try:
-                async for chunk in handler.handle_upload_pack_from_bytes(body):
-                    yield chunk
-            finally:
-                # Clean up resources after streaming completes
-                await cleanup_repo(repo)
+        # Collect the full response body instead of streaming.
+        # The pack data is already generated fully in memory by _generate_pack(),
+        # so buffering the response allows us to set Content-Length and avoid
+        # HTTP chunked transfer encoding. This improves compatibility with
+        # libgit2/wasm-git clients and CORS proxies.
+        try:
+            body_parts = []
+            async for chunk in handler.handle_upload_pack_from_bytes(body):
+                body_parts.append(chunk)
+            response_body = b"".join(body_parts)
+        finally:
+            await cleanup_repo(repo)
 
-        return StreamingResponse(
-            generate(),
+        return Response(
+            content=response_body,
             media_type="application/x-git-upload-pack-result",
+            headers={
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+                "Expires": "Fri, 01 Jan 1980 00:00:00 GMT",
+            },
         )
 
     @router.post("/{workspace}/git/{alias}/git-receive-pack")
@@ -1162,25 +1182,30 @@ def create_git_router(
 
         handler = GitHTTPHandler(repo)
 
-        # IMPORTANT: Read the entire request body BEFORE starting StreamingResponse
-        # Reading from request.stream() inside a StreamingResponse generator causes
-        # a deadlock because the response streaming and request reading happen on
-        # the same HTTP connection.
-        logger.info("git_receive_pack: reading request body before streaming response")
+        # Read the entire request body before processing
+        logger.info("git_receive_pack: reading request body")
         body = await request.body()
         logger.info(f"git_receive_pack: received {len(body)} bytes")
 
-        async def generate():
-            try:
-                async for chunk in handler.handle_receive_pack_from_bytes(body):
-                    yield chunk
-            finally:
-                # Clean up resources after streaming completes
-                await cleanup_repo(repo)
+        # Collect the full response body instead of streaming.
+        # Buffering allows us to set Content-Length and avoid HTTP chunked
+        # transfer encoding, improving compatibility with various git clients.
+        try:
+            body_parts = []
+            async for chunk in handler.handle_receive_pack_from_bytes(body):
+                body_parts.append(chunk)
+            response_body = b"".join(body_parts)
+        finally:
+            await cleanup_repo(repo)
 
-        return StreamingResponse(
-            generate(),
+        return Response(
+            content=response_body,
             media_type="application/x-git-receive-pack-result",
+            headers={
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+                "Expires": "Fri, 01 Jan 1980 00:00:00 GMT",
+            },
         )
 
     return router
