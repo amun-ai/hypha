@@ -311,11 +311,23 @@ class ASGIRoutingMiddleware:
                     # Use the TARGET workspace from URL, not user's current workspace.
                     # This allows anonymous users to access public services in any workspace.
                     # Permission checks are enforced by get_service() based on service visibility.
+
+                    # The agent-skills service is registered as a public service
+                    # in the "public" workspace, but should be accessible from
+                    # any workspace URL (e.g. /my-workspace/agent-skills/).
+                    # Always resolve it from "public" to avoid KeyError, while
+                    # preserving the original workspace in scope so the handler
+                    # can generate workspace-specific documentation.
+                    if service_id == "agent-skills":
+                        lookup_workspace = "public"
+                    else:
+                        lookup_workspace = workspace
+
                     async with self.store.get_workspace_interface(
-                        user_info, workspace
+                        user_info, lookup_workspace
                     ) as api:
                         service = await api.get_service(
-                            workspace + "/" + service_id, {"mode": _mode}
+                            lookup_workspace + "/" + service_id, {"mode": _mode}
                         )
                         await self._handle_app_service(
                             service, workspace, path, scope, receive, send
