@@ -798,6 +798,14 @@ const result = await svc.someFunction({{ param1: "value", _rkwargs: true }});
 
 > **Critical: `_rkwargs: true` for JavaScript callers.** Python services use keyword arguments (e.g., `def method(param1, param2)`), but JavaScript has no native named-argument syntax. When calling a Python service from JavaScript, add `_rkwargs: true` to the **last object argument** to convert it into Python keyword arguments. Without it, the call will fail with a missing-argument error. The `_rkwargs` flag is stripped before sending — it never reaches the Python function.
 
+> **`case_conversion` for cross-language naming styles.** Python uses `snake_case` (e.g., `get_service`, `list_files`) while JavaScript uses `camelCase` (e.g., `getService`, `listFiles`). When getting a service, pass `case_conversion` to automatically convert all method names:
+>
+> **Python:** `svc = await server.get_service("service-id", case_conversion="camel")` — converts method names to camelCase
+>
+> **JavaScript:** `const svc = await server.getService("service-id", {{case_conversion: "snake", _rkwargs: true}})` — converts method names to snake_case
+>
+> Values: `"camel"` (to camelCase), `"snake"` (to snake_case), `"camel+snake"` (both). This is useful when a Python service registers methods with `snake_case` names but you want to call them with idiomatic `camelCase` in JavaScript, or vice versa.
+
 ### HTTP API (curl / fetch / any HTTP client)
 
 **Important HTTP conventions:**
@@ -839,15 +847,18 @@ curl -X POST "{server_url}/{workspace}/services/%7E/check_status" \\\\
 
 **HTTP limitations:** The HTTP API is **stateless** — each request is independent. This means:
 - You **cannot register callable services** via HTTP (services with functions need a persistent WebSocket connection).
-- You **cannot receive callbacks** or streaming responses via HTTP.
-- For bidirectional communication, use the Python/JS SDK with WebSocket transport.
+- You **cannot pass or receive callback functions** via HTTP (callbacks require the WebSocket or HTTP-streaming transport in the hypha-rpc SDK).
 - HTTP is ideal for: calling existing services, managing artifacts, checking status, and one-shot operations.
+
+> **Callback functions** are a unique feature of hypha-rpc: you can pass Python/JS functions as arguments to remote service calls, and the remote side can call them back. This enables streaming progress updates, interactive workflows, and event-driven patterns. Callbacks require the **hypha-rpc SDK** (Python or JavaScript) — not the plain HTTP proxy. Example: `await svc.train(data, on_progress=lambda p: print(p))`. By default, callbacks are available only during the call; use `_rintf: True` in an object to make its functions persist beyond the call.
 
 ## Core Capabilities
 
 ### 1. Service Management
 - List, discover, and call remote services
-- Register new services with custom functions (SDK only — requires WebSocket)
+- Register new services with custom functions (SDK only — requires WebSocket or HTTP-streaming connection)
+- **Works from any environment**: Python scripts, Node.js, and even **browsers** — JavaScript running in a web page can connect via WebSocket and register services that other clients can call
+- Pass **callback functions** as arguments to remote calls (SDK only — not available via plain HTTP)
 - Search services using semantic similarity (vector search)
 
 ### 2. Token & Permission Management
@@ -1532,6 +1543,35 @@ async def main():
         await server.serve()  # Keep running
 ```
 
+### Register a Service from the Browser (JavaScript)
+
+JavaScript running in a web page can also register services — this is a unique feature of Hypha. Browser-based services are callable by any other client (Python, Node.js, other browsers) via the same `get_service()` / `getService()` API.
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.57/dist/hypha-rpc-websocket.min.js"></script>
+<script>
+async function main() {{
+    const server = await hyphaWebsocketClient.connectToServer({{
+        server_url: "{server_url}"
+    }});
+
+    await server.registerService({{
+        id: "browser-service",
+        name: "Browser Calculator",
+        config: {{ visibility: "public" }},
+        add(a, b) {{ return a + b; }},
+        greet(name) {{ return `Hello ${{name}} from the browser!`; }}
+    }});
+
+    console.log("Service registered! Other clients can now call it.");
+    // The service stays available as long as this page is open
+}}
+main();
+</script>
+```
+
+> **Why this matters:** Hypha's WebSocket-based RPC means any environment that can open a WebSocket — including browsers — can be both a client and a server. A browser tab can register a service that a Python script on another machine calls, enabling hybrid architectures where browser UI components expose APIs.
+
 ### Use a Service
 
 ```python
@@ -1587,6 +1627,26 @@ async function main() {{
 - Calling functions with only positional arguments: `calc.add(5, 3)`
 - Calling from Python (Python natively supports keyword arguments)
 - Calling via HTTP API (JSON body is always treated as keyword arguments)
+
+### Cross-Language Naming with `case_conversion`
+
+Python services use `snake_case` method names (e.g., `get_service`, `list_files`), while JavaScript conventionally uses `camelCase` (e.g., `getService`, `listFiles`). Use `case_conversion` when getting a service to automatically convert all method names to the style native to your language:
+
+```python
+# Python — get a JavaScript-registered service with camelCase methods
+# case_conversion="snake" converts getUsers -> get_users, listFiles -> list_files
+svc = await server.get_service("js-service", case_conversion="snake")
+users = await svc.get_users()  # calls the original "getUsers" method
+```
+
+```javascript
+// JavaScript — get a Python-registered service with snake_case methods
+// case_conversion="camel" converts get_users -> getUsers, list_files -> listFiles
+const svc = await server.getService("py-service", {{case_conversion: "camel", _rkwargs: true}});
+const users = await svc.getUsers();  // calls the original "get_users" method
+```
+
+Values: `"camel"`, `"snake"`, `"camel+snake"` (provides both styles), `"snake+camel"` (provides both styles).
 
 ### Call Service via HTTP
 
@@ -3948,7 +4008,7 @@ const svc = await server.getService("service-id");
 const result = await svc.someFunction({{ param1: "value", _rkwargs: true }});
 ```
 
-> **JavaScript note:** Add `_rkwargs: true` to the last object argument when calling Python services with named parameters. Without it, Python receives the object as a single positional argument and the call fails. See [EXAMPLES.md](EXAMPLES.md) for details.
+> **JavaScript note:** Add `_rkwargs: true` to the last object argument when calling Python services with named parameters. Without it, Python receives the object as a single positional argument and the call fails. Use `case_conversion: "camel"` when getting a Python service to auto-convert `snake_case` method names to `camelCase`. See [EXAMPLES.md](EXAMPLES.md) for details.
 
 ```bash
 # HTTP: List services
@@ -3964,7 +4024,7 @@ curl -X POST "{server_url}/YOUR_WORKSPACE/services/SERVICE_ID/FUNCTION" \\
 ## Core Platform Capabilities
 
 ### 1. Service Management
-Register, discover, and call remote services via RPC or HTTP. Every service exposes methods that can be called via WebSocket (real-time, bidirectional) or HTTP (stateless REST).
+Register, discover, and call remote services via RPC or HTTP. Every service exposes methods that can be called via WebSocket (real-time, bidirectional) or HTTP (stateless REST). Services can be registered from Python, Node.js, or **browsers** — any environment with a WebSocket connection. Unique features include **callback functions** (pass functions as arguments to remote calls) and **`case_conversion`** (auto-convert method names between `snake_case` and `camelCase` across languages).
 - **Reference**: [REFERENCE/workspace-manager.md](REFERENCE/workspace-manager.md)
 
 ### 2. Artifact Management

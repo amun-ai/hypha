@@ -838,8 +838,8 @@ async def test_skills_server_url_consistency(fastapi_server):
         for url in urls:
             # Clean trailing punctuation
             url = url.rstrip(".,;:")
-            # Only consider Hypha server URLs (not example external URLs)
-            if "127.0.0.1" in url or "localhost" in url or "hypha" in url:
+            # Only consider Hypha server URLs (not CDN or external URLs)
+            if ("127.0.0.1" in url or "localhost" in url or "hypha" in url) and "cdn.jsdelivr.net" not in url:
                 # Extract base URL (scheme + host + port)
                 match = re.match(r'(https?://[^/]+)', url)
                 if match:
@@ -875,7 +875,7 @@ async def test_skills_all_code_blocks_have_language(fastapi_server):
                 continue
 
             # The language should be a known language identifier
-            known_languages = {"python", "javascript", "bash", "json", "yaml", "text", "markdown"}
+            known_languages = {"python", "javascript", "bash", "json", "yaml", "text", "markdown", "html"}
             assert fence.lower() in known_languages, (
                 f"Code block in {filename} has unrecognized language: '{fence}'. "
                 f"Known: {known_languages}"
