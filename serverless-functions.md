@@ -206,12 +206,16 @@ app = FastAPI()
 async def upload_file(file: UploadFile):
     return {"filename": file.filename}
 
+# Wrap FastAPI app in a serve function that Hypha can call
+async def serve(args):
+    await app(args["scope"], args["receive"], args["send"])
+
 # Deploy as ASGI service
 api = await connect_to_server({"server_url": "..."})
 await api.register_service({
     "id": "file-service",
-    "type": "asgi", 
-    "serve": app
+    "type": "asgi",
+    "serve": serve
 })
 ```
 
