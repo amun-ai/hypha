@@ -28,7 +28,7 @@ Hypha persists events with a shared schema:
 - `data` (JSON payload)
 - `idempotency_key` (required for billing usage writes)
 - `intercepted` (`false` by default)
-- `interceptor_action` (`stop|recover`, nullable)
+- `interceptor_action` (`stop`, nullable; currently set only for stop actions)
 - `interceptor_reason` (`policy|security|limit`, nullable)
 - `interceptor_code` (`INTERCEPT_STOP_*`, nullable)
 - `interceptor_id` (nullable)
@@ -72,6 +72,8 @@ Important behavior:
 - when `stop` matches, the already-persisted source event is flagged in `event_logs`
   with `intercepted=true` and interceptor metadata.
 - if stop-flag persistence fails, the caller gets `INTERNAL_ERROR` instead of a stop success.
+- when `recover` matches, Hypha writes a separate recovery/audit event and returns a controlled
+  response; the original source event is not flagged as `intercepted`.
 
 Workspace APIs:
 - `register_interceptor(...)`
@@ -120,6 +122,11 @@ Usage payload fields:
 - `unit`
 - `idempotency_key` (required)
 - optional dimensions (`model`, `region`, `operation`, etc.)
+- optional `occurred_at` (RFC3339 UTC timestamp)
+- optional `billing_account_id`
+- optional `entitlement` object:
+  - `key` (defaults to `billing_point`)
+  - `limit` (strictly positive; enforced as hard limit with `TOO_MANY_REQUESTS`)
 
 Example:
 
@@ -156,8 +163,30 @@ Rules:
 Expected behavior:
 - First request with a new key is persisted.
 - Retries with the same key return deduped behavior and do not double count.
+- Reusing the same key with a different payload returns `IDEMPOTENCY_CONFLICT`.
 - Aggregation excludes intercepted billing rows (`intercepted=true`) so blocked usage
   never contributes to billable totals.
+
+## Stripe Webhook Ingestion
+
+Hypha exposes Stripe webhook handlers on these paths (all POST):
+
+- `/api/v1/billing/stripe/webhook`
+- `/api/billing/stripe/webhook`
+- `/billing/stripe/webhook`
+- `/stripe/webhook`
+
+Required runtime configuration:
+
+- `HYPHA_STRIPE_WEBHOOK_SECRET`: shared secret used for `Stripe-Signature` verification.
+- Production deployments should always set a strong, private webhook secret explicitly.
+
+Operational notes:
+
+- Webhook delivery dedupe is based on Stripe `event.id`.
+- Duplicate deliveries return deterministic success with `deduped=true`.
+- For each accepted webhook, Hypha mirrors subscription/invoice/payment snapshot fields
+  to internal billing account state and writes a billing event (`stripe.webhook.<event_type>`).
 
 Retry example (client-side):
 

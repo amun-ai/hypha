@@ -8,7 +8,9 @@ This guide covers advanced Hypha features for developers who want to build produ
 
 For logging extensibility, interceptor behavior, billing hooks, idempotency semantics, and retention/storage guidance, see:
 
-- [Logging and Billing](logging-and-billing.md)
+- [Logging, Interception, and Billing](logging-and-billing.md)
+
+If you enable Stripe webhook ingestion, set `HYPHA_STRIPE_WEBHOOK_SECRET` in your server environment.
 
 ## Advanced Server Configuration
 
