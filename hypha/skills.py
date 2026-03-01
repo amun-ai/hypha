@@ -69,21 +69,99 @@ def extract_docstring(func: Callable) -> str:
     return ""
 
 
+def _service_has_schema(service_dict: dict) -> bool:
+    """Check if a service has meaningful service_schema with documented methods.
+
+    Returns True only if at least one method has a non-empty description
+    or non-empty parameters. This filters out auto-generated schemas for
+    undecorated functions (which have empty descriptions and empty properties).
+    """
+    schema = service_dict.get("service_schema")
+    if not schema or not isinstance(schema, dict):
+        return False
+    for method_name, method_def in schema.items():
+        if not isinstance(method_def, dict):
+            continue
+        if method_def.get("type") != "function":
+            continue
+        function_def = method_def.get("function")
+        if not function_def or not isinstance(function_def, dict):
+            continue
+        # Check for meaningful schema: non-empty description or parameters
+        has_description = bool(function_def.get("description", "").strip())
+        params = function_def.get("parameters", {})
+        has_params = bool(params.get("properties", {}))
+        if has_description or has_params:
+            return True
+    return False
+
+
+def _normalize_service_slug(service_id: str) -> str:
+    """Convert a full service ID to a URL-safe slug for REFERENCE paths.
+
+    Examples:
+        "public/client_id:my-service" -> "my-service"
+        "workspace/client:svc@app" -> "svc"
+        "simple-service" -> "simple-service"
+    """
+    # Remove workspace prefix
+    if "/" in service_id:
+        service_id = service_id.split("/", 1)[1]
+    # Extract service name (after colon)
+    if ":" in service_id:
+        service_id = service_id.split(":", 1)[1]
+    # Remove @app-id suffix
+    if "@" in service_id:
+        service_id = service_id.split("@", 1)[0]
+    return service_id
+
+
+# Service slugs that are internal infrastructure and should not appear
+# in agent-facing documentation. These services exist for the server's
+# own operation and have no useful API for external consumers.
+_INTERNAL_SERVICE_SLUGS = frozenset({
+    "built-in",       # Internal get_service/ping — duplicates workspace-manager
+    "agent-skills",   # The doc system itself — meta/circular
+    "hypha-login",    # Browser-only OAuth flow handlers
+})
+
+
+def _is_agent_visible_service(service_dict: dict) -> bool:
+    """Check if a service should be shown in agent-facing documentation.
+
+    A service is visible if it has meaningful schema AND is not an internal
+    infrastructure service (built-in, agent-skills, hypha-login).
+    """
+    slug = _normalize_service_slug(service_dict.get("id", ""))
+    if slug in _INTERNAL_SERVICE_SLUGS:
+        return False
+    return _service_has_schema(service_dict)
+
+
 def format_schema_as_markdown(schema: Dict[str, Any], method_name: str, docstring: str = "") -> str:
     """Format a JSON schema as markdown documentation."""
     lines = [f"### {method_name}\n"]
 
-    # Add description from schema or docstring
-    description = schema.get("description") or docstring.split("\n")[0] if docstring else ""
-    if description:
-        lines.append(f"{description}\n")
-
-    # Add detailed docstring if available
-    if docstring and "\n" in docstring:
-        # Get everything after the first line
-        details = "\n".join(docstring.split("\n")[1:]).strip()
-        if details:
-            lines.append(f"\n{details}\n")
+    # Add description from schema or docstring (avoid duplication)
+    schema_desc = schema.get("description", "")
+    if schema_desc:
+        lines.append(f"{schema_desc}\n")
+        # Add docstring details only if they go beyond the schema description
+        if docstring and "\n" in docstring:
+            first_line = docstring.split("\n")[0].strip()
+            # Only add extra details if the docstring has more than just the first line
+            # and the first line matches what we already printed from schema
+            details = "\n".join(docstring.split("\n")[1:]).strip()
+            if details:
+                lines.append(f"\n{details}\n")
+    elif docstring:
+        first_line = docstring.split("\n")[0].strip()
+        if first_line:
+            lines.append(f"{first_line}\n")
+        if "\n" in docstring:
+            details = "\n".join(docstring.split("\n")[1:]).strip()
+            if details:
+                lines.append(f"\n{details}\n")
 
     # Add parameters
     params = schema.get("parameters", {})
@@ -475,10 +553,11 @@ class DynamicDocGenerator:
         return "".join(lines)
 
 
-def get_skill_md(workspace: str, server_url: str, workspace_info: dict = None, services: list = None) -> str:
+def get_skill_md(workspace: str, server_url: str, workspace_info: dict = None, services: list = None, public_services: list = None) -> str:
     """Generate the main SKILL.md content for a workspace."""
     workspace_info = workspace_info or {}
     services = services or []
+    public_services = public_services or []
     workspace_name = workspace_info.get("name", workspace)
     workspace_desc = workspace_info.get("description", "A Hypha workspace")
     is_persistent = workspace_info.get("persistent", False)
@@ -486,16 +565,33 @@ def get_skill_md(workspace: str, server_url: str, workspace_info: dict = None, s
     # Load quick start documentation
     quick_start_doc = load_documentation_file("quick-start.md") or ""
 
-    # Format available services
+    # Format available services (only agent-visible, with clean slugs)
     service_list = ""
     for svc in services[:20]:  # Limit to 20 services for readability
-        svc_id = svc.get("id", "unknown")
+        svc_slug = _normalize_service_slug(svc.get("id", "unknown"))
+        if svc_slug in _INTERNAL_SERVICE_SLUGS:
+            continue
         svc_name = svc.get("name", "")
         svc_desc = (svc.get("description") or "")[:100]
-        service_list += f"- `{svc_id}`: {svc_name}"
+        service_list += f"- `{svc_slug}`: {svc_name}"
         if svc_desc:
             service_list += f" - {svc_desc}"
+        if _service_has_schema(svc):
+            service_list += f" | [Reference](REFERENCE/{svc_slug}.md)"
         service_list += "\n"
+
+    # Format public services (only agent-visible with schemas)
+    public_service_list = ""
+    if public_services:
+        visible_services = [s for s in public_services if _is_agent_visible_service(s)]
+        for svc in visible_services[:20]:
+            svc_slug = _normalize_service_slug(svc.get("id", ""))
+            svc_name = svc.get("name") or svc_slug
+            svc_desc = (svc.get("description") or "")[:100]
+            public_service_list += f"- `{svc_slug}`: {svc_name}"
+            if svc_desc:
+                public_service_list += f" - {svc_desc}"
+            public_service_list += f" | [Reference](REFERENCE/{svc_slug}.md)\n"
 
     return f"""---
 name: {SKILL_NAME}
@@ -617,7 +713,9 @@ asyncio.run(main())
 
 ### Generating Tokens for Programmatic Access
 
-Once authenticated, generate tokens for use by scripts or AI agents:
+Once authenticated, generate tokens for use by scripts or AI agents.
+
+**Important**: `generate_token` requires **admin** permission on the workspace. Tokens obtained from the login flow typically have admin permission on the user's own workspace. If you get a PermissionError (HTTP 403), your current token lacks admin access.
 
 ```python
 # Generate a read-only token (safe to share)
@@ -633,7 +731,15 @@ rw_token = await server.generate_token({{
 }})
 ```
 
-Permission levels: `read` (view only), `read_write` (modify data), `admin` (full control including workspace deletion and token generation).
+**Permission Levels:**
+
+| `generate_token` value | Code in `parse_token` scope | Meaning |
+|------------------------|---------------------------|---------|
+| `"read"` | `"r"` | View workspace resources and services |
+| `"read_write"` | `"rw"` | Create/modify services and data |
+| `"admin"` | `"a"` | Full control: workspace deletion, token generation |
+
+When you call `generate_token({{"permission": "read_write"}})`, the resulting token's scope will contain `"rw"` in `scope.workspaces["<workspace-id>"]`.
 
 ### How Authorization Works (Context Injection)
 
@@ -685,36 +791,74 @@ const server = await connectToServer({{
 
 const services = await server.listServices();
 const svc = await server.getService("service-id");
-const result = await svc.someFunction({{ param1: "value" }});
+
+// IMPORTANT: Use _rkwargs: true when passing named arguments to Python services
+const result = await svc.someFunction({{ param1: "value", _rkwargs: true }});
 ```
+
+> **Critical: `_rkwargs: true` for JavaScript callers.** Python services use keyword arguments (e.g., `def method(param1, param2)`), but JavaScript has no native named-argument syntax. When calling a Python service from JavaScript, add `_rkwargs: true` to the **last object argument** to convert it into Python keyword arguments. Without it, the call will fail with a missing-argument error. The `_rkwargs` flag is stripped before sending — it never reaches the Python function.
+
+> **`case_conversion` for cross-language naming styles.** Python uses `snake_case` (e.g., `get_service`, `list_files`) while JavaScript uses `camelCase` (e.g., `getService`, `listFiles`). When getting a service, pass `case_conversion` to automatically convert all method names:
+>
+> **Python:** `svc = await server.get_service("service-id", case_conversion="camel")` — converts method names to camelCase
+>
+> **JavaScript:** `const svc = await server.getService("service-id", {{case_conversion: "snake", _rkwargs: true}})` — converts method names to snake_case
+>
+> Values: `"camel"` (to camelCase), `"snake"` (to snake_case), `"camel+snake"` (both). This is useful when a Python service registers methods with `snake_case` names but you want to call them with idiomatic `camelCase` in JavaScript, or vice versa.
 
 ### HTTP API (curl / fetch / any HTTP client)
 
+**Important HTTP conventions:**
+- Always use a **trailing slash** on path endpoints (e.g., `/services/`), or use `curl -L` to follow the automatic redirect.
+- **POST** is recommended for all service method calls. Send parameters as a JSON object in the body.
+- **GET** works for methods with no parameters or simple query-string parameters.
+- Parameters are passed as **keyword arguments** in the JSON body: `{{"param_name": value}}`.
+- Authenticated requests require the `Authorization: Bearer YOUR_TOKEN` header.
+
 ```bash
-# List all services
-curl "{server_url}/{workspace}/services"
+# List all services in your workspace
+curl -L "{server_url}/{workspace}/services/"
 
-# Get service details
-curl "{server_url}/{workspace}/services/{{service_id}}"
-
-# Call a service function (GET for simple params)
-curl "{server_url}/{workspace}/services/{{service_id}}/{{function_name}}?param1=value"
-
-# Call a service function (POST for complex params)
-curl -X POST "{server_url}/{workspace}/services/{{service_id}}/{{function_name}}" \\
-  -H "Content-Type: application/json" \\
+# Call a service method (POST with JSON body — recommended)
+curl -X POST "{server_url}/{workspace}/services/{{service_id}}/{{method_name}}" \\\\
+  -H "Content-Type: application/json" \\\\
+  -H "Authorization: Bearer YOUR_TOKEN" \\\\
   -d '{{"param1": "value1", "param2": 42}}'
 
-# With authentication
-curl -H "Authorization: Bearer YOUR_TOKEN" \\
-  "{server_url}/{workspace}/services/{{service_id}}/{{function_name}}"
+# Call a method with no parameters
+curl -X POST "{server_url}/{workspace}/services/{{service_id}}/{{method_name}}" \\\\
+  -H "Authorization: Bearer YOUR_TOKEN"
+
+# GET works for simple cases (parameters as query string)
+curl -L "{server_url}/{workspace}/services/{{service_id}}/{{method_name}}?param1=value"
 ```
+
+**Accessing public services via HTTP:** Public services (like `queue`, `artifact-manager`, `server-apps`) are accessed using the `public` workspace prefix:
+
+```bash
+# Call a public service method
+curl -X POST "{server_url}/public/services/queue/get_length" \\\\
+  -H "Authorization: Bearer YOUR_TOKEN"
+
+# The workspace manager is special — use `~` (URL: %7E) as the service ID:
+curl -X POST "{server_url}/{workspace}/services/%7E/check_status" \\\\
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+**HTTP limitations:** The HTTP API is **stateless** — each request is independent. This means:
+- You **cannot register callable services** via HTTP (services with functions need a persistent WebSocket connection).
+- You **cannot pass or receive callback functions** via HTTP (callbacks require the WebSocket or HTTP-streaming transport in the hypha-rpc SDK).
+- HTTP is ideal for: calling existing services, managing artifacts, checking status, and one-shot operations.
+
+> **Callback functions** are a unique feature of hypha-rpc: you can pass Python/JS functions as arguments to remote service calls, and the remote side can call them back. This enables streaming progress updates, interactive workflows, and event-driven patterns. Callbacks require the **hypha-rpc SDK** (Python or JavaScript) — not the plain HTTP proxy. Example: `await svc.train(data, on_progress=lambda p: print(p))`. By default, callbacks are available only during the call; use `_rintf: True` in an object to make its functions persist beyond the call.
 
 ## Core Capabilities
 
 ### 1. Service Management
 - List, discover, and call remote services
-- Register new services with custom functions
+- Register new services with custom functions (SDK only — requires WebSocket or HTTP-streaming connection)
+- **Works from any environment**: Python scripts, Node.js, and even **browsers** — JavaScript running in a web page can connect via WebSocket and register services that other clients can call
+- Pass **callback functions** as arguments to remote calls (SDK only — not available via plain HTTP)
 - Search services using semantic similarity (vector search)
 
 ### 2. Token & Permission Management
@@ -733,14 +877,59 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \\
 - Upload/download files with presigned URLs
 - HTTP proxy endpoint: `{server_url}/{workspace}/files/`
 
-### 5. Server Applications
-- Install and manage serverless applications (web-worker, web-python, window, iframe)
-- Deploy HTTP endpoints via ASGI (FastAPI) or serverless functions
-- Access apps at: `{server_url}/{workspace}/apps/{{app_id}}/`
+### 5. Server Applications & HTTP Endpoints
+
+Hypha provides **two approaches** for deploying HTTP endpoints:
+
+**A) ASGI Applications** — Deploy full web frameworks (FastAPI, Django, Starlette) as Hypha services.
+- Register with `type: "asgi"` and a `serve` function that handles ASGI scope/receive/send
+- Ideal for complex web apps, file uploads, WebSocket endpoints, middleware
+- URL pattern: `{server_url}/{workspace}/apps/{{service_id}}/{{path}}`
+- See full guide: [ASGI Apps Guide](GUIDE/asgi-apps.md)
+
+**B) Serverless Functions** — Define simple HTTP handler functions with automatic URL routing.
+- Register with `type: "functions"` and named handler functions
+- Ideal for REST APIs, webhooks, microservices, quick prototypes
+- Supports nested paths (e.g., `api/v1/users`) and default fallback handlers
+- URL pattern: `{server_url}/{workspace}/apps/{{service_id}}/{{function_name}}/`
+- See full guide: [Serverless Functions Guide](GUIDE/serverless-functions.md)
+
+**C) Managed Server Apps** — Install and manage applications via the `server-apps` controller.
+- Application types: `web-worker` (JavaScript), `web-python` (Pyodide), `window`, `iframe`
+- Auto-scaling, lifecycle management, and on-demand startup
+- Use `server-apps` service to install, start, stop, and uninstall apps
+- See [REFERENCE/server-apps.md](REFERENCE/server-apps.md) for the full API
+
+Quick example — direct ASGI registration (no server-apps needed):
+```python
+from hypha_rpc import connect_to_server
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/hello")
+async def hello():
+    return {{"message": "Hello from Hypha!"}}
+
+async def serve(args):
+    await app(args["scope"], args["receive"], args["send"])
+
+async with connect_to_server({{"server_url": "{server_url}"}}) as server:
+    await server.register_service({{
+        "id": "my-api",
+        "type": "asgi",
+        "serve": serve,
+        "config": {{"visibility": "public"}}
+    }})
+    # Accessible at: {server_url}/{workspace}/apps/my-api/hello
+    print("Service registered. Press Ctrl+C to stop.")
+    await asyncio.sleep(float("inf"))  # Keep alive
+```
 
 ### 6. MCP Integration (if enabled)
 - Expose Hypha services as MCP endpoints for AI tools (Claude, Cursor, etc.)
 - MCP endpoint: `{server_url}/{workspace}/mcp/{{service_id}}/mcp`
+- [MCP Integration Guide](GUIDE/mcp.md)
 
 ### 7. A2A Protocol (if enabled)
 - Agent-to-Agent protocol for multi-agent communication
@@ -752,65 +941,363 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \\
 
 ## Available Services
 
-{service_list if service_list else "Use `list_services()` or `GET /{workspace}/services` to discover all services."}
+{service_list if service_list else "Use `list_services()` or `GET /{workspace}/services/` (note trailing slash) to discover all services."}
+
+{"## Public Services (Available from Any Workspace)" + chr(10) + chr(10) + public_service_list if public_service_list else ""}
 
 Key built-in services:
-1. **Workspace Manager** (`~` or `default`): Core workspace operations, service registration, token generation
-2. **Artifact Manager** (`public/artifact-manager`): File/data management, version control, vector search
-3. **Server Apps** (`public/server-apps`): Serverless app deployment (ASGI, functions, web-worker, web-python)
-4. **S3 Storage** (`public/s3-storage`): Direct S3 operations - upload, download, list, multipart (if enabled)
+
+| Service | SDK ID | HTTP URL Pattern | Reference |
+|---------|--------|-----------------|-----------|
+| Workspace Manager | `~` or `default` | `/{workspace}/services/%7E/{{method}}` | [REFERENCE/workspace-manager.md](REFERENCE/workspace-manager.md) |
+| Artifact Manager | `public/artifact-manager` | `/public/services/artifact-manager/{{method}}` | [REFERENCE/artifact-manager.md](REFERENCE/artifact-manager.md) |
+| Server Apps | `public/server-apps` | `/public/services/server-apps/{{method}}` | [REFERENCE/server-apps.md](REFERENCE/server-apps.md) |
+| S3 Storage | `public/s3-storage` | `/public/services/s3-storage/{{method}}` | [REFERENCE/s3-storage.md](REFERENCE/s3-storage.md) |
+
+> **Note on service access**: The workspace manager (`~`) lives in your workspace. All other built-in services are in the `public` workspace — via HTTP, use the `/public/services/` prefix. Via SDK, use `await server.get_service("public/artifact-manager")`.
 
 ## Instructions for AI Agents
 
-1. **Bootstrap first** - Install `hypha-rpc` (`pip install hypha-rpc`), then connect
-2. **Check workspace status** - `await server.check_status()` to verify workspace is ready
-3. **Discover services** - `await server.list_services()` to see what's available
-4. **Choose transport** - Use Python/JS SDK for bidirectional real-time calls; use HTTP for simple stateless calls
-5. **Handle permissions** - Check user has required permissions before operations
-6. **HTTP fallback** - If you can't install libraries, all services work via HTTP REST endpoints
+1. **Read the docs first** — Start with this SKILL.md, then check `REFERENCE/{{service-id}}.md` for the specific service you need
+2. **Choose your transport**:
+   - **Python/JS SDK** (recommended): Full bidirectional communication, callbacks, streaming. Use `pip install hypha-rpc`.
+   - **HTTP REST**: Stateless, works with `curl`/`fetch`. Good for calling existing services. Cannot register services or receive callbacks.
+3. **Check workspace status** — `check_status` verifies the workspace is ready and shows your permission level
+4. **Discover services** — Use `GET /{workspace}/services/` (note trailing slash) to list services via HTTP. The RPC `list_services()` method returns services in your *own* workspace, not the target workspace.
+5. **Access public services** — Built-in services like `artifact-manager`, `queue`, `server-apps` are in the `public` workspace. Use `public/` prefix in HTTP URLs.
+6. **Handle errors** — Check the Error Handling section below for common issues and solutions
+
+## Service Lifecycle
+
+**Services are ephemeral by default.** When a client disconnects (e.g., WebSocket closes), all services it registered are automatically unregistered. This means:
+
+- Services registered via the SDK exist only as long as the client connection is alive
+- If your script exits or the connection drops, the services disappear
+- To create persistent services, use **server apps** (`server-apps` service) which manage worker lifecycle
+- Built-in services (workspace manager, artifact-manager, queue, etc.) are persistent — they are registered by the server itself
+
+To re-register a service on reconnect, use the `overwrite` option: `await server.register_service(svc, {{"overwrite": True}})`
 
 ## Error Handling
 
-Common errors and solutions:
+Common errors and HTTP status codes:
 
-- `PermissionError`: User lacks required permission level. Generate a new token with higher permission.
-- `KeyError: Workspace not found`: Workspace doesn't exist or was unloaded due to inactivity.
-- `KeyError: Service not found`: Service not registered. Try `list_services()` first, or start the app.
-- `TimeoutError`: Service didn't respond in time. Increase timeout or check if the service is running.
+| Error | HTTP Status | Meaning |
+|-------|-------------|---------|
+| `PermissionError` | **403** Forbidden | User lacks required permission level. Check `check_status()` for your current permission. |
+| `KeyError: not found` | **404** Not Found | Service, method, or workspace not found. Use `list_services()` to discover available services. |
+| `TypeError` / `ValueError` | **500** Server Error | Invalid arguments passed to service method. Check the REFERENCE docs for parameter types. |
+| `TimeoutError` | **500** Server Error | Service didn't respond in time. Check if the service is running. |
+
+## Documentation URLs
+
+### Generic Documentation (No Auth Required)
+
+These URLs provide general Hypha documentation accessible without authentication:
+
+- **Overview**: `{server_url}/ws/agent-skills/SKILL.md`
+- **API Reference**: `{server_url}/ws/agent-skills/REFERENCE.md`
+- **Per-Service Reference**: `{server_url}/ws/agent-skills/REFERENCE/{{service-id}}.md`
+- **Examples**: `{server_url}/ws/agent-skills/EXAMPLES.md`
+- **ASGI Apps Guide**: `{server_url}/ws/agent-skills/GUIDE/asgi-apps.md`
+- **Serverless Functions Guide**: `{server_url}/ws/agent-skills/GUIDE/serverless-functions.md`
+
+### Workspace-Specific Documentation (Auth Required)
+
+For documentation tailored to a specific workspace (includes workspace services, context, and capabilities):
+
+- **Overview**: `{server_url}/{{workspace}}/agent-skills/SKILL.md`
+- **API Reference**: `{server_url}/{{workspace}}/agent-skills/REFERENCE.md`
+- **Per-Service Reference**: `{server_url}/{{workspace}}/agent-skills/REFERENCE/{{service-id}}.md`
+- **Examples**: `{server_url}/{{workspace}}/agent-skills/EXAMPLES.md`
+- **Workspace Context**: `{server_url}/{{workspace}}/agent-skills/WORKSPACE_CONTEXT.md`
+- **Source Code**: `{server_url}/{{workspace}}/agent-skills/SOURCE/{{service-id}}/{{method-name}}`
+- **ASGI Apps Guide**: `{server_url}/{{workspace}}/agent-skills/GUIDE/asgi-apps.md`
+- **Serverless Functions Guide**: `{server_url}/{{workspace}}/agent-skills/GUIDE/serverless-functions.md`
+
+Replace `{{workspace}}` with the target workspace ID and provide a Bearer token via the `Authorization` header.
 
 ## Reference Documentation
 
 For detailed API documentation, see:
-- [REFERENCE.md](REFERENCE.md) - Complete API reference with all methods and parameters
+- [REFERENCE.md](REFERENCE.md) - API reference overview with links to per-service docs
+- [REFERENCE/workspace-manager.md](REFERENCE/workspace-manager.md) - Workspace Manager full API
+- [REFERENCE/artifact-manager.md](REFERENCE/artifact-manager.md) - Artifact Manager full API
+- [REFERENCE/server-apps.md](REFERENCE/server-apps.md) - Server Apps full API
+- [REFERENCE/s3-storage.md](REFERENCE/s3-storage.md) - S3 Storage full API
 - [EXAMPLES.md](EXAMPLES.md) - Code examples for every feature
 - [WORKSPACE_CONTEXT.md](WORKSPACE_CONTEXT.md) - This workspace's specific configuration
+
+### Guides
+
+In-depth guides for building HTTP endpoints and web applications:
+- [GUIDE/asgi-apps.md](GUIDE/asgi-apps.md) - Deploy FastAPI, Django, and ASGI frameworks as Hypha services
+- [GUIDE/serverless-functions.md](GUIDE/serverless-functions.md) - Simple HTTP functions with automatic routing
 """
 
 
-async def get_reference_md(workspace: str, server_url: str, doc_generator: DynamicDocGenerator) -> str:
-    """Generate comprehensive API reference documentation dynamically.
+async def get_service_reference_md(
+    service_id: str, workspace: str, server_url: str, doc_generator: DynamicDocGenerator
+) -> Optional[str]:
+    """Generate a standalone reference document for a single service.
 
-    This function dynamically generates API documentation for all enabled services
-    on the server, extracting schema information from the actual service classes.
+    Returns None if the service is not enabled.
     """
-    # Get all enabled services dynamically
+    service_api = await doc_generator.get_service_api(service_id)
+    if not service_api:
+        return None
+
+    methods = service_api.get("methods", {})
+    method_toc = "\n".join(f"- [`{name}`](#{name})" for name in sorted(methods.keys()))
+
+    lines = [f"""# {service_api['name']} API Reference
+
+**Service ID:** `{service_api['id']}`
+"""]
+
+    if service_api.get("description"):
+        lines.append(f"\n{service_api['description']}\n")
+
+    lines.append(f"""
+## Quick Access
+
+```python
+from hypha_rpc import connect_to_server
+
+async with connect_to_server({{
+    "server_url": "{server_url}",
+    "workspace": "{workspace}",
+    "token": "YOUR_TOKEN"
+}}) as server:
+    svc = await server.get_service("{service_api['id']}")
+    # Call methods on svc...
+```
+
+```bash
+# HTTP: Call a method
+curl -X POST "{server_url}/{workspace}/services/{service_api['id']}/METHOD_NAME" \\\\
+  -H "Content-Type: application/json" \\\\
+  -H "Authorization: Bearer YOUR_TOKEN" \\\\
+  -d '{{"param1": "value"}}'
+```
+
+## Methods
+
+{method_toc}
+
+---
+
+""")
+
+    for method_name, method_info in sorted(methods.items()):
+        schema = method_info.get("schema", {})
+        docstring = method_info.get("docstring", "")
+        lines.append(format_schema_as_markdown(schema, method_name, docstring))
+        lines.append("\n---\n\n")
+
+    lines.append(f"""
+## Source Code
+
+To inspect the implementation of any method, use:
+
+```
+GET {server_url}/{workspace}/agent-skills/SOURCE/{service_id}/METHOD_NAME
+```
+
+[Back to API Reference Overview](REFERENCE.md)
+""")
+
+    return "".join(lines)
+
+
+def generate_reference_from_service_schema(
+    service_dict: dict, workspace: str, server_url: str
+) -> Optional[str]:
+    """Generate reference documentation from a service's service_schema.
+
+    This handles dynamically registered services that have service_schema
+    but are not built-in services managed by DynamicDocGenerator.
+
+    Args:
+        service_dict: Service dict from list_services() containing service_schema
+        workspace: Current workspace ID
+        server_url: Server URL for code examples
+
+    Returns:
+        Markdown string, or None if service has no valid schema
+    """
+    service_schema = service_dict.get("service_schema")
+    if not service_schema or not isinstance(service_schema, dict):
+        return None
+
+    service_id = service_dict.get("id", "unknown")
+    service_name = service_dict.get("name") or service_id
+    service_desc = service_dict.get("description") or ""
+    slug = _normalize_service_slug(service_id)
+
+    # Extract methods from service_schema format
+    # Format: {"method": {"type": "function", "function": {"description": ..., "parameters": ...}}}
+    # Skip methods without meaningful schemas (no description and no parameters)
+    methods = {}
+    for method_name, method_def in service_schema.items():
+        if not isinstance(method_def, dict):
+            continue
+        if method_def.get("type") != "function":
+            continue
+        function_def = method_def.get("function")
+        if not function_def or not isinstance(function_def, dict):
+            continue
+        has_description = bool(function_def.get("description", "").strip())
+        has_params = bool(function_def.get("parameters", {}).get("properties", {}))
+        if not has_description and not has_params:
+            continue
+        # Convert to format expected by format_schema_as_markdown.
+        # Put the full description only in docstring to avoid duplication:
+        # format_schema_as_markdown prints schema["description"] as summary
+        # and docstring details as the rest.
+        full_desc = function_def.get("description", "")
+        schema = {
+            "description": "",
+            "parameters": function_def.get("parameters", {}),
+        }
+        methods[method_name] = {
+            "name": method_name,
+            "schema": schema,
+            "docstring": full_desc,
+        }
+
+    if not methods:
+        return None
+
+    method_toc = "\n".join(
+        f"- [`{name}`](#{name})" for name in sorted(methods.keys())
+    )
+
+    lines = [
+        f"# {service_name} API Reference\n\n**Service ID:** `{slug}`\n"
+    ]
+
+    if service_desc:
+        lines.append(f"\n{service_desc}\n")
+
+    lines.append(f"""
+## Quick Access
+
+```python
+from hypha_rpc import connect_to_server
+
+async with connect_to_server({{
+    "server_url": "{server_url}",
+    "workspace": "{workspace}",
+    "token": "YOUR_TOKEN"
+}}) as server:
+    svc = await server.get_service("{slug}")
+    # Call methods on svc...
+```
+
+```bash
+# HTTP: Call a method
+curl -X POST "{server_url}/{workspace}/services/{slug}/METHOD_NAME" \\\\
+  -H "Content-Type: application/json" \\\\
+  -H "Authorization: Bearer YOUR_TOKEN" \\\\
+  -d '{{"param1": "value"}}'
+```
+
+## Methods
+
+{method_toc}
+
+---
+
+""")
+
+    for method_name, method_info in sorted(methods.items()):
+        schema = method_info.get("schema", {})
+        docstring = method_info.get("docstring", "")
+        lines.append(format_schema_as_markdown(schema, method_name, docstring))
+        lines.append("\n---\n\n")
+
+    lines.append(f"\n[Back to API Reference Overview](REFERENCE.md)\n")
+
+    return "".join(lines)
+
+
+async def get_reference_md(
+    workspace: str, server_url: str, doc_generator: DynamicDocGenerator,
+    services: list = None, public_services: list = None,
+) -> str:
+    """Generate API reference overview with links to per-service reference docs.
+
+    This function generates a concise overview that links to individual service
+    reference documents at REFERENCE/<service-id>.md.
+    """
+    services = services or []
+    public_services = public_services or []
+
+    # Get all enabled built-in services dynamically
     enabled_services = await doc_generator.get_all_enabled_services()
 
-    enabled_list = "\n".join(f"- {svc['name']} (`{svc['id']}`)" for svc in enabled_services)
+    # Build service table with links to per-service docs
+    service_rows = []
+    for svc in enabled_services:
+        svc_id = svc["id"]
+        svc_name = svc["name"]
+        svc_desc = (svc.get("description") or "")[:80]
+        method_count = len(svc.get("methods", {}))
+        service_rows.append(
+            f"| [{svc_name}](REFERENCE/{svc_id}.md) | `{svc_id}` | {svc_desc} | {method_count} |"
+        )
+    service_table = "\n".join(service_rows)
+
+    # Build dynamic services rows (workspace + public), filtering internal services
+    builtin_ids = {svc["id"] for svc in enabled_services}
+    dynamic_service_rows = []
+    for svc_list in [services, public_services]:
+        for svc in svc_list:
+            if not _is_agent_visible_service(svc):
+                continue
+            slug = _normalize_service_slug(svc.get("id", ""))
+            if slug in builtin_ids:
+                continue
+            # Avoid duplicates (same service in both workspace and public)
+            if any(slug in row for row in dynamic_service_rows):
+                continue
+            svc_name = svc.get("name") or slug
+            svc_desc = (svc.get("description") or "")[:80]
+            schema = svc.get("service_schema", {})
+            method_count = sum(
+                1 for m in schema.values()
+                if isinstance(m, dict) and m.get("type") == "function"
+            )
+            dynamic_service_rows.append(
+                f"| [{svc_name}](REFERENCE/{slug}.md) | `{slug}` | {svc_desc} | {method_count} |"
+            )
 
     lines = [f"""# Hypha API Reference
 
 Complete API reference for workspace `{workspace}` at `{server_url}`.
 
 This documentation is automatically generated from the service API schemas.
+Each service has its own detailed reference document with full method signatures and descriptions.
 
-## Enabled Services
+## Services
 
-The following services are enabled on this server:
+| Service | ID | Description | Methods |
+|---------|-----|-------------|---------|
+{service_table}
+"""]
 
-{enabled_list}
+    # Append dynamic service rows to the same table
+    if dynamic_service_rows:
+        lines.append("\n".join(dynamic_service_rows))
+        lines.append("")
 
-## Connection Methods
+    lines.append("""
+Click on any service name above to view its full API reference.
+
+""")
+
+    lines.append(f"""## Connection Methods
 
 ### Python (Async)
 
@@ -843,15 +1330,31 @@ Base URL: `{server_url}/{workspace}`
 
 ---
 
-"""]
+""")
 
-    # Generate documentation for each enabled service (dynamically detected)
+    # Generate a brief summary for each built-in service
     for service_api in enabled_services:
-        lines.append(doc_generator.generate_api_reference(service_api))
-        lines.append("\n---\n\n")
+        svc_id = service_api["id"]
+        svc_name = service_api["name"]
+        svc_desc = service_api.get("description", "")
+        methods = service_api.get("methods", {})
+        method_list = ", ".join(f"`{m}`" for m in sorted(methods.keys())[:10])
+        if len(methods) > 10:
+            method_list += f", ... ({len(methods)} total)"
+        lines.append(f"""## {svc_name}
+
+**Service ID:** `{svc_id}` | **[Full Reference](REFERENCE/{svc_id}.md)**
+
+{svc_desc}
+
+**Key methods:** {method_list}
+
+""")
 
     # Add HTTP endpoints reference
-    lines.append("""## HTTP Endpoints Reference
+    lines.append("""---
+
+## HTTP Endpoints Reference
 
 ### Workspace Endpoints
 
@@ -922,10 +1425,11 @@ Comprehensive examples for workspace `{workspace}`.
 5. [Git Storage & Pull Requests](#git-storage--pull-request-examples)
 6. [S3 Storage Operations](#s3-storage-examples)
 7. [Server Applications](#server-app-examples)
-8. [MCP Integration](#mcp-integration-examples)
-9. [A2A Protocol](#a2a-agent-to-agent-examples)
-10. [Vector Search](#vector-search-examples)
-11. [Error Handling](#error-handling-examples)
+8. [Direct ASGI & Functions Registration](#direct-asgi--functions-registration)
+9. [MCP Integration](#mcp-integration-examples)
+10. [A2A Protocol](#a2a-agent-to-agent-examples)
+11. [Vector Search](#vector-search-examples)
+12. [Error Handling](#error-handling-examples)
 
 ---
 
@@ -1039,6 +1543,35 @@ async def main():
         await server.serve()  # Keep running
 ```
 
+### Register a Service from the Browser (JavaScript)
+
+JavaScript running in a web page can also register services — this is a unique feature of Hypha. Browser-based services are callable by any other client (Python, Node.js, other browsers) via the same `get_service()` / `getService()` API.
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.57/dist/hypha-rpc-websocket.min.js"></script>
+<script>
+async function main() {{
+    const server = await hyphaWebsocketClient.connectToServer({{
+        server_url: "{server_url}"
+    }});
+
+    await server.registerService({{
+        id: "browser-service",
+        name: "Browser Calculator",
+        config: {{ visibility: "public" }},
+        add(a, b) {{ return a + b; }},
+        greet(name) {{ return `Hello ${{name}} from the browser!`; }}
+    }});
+
+    console.log("Service registered! Other clients can now call it.");
+    // The service stays available as long as this page is open
+}}
+main();
+</script>
+```
+
+> **Why this matters:** Hypha's WebSocket-based RPC means any environment that can open a WebSocket — including browsers — can be both a client and a server. A browser tab can register a service that a Python script on another machine calls, enabling hybrid architectures where browser UI components expose APIs.
+
 ### Use a Service
 
 ```python
@@ -1055,13 +1588,73 @@ async def main():
         print(f"Processed: {{processed}}")
 ```
 
+### Use a Service from JavaScript (`_rkwargs`)
+
+When calling Python services from JavaScript, you **must** add `_rkwargs: true` to any object argument that contains named parameters. This converts the JavaScript object into Python keyword arguments.
+
+```javascript
+const {{ connectToServer }} = require('hypha-rpc');
+
+async function main() {{
+    const server = await connectToServer({{ server_url: "{server_url}" }});
+    const calc = await server.getService("my-calculator");
+
+    // Positional arguments — no _rkwargs needed
+    const sum = await calc.add(5, 3);
+    console.log(`5 + 3 = ${{sum}}`);
+
+    // Named arguments — MUST use _rkwargs: true
+    const processed = await calc.process({{ data: {{ key: "value" }}, _rkwargs: true }});
+    console.log("Processed:", processed);
+
+    // Another example: calling a method with named parameters
+    // Python: def create(name, type, config=None)
+    // JavaScript:
+    const result = await svc.create({{ name: "test", type: "dataset", config: {{}}, _rkwargs: true }});
+
+    // WRONG — without _rkwargs, Python receives the object as a single positional arg
+    // and fails with: TypeError: create() missing required argument 'name'
+    // const result = await svc.create({{ name: "test", type: "dataset" }});  // FAILS!
+}}
+```
+
+**When to use `_rkwargs: true`:**
+- Calling a Python function with named/keyword parameters from JavaScript
+- Always add it to the **last** argument if it's an object containing named params
+- The `_rkwargs` flag is automatically stripped before sending — it never reaches the Python function
+
+**When you do NOT need `_rkwargs`:**
+- Calling functions with only positional arguments: `calc.add(5, 3)`
+- Calling from Python (Python natively supports keyword arguments)
+- Calling via HTTP API (JSON body is always treated as keyword arguments)
+
+### Cross-Language Naming with `case_conversion`
+
+Python services use `snake_case` method names (e.g., `get_service`, `list_files`), while JavaScript conventionally uses `camelCase` (e.g., `getService`, `listFiles`). Use `case_conversion` when getting a service to automatically convert all method names to the style native to your language:
+
+```python
+# Python — get a JavaScript-registered service with camelCase methods
+# case_conversion="snake" converts getUsers -> get_users, listFiles -> list_files
+svc = await server.get_service("js-service", case_conversion="snake")
+users = await svc.get_users()  # calls the original "getUsers" method
+```
+
+```javascript
+// JavaScript — get a Python-registered service with snake_case methods
+// case_conversion="camel" converts get_users -> getUsers, list_files -> listFiles
+const svc = await server.getService("py-service", {{case_conversion: "camel", _rkwargs: true}});
+const users = await svc.getUsers();  // calls the original "get_users" method
+```
+
+Values: `"camel"`, `"snake"`, `"camel+snake"` (provides both styles), `"snake+camel"` (provides both styles).
+
 ### Call Service via HTTP
 
 ```bash
 # GET request
 curl "{server_url}/{workspace}/services/my-calculator/add?a=5&b=3"
 
-# POST request
+# POST request (JSON body params are automatically keyword arguments — no _rkwargs needed)
 curl -X POST "{server_url}/{workspace}/services/my-calculator/process" \\
   -H "Content-Type: application/json" \\
   -d '{{"data": {{"key": "value"}}}}'
@@ -1082,26 +1675,21 @@ async def main():
         # Generate a read-only token (expires in 24 hours)
         read_token = await server.generate_token({{
             "permission": "read",          # read, read_write, or admin
-            "expires_in": 86400,           # 24 hours in seconds
-            "description": "Read-only access for monitoring"
+            "expires_in": 86400            # 24 hours in seconds
         }})
         print(f"Read token: {{read_token}}")
 
         # Generate a read-write token for service operations
         rw_token = await server.generate_token({{
             "permission": "read_write",
-            "expires_in": 3600,            # 1 hour
-            "extra_scopes": [              # Optional: limit to specific operations
-                {{"workspace": "{workspace}", "resource": "artifact:my-dataset:*"}}
-            ]
+            "expires_in": 3600             # 1 hour
         }})
         print(f"RW token: {{rw_token}}")
 
         # Generate admin token for workspace management
         admin_token = await server.generate_token({{
             "permission": "admin",
-            "expires_in": 600,             # Short-lived for security
-            "description": "Temporary admin access"
+            "expires_in": 600              # Short-lived for security
         }})
 ```
 
@@ -1114,14 +1702,20 @@ async def main():
         token_info = await server.parse_token("eyJ...")
 
         print(f"User ID: {{token_info.get('id')}}")
-        print(f"Workspace: {{token_info.get('workspace')}}")
-        print(f"Permission: {{token_info.get('permission')}}")
+        print(f"Current workspace: {{token_info.get('current_workspace')}}")
+        print(f"Roles: {{token_info.get('roles')}}")
+        print(f"Is anonymous: {{token_info.get('is_anonymous')}}")
         print(f"Expires: {{token_info.get('expires_at')}}")
-        print(f"Scopes: {{token_info.get('scopes')}}")
+        # Permission scope: token_info["scope"]["workspaces"] is a dict
+        # mapping workspace IDs to permission codes: "r" (read), "rw" (read_write), "a" (admin)
+        scope = token_info.get("scope", {{}})
+        workspaces = scope.get("workspaces", {{}})
+        print(f"Workspace permissions: {{workspaces}}")
 
-        # Check if token has specific permission
-        if token_info.get("permission") in ["read_write", "admin"]:
-            print("Token can modify data")
+        # Check if token has write or admin permission on a workspace
+        for ws_name, perm_code in workspaces.items():
+            if perm_code in ["rw", "a"]:
+                print(f"Token can modify data in {{ws_name}}")
 ```
 
 ### Revoke Tokens
@@ -1134,9 +1728,6 @@ async def main():
     }}) as server:
         # Revoke a specific token
         await server.revoke_token("token_to_revoke")
-
-        # Revoke all tokens for the workspace
-        await server.revoke_all_tokens()
 ```
 
 ### Login Flow (Interactive)
@@ -1169,11 +1760,12 @@ async def main():
         "server_url": "{server_url}",
         "token": "YOUR_TOKEN"
     }}) as server:
-        # Get current user info
-        user = await server.get_user_info()
+        # User info is available on the server config object
+        user = server.config.user
         print(f"User ID: {{user.get('id')}}")
         print(f"Email: {{user.get('email')}}")
         print(f"Roles: {{user.get('roles')}}")
+        print(f"Is anonymous: {{user.get('is_anonymous')}}")
 
         # Check workspace status and permissions
         status = await server.check_status()
@@ -1206,21 +1798,24 @@ async def main():
         )
         print(f"Created artifact: {{dataset['id']}}")
 
-        # Upload a file
-        put_info = await artifact_manager.put_file(
+        # Stage the artifact for editing (required before uploading files)
+        await artifact_manager.edit(artifact_id=dataset["id"], stage=True)
+
+        # Upload a file — put_file returns a presigned URL string
+        upload_url = await artifact_manager.put_file(
             artifact_id=dataset["id"],
             file_path="images/sample.jpg"
         )
 
-        # Actually upload the file
+        # Actually upload the file using the presigned URL
         async with httpx.AsyncClient() as client:
             with open("local_sample.jpg", "rb") as f:
-                await client.put(put_info["put_url"], content=f.read())
+                await client.put(upload_url, content=f.read())
 
-        # Commit the changes
+        # Commit the changes (use comment=, not message=)
         await artifact_manager.commit(
             artifact_id=dataset["id"],
-            message="Added sample image"
+            comment="Added sample image"
         )
 ```
 
@@ -1231,15 +1826,15 @@ async def main():
     async with connect_to_server({{"server_url": "{server_url}"}}) as server:
         artifact_manager = await server.get_service("public/artifact-manager")
 
-        # Get download URL
-        file_info = await artifact_manager.get_file(
+        # Get download URL — get_file returns a presigned URL string
+        download_url = await artifact_manager.get_file(
             artifact_id="{workspace}/my-dataset",
             file_path="images/sample.jpg"
         )
 
-        # Download the file
+        # Download the file using the presigned URL
         async with httpx.AsyncClient() as client:
-            response = await client.get(file_info["get_url"])
+            response = await client.get(download_url)
             with open("downloaded_sample.jpg", "wb") as f:
                 f.write(response.content)
 ```
@@ -1251,19 +1846,140 @@ async def main():
     async with connect_to_server({{"server_url": "{server_url}"}}) as server:
         artifact_manager = await server.get_service("public/artifact-manager")
 
-        # Write a small file directly
+        # Stage the artifact first (required for non-git artifacts)
+        await artifact_manager.edit(artifact_id="{workspace}/my-dataset", stage=True)
+
+        # Write a small file directly (use file_path=, not path=)
         await artifact_manager.write_file(
             artifact_id="{workspace}/my-dataset",
-            path="config.json",
+            file_path="config.json",
             content='{{"setting": "value"}}'
         )
 
-        # Read the file content directly
-        content = await artifact_manager.read_file(
+        # Commit after writing
+        await artifact_manager.commit(
             artifact_id="{workspace}/my-dataset",
-            path="config.json"
+            comment="Added config file"
         )
-        print(f"Config: {{content}}")
+
+        # Read the file content directly (returns {{"name": ..., "content": ...}})
+        result = await artifact_manager.read_file(
+            artifact_id="{workspace}/my-dataset",
+            file_path="config.json"
+        )
+        print(f"Config: {{result['content']}}")
+```
+
+### Create a Collection and Add Items
+
+```python
+async def main():
+    async with connect_to_server({{"server_url": "{server_url}"}}) as server:
+        artifact_manager = await server.get_service("public/artifact-manager")
+
+        # Create a collection (container for other artifacts)
+        collection = await artifact_manager.create(
+            type="collection",
+            alias="my-models",
+            manifest={{
+                "name": "ML Models",
+                "description": "Collection of trained models"
+            }}
+        )
+        print(f"Collection ID: {{collection['id']}}")
+
+        # Add a child artifact to the collection
+        model = await artifact_manager.create(
+            type="model",
+            alias="classifier-v1",
+            parent_id=collection["id"],
+            manifest={{
+                "name": "Image Classifier",
+                "accuracy": 0.95,
+                "framework": "pytorch"
+            }}
+        )
+
+        # List items in the collection
+        items = await artifact_manager.list(parent_id=collection["id"])
+        print(f"Collection has {{len(items)}} items")
+
+        # Search by manifest fields (use filters with "manifest" key)
+        results = await artifact_manager.list(
+            parent_id=collection["id"],
+            filters={{"manifest": {{"framework": "pytorch"}}}}
+        )
+        # Supported manifest operators: exact match, $like (wildcard), $in, $all
+        # For numeric ranges, use order_by + client-side filtering:
+        all_models = await artifact_manager.list(
+            parent_id=collection["id"],
+            order_by="-manifest.accuracy"
+        )
+        high_accuracy = [m for m in all_models if m["manifest"].get("accuracy", 0) >= 0.9]
+```
+
+### Update Artifact Manifest
+
+```python
+async def main():
+    async with connect_to_server({{"server_url": "{server_url}"}}) as server:
+        artifact_manager = await server.get_service("public/artifact-manager")
+
+        # IMPORTANT: edit() REPLACES the entire manifest, it does NOT merge.
+        # Read the current manifest first, modify it, then pass the full manifest.
+        artifact = await artifact_manager.read("{workspace}/my-dataset")
+        current_manifest = artifact["manifest"]
+        current_manifest["version"] = "2.0"
+        current_manifest["updated"] = True
+
+        await artifact_manager.edit(
+            artifact_id="{workspace}/my-dataset",
+            manifest=current_manifest
+        )
+```
+
+### Share an Artifact Across Workspaces
+
+```python
+async def main():
+    async with connect_to_server({{"server_url": "{server_url}"}}) as server:
+        artifact_manager = await server.get_service("public/artifact-manager")
+
+        # Grant read access to all authenticated users
+        await artifact_manager.edit(
+            artifact_id="{workspace}/my-dataset",
+            config={{"permissions": {{"@": "r"}}}}  # @ = all authenticated users
+        )
+        # Permission codes: "r" (read), "r+" (read + list), "rw" (read-write), "*" (all)
+        # Special targets: "*" (everyone including anonymous), "@" (all authenticated)
+
+        # From another workspace, access by full ID:
+        # data = await artifact_manager.read("{workspace}/my-dataset")
+```
+
+### Delete Old Versions to Save Storage
+
+```python
+async def main():
+    async with connect_to_server({{"server_url": "{server_url}"}}) as server:
+        artifact_manager = await server.get_service("public/artifact-manager")
+
+        # Read artifact to see all versions
+        info = await artifact_manager.read("{workspace}/my-dataset")
+        versions = info.get("versions", [])
+        print(f"Total versions: {{len(versions)}}")
+
+        # Delete old versions, keep only the latest 2
+        for v in versions[:-2]:
+            await artifact_manager.delete(
+                artifact_id="{workspace}/my-dataset",
+                version=v["version"],
+                delete_files=True  # Also delete files from S3
+            )
+            print(f"Deleted version {{v['version']}}")
+
+        # Delete an entire artifact with all files
+        # await artifact_manager.delete("{workspace}/old-artifact", delete_files=True)
 ```
 
 ---
@@ -1369,6 +2085,8 @@ async def main():
 ## Server App Examples
 
 Server Apps enable serverless computing with applications that start on-demand and auto-scale.
+
+> **Authentication Required**: Installing and managing server apps requires a non-anonymous authenticated connection. Anonymous users cannot install apps. Use `token=` in `connect_to_server()` or the interactive `login()` flow first.
 
 ### Install and Run a Web Worker App
 
@@ -1494,7 +2212,9 @@ api.register_service({{
             return {{ users: ["alice", "bob", "charlie"] }};
         }},
         "get": async (event) => {{
-            const id = event.path_params?.id || event.query_params?.id;
+            // Parse query string for parameters (path_params is not available)
+            const params = new URLSearchParams(event.query_string || "");
+            const id = params.get("id") || "unknown";
             return {{ user: id, name: "User " + id }};
         }},
         "create": async (event) => {{
@@ -1631,8 +2351,7 @@ async def main():
 
         # Commit changes (creates new version)
         await controller.commit_app(
-            app_id="my-app",
-            message="Updated configuration"
+            app_id="my-app"
         )
 ```
 
@@ -1645,6 +2364,161 @@ async def main():
 | `window` | Full browser context | DOM manipulation |
 | `iframe` | Isolated iframe | Legacy/untrusted apps |
 | Custom types | Via custom workers | Specialized runtimes |
+
+---
+
+## Direct ASGI & Functions Registration
+
+You can register ASGI services and serverless functions **directly** without using the `server-apps` controller. This is useful when you have a running Python/JavaScript client that stays connected.
+
+> **Note**: Services registered this way are ephemeral — they exist only while your client is connected. For persistent deployment, use the `server-apps` controller above.
+
+For comprehensive guides, see:
+- [ASGI Apps Guide](GUIDE/asgi-apps.md) — Full guide with streaming, Pyodide, OpenAI emulation, and more
+- [Serverless Functions Guide](GUIDE/serverless-functions.md) — Functions vs ASGI comparison, nested paths, fallbacks
+
+### Direct ASGI Registration (FastAPI)
+
+```python
+from hypha_rpc import connect_to_server
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+import asyncio
+
+app = FastAPI(title="My Direct API")
+
+@app.get("/", response_class=HTMLResponse)
+async def home():
+    return "<h1>Hello from Hypha!</h1><p>This is a directly registered ASGI service.</p>"
+
+@app.get("/api/greet/{{name}}")
+async def greet(name: str):
+    return {{"greeting": f"Hello, {{name}}!", "service": "direct-asgi"}}
+
+@app.post("/api/echo")
+async def echo(data: dict):
+    return {{"echo": data}}
+
+async def serve(args):
+    \"\"\"ASGI serve function — receives scope, receive, send from Hypha.\"\"\"
+    await app(args["scope"], args["receive"], args["send"])
+
+async def main():
+    async with connect_to_server({{"server_url": "{server_url}"}}) as server:
+        await server.register_service({{
+            "id": "my-direct-api",
+            "type": "asgi",
+            "serve": serve,
+            "config": {{"visibility": "public"}}
+        }})
+        ws = server.config.workspace
+        print("ASGI service registered!")
+        print(f"Access at: {server_url}/{{ws}}/apps/my-direct-api/")
+        print(f"API: {server_url}/{{ws}}/apps/my-direct-api/api/greet/World")
+        # Keep the connection alive
+        await asyncio.sleep(float("inf"))
+
+asyncio.run(main())
+```
+
+### Direct Serverless Functions Registration (JavaScript)
+
+```javascript
+// Register serverless functions with nested routing
+const {{ connectToServer }} = require('hypha-rpc');
+
+const server = await connectToServer({{
+    server_url: "{server_url}"
+}});
+
+await server.registerService({{
+    id: "my-functions",
+    type: "functions",
+    config: {{ visibility: "public" }},
+    // Simple endpoint
+    "hello": async (event) => {{
+        return {{
+            status: 200,
+            headers: {{ "Content-Type": "application/json" }},
+            body: JSON.stringify({{ message: "Hello World!" }})
+        }};
+    }},
+    // Nested API routes
+    "api": {{
+        "v1": {{
+            "users": async (event) => {{
+                if (event.method === "GET") {{
+                    return {{ status: 200, body: JSON.stringify({{ users: ["alice", "bob"] }}) }};
+                }} else if (event.method === "POST") {{
+                    const data = JSON.parse(event.body);
+                    return {{ status: 201, body: JSON.stringify({{ created: data }}) }};
+                }}
+            }}
+        }}
+    }},
+    // Default fallback for unmatched paths
+    "default": async (event) => {{
+        return {{
+            status: 404,
+            body: JSON.stringify({{
+                error: "Not found",
+                path: event.function_path,
+                method: event.method
+            }})
+        }};
+    }}
+}});
+
+// Access via HTTP:
+// GET {server_url}/{workspace}/apps/my-functions/hello/
+// GET {server_url}/{workspace}/apps/my-functions/api/v1/users/
+// POST {server_url}/{workspace}/apps/my-functions/api/v1/users/
+// GET {server_url}/{workspace}/apps/my-functions/anything-else/  (hits default)
+```
+
+### Direct Serverless Functions Registration (Python)
+
+```python
+from hypha_rpc import connect_to_server
+import json, asyncio
+
+async def main():
+    async with connect_to_server({{"server_url": "{server_url}"}}) as server:
+        async def hello(event):
+            return {{
+                "status": 200,
+                "headers": {{"Content-Type": "application/json"}},
+                "body": json.dumps({{"message": "Hello from Python!"}})
+            }}
+
+        async def handle_data(event):
+            if event.get("method") == "POST":
+                body = event.get("body", b"")
+                if isinstance(body, bytes):
+                    body = body.decode()
+                data = json.loads(body) if body else {{}}
+                return {{
+                    "status": 200,
+                    "body": json.dumps({{"received": data}})
+                }}
+            return {{
+                "status": 200,
+                "body": json.dumps({{"info": "POST data to this endpoint"}})
+            }}
+
+        await server.register_service({{
+            "id": "python-functions",
+            "type": "functions",
+            "config": {{"visibility": "public"}},
+            "hello": hello,
+            "data": handle_data,
+        }})
+        ws = server.config.workspace
+        print(f"Functions at: {server_url}/{{ws}}/apps/python-functions/hello/")
+        await asyncio.sleep(float("inf"))
+
+asyncio.run(main())
+```
 
 ---
 
@@ -1661,29 +2535,26 @@ async def main():
     async with connect_to_server({{"server_url": "{server_url}"}}) as server:
         s3 = await server.get_service("public/s3-storage")
 
-        # Upload a file - get presigned URL
-        put_info = await s3.put_file(
-            workspace="{workspace}",
-            path="data/sample.json",
-            options={{"content_type": "application/json"}}
+        # Upload a file — put_file returns a presigned URL string (single file)
+        upload_url = await s3.put_file(
+            file_path="data/sample.json"
         )
 
         # Upload using the presigned URL
         async with httpx.AsyncClient() as client:
             content = '{{"key": "value", "data": [1, 2, 3]}}'
-            await client.put(put_info["put_url"], content=content)
+            await client.put(upload_url, content=content)
 
-        print(f"Uploaded to: {{put_info['path']}}")
+        print(f"Uploaded to: data/sample.json")
 
-        # Download a file - get presigned URL
-        get_info = await s3.get_file(
-            workspace="{workspace}",
-            path="data/sample.json"
+        # Download a file — get_file returns a presigned URL string (single file)
+        download_url = await s3.get_file(
+            file_path="data/sample.json"
         )
 
         # Download using the presigned URL
         async with httpx.AsyncClient() as client:
-            response = await client.get(get_info["get_url"])
+            response = await client.get(download_url)
             print(f"Downloaded: {{response.text}}")
 ```
 
@@ -1694,20 +2565,18 @@ async def main():
     async with connect_to_server({{"server_url": "{server_url}"}}) as server:
         s3 = await server.get_service("public/s3-storage")
 
-        # List files in a directory
+        # List files in a directory (workspace is auto-injected from your connection)
         files = await s3.list_files(
-            workspace="{workspace}",
             path="data/",
-            max_keys=100
+            max_length=100
         )
 
-        print(f"Found {{len(files.get('items', []))}} files:")
-        for item in files.get("items", []):
+        print(f"Found {{len(files)}} files:")
+        for item in files:
             print(f"  - {{item['name']}} ({{item.get('size', 0)}} bytes)")
 
         # Remove a file
         await s3.remove_file(
-            workspace="{workspace}",
             path="data/old-file.json"
         )
 ```
@@ -1719,11 +2588,10 @@ async def main():
     async with connect_to_server({{"server_url": "{server_url}"}}) as server:
         s3 = await server.get_service("public/s3-storage")
 
-        # Start multipart upload
+        # Start multipart upload (returns upload_id and presigned URLs for all parts)
         upload_info = await s3.put_file_start_multipart(
-            workspace="{workspace}",
-            path="data/large-file.bin",
-            options={{"content_type": "application/octet-stream"}}
+            file_path="data/large-file.bin",
+            part_count=3  # Number of parts to split the file into
         )
 
         upload_id = upload_info["upload_id"]
@@ -1731,29 +2599,19 @@ async def main():
 
         # Upload parts (5MB+ each, except last)
         async with httpx.AsyncClient() as client:
-            for part_number in range(1, 4):
-                # Get presigned URL for this part
-                part_info = await s3.put_file_upload_part(
-                    workspace="{workspace}",
-                    path="data/large-file.bin",
-                    upload_id=upload_id,
-                    part_number=part_number
-                )
-
-                # Upload the part
+            for i, part_url in enumerate(upload_info["urls"]):
+                # Upload the part using the presigned URL
                 chunk = b"x" * (5 * 1024 * 1024)  # 5MB chunk
-                response = await client.put(part_info["put_url"], content=chunk)
+                response = await client.put(part_url, content=chunk)
 
                 # Record the ETag for completion
                 parts.append({{
-                    "PartNumber": part_number,
-                    "ETag": response.headers["ETag"]
+                    "part_number": i + 1,
+                    "etag": response.headers["ETag"]
                 }})
 
         # Complete the upload
         await s3.put_file_complete_multipart(
-            workspace="{workspace}",
-            path="data/large-file.bin",
             upload_id=upload_id,
             parts=parts
         )
@@ -2137,7 +2995,7 @@ async def main():
         # Commit the changes
         await artifact_manager.commit(
             artifact_id="{workspace}/knowledge-base",
-            message="Added documentation entries"
+            comment="Added documentation entries"
         )
 ```
 
@@ -2216,8 +3074,12 @@ async def main():
         print(f"Collection: {{info['manifest']['name']}}")
         print(f"Vector count: {{info.get('vector_count', 0)}}")
 
-        # Update vectors
-        await artifact_manager.update_vectors(
+        # Update vectors (remove old, then add new — no update_vectors method)
+        await artifact_manager.remove_vectors(
+            artifact_id="{workspace}/knowledge-base",
+            ids=["doc-001"]
+        )
+        await artifact_manager.add_vectors(
             artifact_id="{workspace}/knowledge-base",
             vectors=[
                 {{"id": "doc-001", "text": "Updated content here"}}
@@ -2318,14 +3180,16 @@ def get_workspace_context_md(workspace: str, server_url: str, workspace_info: di
     is_read_only = workspace_info.get("read_only", False)
     owners = workspace_info.get("owners", [])
 
-    # Format services list with schemas
+    # Format services list, filtering out internal infrastructure services
     service_list = ""
     for svc in services[:50]:  # Limit to 50 services
-        svc_id = svc.get("id", "unknown")
+        svc_slug = _normalize_service_slug(svc.get("id", "unknown"))
+        if svc_slug in _INTERNAL_SERVICE_SLUGS:
+            continue
         svc_name = svc.get("name", "unnamed")
         svc_type = svc.get("type", "unknown")
         svc_desc = (svc.get("description") or "")[:100]
-        service_list += f"\n### {svc_name or svc_id}\n- **ID**: `{svc_id}`\n- **Type**: {svc_type}\n"
+        service_list += f"\n### {svc_name or svc_slug}\n- **ID**: `{svc_slug}`\n- **Type**: {svc_type}\n"
         if svc_desc:
             service_list += f"- **Description**: {svc_desc}\n"
 
@@ -2517,10 +3381,39 @@ def create_agent_skills_service(store) -> dict:
         # basic documentation without workspace-specific details
         return None
 
-    async def handle_index(scope: dict) -> dict:
+    async def handle_index(
+            scope: dict, services: list = None, public_services: list = None,
+        ) -> dict:
         """Handle index request - return skill directory listing."""
+        services = services or []
+        public_services = public_services or []
         doc_generator = get_doc_generator()
         enabled_services = await doc_generator.get_all_enabled_services()
+
+        # Build file list including per-service reference docs
+        files = [
+            "SKILL.md",
+            "REFERENCE.md",
+            "EXAMPLES.md",
+            "WORKSPACE_CONTEXT.md",
+        ]
+        reference_files = []
+        for svc in enabled_services:
+            ref_file = f"REFERENCE/{svc['id']}.md"
+            files.append(ref_file)
+            reference_files.append(ref_file)
+
+        # Add dynamic service references (workspace + public), filtering internal
+        builtin_ids = {svc["id"] for svc in enabled_services}
+        dynamic_slugs = []
+        for svc in services + public_services:
+            if _is_agent_visible_service(svc):
+                slug = _normalize_service_slug(svc.get("id", ""))
+                if slug not in builtin_ids and slug not in dynamic_slugs:
+                    dynamic_slugs.append(slug)
+                    ref_file = f"REFERENCE/{slug}.md"
+                    files.append(ref_file)
+                    reference_files.append(ref_file)
 
         return {
             "status": 200,
@@ -2529,12 +3422,8 @@ def create_agent_skills_service(store) -> dict:
                 "name": SKILL_NAME,
                 "version": SKILL_VERSION,
                 "description": "Hypha workspace management skill for AI agents",
-                "files": [
-                    "SKILL.md",
-                    "REFERENCE.md",
-                    "EXAMPLES.md",
-                    "WORKSPACE_CONTEXT.md"
-                ],
+                "files": files,
+                "reference_files": reference_files,
                 "download": {
                     "zip": "create-zip-file",
                     "description": "Download all skills documentation as a zip file"
@@ -2542,7 +3431,8 @@ def create_agent_skills_service(store) -> dict:
                 "source_endpoints": [
                     f"SOURCE/{svc['id']}" for svc in enabled_services
                 ],
-                "enabled_services": [svc['id'] for svc in enabled_services]
+                "enabled_services": [svc['id'] for svc in enabled_services],
+                "dynamic_services": dynamic_slugs,
             })
         }
 
@@ -2645,7 +3535,9 @@ For high-level usage, refer to REFERENCE.md and EXAMPLES.md.
                 "body": content
             }
 
-    async def handle_create_zip(scope: dict) -> dict:
+    async def handle_create_zip(
+            scope: dict, services: list = None, public_services: list = None,
+        ) -> dict:
         """Create a zip file containing all skills documentation.
 
         Returns a zip archive with:
@@ -2653,18 +3545,22 @@ For high-level usage, refer to REFERENCE.md and EXAMPLES.md.
         - REFERENCE.md
         - EXAMPLES.md
         - WORKSPACE_CONTEXT.md
+        - REFERENCE/<service-id>.md for each service with schema
         - SOURCE/ directory with all service source code
         """
+        services = services or []
+        public_services = public_services or []
         workspace = extract_workspace(scope)
         user_info = await get_user_from_scope(scope)
         workspace_info = {}
-        services = []
 
         ws = workspace or "public"
 
         if workspace and user_info:
             workspace_info = await get_workspace_info_safe(workspace, user_info)
-            services = await get_services_safe(workspace, user_info)
+            # Use passed services if available, otherwise fetch
+            if not services:
+                services = await get_services_safe(workspace, user_info)
 
         doc_generator = get_doc_generator()
 
@@ -2673,12 +3569,42 @@ For high-level usage, refer to REFERENCE.md and EXAMPLES.md.
 
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
             # Add main documentation files
-            zf.writestr("SKILL.md", get_skill_md(ws, server_url, workspace_info, services))
-            zf.writestr("REFERENCE.md", await get_reference_md(ws, server_url, doc_generator))
+            zf.writestr("SKILL.md", get_skill_md(
+                ws, server_url, workspace_info, services,
+                public_services=public_services,
+            ))
+            zf.writestr("REFERENCE.md", await get_reference_md(
+                ws, server_url, doc_generator,
+                services=services, public_services=public_services,
+            ))
+
+            # Add per-service reference docs for built-in services
+            enabled_services_list = await doc_generator.get_all_enabled_services()
+            builtin_ids = set()
+            for svc_api in enabled_services_list:
+                svc_ref = await get_service_reference_md(
+                    svc_api["id"], ws, server_url, doc_generator
+                )
+                if svc_ref:
+                    zf.writestr(f"REFERENCE/{svc_api['id']}.md", svc_ref)
+                    builtin_ids.add(svc_api["id"])
+
+            # Add per-service reference docs for dynamic services
+            for svc in services + public_services:
+                if not _is_agent_visible_service(svc):
+                    continue
+                slug = _normalize_service_slug(svc.get("id", ""))
+                if slug in builtin_ids:
+                    continue
+                svc_ref = generate_reference_from_service_schema(svc, ws, server_url)
+                if svc_ref:
+                    zf.writestr(f"REFERENCE/{slug}.md", svc_ref)
+                    builtin_ids.add(slug)
+
             zf.writestr("EXAMPLES.md", get_examples_md(ws, server_url))
             zf.writestr("WORKSPACE_CONTEXT.md", get_workspace_context_md(ws, server_url, workspace_info, services))
 
-            # Add source code for each enabled service
+            # Add source code for each enabled built-in service
             enabled_services = await doc_generator.get_all_enabled_services()
             # Derive service_id -> class_name from the module-level constant
             svc_id_to_class = {
@@ -2736,8 +3662,17 @@ For high-level usage, refer to REFERENCE.md and EXAMPLES.md.
         user_info = await get_user_from_scope(scope)
         workspace_info = {}
         services = []
+        public_services = []
 
         ws = workspace or "public"
+
+        # For public workspace, create anonymous user if not authenticated
+        # so we can discover public services
+        if ws == "public" and user_info is None:
+            from hypha.core.auth import create_scope as _create_scope, generate_anonymous_user
+            user_info = generate_anonymous_user(
+                scope=_create_scope("ws-anonymous#r", current_workspace="ws-anonymous")
+            )
 
         # Require authentication for non-public workspaces
         if ws != "public" and user_info is None:
@@ -2758,15 +3693,61 @@ For high-level usage, refer to REFERENCE.md and EXAMPLES.md.
             workspace_info = await get_workspace_info_safe(workspace, user_info)
             services = await get_services_safe(workspace, user_info)
 
+        # For non-public workspaces, also fetch public services
+        # (they are accessible from any workspace)
+        if ws != "public" and user_info:
+            public_services = await get_services_safe("public", user_info)
+
         doc_generator = get_doc_generator()
 
         # Route to appropriate handler
         if path in ["", "index", "index.html"]:
-            return await handle_index(scope)
+            return await handle_index(
+                scope, services=services, public_services=public_services
+            )
         elif path == "SKILL.md":
-            content = get_skill_md(ws, server_url, workspace_info, services)
+            content = get_skill_md(
+                ws, server_url, workspace_info, services,
+                public_services=public_services,
+            )
         elif path == "REFERENCE.md":
-            content = await get_reference_md(ws, server_url, doc_generator)
+            content = await get_reference_md(
+                ws, server_url, doc_generator,
+                services=services, public_services=public_services,
+            )
+        elif path.startswith("REFERENCE/") and path.endswith(".md"):
+            # Per-service reference docs: REFERENCE/<service-id>.md
+            service_slug = path[len("REFERENCE/"):-len(".md")]
+            # 1. Try built-in services first (richer docs from source code)
+            content = await get_service_reference_md(
+                service_slug, ws, server_url, doc_generator
+            )
+            # 2. If not found, try dynamic services from workspace + public
+            if content is None:
+                all_dynamic = services + public_services
+                matching_service = None
+                for svc in all_dynamic:
+                    if _normalize_service_slug(svc.get("id", "")) == service_slug:
+                        matching_service = svc
+                        break
+                if matching_service and _is_agent_visible_service(matching_service):
+                    content = generate_reference_from_service_schema(
+                        matching_service, ws, server_url
+                    )
+            # 3. If still not found, return 404
+            if content is None:
+                enabled_services = await doc_generator.get_all_enabled_services()
+                available = [svc["id"] for svc in enabled_services]
+                for svc in services + public_services:
+                    slug = _normalize_service_slug(svc.get("id", ""))
+                    if _is_agent_visible_service(svc) and slug not in available:
+                        available.append(slug)
+                return {
+                    "status": 404,
+                    "headers": {"Content-Type": "text/plain"},
+                    "body": f"Service not found or not enabled: {service_slug}. "
+                    f"Available services: {', '.join(available)}"
+                }
         elif path == "EXAMPLES.md":
             content = get_examples_md(ws, server_url)
         elif path == "WORKSPACE_CONTEXT.md":
@@ -2776,7 +3757,19 @@ For high-level usage, refer to REFERENCE.md and EXAMPLES.md.
             return await handle_source_request(scope, path)
         elif path in ["create-zip-file", "download.zip", "skills.zip"]:
             # Create and return zip file with all documentation
-            return await handle_create_zip(scope)
+            return await handle_create_zip(
+                scope, services=services, public_services=public_services
+            )
+        elif path.startswith("GUIDE/") and path.endswith(".md"):
+            # Serve guide documents from the docs/ directory
+            guide_name = path[len("GUIDE/"):]
+            content = load_documentation_file(guide_name)
+            if content is None:
+                return {
+                    "status": 404,
+                    "headers": {"Content-Type": "text/plain"},
+                    "body": f"Guide not found: {guide_name}"
+                }
         else:
             return {
                 "status": 404,
@@ -2800,7 +3793,6 @@ For high-level usage, refer to REFERENCE.md and EXAMPLES.md.
             "visibility": "public",
             "require_context": False,
         },
-        "index": handle_index,
         "default": handle_request,
     }
 
@@ -3010,59 +4002,82 @@ svc = await server.get_service("service-id")
 result = await svc.some_function(param1="value")
 ```
 
+```javascript
+// JavaScript — use _rkwargs: true for named arguments
+const svc = await server.getService("service-id");
+const result = await svc.someFunction({{ param1: "value", _rkwargs: true }});
+```
+
+> **JavaScript note:** Add `_rkwargs: true` to the last object argument when calling Python services with named parameters. Without it, Python receives the object as a single positional argument and the call fails. Use `case_conversion: "camel"` when getting a Python service to auto-convert `snake_case` method names to `camelCase`. See [EXAMPLES.md](EXAMPLES.md) for details.
+
 ```bash
 # HTTP: List services
 curl "{server_url}/YOUR_WORKSPACE/services"
 
-# HTTP: Call a service function
+# HTTP: Call a service function (JSON body = keyword arguments automatically)
 curl -X POST "{server_url}/YOUR_WORKSPACE/services/SERVICE_ID/FUNCTION" \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer YOUR_TOKEN" \\
   -d '{{"param1": "value"}}'
 ```
 
-## Workspace-Specific Skills
-
-Each workspace has its own agent skills endpoint with detailed, workspace-specific documentation:
-
-```
-{server_url}/YOUR_WORKSPACE/agent-skills/SKILL.md
-```
-
-These workspace-specific skills include:
-- Detailed service listings with schemas
-- Workspace configuration and capabilities
-- API reference for all enabled services
-- Code examples tailored to the workspace
-
-**Authentication is required** for workspace-specific skills (use a Bearer token or cookie).
-
 ## Core Platform Capabilities
 
-1. **Service Management** - Register, discover, and call remote services via RPC or HTTP
-2. **Artifact Management** - Files, datasets, models with versioning and vector search
-3. **Server Applications** - Deploy serverless apps (web-worker, web-python, ASGI)
-4. **S3 Storage** - S3-compatible object storage with presigned URLs
-5. **MCP Integration** - Expose services as MCP endpoints for AI tools (Claude, Cursor, etc.)
-6. **A2A Protocol** - Agent-to-Agent communication for multi-agent systems
+### 1. Service Management
+Register, discover, and call remote services via RPC or HTTP. Every service exposes methods that can be called via WebSocket (real-time, bidirectional) or HTTP (stateless REST). Services can be registered from Python, Node.js, or **browsers** — any environment with a WebSocket connection. Unique features include **callback functions** (pass functions as arguments to remote calls) and **`case_conversion`** (auto-convert method names between `snake_case` and `camelCase` across languages).
+- **Reference**: [REFERENCE/workspace-manager.md](REFERENCE/workspace-manager.md)
+
+### 2. Artifact Management
+Store and manage files, datasets, models, and applications with Git-like versioning. Supports vector search for semantic queries over collections.
+- Create collections and items with metadata and file attachments
+- Stage files, commit changes, and browse version history
+- Upload/download via presigned S3 URLs
+- **Reference**: [REFERENCE/artifact-manager.md](REFERENCE/artifact-manager.md)
+
+### 3. Server Applications & HTTP Endpoints
+Deploy HTTP endpoints and web applications using two approaches:
+- **ASGI Applications**: Deploy FastAPI, Django, or other ASGI frameworks — [ASGI Apps Guide](GUIDE/asgi-apps.md)
+- **Serverless Functions**: Simple HTTP handler functions with automatic URL routing — [Functions Guide](GUIDE/serverless-functions.md)
+- **Managed Server Apps**: Install and manage applications via the `server-apps` controller
+- Access apps at: `{server_url}/WORKSPACE/apps/{{app_id}}/`
+- **Reference**: [REFERENCE/server-apps.md](REFERENCE/server-apps.md)
+
+### 4. S3 Storage
+Direct S3-compatible object storage with presigned URLs, multipart uploads, and an HTTP proxy for file access.
+- Upload/download files with presigned URLs
+- HTTP proxy endpoint: `{server_url}/WORKSPACE/files/`
+- **Reference**: [REFERENCE/s3-storage.md](REFERENCE/s3-storage.md)
+
+### 5. MCP Integration
+Expose Hypha services as MCP (Model Context Protocol) endpoints for AI tools like Claude, Cursor, Gemini CLI, etc.
+- MCP endpoint: `{server_url}/WORKSPACE/mcp/{{service_id}}/mcp`
+- Supports HTTP JSON-RPC transport
+
+### 6. A2A Protocol
+Agent-to-Agent protocol for multi-agent communication following Google's A2A specification.
+- A2A endpoint: `{server_url}/WORKSPACE/a2a/{{service_id}}`
+
+### 7. Vector Search
+Semantic search by text query or vector embedding. Search services by natural language description.
 
 ## Key Built-in Services
 
-| Service | ID | Description |
-|---------|-----|------------|
-| Workspace Manager | `~` or `default` | Core workspace ops, service registration, token generation |
-| Artifact Manager | `public/artifact-manager` | File/data management, version control, vector search |
-| Server Apps | `public/server-apps` | Serverless app deployment |
-| S3 Storage | `public/s3-storage` | Direct S3 operations (if enabled) |
+| Service | ID | Reference |
+|---------|-----|-----------|
+| Workspace Manager | `~` or `default` | [Full API](REFERENCE/workspace-manager.md) |
+| Artifact Manager | `public/artifact-manager` | [Full API](REFERENCE/artifact-manager.md) |
+| Server Apps | `public/server-apps` | [Full API](REFERENCE/server-apps.md) |
+| S3 Storage | `public/s3-storage` | [Full API](REFERENCE/s3-storage.md) |
 
 ## Instructions for AI Agents
 
 1. **Start here** - Read this global SKILL.md to understand the platform
 2. **Get a token** - Use anonymous access or request a token from the user
-3. **Access workspace skills** - Use `{server_url}/WORKSPACE/agent-skills/SKILL.md` for workspace-specific docs
-4. **Discover services** - `GET {server_url}/WORKSPACE/services` to list available services
-5. **Use HTTP or SDK** - HTTP REST for simple calls; Python/JS SDK for real-time bidirectional communication
-6. **Handle errors** - Check permissions, verify workspace exists, handle timeouts
+3. **Read service docs** - Check `REFERENCE/{{service-id}}.md` for the service API you need
+4. **Access workspace skills** - Use `{server_url}/WORKSPACE/agent-skills/SKILL.md` for workspace-specific docs
+5. **Discover services** - `GET {server_url}/WORKSPACE/services` to list available services
+6. **Use HTTP or SDK** - HTTP REST for simple calls; Python/JS SDK for real-time bidirectional communication
+7. **Handle errors** - Check permissions, verify workspace exists, handle timeouts
 
 ## Error Handling
 
@@ -3074,12 +4089,48 @@ These workspace-specific skills include:
 | `TimeoutError` | Service didn't respond | Increase timeout or check service status |
 | `401 Unauthorized` | Missing or invalid token | Provide valid token via Bearer header or cookie |
 
-## Reference
+## Documentation URLs
 
-- **Workspace-specific skills**: `{server_url}/WORKSPACE/agent-skills/`
-- **Public workspace skills**: `{server_url}/public/agent-skills/`
-- **API reference**: `{server_url}/WORKSPACE/agent-skills/REFERENCE.md`
-- **Code examples**: `{server_url}/WORKSPACE/agent-skills/EXAMPLES.md`
+### Generic Documentation (No Auth Required)
+
+These URLs serve general Hypha documentation accessible without authentication:
+
+| Document | URL |
+|----------|-----|
+| Platform Guide | `{server_url}/ws/agent-skills/SKILL.md` |
+| API Reference Overview | `{server_url}/ws/agent-skills/REFERENCE.md` |
+| Workspace Manager API | `{server_url}/ws/agent-skills/REFERENCE/workspace-manager.md` |
+| Artifact Manager API | `{server_url}/ws/agent-skills/REFERENCE/artifact-manager.md` |
+| Server Apps API | `{server_url}/ws/agent-skills/REFERENCE/server-apps.md` |
+| S3 Storage API | `{server_url}/ws/agent-skills/REFERENCE/s3-storage.md` |
+| Code Examples | `{server_url}/ws/agent-skills/EXAMPLES.md` |
+| ASGI Apps Guide | `{server_url}/ws/agent-skills/GUIDE/asgi-apps.md` |
+| Serverless Functions Guide | `{server_url}/ws/agent-skills/GUIDE/serverless-functions.md` |
+
+### Workspace-Specific Documentation (Auth Required)
+
+For documentation tailored to a specific workspace (includes workspace services, context, and capabilities):
+
+| Document | URL |
+|----------|-----|
+| Workspace Guide | `{server_url}/{{workspace}}/agent-skills/SKILL.md` |
+| API Reference Overview | `{server_url}/{{workspace}}/agent-skills/REFERENCE.md` |
+| Per-Service API | `{server_url}/{{workspace}}/agent-skills/REFERENCE/{{service-id}}.md` |
+| Code Examples | `{server_url}/{{workspace}}/agent-skills/EXAMPLES.md` |
+| ASGI Apps Guide | `{server_url}/{{workspace}}/agent-skills/GUIDE/asgi-apps.md` |
+| Serverless Functions Guide | `{server_url}/{{workspace}}/agent-skills/GUIDE/serverless-functions.md` |
+| Workspace Context | `{server_url}/{{workspace}}/agent-skills/WORKSPACE_CONTEXT.md` |
+| Source Code | `{server_url}/{{workspace}}/agent-skills/SOURCE/{{service-id}}/{{method}}` |
+| Download All (ZIP) | `{server_url}/{{workspace}}/agent-skills/create-zip-file` |
+
+Replace `{{workspace}}` with the target workspace ID. Provide a Bearer token via the `Authorization` header or `?token=` query parameter.
+
+### Public Workspace (No Auth Required)
+
+The `public` workspace skills are always accessible without authentication:
+
+- `{server_url}/public/agent-skills/SKILL.md`
+- `{server_url}/public/agent-skills/REFERENCE/workspace-manager.md`
 """
 
 
@@ -3131,12 +4182,19 @@ def setup_global_agent_skills_routes(app, store, base_path: str = ""):
         if path in ["", "index", "index.html"]:
             doc_generator = get_doc_generator()
             enabled_services = await doc_generator.get_all_enabled_services()
+            files = ["SKILL.md", "REFERENCE.md", "EXAMPLES.md"]
+            reference_files = []
+            for svc in enabled_services:
+                ref_file = f"REFERENCE/{svc['id']}.md"
+                files.append(ref_file)
+                reference_files.append(ref_file)
             data = {
                 "name": SKILL_NAME,
                 "version": SKILL_VERSION,
                 "description": "Hypha platform guide for AI agents - global entry point",
                 "type": "global",
-                "files": ["SKILL.md", "REFERENCE.md", "EXAMPLES.md"],
+                "files": files,
+                "reference_files": reference_files,
                 "workspace_skills_pattern": f"{server_url}/{{workspace}}/agent-skills/",
                 "enabled_services": [svc["id"] for svc in enabled_services],
             }
@@ -3164,6 +4222,40 @@ def setup_global_agent_skills_routes(app, store, base_path: str = ""):
             return Response(
                 content=content,
                 media_type="text/markdown; charset=utf-8",
+                headers=cors_headers,
+            )
+
+        if path.startswith("REFERENCE/") and path.endswith(".md"):
+            service_id = path[len("REFERENCE/"):-len(".md")]
+            doc_generator = get_doc_generator()
+            content = await get_service_reference_md(
+                service_id, "public", server_url, doc_generator
+            )
+            if content:
+                return Response(
+                    content=content,
+                    media_type="text/markdown; charset=utf-8",
+                    headers=cors_headers,
+                )
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"Service not found or not enabled: {service_id}"},
+                headers=cors_headers,
+            )
+
+        # Serve guide documents from the docs/ directory
+        if path.startswith("GUIDE/") and path.endswith(".md"):
+            guide_name = path[len("GUIDE/"):]
+            content = load_documentation_file(guide_name)
+            if content:
+                return Response(
+                    content=content,
+                    media_type="text/markdown; charset=utf-8",
+                    headers=cors_headers,
+                )
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"Guide not found: {guide_name}"},
                 headers=cors_headers,
             )
 

@@ -3762,6 +3762,21 @@ class Timer {
 
 class RemoteService extends Object {}
 
+// Error patterns indicating a stale service reference that can be retried
+const STALE_SERVICE_ERROR_PATTERNS = [
+  "Method expired or not found",
+  "Session not found",
+  "Peer",  // "Peer X is not connected"
+  "Method not found",
+  "Connection was closed",
+  "Connection is closed",
+];
+
+function isStaleServiceError(error) {
+  const msg = String(error && error.message ? error.message : error);
+  return STALE_SERVICE_ERROR_PATTERNS.some((pattern) => msg.includes(pattern));
+}
+
 /**
  * RPC object represents a single site in the
  * communication protocol between the application and the plugin
@@ -3779,10 +3794,12 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       name = null,
       codecs = null,
       method_timeout = null,
+      rintf_timeout = null,
       max_message_buffer_size = 0,
       debug = false,
       workspace = null,
       silent = false,
+      logger = undefined,
       app_id = null,
       server_base_url = null,
       long_message_chunk_size = null,
@@ -3800,11 +3817,23 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
     this._app_id = app_id || "*";
     this._local_workspace = workspace;
     this._silent = silent;
+    // Configurable logger: pass `logger: null` to suppress all output,
+    // or `logger: customObj` with {debug,info,warn,error} methods.
+    // Default uses console when not silent.
+    if (logger === null || silent) {
+      const noop = () => {};
+      this._logger = { debug: noop, info: noop, warn: noop, error: noop, log: noop };
+    } else if (logger) {
+      this._logger = logger;
+    } else {
+      this._logger = console;
+    }
     this.default_context = default_context || {};
     this._method_annotations = new WeakMap();
     this._max_message_buffer_size = max_message_buffer_size;
     this._chunk_store = {};
     this._method_timeout = method_timeout || 30;
+    this._rintf_timeout = rintf_timeout || 10;
     this._server_base_url = server_base_url;
     this._long_message_chunk_size = long_message_chunk_size || CHUNK_SIZE;
 
@@ -3873,7 +3902,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
           return;
         }
       }
-      console.warn("Unhandled RPC promise rejection:", reason);
+      this._logger.warn("Unhandled RPC promise rejection:", reason);
     };
 
     this._unhandledRejectionNodeHandler = null;
@@ -3950,7 +3979,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
             const oldTarget = `*/${this._last_manager_id}`;
             const cleaned = this._cleanupSessionsForClient(oldTarget);
             if (cleaned > 0) {
-              console.info(
+              this._logger.info(
                 `Rejected ${cleaned} stale call(s) to old manager ${this._last_manager_id}`,
               );
             }
@@ -3993,11 +4022,11 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
                   serviceError.message &&
                   serviceError.message.includes("TimeoutError")
                 ) {
-                  console.error(
+                  this._logger.error(
                     `Timeout registering service ${service.id || "unknown"}`,
                   );
                 } else {
-                  console.error(
+                  this._logger.error(
                     `Failed to register service ${service.id || "unknown"}: ${serviceError}`,
                   );
                 }
@@ -4005,11 +4034,11 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
             }
 
             if (registeredCount === servicesCount) {
-              console.info(
+              this._logger.info(
                 `Successfully registered all ${registeredCount} services with the server`,
               );
             } else {
-              console.warn(
+              this._logger.warn(
                 `Only registered ${registeredCount} out of ${servicesCount} services with the server. Failed services: ${failedServices.join(", ")}`,
               );
             }
@@ -4105,7 +4134,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
               this._clientDisconnectedSubscription = null;
             }
           } catch (managerError) {
-            console.error(
+            this._logger.error(
               `Failed to get manager service for registering services: ${managerError}`,
             );
             // Fire event with error status
@@ -4134,12 +4163,12 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
           // The timeout mechanism will handle them if reconnection fails,
           // allowing calls to succeed after a successful reconnection.
           if (connection._enable_reconnect) {
-            console.info(
+            this._logger.info(
               `Connection lost (${reason}), reconnection enabled - pending calls will be handled by timeout`,
             );
             return;
           }
-          console.warn(
+          this._logger.warn(
             `Connection lost (${reason}), rejecting all pending RPC calls`,
           );
           this._rejectPendingCalls(
@@ -4151,7 +4180,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       onConnected();
     } else {
       this._emit_message = function () {
-        console.log("No connection to emit message");
+        this._logger.log("No connection to emit message");
       };
     }
   }
@@ -4175,7 +4204,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
         for (let k of Object.keys(this._codecs)) {
           if (this._codecs[k].type === config.type || k === config.name) {
             delete this._codecs[k];
-            console.warn("Remove duplicated codec: " + k);
+            this._logger.warn("Remove duplicated codec: " + k);
           }
         }
       }
@@ -4510,7 +4539,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
         rintf_cleaned: rintfCleaned,
       });
     } catch (e) {
-      console.error(
+      this._logger.error(
         `Error handling client disconnection for ${clientId}: ${e}`,
       );
     }
@@ -4643,12 +4672,12 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
         }
       }
       if (rejectedCount > 0) {
-        console.warn(
+        this._logger.warn(
           `Rejected ${rejectedCount} pending RPC call(s) due to: ${reason}`,
         );
       }
     } catch (e) {
-      console.error(`Error rejecting pending calls: ${e}`);
+      this._logger.error(`Error rejecting pending calls: ${e}`);
     }
   }
 
@@ -4671,7 +4700,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       this._targetIdIndex = {};
       this._rintfCallerIndex = {};
     } catch (e) {
-      console.error(`Error during cleanup on disconnect: ${e}`);
+      this._logger.error(`Error during cleanup on disconnect: ${e}`);
     }
   }
 
@@ -4701,7 +4730,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
 
       if (!this._connection.manager_id) {
         if (attempt < maxRetries - 1) {
-          console.warn(
+          this._logger.warn(
             `Manager ID not set, retrying in ${retryDelay}ms (attempt ${attempt + 1}/${maxRetries})`,
           );
           await new Promise((resolve) => setTimeout(resolve, retryDelay));
@@ -4719,7 +4748,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
         return svc;
       } catch (e) {
         lastError = e;
-        console.warn(
+        this._logger.warn(
           `Failed to get manager service (attempt ${attempt + 1}/${maxRetries}): ${e.message}`,
         );
         if (attempt < maxRetries - 1) {
@@ -4781,8 +4810,13 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
     );
   }
   async get_remote_service(service_uri, config) {
-    let { timeout, case_conversion, kwargs_expansion, encryption_public_key } =
-      config || {};
+    let {
+      timeout,
+      case_conversion,
+      kwargs_expansion,
+      encryption_public_key,
+      _no_retry,
+    } = config || {};
     timeout = timeout === undefined ? this._method_timeout : timeout;
     if (!service_uri && this._connection.manager_id) {
       service_uri = "*/" + this._connection.manager_id;
@@ -4823,15 +4857,56 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       if (kwargs_expansion) {
         svc = (0,_utils_index_js__WEBPACK_IMPORTED_MODULE_0__.expandKwargs)(svc);
       }
-      if (case_conversion)
-        return Object.assign(
-          new RemoteService(),
-          (0,_utils_index_js__WEBPACK_IMPORTED_MODULE_0__.convertCase)(svc, case_conversion),
-        );
-      else return Object.assign(new RemoteService(), svc);
+      if (case_conversion) {
+        svc = (0,_utils_index_js__WEBPACK_IMPORTED_MODULE_0__.convertCase)(svc, case_conversion);
+      }
+      const result = Object.assign(new RemoteService(), svc);
+      if (!_no_retry) {
+        this._wrapServiceMethodsWithRetry(result, service_uri, config || {});
+      }
+      return result;
     } catch (e) {
-      console.warn("Failed to get remote service: " + service_uri, e);
+      this._logger.warn("Failed to get remote service: " + service_uri, e);
       throw e;
+    }
+  }
+
+  _wrapServiceMethodsWithRetry(svc, serviceUri, config) {
+    const rpc = this;
+    for (const key of Object.keys(svc)) {
+      const val = svc[key];
+      if (typeof val !== "function") continue;
+      const methodName = key;
+      const originalMethod = val;
+
+      const retryWrapper = async function (...args) {
+        try {
+          return await originalMethod(...args);
+        } catch (e) {
+          if (isStaleServiceError(e)) {
+            console.info(
+              `Stale service error on ${serviceUri}:${methodName}, refreshing and retrying:`,
+              e.message || e,
+            );
+            const retryConfig = { ...config, _no_retry: true };
+            const refreshed = await rpc.get_remote_service(
+              serviceUri,
+              retryConfig,
+            );
+            const newMethod = refreshed[methodName];
+            if (!newMethod) throw e;
+            return await newMethod(...args);
+          }
+          throw e;
+        }
+      };
+
+      // Preserve metadata from the original method
+      retryWrapper.__rpc_object__ = originalMethod.__rpc_object__;
+      retryWrapper.__name__ = originalMethod.__name__ || methodName;
+      retryWrapper.__doc__ = originalMethod.__doc__;
+      retryWrapper.__schema__ = originalMethod.__schema__;
+      svc[key] = retryWrapper;
     }
   }
   _annotate_service_methods(
@@ -5162,7 +5237,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       try {
         callback.apply(null, Array.prototype.slice.call(arguments));
       } catch (error) {
-        console.error(
+        self._logger.error(
           `Error in callback(${method_id}, ${description}): ${error}`,
         );
       } finally {
@@ -5221,7 +5296,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
             // );
           }
         } catch (e) {
-          console.warn(
+          this._logger.warn(
             `Error in promise manager cleanup for session ${session_id}:`,
             e,
           );
@@ -5246,7 +5321,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
         this._cleanup_session_completely(session_id);
       }
     } catch (error) {
-      console.warn(`Error during session cleanup for ${session_id}:`, error);
+      this._logger.warn(`Error during session cleanup for ${session_id}:`, error);
     }
   }
 
@@ -5273,7 +5348,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
         try {
           store.timer.clear();
         } catch (error) {
-          console.warn(
+          this._logger.warn(
             `Error clearing timer for session ${session_id}:`,
             error,
           );
@@ -5287,7 +5362,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
         try {
           store.heartbeat_task.cancel();
         } catch (error) {
-          console.warn(
+          this._logger.warn(
             `Error canceling heartbeat for session ${session_id}:`,
             error,
           );
@@ -5320,7 +5395,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
         this._cleanup_empty_containers(levels.slice(0, -1));
       }
     } catch (error) {
-      console.warn(
+      this._logger.warn(
         `Error in complete session cleanup for ${session_id}:`,
         error,
       );
@@ -5361,7 +5436,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
         }
       }
     } catch (error) {
-      console.warn("Error cleaning up empty containers:", error);
+      this._logger.warn("Error cleaning up empty containers:", error);
     }
   }
 
@@ -5534,7 +5609,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
   ) {
     let store = this._get_session_store(session_id, true);
     if (!store) {
-      console.warn(
+      this._logger.warn(
         `Failed to create session store ${session_id}, session management may be impaired`,
       );
       store = {};
@@ -5628,7 +5703,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
         try {
           await message_cache.remove(message_id);
         } catch (cleanupError) {
-          console.error(
+          this._logger.error(
             `Failed to clean up message cache after error: ${cleanupError}`,
           );
         }
@@ -5674,7 +5749,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
     }
     const total_size = message_package.length;
     if (total_size > this._long_message_chunk_size + 1024) {
-      console.warn(`Sending large message (size=${total_size})`);
+      this._logger.warn(`Sending large message (size=${total_size})`);
     }
     return this._emit_message(message_package);
   }
@@ -5799,8 +5874,13 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
               }
             };
 
+            // Use shorter timeout for _rintf_ callbacks to fail fast
+            // when the peer holding the callback has disconnected
+            const effectiveTimeout = method_id.includes("_rintf_")
+              ? self._rintf_timeout
+              : self._method_timeout;
             timer = new Timer(
-              self._method_timeout,
+              effectiveTimeout,
               timeoutCallback,
               [
                 `Method call timed out: ${method_name}, context: ${description}`,
@@ -5823,7 +5903,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
               extra_data["promise"] = promiseData;
             } else if (with_promise === "*") {
               extra_data["promise"] = "*";
-              extra_data["t"] = self._method_timeout / 2;
+              extra_data["t"] = effectiveTimeout / 2;
             } else {
               throw new Error(`Unsupported promise type: ${with_promise}`);
             }
@@ -5890,7 +5970,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
                   reject(new Error(error_msg));
                 } else {
                   // No reject callback available, log the error to prevent unhandled promise rejections
-                  console.warn("Unhandled RPC method call error:", error_msg);
+                  self._logger.warn("Unhandled RPC method call error:", error_msg);
                 }
                 if (timer && timer.started) {
                   timer.clear();
@@ -5916,7 +5996,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
                   reject(new Error(error_msg));
                 } else {
                   // No reject callback available, log the error to prevent unhandled promise rejections
-                  console.warn("Unhandled RPC method call error:", error_msg);
+                  self._logger.warn("Unhandled RPC method call error:", error_msg);
                 }
                 if (timer && timer.started) {
                   timer.clear();
@@ -6040,12 +6120,13 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
         resolve = promise.resolve;
         reject = promise.reject;
         if (promise.heartbeat && promise.interval) {
+          const _self = this;
           async function heartbeat() {
             try {
               // console.debug("Reset heartbeat timer: " + data.method);
               await promise.heartbeat();
             } catch (err) {
-              console.error(err);
+              _self._logger.error(err);
             }
           }
           heartbeat_task = setInterval(heartbeat, promise.interval * 1000);
@@ -6120,7 +6201,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
           reject(error);
         } else {
           // Log the error instead of throwing to prevent unhandled exceptions
-          console.warn(
+          this._logger.warn(
             "Method not found and no reject callback:",
             error.message,
           );
@@ -6292,7 +6373,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       if (reject) {
         reject(err);
       } else {
-        console.error("Error during calling method: ", err);
+        this._logger.error("Error during calling method: ", err);
       }
       clearInterval(heartbeat_task);
     }
@@ -6512,7 +6593,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
             bObject._rdoc = `${funcInfo.doc}`;
           }
         } catch (e) {
-          console.error("Failed to extract function docstring:", aObject);
+          this._logger.error("Failed to extract function docstring:", aObject);
         }
       }
       bObject._rschema = aObject.__schema__;
@@ -6572,7 +6653,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
         _rdtype: dtype,
       };
     } else if (aObject instanceof Error) {
-      console.error(aObject);
+      this._logger.error(aObject);
       bObject = {
         _rtype: "error",
         _rvalue: aObject.toString(),
@@ -6802,6 +6883,8 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
           local_workspace,
         );
       } else if (aObject._rtype === "generator") {
+        // Capture logger for use in async generator proxy (function scope)
+        const _genLogger = this._logger;
         // Create a method to fetch next items from the remote generator
         const gen_method = this._generate_remote_method(
           aObject,
@@ -6844,7 +6927,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
               yield next_item;
             }
           } catch (error) {
-            console.error("Error in generator:", error);
+            _genLogger.error("Error in generator:", error);
             throw error;
           } finally {
             // If not completed normally, send close signal to clean up remote generator
@@ -10150,8 +10233,18 @@ class WebsocketRPCConnection {
     token_refresh_interval = 2 * 60 * 60,
     additional_headers = null,
     ping_interval = 30,
+    logger = undefined,
   ) {
     (0,_utils_index_js__WEBPACK_IMPORTED_MODULE_2__.assert)(server_url && client_id, "server_url and client_id are required");
+    // Configurable logger (same as RPC class)
+    if (logger === null) {
+      const noop = () => {};
+      this._logger = { debug: noop, info: noop, warn: noop, error: noop, log: noop };
+    } else if (logger) {
+      this._logger = logger;
+    } else {
+      this._logger = console;
+    }
     this._server_url = server_url;
     this._client_id = client_id;
     this._workspace = workspace;
@@ -10228,18 +10321,18 @@ class WebsocketRPCConnection {
       websocket.binaryType = "arraybuffer";
 
       websocket.onopen = () => {
-        console.info("WebSocket connection established");
+        this._logger.info("WebSocket connection established");
         resolve(websocket);
       };
 
       websocket.onerror = (event) => {
-        console.error("WebSocket connection error:", event);
+        this._logger.error("WebSocket connection error:", event);
         reject(new Error(`WebSocket connection error: ${event}`));
       };
 
       websocket.onclose = (event) => {
         if (event.code === 1003 && attempt_fallback) {
-          console.info(
+          this._logger.info(
             "Received 1003 error, attempting connection with query parameters.",
           );
           this._legacy_auth = true;
@@ -10281,6 +10374,37 @@ class WebsocketRPCConnection {
 
   _establish_connection() {
     return new Promise((resolve, reject) => {
+      let settled = false;
+
+      // Handle WebSocket closing before connection_info is received.
+      // Without this, the promise hangs until the outer waitFor timeout (60s).
+      const prevOnClose = this._websocket.onclose;
+      this._websocket.onclose = (event) => {
+        if (!settled) {
+          settled = true;
+          reject(
+            new Error(
+              `ConnectionAbortedError: WebSocket closed during handshake (code=${event.code}, reason=${event.reason || "unknown"})`,
+            ),
+          );
+        }
+        // Delegate to any previously-set onclose handler
+        if (prevOnClose) prevOnClose.call(this._websocket, event);
+      };
+
+      const prevOnError = this._websocket.onerror;
+      this._websocket.onerror = (event) => {
+        if (!settled) {
+          settled = true;
+          reject(
+            new Error(
+              `ConnectionAbortedError: WebSocket error during handshake`,
+            ),
+          );
+        }
+        if (prevOnError) prevOnError.call(this._websocket, event);
+      };
+
       this._websocket.onmessage = (event) => {
         const data = event.data;
         if (typeof data !== "string") {
@@ -10289,6 +10413,7 @@ class WebsocketRPCConnection {
         }
         const first_message = JSON.parse(data);
         if (first_message.type == "connection_info") {
+          settled = true;
           this.connection_info = first_message;
           if (this._workspace) {
             (0,_utils_index_js__WEBPACK_IMPORTED_MODULE_2__.assert)(
@@ -10305,7 +10430,7 @@ class WebsocketRPCConnection {
               this._token_refresh_interval >
               this.connection_info.reconnection_token_life_time / 1.5
             ) {
-              console.warn(
+              this._logger.warn(
                 `Token refresh interval is too long (${this._token_refresh_interval}), setting it to 1.5 times of the token life time(${this.connection_info.reconnection_token_life_time}).`,
               );
               this._token_refresh_interval =
@@ -10313,20 +10438,22 @@ class WebsocketRPCConnection {
             }
           }
           this.manager_id = this.connection_info.manager_id || null;
-          console.log(
+          this._logger.log(
             `Successfully connected to the server, workspace: ${this.connection_info.workspace}, manager_id: ${this.manager_id}`,
           );
           if (this.connection_info.announcement) {
-            console.log(`${this.connection_info.announcement}`);
+            this._logger.log(`${this.connection_info.announcement}`);
           }
           resolve(this.connection_info);
         } else if (first_message.type == "error") {
+          settled = true;
           const error = "ConnectionAbortedError: " + first_message.message;
-          console.error("Failed to connect, " + error);
+          this._logger.error("Failed to connect, " + error);
           reject(new Error(error));
           return;
         } else {
-          console.error(
+          settled = true;
+          this._logger.error(
             "ConnectionAbortedError: Unexpected message received from the server:",
             data,
           );
@@ -10342,7 +10469,7 @@ class WebsocketRPCConnection {
   }
 
   async open() {
-    console.log(
+    this._logger.log(
       "Creating a new websocket connection to",
       this._server_url.split("?")[0],
     );
@@ -10402,7 +10529,7 @@ class WebsocketRPCConnection {
           } else if (parsedData.type === "pong") {
             // Keepalive response, no action needed
           } else {
-            console.log("Received message from the server:", parsedData);
+            this._logger.log("Received message from the server:", parsedData);
           }
         } else {
           this._handle_message(event.data);
@@ -10410,7 +10537,7 @@ class WebsocketRPCConnection {
       };
 
       this._websocket.onerror = (event) => {
-        console.error("WebSocket connection error:", event);
+        this._logger.error("WebSocket connection error:", event);
         // Clean up timers on error
         this._cleanup();
       };
@@ -10426,7 +10553,7 @@ class WebsocketRPCConnection {
     } catch (error) {
       // Clean up any timers that might have been set up before the error
       this._cleanup();
-      console.error(
+      this._logger.error(
         "Failed to connect to",
         this._server_url.split("?")[0],
         error,
@@ -10472,11 +10599,11 @@ class WebsocketRPCConnection {
       // we should attempt to reconnect (e.g., server restart, k8s upgrade)
       if (this._enable_reconnect) {
         if ([1000, 1001].includes(event.code)) {
-          console.warn(
+          this._logger.warn(
             `Websocket connection closed gracefully by server (code: ${event.code}): ${event.reason} - attempting reconnect`,
           );
         } else {
-          console.warn(
+          this._logger.warn(
             "Websocket connection closed unexpectedly (code: %s): %s",
             event.code,
             event.reason,
@@ -10502,13 +10629,13 @@ class WebsocketRPCConnection {
         const reconnect = async () => {
           // Check if we were explicitly closed
           if (this._closed) {
-            console.info("Connection was closed, stopping reconnection");
+            this._logger.info("Connection was closed, stopping reconnection");
             this._reconnecting = false;
             return;
           }
 
           try {
-            console.warn(
+            this._logger.warn(
               `Reconnecting to ${this._server_url.split("?")[0]} (attempt #${retry})`,
             );
             // Reset the flag before each attempt so we can detect new close
@@ -10531,7 +10658,7 @@ class WebsocketRPCConnection {
               !this._websocket ||
               this._websocket.readyState !== WebSocket.OPEN
             ) {
-              console.warn(
+              this._logger.warn(
                 "WebSocket closed during reconnection settle period, retrying...",
               );
               this._closedDuringReconnect = false;
@@ -10539,19 +10666,19 @@ class WebsocketRPCConnection {
               throw new Error("Connection lost during reconnection settle");
             }
 
-            console.warn(
+            this._logger.warn(
               `Successfully reconnected to server ${this._server_url} (services re-registered)`,
             );
             this._reconnecting = false;
           } catch (e) {
             if (`${e}`.includes("ConnectionAbortedError:")) {
-              console.warn("Server refused to reconnect:", e);
+              this._logger.warn("Server refused to reconnect:", e);
               this._closed = true;
               this._reconnecting = false;
               this._notifyDisconnected(`Server refused reconnection: ${e}`);
               return;
             } else if (`${e}`.includes("NotImplementedError:")) {
-              console.error(
+              this._logger.error(
                 `${e}\nIt appears that you are trying to connect to a hypha server that is older than 0.20.0, please upgrade the hypha server or use the websocket client in imjoy-rpc(https://www.npmjs.com/package/imjoy-rpc) instead`,
               );
               this._closed = true;
@@ -10564,15 +10691,15 @@ class WebsocketRPCConnection {
             // Convert to string first to safely handle non-standard error objects
             const errStr = `${e}`;
             if (errStr.includes("NetworkError") || errStr.includes("network")) {
-              console.error(`Network error during reconnection: ${errStr}`);
+              this._logger.error(`Network error during reconnection: ${errStr}`);
             } else if (
               errStr.includes("TimeoutError") || errStr.includes("timeout")
             ) {
-              console.error(
+              this._logger.error(
                 `Connection timeout during reconnection: ${errStr}`,
               );
             } else {
-              console.error(
+              this._logger.error(
                 `Unexpected error during reconnection: ${errStr}`,
               );
             }
@@ -10594,14 +10721,14 @@ class WebsocketRPCConnection {
                 this._websocket &&
                 this._websocket.readyState === WebSocket.OPEN
               ) {
-                console.info("Connection restored externally");
+                this._logger.info("Connection restored externally");
                 this._reconnecting = false;
                 return;
               }
 
               // Check if we were explicitly closed
               if (this._closed) {
-                console.info("Connection was closed, stopping reconnection");
+                this._logger.info("Connection was closed, stopping reconnection");
                 this._reconnecting = false;
                 return;
               }
@@ -10610,7 +10737,7 @@ class WebsocketRPCConnection {
               if (retry < MAX_RETRY) {
                 await reconnect();
               } else {
-                console.error(
+                this._logger.error(
                   `Failed to reconnect after ${MAX_RETRY} attempts, giving up.`,
                 );
                 this._closed = true;
@@ -10640,7 +10767,7 @@ class WebsocketRPCConnection {
     try {
       this._websocket.send(data);
     } catch (exp) {
-      console.error(`Failed to send data, error: ${exp}`);
+      this._logger.error(`Failed to send data, error: ${exp}`);
       throw exp;
     }
   }
@@ -10659,7 +10786,7 @@ class WebsocketRPCConnection {
     }
     // Use centralized cleanup to clear all timers
     this._cleanup();
-    console.info(`WebSocket connection disconnected (${reason})`);
+    this._logger.info(`WebSocket connection disconnected (${reason})`);
   }
 }
 
@@ -10690,6 +10817,7 @@ function normalizeServerUrl(server_url) {
  *   transport: Transport type - "websocket" (default) or "http"
  */
 async function login(config) {
+  const _logger = config.logger === null ? { log() {}, warn() {}, error() {}, info() {} } : (config.logger || console);
   const service_id = config.login_service_id || "public/hypha-login";
   const workspace = config.workspace;
   const expires_in = config.expires_in;
@@ -10717,7 +10845,7 @@ async function login(config) {
     if (callback) {
       await callback(context);
     } else {
-      console.log(`Please open your browser and login at ${context.login_url}`);
+      _logger.log(`Please open your browser and login at ${context.login_url}`);
     }
     return await svc.check(context.key, { timeout, profile, _rkwargs: true });
   } catch (error) {
@@ -10738,6 +10866,7 @@ async function login(config) {
  *   transport: Transport type - "websocket" (default) or "http"
  */
 async function logout(config) {
+  const _logger = config.logger === null ? { log() {}, warn() {}, error() {}, info() {} } : (config.logger || console);
   const service_id = config.login_service_id || "public/hypha-login";
   const callback = config.logout_callback;
   const additional_headers = config.additional_headers;
@@ -10765,7 +10894,7 @@ async function logout(config) {
     if (callback) {
       await callback(context);
     } else {
-      console.log(
+      _logger.log(
         `Please open your browser to logout at ${context.logout_url}`,
       );
     }
@@ -10777,8 +10906,9 @@ async function logout(config) {
   }
 }
 
-async function webrtcGetService(wm, query, config) {
+async function webrtcGetService(wm, query, config, logger) {
   config = config || {};
+  const _logger = logger === null ? { log() {}, warn() {}, error() {}, info() {}, debug() {} } : (logger || console);
   // Default to "auto" since this wrapper is only used when connection was
   // established with webrtc: true
   const webrtc = config.webrtc !== undefined ? config.webrtc : "auto";
@@ -10814,7 +10944,7 @@ async function webrtcGetService(wm, query, config) {
         rtcSvc._service = svc;
         return rtcSvc;
       } catch (e) {
-        console.warn(
+        _logger.warn(
           "Failed to get webrtc service, using websocket connection",
           e,
         );
@@ -10828,6 +10958,7 @@ async function webrtcGetService(wm, query, config) {
 }
 
 async function connectToServer(config) {
+  const _logger = config.logger === null ? { log() {}, warn() {}, error() {}, info() {}, debug() {} } : (config.logger || console);
   // Support HTTP transport via transport option
   const transport = config.transport || "websocket";
   if (transport === "http") {
@@ -10879,6 +11010,7 @@ async function connectToServer(config) {
     config.token_refresh_interval,
     config.additional_headers,
     config.ping_interval,
+    config.logger,
   );
   const connection_info = await connection.open();
   (0,_utils_index_js__WEBPACK_IMPORTED_MODULE_2__.assert)(
@@ -10889,7 +11021,7 @@ async function connectToServer(config) {
   await new Promise((resolve) => setTimeout(resolve, 100));
   // Ensure manager_id is set before proceeding
   if (!connection.manager_id) {
-    console.warn("Manager ID not set immediately, waiting...");
+    _logger.warn("Manager ID not set immediately, waiting...");
 
     // Wait for manager_id to be set with timeout
     const maxWaitTime = 5000; // 5 seconds
@@ -10901,10 +11033,10 @@ async function connectToServer(config) {
     }
 
     if (!connection.manager_id) {
-      console.error("Manager ID still not set after waiting");
+      _logger.error("Manager ID still not set after waiting");
       throw new Error("Failed to get manager ID from server");
     } else {
-      console.info(`Manager ID set after waiting: ${connection.manager_id}`);
+      _logger.info(`Manager ID set after waiting: ${connection.manager_id}`);
     }
   }
   if (config.workspace && connection_info.workspace !== config.workspace) {
@@ -10919,8 +11051,10 @@ async function connectToServer(config) {
     workspace,
     default_context: { connection_type: "websocket" },
     silent: config.silent || false,
+    logger: config.logger,
     name: config.name,
     method_timeout: config.method_timeout,
+    rintf_timeout: config.rintf_timeout,
     app_id: config.app_id,
     server_base_url: connection_info.public_base_url,
     long_message_chunk_size: config.long_message_chunk_size,
@@ -10958,12 +11092,12 @@ async function connectToServer(config) {
           wm[key].__rpc_object__._rtarget = newTarget;
         }
       }
-      console.info(
+      _logger.info(
         "Workspace manager proxy retargeted after reconnection (new manager_id:",
         rpc._connection?.manager_id + ")",
       );
     } catch (err) {
-      console.warn(
+      _logger.warn(
         "Failed to retarget workspace manager after reconnection:",
         err,
       );
@@ -11161,7 +11295,7 @@ async function connectToServer(config) {
   if (connection.manager_id) {
     rpc.on("force-exit", async (message) => {
       if (message.from === "*/" + connection.manager_id) {
-        console.log("Disconnecting from server, reason:", message.reason);
+        _logger.log("Disconnecting from server, reason:", message.reason);
         await rpc.disconnect();
       }
     });
@@ -11173,7 +11307,7 @@ async function connectToServer(config) {
     const description = _wm.getService.__schema__.description;
     // TODO: Fix the schema for adding options for webrtc
     const parameters = _wm.getService.__schema__.parameters;
-    wm.getService = (0,_utils_schema_js__WEBPACK_IMPORTED_MODULE_3__.schemaFunction)(webrtcGetService.bind(null, _wm), {
+    wm.getService = (0,_utils_schema_js__WEBPACK_IMPORTED_MODULE_3__.schemaFunction)(function(query, cfg) { return webrtcGetService(_wm, query, cfg, config.logger); }, {
       name: "getService",
       description,
       parameters,
@@ -11401,12 +11535,12 @@ function setupLocalClient({
 
         if (type === "initializeHyphaClient") {
           if (!server_url || !workspace || !client_id) {
-            console.error("server_url, workspace, and client_id are required.");
+            _logger.error("server_url, workspace, and client_id are required.");
             return;
           }
 
           if (!server_url.startsWith("https://local-hypha-server:")) {
-            console.error(
+            _logger.error(
               "server_url should start with https://local-hypha-server:",
             );
             return;

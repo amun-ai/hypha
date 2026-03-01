@@ -32,6 +32,7 @@ import jose
 from starlette.datastructures import Headers, MutableHeaders
 
 from hypha_rpc import RPC
+from hypha_rpc.rpc import RemoteException
 from hypha import hypha_rpc_version
 from hypha.core import UserPermission
 from hypha.core.auth import AUTH0_DOMAIN, extract_token_from_scope, update_user_scope
@@ -94,6 +95,18 @@ def _get_safe_error_detail(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc_msg}"
 
 
+def _get_status_for_remote_exception(exc: RemoteException) -> int:
+    """Map a RemoteException to an appropriate HTTP status code based on the wrapped error type."""
+    msg = str(exc)
+    if "KeyError:" in msg or "not found" in msg.lower():
+        return 404
+    if "PermissionError:" in msg or "Permission denied" in msg:
+        return 403
+    if "TypeError:" in msg or "ValueError:" in msg or "AssertionError:" in msg:
+        return 400
+    return 500
+
+
 class MsgpackResponse(Response):
     """Response class for msgpack encoding."""
 
@@ -138,7 +151,9 @@ def get_value(keys, service):
     """Get service function by a key string."""
     keys = keys.split(".")
     key = keys[0]
-    value = service[key]
+    value = service.get(key)
+    if value is None:
+        return None
     if len(keys) > 1:
         for key in keys[1:]:
             value = value.get(key)
@@ -167,10 +182,14 @@ async def extracted_kwargs(
                         kwargs[key] = json.loads(kwargs[key])
 
     elif request.method == "POST":
-        if content_type == "application/msgpack":
-            kwargs = msgpack.loads(await request.body())
+        body = await request.body()
+        if not body:
+            # Empty POST body is treated as no arguments (e.g., calling a method with no parameters)
+            kwargs = {}
+        elif content_type == "application/msgpack":
+            kwargs = msgpack.loads(body)
         elif content_type == "application/json":
-            kwargs = json.loads(await request.body())
+            kwargs = json.loads(body)
         else:
             raise RuntimeError(
                 "Invalid content-type (supported types: "
@@ -212,10 +231,13 @@ async def extracted_call_info(request: Request):
     """Extract workspace, service_id, function_key from the request."""
     content_type = request.headers.get("content-type", "application/json")
     if request.method == "POST":
-        if content_type == "application/msgpack":
-            kwargs = msgpack.loads(await request.body())
+        body = await request.body()
+        if not body:
+            kwargs = {}
+        elif content_type == "application/msgpack":
+            kwargs = msgpack.loads(body)
         elif content_type == "application/json":
-            kwargs = json.loads(await request.body())
+            kwargs = json.loads(body)
         else:
             raise RuntimeError(
                 "Invalid content-type (supported types: "
@@ -311,11 +333,23 @@ class ASGIRoutingMiddleware:
                     # Use the TARGET workspace from URL, not user's current workspace.
                     # This allows anonymous users to access public services in any workspace.
                     # Permission checks are enforced by get_service() based on service visibility.
+
+                    # The agent-skills service is registered as a public service
+                    # in the "public" workspace, but should be accessible from
+                    # any workspace URL (e.g. /my-workspace/agent-skills/).
+                    # Always resolve it from "public" to avoid KeyError, while
+                    # preserving the original workspace in scope so the handler
+                    # can generate workspace-specific documentation.
+                    if service_id == "agent-skills":
+                        lookup_workspace = "public"
+                    else:
+                        lookup_workspace = workspace
+
                     async with self.store.get_workspace_interface(
-                        user_info, workspace
+                        user_info, lookup_workspace
                     ) as api:
                         service = await api.get_service(
-                            workspace + "/" + service_id, {"mode": _mode}
+                            lookup_workspace + "/" + service_id, {"mode": _mode}
                         )
                         await self._handle_app_service(
                             service, workspace, path, scope, receive, send
@@ -908,7 +942,7 @@ class HTTPProxy:
                         status_code=403,
                         content={
                             "success": False,
-                            "detail": f"Unsafe path: {file_path}",
+                            "detail": f"Unsafe path requested",
                         },
                     )
                 if not os.path.exists(file_path):
@@ -1018,7 +1052,13 @@ class HTTPProxy:
             user_info: store.login_optional = Depends(store.login_optional),
         ):
             """Run service function by keys."""
-            function_kwargs = await extracted_kwargs(request, use_function_kwargs=False)
+            try:
+                function_kwargs = await extracted_kwargs(request, use_function_kwargs=False)
+            except (json.JSONDecodeError, ValueError) as e:
+                return JSONResponse(
+                    status_code=400,
+                    content={"success": False, "detail": f"Invalid request body: {e}"},
+                )
             response_type = detected_response_type(request)
             try:
                 return await service_function(
@@ -1028,11 +1068,34 @@ class HTTPProxy:
                     user_info,
                     _mode=_mode,
                 )
+            except PermissionError as e:
+                return JSONResponse(
+                    status_code=403,
+                    content={"success": False, "detail": str(e)},
+                )
+            except KeyError as e:
+                return JSONResponse(
+                    status_code=404,
+                    content={"success": False, "detail": _get_safe_error_detail(e)},
+                )
+            except json.JSONDecodeError as e:
+                return JSONResponse(
+                    status_code=400,
+                    content={"success": False, "detail": f"Invalid JSON in request body: {e.msg}"},
+                )
+            except RemoteException as e:
+                status_code = _get_status_for_remote_exception(e)
+                if status_code >= 500:
+                    logger.error(f"RemoteException in service call: {e}\n{traceback.format_exc()}")
+                return JSONResponse(
+                    status_code=status_code,
+                    content={"success": False, "detail": _get_safe_error_detail(e)},
+                )
             except Exception as e:
                 # SECURITY: Log full traceback server-side, send sanitized message to client
                 logger.error(f"Error in get service function: {e}\n{traceback.format_exc()}")
                 return JSONResponse(
-                    status_code=400,
+                    status_code=500,
                     content={"success": False, "detail": _get_safe_error_detail(e)},
                 )
 
@@ -1124,11 +1187,38 @@ class HTTPProxy:
 
                     try:
                         results = await _call_service_function(func, function_kwargs)
+                    except PermissionError as e:
+                        return JSONResponse(
+                            status_code=403,
+                            content={
+                                "success": False,
+                                "detail": str(e),
+                            },
+                        )
+                    except KeyError as e:
+                        return JSONResponse(
+                            status_code=404,
+                            content={
+                                "success": False,
+                                "detail": _get_safe_error_detail(e),
+                            },
+                        )
+                    except RemoteException as e:
+                        status_code = _get_status_for_remote_exception(e)
+                        if status_code >= 500:
+                            logger.error(f"RemoteException calling service function: {e}\n{traceback.format_exc()}")
+                        return JSONResponse(
+                            status_code=status_code,
+                            content={
+                                "success": False,
+                                "detail": _get_safe_error_detail(e),
+                            },
+                        )
                     except Exception as e:
                         # SECURITY: Log full traceback server-side, send sanitized message to client
                         logger.error(f"Error calling service function: {e}\n{traceback.format_exc()}")
                         return JSONResponse(
-                            status_code=400,
+                            status_code=500,
                             content={
                                 "success": False,
                                 "detail": _get_safe_error_detail(e),
@@ -1154,6 +1244,14 @@ class HTTPProxy:
                 return JSONResponse(
                     status_code=403,
                     content={"success": False, "detail": str(e)},
+                )
+            except RemoteException as e:
+                status_code = _get_status_for_remote_exception(e)
+                if status_code >= 500:
+                    logger.error(f"RemoteException in service endpoint: {e}\n{traceback.format_exc()}")
+                return JSONResponse(
+                    status_code=status_code,
+                    content={"success": False, "detail": _get_safe_error_detail(e)},
                 )
             except Exception as e:
                 # SECURITY: Log full traceback server-side, send sanitized message to client
@@ -1526,14 +1624,14 @@ class HTTPProxy:
             if not is_safe_path(str(self.templates_dir), file_path):
                 return JSONResponse(
                     status_code=403,
-                    content={"success": False, "detail": f"Unsafe path: {file_path}"},
+                    content={"success": False, "detail": f"Unsafe path: {page}"},
                 )
             if not os.path.exists(file_path):
                 return JSONResponse(
                     status_code=404,
                     content={
                         "success": False,
-                        "detail": f"File not found: {file_path}",
+                        "detail": f"File not found: {page}",
                     },
                 )
             assert os.path.basename(file_path) not in [

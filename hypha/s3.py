@@ -926,22 +926,25 @@ class S3Controller:
             ge=0
         ),
         context: dict = None,
-    ) -> Dict[str, Any]:
+    ) -> List[Dict[str, Any]]:
         """
         List files and directories in an S3 storage path.
-        
+
         This service lists the contents of a directory in the S3-compatible storage system.
         It returns file metadata including names, sizes, and modification times.
-        
+
         Returns:
-            Dictionary containing:
-            - items: List of file/directory objects with metadata
-            - truncated: Boolean indicating if results were truncated
-            - continuation_token: Token for pagination (if truncated)
-        
+            List of file/directory objects, each containing:
+            - name: File or directory name
+            - type: "file" or "directory"
+            - size: File size in bytes (for files)
+            - last_modified: Timestamp of last modification
+
         Examples:
             # List files in workspace root
             files = await list_files("")
+            for f in files:
+                print(f"{f['name']} ({f['size']} bytes)")
 
             # List files in a subdirectory
             files = await list_files("datasets/images")

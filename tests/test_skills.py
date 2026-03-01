@@ -58,29 +58,66 @@ async def test_skills_skill_md(fastapi_server):
 
 @pytest.mark.asyncio
 async def test_skills_reference_md(fastapi_server):
-    """Test the REFERENCE.md endpoint with dynamic API documentation."""
+    """Test the REFERENCE.md endpoint with API reference overview."""
     response = requests.get(f"{SERVER_URL}/public/agent-skills/REFERENCE.md")
     assert response.status_code == 200
     assert response.headers.get("content-type", "").startswith("text/markdown")
 
     content = response.text
 
-    # Verify the reference contains dynamic API documentation
+    # Verify the reference contains overview documentation
     assert "# Hypha API Reference" in content
     assert "## Connection Methods" in content
 
-    # Verify core services are documented
+    # Verify core services are listed with links to per-service docs
     assert "## Workspace Manager" in content
     assert "## Artifact Manager" in content
     assert "## Server Apps" in content
+    assert "REFERENCE/workspace-manager.md" in content
+    assert "REFERENCE/artifact-manager.md" in content
+    assert "REFERENCE/server-apps.md" in content
 
-    # Verify at least some methods are documented (from __schema__)
-    # These should be dynamically extracted from the actual service classes
-    assert "### list_services" in content or "list_services" in content
-    assert "### create" in content or "create" in content
+    # Verify key methods are listed in summaries
+    assert "Key methods" in content
 
     # Verify HTTP endpoints reference
     assert "## HTTP Endpoints Reference" in content
+
+
+@pytest.mark.asyncio
+async def test_skills_per_service_reference(fastapi_server):
+    """Test per-service reference docs at REFERENCE/<service-id>.md."""
+    # Workspace manager reference should be available
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/REFERENCE/workspace-manager.md")
+    assert response.status_code == 200
+    assert response.headers.get("content-type", "").startswith("text/markdown")
+    content = response.text
+
+    assert "# Workspace Manager API Reference" in content
+    assert "## Methods" in content
+    assert "### list_services" in content or "list_services" in content
+    assert "**Parameters:**" in content
+    assert "## Quick Access" in content
+
+    # Artifact manager reference
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/REFERENCE/artifact-manager.md")
+    assert response.status_code == 200
+    assert "# Artifact Manager API Reference" in content or "Artifact" in response.text
+
+    # Non-existent service should return 404
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/REFERENCE/nonexistent-service.md")
+    assert response.status_code == 404
+    assert "Available services" in response.text or "not found" in response.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_skills_per_service_reference_via_global(fastapi_server):
+    """Test per-service reference docs via global /ws/agent-skills/ route."""
+    response = requests.get(f"{SERVER_URL}/ws/agent-skills/REFERENCE/workspace-manager.md")
+    assert response.status_code == 200
+    content = response.text
+    assert "Workspace Manager" in content
+    assert "## Methods" in content
 
 
 @pytest.mark.asyncio
@@ -173,17 +210,71 @@ async def test_skills_different_workspaces(fastapi_server):
 
 
 @pytest.mark.asyncio
-async def test_skills_non_public_workspace_no_fallback(fastapi_server):
-    """Test that agent-skills from a non-existent workspace returns an error (no fallback)."""
-    # Accessing agent-skills from a non-existent workspace should fail
+async def test_skills_workspace_specific_fallback(fastapi_server):
+    """Test that agent-skills from any workspace falls back to the public service.
+
+    The agent-skills service is registered in the 'public' workspace but should
+    be accessible from any workspace URL (e.g., /my-workspace/agent-skills/).
+    Without authentication, non-public workspaces should return 401.
+    """
+    # Accessing agent-skills from a non-public workspace without auth returns 401
     response = requests.get(f"{SERVER_URL}/nonexistent-workspace/agent-skills/SKILL.md")
-    assert response.status_code == 500
+    assert response.status_code == 401
+    data = response.json()
+    assert data["error"] == "Authentication required"
+    assert "valid token" in data["message"]
+
+
+@pytest.mark.asyncio
+async def test_skills_workspace_specific_with_auth(fastapi_server, root_user_token):
+    """Test that workspace-specific agent-skills work with authentication.
+
+    When an authenticated user accesses /{workspace}/agent-skills/, the service
+    should be resolved from the public workspace but generate documentation
+    with the requested workspace context.
+    """
+    from hypha_rpc import connect_to_server
+
+    # First create a workspace to test with
+    async with connect_to_server(
+        {"name": "test-skills-client", "server_url": SERVER_URL, "token": root_user_token}
+    ) as api:
+        workspace = api.config["workspace"]
+
+        # Access agent-skills for this workspace with auth token
+        response = requests.get(
+            f"{SERVER_URL}/{workspace}/agent-skills/SKILL.md",
+            headers={"Authorization": f"Bearer {root_user_token}"},
+        )
+        assert response.status_code == 200
+        content = response.text
+        assert "# Hypha Workspace Manager" in content
+        # The workspace context should reflect the requested workspace
+        assert workspace in content
+
+        # Also test REFERENCE.md
+        response = requests.get(
+            f"{SERVER_URL}/{workspace}/agent-skills/REFERENCE.md",
+            headers={"Authorization": f"Bearer {root_user_token}"},
+        )
+        assert response.status_code == 200
+        assert "# Hypha API Reference" in response.text
+
+        # Test index endpoint
+        response = requests.get(
+            f"{SERVER_URL}/{workspace}/agent-skills/",
+            headers={"Authorization": f"Bearer {root_user_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["name"] == "hypha"
 
 
 @pytest.mark.asyncio
 async def test_skills_dynamic_schema_extraction(fastapi_server):
     """Test that API documentation is dynamically extracted from service schemas."""
-    response = requests.get(f"{SERVER_URL}/public/agent-skills/REFERENCE.md")
+    # Per-service reference docs contain the detailed parameter documentation
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/REFERENCE/workspace-manager.md")
     assert response.status_code == 200
 
     content = response.text
@@ -325,8 +416,8 @@ async def test_skills_reference_shows_enabled_services(fastapi_server):
 
     content = response.text
 
-    # Verify enabled services section
-    assert "## Enabled Services" in content
+    # Verify services section
+    assert "## Services" in content
     assert "Workspace Manager" in content
     assert "workspace-manager" in content
 
@@ -553,9 +644,10 @@ async def test_skills_public_workspace_accessible_without_auth(fastapi_server):
     assert response.status_code == 200
     assert "# Hypha Workspace Manager" in response.text
 
-    # Non-existent workspace should return an error (no fallback)
+    # Non-public workspace without auth should return 401
+    # (agent-skills service falls back to public, but handler requires auth for non-public)
     response = requests.get(f"{SERVER_URL}/test-workspace/agent-skills/SKILL.md")
-    assert response.status_code == 500
+    assert response.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -582,7 +674,8 @@ async def test_skills_global_endpoint_no_auth(fastapi_server):
     # Global REFERENCE.md
     response = requests.get(f"{SERVER_URL}/ws/agent-skills/REFERENCE.md")
     assert response.status_code == 200
-    assert "**Parameters:**" in response.text
+    assert "Hypha API Reference" in response.text
+    assert "REFERENCE/workspace-manager.md" in response.text
 
     # Global EXAMPLES.md
     response = requests.get(f"{SERVER_URL}/ws/agent-skills/EXAMPLES.md")
@@ -626,6 +719,63 @@ async def test_skills_global_skill_md_content(fastapi_server):
 
     # Should explain authentication options
     assert "Bearer" in content
+
+
+@pytest.mark.asyncio
+async def test_skills_guide_endpoint(fastapi_server):
+    """Test that GUIDE/ route serves documentation files from docs/ directory."""
+    # ASGI apps guide should be accessible via global endpoint
+    response = requests.get(f"{SERVER_URL}/ws/agent-skills/GUIDE/asgi-apps.md")
+    assert response.status_code == 200, f"GUIDE/asgi-apps.md returned {response.status_code}"
+    content = response.text
+    assert "ASGI" in content
+    assert "FastAPI" in content
+
+    # Serverless functions guide
+    response = requests.get(
+        f"{SERVER_URL}/ws/agent-skills/GUIDE/serverless-functions.md"
+    )
+    assert response.status_code == 200
+    assert "functions" in content.lower() or "Functions" in content
+
+    # Non-existent guide should return 404
+    response = requests.get(
+        f"{SERVER_URL}/ws/agent-skills/GUIDE/nonexistent-guide.md"
+    )
+    assert response.status_code == 404
+
+    # Global SKILL.md should link to the guides
+    response = requests.get(f"{SERVER_URL}/ws/agent-skills/SKILL.md")
+    assert response.status_code == 200
+    skill_content = response.text
+    assert "GUIDE/asgi-apps.md" in skill_content
+    assert "GUIDE/serverless-functions.md" in skill_content
+
+
+@pytest.mark.asyncio
+async def test_skills_guide_via_workspace(fastapi_server, root_user_token):
+    """Test that GUIDE/ route works via workspace-specific endpoint too."""
+    from hypha_rpc import connect_to_server
+
+    async with connect_to_server(
+        {"name": "test-guide-client", "server_url": SERVER_URL, "token": root_user_token}
+    ) as api:
+        workspace = api.config["workspace"]
+
+        # ASGI guide via workspace endpoint (use root_user_token for HTTP auth)
+        response = requests.get(
+            f"{SERVER_URL}/{workspace}/agent-skills/GUIDE/asgi-apps.md",
+            headers={"Authorization": f"Bearer {root_user_token}"},
+        )
+        assert response.status_code == 200
+        assert "ASGI" in response.text
+
+        # Non-existent guide should return 404
+        response = requests.get(
+            f"{SERVER_URL}/{workspace}/agent-skills/GUIDE/no-such-file.md",
+            headers={"Authorization": f"Bearer {root_user_token}"},
+        )
+        assert response.status_code == 404
 
 
 # ============================================================================
@@ -688,8 +838,8 @@ async def test_skills_server_url_consistency(fastapi_server):
         for url in urls:
             # Clean trailing punctuation
             url = url.rstrip(".,;:")
-            # Only consider Hypha server URLs (not example external URLs)
-            if "127.0.0.1" in url or "localhost" in url or "hypha" in url:
+            # Only consider Hypha server URLs (not CDN or external URLs)
+            if ("127.0.0.1" in url or "localhost" in url or "hypha" in url) and "cdn.jsdelivr.net" not in url:
                 # Extract base URL (scheme + host + port)
                 match = re.match(r'(https?://[^/]+)', url)
                 if match:
@@ -725,7 +875,7 @@ async def test_skills_all_code_blocks_have_language(fastapi_server):
                 continue
 
             # The language should be a known language identifier
-            known_languages = {"python", "javascript", "bash", "json", "yaml", "text", "markdown"}
+            known_languages = {"python", "javascript", "bash", "json", "yaml", "text", "markdown", "html"}
             assert fence.lower() in known_languages, (
                 f"Code block in {filename} has unrecognized language: '{fence}'. "
                 f"Known: {known_languages}"
@@ -783,7 +933,7 @@ async def test_skills_http_examples_are_functional(fastapi_server):
 
 @pytest.mark.asyncio
 async def test_skills_reference_documents_all_key_methods(fastapi_server):
-    """Test that REFERENCE.md documents the most important methods.
+    """Test that per-service reference docs document the most important methods.
 
     An AI agent needs at minimum these operations documented:
     - list_services (discover what's available)
@@ -791,7 +941,10 @@ async def test_skills_reference_documents_all_key_methods(fastapi_server):
     - get_service (use services)
     - generate_token (authentication)
     """
-    response = requests.get(f"{SERVER_URL}/public/agent-skills/REFERENCE.md")
+    # The workspace manager reference doc should have all essential methods
+    response = requests.get(
+        f"{SERVER_URL}/public/agent-skills/REFERENCE/workspace-manager.md"
+    )
     assert response.status_code == 200
     content = response.text
 
@@ -804,7 +957,7 @@ async def test_skills_reference_documents_all_key_methods(fastapi_server):
 
     for method in essential_methods:
         assert method in content, (
-            f"REFERENCE.md missing documentation for essential method: {method}"
+            f"workspace-manager reference missing essential method: {method}"
         )
 
     # Verify methods have parameter documentation
@@ -818,6 +971,13 @@ async def test_skills_reference_documents_all_key_methods(fastapi_server):
     assert documented_methods >= 5, (
         f"Only {documented_methods} methods have parameter docs, expected at least 5"
     )
+
+    # REFERENCE.md overview should link to per-service docs
+    overview = requests.get(f"{SERVER_URL}/public/agent-skills/REFERENCE.md")
+    assert overview.status_code == 200
+    assert "REFERENCE/workspace-manager.md" in overview.text
+    # Overview should show key methods summary for each service
+    assert "Key methods" in overview.text
 
 
 @pytest.mark.asyncio
@@ -874,8 +1034,8 @@ async def test_skills_examples_show_error_handling(fastapi_server):
 async def test_skills_progressive_disclosure(fastapi_server):
     """Test that skills documents follow progressive disclosure pattern.
 
-    SKILL.md should be concise (overview), while REFERENCE.md provides details.
-    This pattern helps AI agents consume documentation efficiently.
+    SKILL.md is the quickstart/overview. REFERENCE.md is a concise API overview
+    linking to per-service reference docs (REFERENCE/<service-id>.md) for full details.
     """
     skill_resp = requests.get(f"{SERVER_URL}/public/agent-skills/SKILL.md")
     ref_resp = requests.get(f"{SERVER_URL}/public/agent-skills/REFERENCE.md")
@@ -885,14 +1045,20 @@ async def test_skills_progressive_disclosure(fastapi_server):
     ref_len = len(ref_resp.text)
     examples_len = len(examples_resp.text)
 
-    # SKILL.md should be the most concise (overview/quickstart)
-    assert skill_len < ref_len, (
-        f"SKILL.md ({skill_len} chars) should be shorter than REFERENCE.md ({ref_len} chars)"
+    # REFERENCE.md overview should have substantial content
+    assert ref_len > 1000, (
+        f"REFERENCE.md ({ref_len} chars) seems too short for an API overview"
     )
 
-    # REFERENCE.md should be detailed (full API docs)
-    assert ref_len > 5000, (
-        f"REFERENCE.md ({ref_len} chars) seems too short for comprehensive API docs"
+    # Per-service reference docs should be more detailed than the overview
+    ws_manager_resp = requests.get(
+        f"{SERVER_URL}/public/agent-skills/REFERENCE/workspace-manager.md"
+    )
+    assert ws_manager_resp.status_code == 200
+    ws_ref_len = len(ws_manager_resp.text)
+    assert ws_ref_len > ref_len, (
+        f"Per-service reference ({ws_ref_len} chars) should be more detailed "
+        f"than overview ({ref_len} chars)"
     )
 
     # EXAMPLES.md should have substantial content
@@ -903,6 +1069,9 @@ async def test_skills_progressive_disclosure(fastapi_server):
     # SKILL.md should reference the other files
     assert "REFERENCE.md" in skill_resp.text, "SKILL.md should link to REFERENCE.md"
     assert "EXAMPLES.md" in skill_resp.text, "SKILL.md should link to EXAMPLES.md"
+    assert "REFERENCE/workspace-manager.md" in skill_resp.text, (
+        "SKILL.md should link to per-service reference docs"
+    )
 
 
 @pytest.mark.asyncio
@@ -988,6 +1157,39 @@ async def test_skills_agent_can_call_service_via_http(fastapi_server):
     assert response.status_code == 200
     status = response.json()
     assert isinstance(status, dict), "check_status should return a dict"
+
+
+@pytest.mark.asyncio
+async def test_skills_post_without_body_works(fastapi_server):
+    """Test that POST requests without a body work for no-parameter methods.
+
+    This is a common pattern for HTTP agents — sending POST with no body
+    to call a method that takes no parameters. Previously this returned 500.
+    """
+    # POST with no body and no content-type
+    response = requests.post(f"{SERVER_URL}/public/services/~/check_status")
+    assert response.status_code == 200, (
+        f"POST without body should work, got {response.status_code}: {response.text}"
+    )
+    status = response.json()
+    assert isinstance(status, dict)
+    assert "status" in status
+
+    # POST with content-type but no body
+    response = requests.post(
+        f"{SERVER_URL}/public/services/~/check_status",
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+
+    # POST with empty JSON body (should also work)
+    response = requests.post(
+        f"{SERVER_URL}/public/services/~/check_status",
+        json={},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
 
 
 @pytest.mark.asyncio
@@ -1090,3 +1292,144 @@ async def test_skills_auth_options_documented(fastapi_server):
     assert "read" in content
     assert "read_write" in content
     assert "admin" in content
+
+
+@pytest.mark.asyncio
+async def test_skills_public_workspace_discovers_services(fastapi_server):
+    """Test that /public/agent-skills/SKILL.md discovers public services without auth."""
+    response = requests.get(f"{SERVER_URL}/public/agent-skills/SKILL.md")
+    assert response.status_code == 200
+    content = response.text
+    # Should contain the Available Services section with actual services
+    assert "Available Services" in content
+    # Should have at least some service entries (public services like agent-skills)
+    assert "- `" in content, "Expected at least one service entry in Available Services"
+
+
+@pytest.mark.asyncio
+async def test_skills_dynamic_service_reference(fastapi_server, root_user_token):
+    """Test that dynamically registered services with service_schema get reference docs."""
+    from hypha_rpc import connect_to_server
+    from hypha_rpc.utils.schema import schema_function
+    from pydantic import Field
+
+    async with connect_to_server(
+        {"name": "test-dynamic-skills", "server_url": SERVER_URL, "token": root_user_token}
+    ) as api:
+        workspace = api.config["workspace"]
+
+        @schema_function
+        async def greet(
+            name: str = Field(..., description="Name to greet"),
+        ) -> str:
+            """Greet someone by name."""
+            return f"Hello, {name}!"
+
+        await api.register_service(
+            {
+                "id": "test-greeter",
+                "name": "Test Greeter Service",
+                "description": "A test greeting service",
+                "config": {"visibility": "protected"},
+                "greet": greet,
+            }
+        )
+
+        # Access REFERENCE/test-greeter.md
+        response = requests.get(
+            f"{SERVER_URL}/{workspace}/agent-skills/REFERENCE/test-greeter.md",
+            headers={"Authorization": f"Bearer {root_user_token}"},
+        )
+        assert response.status_code == 200
+        content = response.text
+        assert "Test Greeter Service" in content
+        assert "greet" in content
+        assert "name" in content.lower()
+        assert "Name to greet" in content
+
+
+@pytest.mark.asyncio
+async def test_skills_no_schema_service_not_documented(fastapi_server, root_user_token):
+    """Test that services without service_schema are not exposed as reference docs."""
+    from hypha_rpc import connect_to_server
+
+    async with connect_to_server(
+        {"name": "test-no-schema", "server_url": SERVER_URL, "token": root_user_token}
+    ) as api:
+        workspace = api.config["workspace"]
+
+        # Register a service WITHOUT schema decorators
+        await api.register_service(
+            {
+                "id": "plain-service",
+                "name": "Plain Service",
+                "plain_func": lambda: "hello",
+            }
+        )
+
+        response = requests.get(
+            f"{SERVER_URL}/{workspace}/agent-skills/REFERENCE/plain-service.md",
+            headers={"Authorization": f"Bearer {root_user_token}"},
+        )
+        # Should be 404 since the service has no schema
+        assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_skills_workspace_includes_public_services(fastapi_server, root_user_token):
+    """Test that workspace-specific SKILL.md includes public services section."""
+    from hypha_rpc import connect_to_server
+
+    async with connect_to_server(
+        {"name": "test-public-section", "server_url": SERVER_URL, "token": root_user_token}
+    ) as api:
+        workspace = api.config["workspace"]
+
+        response = requests.get(
+            f"{SERVER_URL}/{workspace}/agent-skills/SKILL.md",
+            headers={"Authorization": f"Bearer {root_user_token}"},
+        )
+        assert response.status_code == 200
+        content = response.text
+        # Should have public services section since public services exist
+        # (at minimum, built-in services like artifact-manager are registered as public)
+        assert "Public Services" in content or "Available Services" in content
+
+
+@pytest.mark.asyncio
+async def test_skills_index_includes_dynamic_services(fastapi_server, root_user_token):
+    """Test that the index endpoint lists dynamic service reference files."""
+    from hypha_rpc import connect_to_server
+    from hypha_rpc.utils.schema import schema_function
+    from pydantic import Field
+
+    async with connect_to_server(
+        {"name": "test-index-dynamic", "server_url": SERVER_URL, "token": root_user_token}
+    ) as api:
+        workspace = api.config["workspace"]
+
+        @schema_function
+        async def compute(
+            x: int = Field(..., description="Input value"),
+        ) -> int:
+            """Compute something."""
+            return x * 2
+
+        await api.register_service(
+            {
+                "id": "test-compute",
+                "name": "Test Compute Service",
+                "config": {"visibility": "protected"},
+                "compute": compute,
+            }
+        )
+
+        response = requests.get(
+            f"{SERVER_URL}/{workspace}/agent-skills/",
+            headers={"Authorization": f"Bearer {root_user_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "dynamic_services" in data
+        assert "test-compute" in data["dynamic_services"]
+        assert "REFERENCE/test-compute.md" in data["reference_files"]
