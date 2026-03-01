@@ -61,6 +61,12 @@ class StatusEnum(str, Enum):
     not_initialized = "not_initialized"
 
 
+# Sentinel value for representing None/null in Redis hash fields.
+# Redis hash fields don't natively support null, so we use this marker
+# to distinguish "field explicitly set to null" from "field never set".
+REDIS_NULL_SENTINEL = "__null__"
+
+
 class ServiceConfig(BaseModel):
     """Represent service config."""
 
@@ -110,8 +116,10 @@ class ServiceInfo(BaseModel):
         # Iterate over fields and encode based on their type
         for field_name, field_info in self.model_fields.items():
             value = data.get(field_name)
-            if value is None or field_name == "score":
+            if field_name == "score":
                 continue
+            elif value is None:
+                redis_data[field_name] = REDIS_NULL_SENTINEL
             elif field_name == "config":
                 redis_data[field_name] = value
             elif field_info.annotation in {str, Optional[str]}:
@@ -122,7 +130,7 @@ class ServiceInfo(BaseModel):
                 redis_data[field_name] = json.dumps(value)
 
         # Expand config fields to store as separate keys
-        if "config" in redis_data and redis_data["config"]:
+        if "config" in redis_data and redis_data["config"] and redis_data["config"] != REDIS_NULL_SENTINEL:
             # Store entire config as JSON to preserve all fields including extra fields
             redis_data["config"] = json.dumps(redis_data["config"])
             # Note: We keep the config as a single JSON field to preserve all extra fields
@@ -148,9 +156,12 @@ class ServiceInfo(BaseModel):
 
         # Check if config is stored as JSON (new format)
         config_key = b"config" if in_bytes else "config"
+        null_sentinel = REDIS_NULL_SENTINEL.encode("utf-8") if in_bytes else REDIS_NULL_SENTINEL
         if config_key in service_data:
             config_value = service_data[config_key]
-            if config_value:
+            if config_value == null_sentinel:
+                converted_data["config"] = None
+            elif config_value:
                 # Deserialize JSON config
                 if isinstance(config_value, bytes):
                     config_dict = json.loads(config_value.decode("utf-8"))
@@ -173,6 +184,8 @@ class ServiceInfo(BaseModel):
             else:
                 value = service_data.get(field_name.encode("utf-8"))
             if value is None:
+                converted_data[field_name] = None
+            elif value == REDIS_NULL_SENTINEL or value == REDIS_NULL_SENTINEL.encode("utf-8"):
                 converted_data[field_name] = None
             elif field_info.annotation in {str, Optional[str]}:
                 converted_data[field_name] = (
