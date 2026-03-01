@@ -14,7 +14,7 @@ REQUIREMENTS = [
     "websockets>=14.0",
     "aiofiles",
     "fastapi>=0.70.0,<=0.115.2",
-    "hypha-rpc>=0.21.28",
+    "hypha-rpc>=0.21.29",
     "msgpack>=1.0.2",
     "numpy",
     "pydantic[email]>=2.6.1",
