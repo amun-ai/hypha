@@ -102,7 +102,7 @@ def _get_status_for_remote_exception(exc: RemoteException) -> int:
         return 404
     if "PermissionError:" in msg or "Permission denied" in msg:
         return 403
-    if "TypeError:" in msg or "ValueError:" in msg:
+    if "TypeError:" in msg or "ValueError:" in msg or "AssertionError:" in msg:
         return 400
     return 500
 
