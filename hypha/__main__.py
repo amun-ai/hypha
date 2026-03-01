@@ -14,8 +14,8 @@ from hypha.utils import random_id
 import uvicorn
 
 
-def run_interactive_cli():
-    """Entry point for the `hypha` command (interactive client CLI)."""
+def run_server_cli():
+    """Entry point for the `hypha-server-cli` command (interactive server CLI)."""
 
     # Create the app instance
     arg_parser = get_argparser(add_help=True)
@@ -34,7 +34,7 @@ def run_interactive_cli():
 def create_cli_parser():
     """Create the main CLI parser with subcommands."""
     parser = argparse.ArgumentParser(
-        prog="hypha", description="Hypha server and CLI tools"
+        prog="hypha-server", description="Hypha server and CLI tools"
     )
 
     # Add subcommands
