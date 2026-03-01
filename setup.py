@@ -149,8 +149,8 @@ setup(
     zip_safe=False,
     entry_points={
         "console_scripts": [
-            "hypha = hypha.__main__:main",
-            "hypha-cli = hypha.__main__:run_interactive_cli",
+            "hypha-server = hypha.__main__:run_server",
+            "hypha-server-cli = hypha.__main__:run_server_cli",
         ]
     },
 )

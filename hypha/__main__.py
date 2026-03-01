@@ -14,8 +14,8 @@ from hypha.utils import random_id
 import uvicorn
 
 
-def run_interactive_cli():
-    """Run the interactive CLI."""
+def run_server_cli():
+    """Entry point for the `hypha-server-cli` command (interactive server CLI)."""
 
     # Create the app instance
     arg_parser = get_argparser(add_help=True)
@@ -34,7 +34,7 @@ def run_interactive_cli():
 def create_cli_parser():
     """Create the main CLI parser with subcommands."""
     parser = argparse.ArgumentParser(
-        prog="hypha-cli", description="Hypha server and CLI tools"
+        prog="hypha-server", description="Hypha server and CLI tools"
     )
 
     # Add subcommands
@@ -190,8 +190,8 @@ async def generate_token_command(args):
     return token
 
 
-def main():
-    """Main entry point for the CLI."""
+def run_server():
+    """Entry point for the `hypha-server` command."""
     # If no arguments provided, automatically add --from-env
     if len(sys.argv) == 1:
         sys.argv.append("--from-env")
@@ -226,6 +226,12 @@ def main():
             ws_ping_interval=None,
             ws_ping_timeout=None,
         )
+
+
+# Keep backward compatibility: `python -m hypha` starts the server
+def main():
+    """Legacy entry point — delegates to run_server()."""
+    run_server()
 
 
 if __name__ == "__main__":
