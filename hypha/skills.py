@@ -710,6 +710,15 @@ curl -X POST "{server_url}/{workspace}/services/SERVICE_ID/METHOD" \\
   -d '{{"param": "value"}}'
 ```
 
+```bash
+# CLI — ideal for code agents (npm install -g hypha-cli)
+hypha login {server_url}
+hypha services --json                          # List services
+hypha art ls my-artifact:data/ --json          # Browse files
+hypha art cp ./local-file.csv my-artifact:data/file.csv --commit  # Upload + commit
+# See GUIDE/cli.md for full command reference
+```
+
 ## DO and DON'T
 
 **DO:**
@@ -762,6 +771,7 @@ Generate tokens (requires admin): `await server.generate_token({{"permission": "
 | MCP endpoints | HTTP | `/{workspace}/mcp/{{svc_id}}/mcp` — expose services to Claude, Cursor, etc. |
 | A2A protocol | HTTP | `/{workspace}/a2a/{{svc_id}}` — agent-to-agent communication |
 | Vector search | SDK + HTTP | Semantic search over collections and services |
+| CLI (for agents) | Shell commands | `npm install -g hypha-cli` — manage workspaces, apps, artifacts from terminal. [GUIDE/cli.md](GUIDE/cli.md) |
 
 ## JavaScript Notes
 
@@ -793,6 +803,7 @@ const svc = await server.getService("service-id", {{ case_conversion: "camel", _
 - [WORKSPACE_CONTEXT.md](WORKSPACE_CONTEXT.md) — This workspace's current state
 - [GUIDE/asgi-apps.md](GUIDE/asgi-apps.md) — Deploy FastAPI/Django as Hypha services
 - [GUIDE/serverless-functions.md](GUIDE/serverless-functions.md) — Simple HTTP function endpoints
+- [GUIDE/cli.md](GUIDE/cli.md) — Hypha CLI for agents (`hypha` shell commands)
 - Source code: `{server_url}/{workspace}/agent-skills/SOURCE/{{service-id}}/{{method}}`
 - Download all docs: `{server_url}/{workspace}/agent-skills/create-zip-file`
 """
@@ -1188,6 +1199,7 @@ Examples for workspace `{workspace}` at `{server_url}`.
 8. [MCP Integration](#mcp-integration)
 9. [A2A Protocol](#a2a-protocol)
 10. [Vector Search](#vector-search)
+11. [CLI for Agents](#cli-for-agents)
 
 ---
 
@@ -1771,6 +1783,67 @@ services = await server.search_services(query="image processing", limit=5)
 | `/{workspace}/a2a/{{id}}` | A2A endpoint |
 | `/health` | Health check |
 | `/metrics` | Prometheus metrics |
+
+---
+
+## CLI for Agents
+
+The `hypha` CLI (`npm install -g hypha-cli`) lets agents interact with Hypha directly from the terminal.
+See [GUIDE/cli.md](GUIDE/cli.md) for the full command reference.
+
+### Setup
+
+```bash
+npm install -g hypha-cli
+hypha login {server_url}
+# Or: export HYPHA_SERVER_URL={server_url} HYPHA_TOKEN=your-token
+```
+
+### Browse and Manage Artifacts
+
+```bash
+# List artifacts in workspace
+hypha art ls --json
+
+# Create artifact, upload data, and commit
+hypha art create my-dataset --type dataset
+hypha art cp ./data/ my-dataset:data/ -r
+hypha art commit my-dataset --message "Upload training data"
+
+# Download a file
+hypha art cp my-dataset:data/results.json ./results.json
+
+# View file contents
+hypha art cat my-dataset:config.yaml
+```
+
+### Manage Server Apps
+
+```bash
+# Install and start an app
+hypha apps install https://example.com/app.py --id my-app
+hypha apps start my-app --wait
+
+# Check status and logs
+hypha apps ps --json
+hypha apps logs <instance-id> --tail 100
+
+# Stop all instances
+hypha apps stop my-app --all
+```
+
+### Inspect Workspace
+
+```bash
+# List services
+hypha services --json
+
+# Get workspace info
+hypha info --json
+
+# Generate a token for programmatic access
+hypha token --permission read_write --expires-in 86400 --json
+```
 """
 
 
@@ -2213,6 +2286,12 @@ For high-level usage, refer to REFERENCE.md and EXAMPLES.md.
             zf.writestr("EXAMPLES.md", get_examples_md(ws, server_url))
             zf.writestr("WORKSPACE_CONTEXT.md", get_workspace_context_md(ws, server_url, workspace_info, services))
 
+            # Add guide files from docs/ directory
+            for guide_file in ["asgi-apps.md", "serverless-functions.md", "cli.md"]:
+                guide_content = load_documentation_file(guide_file)
+                if guide_content:
+                    zf.writestr(f"GUIDE/{guide_file}", guide_content)
+
             # Add source code for each enabled built-in service
             enabled_services = await doc_generator.get_all_enabled_services()
             # Derive service_id -> class_name from the module-level constant
@@ -2599,6 +2678,7 @@ const svc = await server.getService("svc-id", {{ case_conversion: "camel", _rkwa
 | Examples | `{server_url}/ws/agent-skills/EXAMPLES.md` |
 | ASGI Guide | `{server_url}/ws/agent-skills/GUIDE/asgi-apps.md` |
 | Functions Guide | `{server_url}/ws/agent-skills/GUIDE/serverless-functions.md` |
+| CLI Guide | `{server_url}/ws/agent-skills/GUIDE/cli.md` |
 
 ### Auth Required (Workspace-Specific)
 
