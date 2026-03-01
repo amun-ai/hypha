@@ -2081,6 +2081,20 @@ class WorkspaceManager:
                 f"Cannot register services in other workspaces."
             )
         service_name = service.id.split(":")[1]
+
+        # Silently reject local-only services — these are callback proxies
+        # (e.g. _rintf_) created by hypha-rpc that should never be stored
+        # server-side.  Older clients may leak them during reconnection;
+        # drop here as a defense-in-depth measure.
+        is_local_only = getattr(service.config, "_local_only", False)
+        if is_local_only or service_name.startswith("_rintf_"):
+            logger.warning(
+                "Dropping local-only service registration '%s' from client %s",
+                service_name,
+                client_id,
+            )
+            return
+
         service.name = service.name or service_name
 
         if service.app_id:
