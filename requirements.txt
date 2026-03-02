@@ -31,7 +31,7 @@ prometheus-client==0.21.1
 uuid-utils==0.9.0
 psycopg2-binary==2.9.10
 asyncpg>=0.30.0
-sqlmodel==0.0.22
+sqlmodel==0.0.34
 alembic==1.14.0
 hrid==0.3.0
 ollama==0.5.1
