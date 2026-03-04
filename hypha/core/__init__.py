@@ -872,8 +872,17 @@ class RedisRPCConnection:
         """Check if load balancing is enabled for this client."""
         return self._client_id.endswith("__rlb")
 
+    # Entries not updated within this window are considered orphaned (e.g. crashed
+    # clients that never called disconnect()) and will be evicted on the next sweep.
+    _METRICS_TTL_SECONDS = 600  # 10 minutes
+
     def _update_load_metric(self):
-        """Update the load metric based on message rate (requests per minute)."""
+        """Update the load metric based on message rate (requests per minute).
+
+        Also sweeps out stale orphan entries whose last_updated timestamp is
+        older than _METRICS_TTL_SECONDS.  This prevents unbounded accumulation
+        when __rlb clients crash without calling disconnect().
+        """
         try:
             current_time = time.time()
             client_key = f"{self._workspace}/{self._client_id}"
@@ -881,16 +890,27 @@ class RedisRPCConnection:
             if not hasattr(RedisRPCConnection, "_client_metrics"):
                 RedisRPCConnection._client_metrics = {}
 
+            # TTL sweep: evict entries not updated recently (orphaned crashed clients)
+            ttl = RedisRPCConnection._METRICS_TTL_SECONDS
+            stale_keys = [
+                k for k, v in RedisRPCConnection._client_metrics.items()
+                if current_time - v.get("last_updated", v["last_time"]) > ttl
+            ]
+            for k in stale_keys:
+                del RedisRPCConnection._client_metrics[k]
+
             metrics = RedisRPCConnection._client_metrics.get(client_key)
             if metrics is None:
                 metrics = {
                     "last_time": current_time,
                     "last_requests": 0,
+                    "last_updated": current_time,
                 }
                 RedisRPCConnection._client_metrics[client_key] = metrics
 
             # Increment local request counter
             metrics["last_requests"] += 1
+            metrics["last_updated"] = current_time
 
             # Compute RPM over a 60s window
             time_diff = current_time - metrics["last_time"]

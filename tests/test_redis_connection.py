@@ -253,3 +253,49 @@ async def test_disconnect_does_not_use_gc_get_objects(event_bus, user_info_admin
     elapsed = time.perf_counter() - start
 
     assert elapsed < 2.0, f"Disconnect took too long: {elapsed:.3f}s"
+
+
+async def test_client_metrics_ttl_expiry(event_bus, user_info_admin):
+    """Test that orphan _client_metrics entries are evicted after TTL expiry.
+
+    When __rlb clients crash without calling disconnect(), their entries
+    accumulate in the class-level _client_metrics dict.  The fix adds
+    TTL-based sweep: any entry not updated within _METRICS_TTL_SECONDS is
+    removed the next time any __rlb client calls _update_load_metric().
+    """
+    import time
+
+    # Ensure fresh state
+    RedisRPCConnection._client_metrics = {}
+
+    # Plant a stale orphan entry (simulates a crashed __rlb client)
+    stale_key = "workspace-orphan/crashed-client__rlb"
+    RedisRPCConnection._client_metrics[stale_key] = {
+        "last_time": time.time() - 700,   # > TTL (600 s default)
+        "last_requests": 5,
+        "last_updated": time.time() - 700,
+    }
+
+    # A fresh __rlb client connects and sends a message, triggering the sweep
+    rpc = RedisRPCConnection(
+        event_bus, "workspace-fresh", "newclient__rlb", user_info_admin, None
+    )
+    rpc.on_message(lambda data: None)
+    await asyncio.sleep(0.05)
+
+    # Directly invoke the metric update (the sweep runs inside it)
+    rpc._update_load_metric()
+
+    # The stale orphan must be gone
+    assert stale_key not in RedisRPCConnection._client_metrics, (
+        "Orphan _client_metrics entry was NOT evicted by TTL sweep; "
+        "this causes unbounded memory growth when __rlb clients crash."
+    )
+
+    # The fresh client's own entry must still exist
+    fresh_key = "workspace-fresh/newclient__rlb"
+    assert fresh_key in RedisRPCConnection._client_metrics, (
+        "Fresh client's own metrics entry was unexpectedly removed."
+    )
+
+    await rpc.disconnect("cleanup")
