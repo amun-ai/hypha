@@ -440,6 +440,15 @@ All vulnerabilities documented with tests in `tests/test_security_vulnerabilitie
 | V9 | Conditional token validation | ALWAYS validate tokens |
 | V10-V14 | Cross-workspace bypass | Extract workspace from ID, validate permission on TARGET workspace |
 
+### Known Performance Anti-Patterns (NEVER DO)
+
+| Pattern | Why It's Bad | Correct Alternative |
+| ------- | ------------ | ------------------- |
+| `gc.get_objects()` in hot path | O(n_total_objects) per call - scans ALL Python objects | Use `_handle_disconnected` callback chain for RPC cleanup |
+| `gc.collect()` in disconnect | Disrupts Python's automatic GC tuning, creates latency spikes | Let Python's GC manage itself |
+| `redis.keys(pattern)` in workspace ops | Blocks entire Redis for duration of scan | Use `redis.scan(cursor, match, count)` cursor-based iteration |
+| Unbounded `asyncio.wait_for()` on Redis ops | Can hang indefinitely if Redis is slow | Always add `timeout=5.0` to Redis operations in cleanup |
+
 **Critical Pattern (V10-V14)**: When an ID contains a workspace prefix (e.g., `workspace/client_id`), always validate permission on the embedded workspace, not just `context["ws"]`.
 
 ```python
