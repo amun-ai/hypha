@@ -609,25 +609,44 @@ class WebsocketServer:
                 pass
             self._idle_cleanup_task = None
 
+    async def _do_idle_cleanup(self):
+        """Core idle cleanup logic — extracted for testability.
+
+        TOCTOU safety: after building the candidate list we re-read _last_seen
+        for each key before calling disconnect().  A connection that received a
+        message between the snapshot and the actual close call is no longer idle
+        and must not be forcibly terminated.
+        """
+        now = time.time()
+        to_disconnect = [
+            key
+            for key, last in list(self._last_seen.items())
+            if now - last > self._idle_timeout
+        ]
+        for key in to_disconnect:
+            ws = self._websockets.get(key)
+            if ws:
+                # Re-check: did the connection become active after we snapshotted it?
+                current_last = self._last_seen.get(key)
+                if current_last is not None and now - current_last <= self._idle_timeout:
+                    continue  # No longer idle — skip
+                try:
+                    await self.disconnect(
+                        ws,
+                        f"Idle timeout ({self._idle_timeout}s)",
+                        status.WS_1001_GOING_AWAY,
+                    )
+                except Exception:
+                    pass
+                finally:
+                    self._last_seen.pop(key, None)
+
     async def _idle_cleanup_loop(self):
         """Periodically disconnect idle connections (prevents explosion without strict rate limiting)."""
         while not self._stop:
             try:
                 await asyncio.sleep(60)
-                now = time.time()
-                to_disconnect = []
-                for key, last in list(self._last_seen.items()):
-                    if now - last > self._idle_timeout:
-                        to_disconnect.append(key)
-                for key in to_disconnect:
-                    ws = self._websockets.get(key)
-                    if ws:
-                        try:
-                            await self.disconnect(ws, f"Idle timeout ({self._idle_timeout}s)", status.WS_1001_GOING_AWAY)
-                        except Exception:
-                            pass
-                        finally:
-                            self._last_seen.pop(key, None)
+                await self._do_idle_cleanup()
             except asyncio.CancelledError:
                 break
             except Exception:
