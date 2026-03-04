@@ -487,6 +487,22 @@ class ServerAppController:
         self.event_bus.on_local("client_disconnected", client_disconnected)
         store.set_server_app_controller(self)
 
+    async def _scan_keys(self, pattern: str) -> list:
+        """Non-blocking cursor-based SCAN replacing redis.keys().
+
+        redis.keys() is O(n_total_keys) and blocks the entire Redis server.
+        Returns decoded str keys, never bytes.
+        """
+        keys = []
+        cursor = 0
+        while True:
+            cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=500)
+            for key in batch:
+                keys.append(key.decode("utf-8") if isinstance(key, bytes) else key)
+            if cursor == 0:
+                break
+        return keys
+
     async def _worker_health_monitor_loop(self):
         """Periodic worker health monitoring loop."""
         while True:
@@ -574,7 +590,7 @@ class ServerAppController:
         try:
             # Search for sessions using this worker_id
             pattern = "sessions:*"
-            keys = await self._redis.keys(pattern)
+            keys = await self._scan_keys(pattern)
             for key in keys:
                 session_data = await self._redis.hgetall(key)
                 if session_data.get(b"worker_id", b"").decode() == worker_id:
@@ -588,7 +604,7 @@ class ServerAppController:
         """Get all sessions from Redis for autoscaling and other operations."""
         try:
             pattern = "sessions:*"
-            keys = await self._redis.keys(pattern)
+            keys = await self._scan_keys(pattern)
             sessions = []
             for key in keys:
                 session_data = await self._redis.hgetall(key)
@@ -598,7 +614,7 @@ class ServerAppController:
                     for k, v in session_data.items():
                         key_str = k.decode() if isinstance(k, bytes) else k
                         value_str = v.decode() if isinstance(v, bytes) else v
-                        
+
                         # Handle prefixed JSON data
                         if key_str.startswith("json_list:"):
                             original_key = key_str[10:]  # Remove "json_list:" prefix
@@ -608,9 +624,9 @@ class ServerAppController:
                             session[original_key] = json.loads(value_str)
                         else:
                             session[key_str] = value_str
-                    
-                    # Extract full_client_id from Redis key
-                    session["id"] = key.decode().replace("sessions:", "") if isinstance(key, bytes) else key.replace("sessions:", "")
+
+                    # Extract full_client_id from Redis key (_scan_keys returns str)
+                    session["id"] = key.replace("sessions:", "")
                     sessions.append(session)
             return sessions
         except Exception as e:
@@ -622,10 +638,10 @@ class ServerAppController:
         try:
             logger.info(f"🧹 Cleaning up sessions for dead worker: {worker_id}")
             pattern = "sessions:*"
-            keys = await self._redis.keys(pattern)
+            keys = await self._scan_keys(pattern)
             logger.info(f"🔍 Found {len(keys)} session keys to check")
             cleaned_count = 0
-            
+
             for key in keys:
                 session_data = await self._redis.hgetall(key)
                 if session_data:
@@ -635,12 +651,12 @@ class ServerAppController:
                         stored_worker_id = session_data[b"worker_id"].decode()
                     elif "worker_id" in session_data:
                         stored_worker_id = session_data["worker_id"]
-                    
+
                     logger.debug(f"🔍 Session key {key}: stored_worker_id={stored_worker_id}, target_worker_id={worker_id}")
-                    
+
                     if stored_worker_id == worker_id:
-                        # Extract session ID from Redis key
-                        session_id = key.decode().replace("sessions:", "") if isinstance(key, bytes) else key.replace("sessions:", "")
+                        # Extract session ID from Redis key (_scan_keys returns str)
+                        session_id = key.replace("sessions:", "")
                         logger.info(f"🗑️ Removing orphaned session: {session_id}")
                         await self._redis.delete(key)
                         cleaned_count += 1
