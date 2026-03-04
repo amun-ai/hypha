@@ -7,7 +7,6 @@ import json
 import logging
 import sys
 import os
-import gc
 import uuid
 import time
 from enum import Enum
@@ -969,33 +968,10 @@ class RedisRPCConnection:
             logger.debug(f"Error clearing circular references: {e}")
 
         
-        # PRIORITY 3: Clear RPC references (but less aggressively)
-        try:
-            cleared_refs = 0
-            # Only check a limited number of objects to avoid performance issues
-            objects_checked = 0
-            for obj in gc.get_objects():
-                if objects_checked > 1000:  # Limit to first 1000 objects
-                    break
-                objects_checked += 1
-                
-                if obj.__class__.__name__ == 'RPC':
-                    if hasattr(obj, '_connection') and obj._connection is self:
-                        obj._connection = None
-                        cleared_refs += 1
-                    if (hasattr(obj, '_emit_message') and 
-                        hasattr(obj._emit_message, '__self__') and 
-                        obj._emit_message.__self__ is self):
-                        async def _emit_disconnected(data):
-                            raise RuntimeError("Connection has been disconnected")
-                        obj._emit_message = _emit_disconnected
-                        cleared_refs += 1
-            
-            if cleared_refs > 0:
-                logger.debug(f"Cleared {cleared_refs} RPC references for {self._workspace}/{self._client_id}")
-                
-        except Exception as e:
-            logger.debug(f"Error clearing RPC references: {e}")
+        # NOTE: RPC references are cleaned up via the _handle_disconnected callback
+        # (registered by the RPC layer in hypha_rpc). We do NOT use gc.get_objects()
+        # here as it scans ALL Python objects O(n_total) and is catastrophically slow
+        # at scale (100K+ concurrent users each disconnecting).
         
         # Standard disconnect logic (preserved)
         try:
@@ -1083,15 +1059,6 @@ class RedisRPCConnection:
                     
         except Exception as e:
             logger.warning(f"Standard disconnect logic error: {e}")
-        
-        # Gentle garbage collection (only occasionally)
-        try:
-            if RedisRPCConnection._closed_total_int % 20 == 0:  # Every 20 disconnects
-                collected = gc.collect()
-                if collected > 0:
-                    logger.debug(f"Garbage collected {collected} objects")
-        except Exception as e:
-            logger.debug(f"GC error: {e}")
         
         # FINALLY: Clear event_bus reference after all operations are done
         # This must be last to avoid NoneType errors during cleanup
@@ -1265,10 +1232,12 @@ class RedisEventBus:
         for pattern in patterns_to_remove:
             if self._pubsub:
                 try:
-                    await self._pubsub.punsubscribe(pattern)
+                    await asyncio.wait_for(self._pubsub.punsubscribe(pattern), timeout=5.0)
                     RedisEventBus._patterns_unsubscribed_total.inc()
                     RedisEventBus._patterns_unsubscribed_total_int += 1
                     logger.debug(f"Unsubscribed from pattern: {pattern}")
+                except asyncio.TimeoutError:
+                    logger.warning("Timeout unsubscribing from client events %s", pattern)
                 except Exception as e:
                     logger.warning("Failed to unsubscribe from client events %s: %s", pattern, e)
             self._subscribed_patterns.discard(pattern)
@@ -1333,9 +1302,11 @@ class RedisEventBus:
             # Clean up orphaned patterns
             for pattern in patterns_to_clean:
                 try:
-                    await self._pubsub.punsubscribe(pattern)
+                    await asyncio.wait_for(self._pubsub.punsubscribe(pattern), timeout=5.0)
                     self._subscribed_patterns.discard(pattern)
                     logger.debug(f"Cleaned up orphaned pattern: {pattern}")
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timeout cleaning up orphaned pattern: {pattern}")
                 except Exception as e:
                     logger.warning(f"Failed to clean up orphaned pattern {pattern}: {e}")
             

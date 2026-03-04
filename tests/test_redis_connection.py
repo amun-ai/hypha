@@ -210,3 +210,46 @@ async def test_broadcast_message_does_not_cross_workspaces(
     assert len(another_messages) == 0
     assert first_messages[0]["content"] == "Broadcast message"
     assert second_messages[0]["content"] == "Broadcast message"
+
+
+async def test_disconnect_does_not_use_gc_get_objects(event_bus, user_info_admin):
+    """Test that disconnect() completes quickly without scanning all Python objects.
+
+    The gc.get_objects() call was removed because it scans ALL Python objects
+    on every disconnect, which is O(n_total_objects) and catastrophically slow
+    at scale with 100K+ concurrent users.
+    """
+    import time
+    import ast
+    import inspect
+    import hypha.core
+
+    # Verify the source AST does not call gc.get_objects() or gc.collect()
+    source = inspect.getsource(hypha.core)
+    tree = ast.parse(source)
+
+    gc_calls = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute):
+                if (isinstance(func.value, ast.Name) and func.value.id == "gc"
+                        and func.attr in ("get_objects", "collect")):
+                    gc_calls.append(f"gc.{func.attr}() at line {func.value.col_offset}")
+
+    assert not gc_calls, (
+        f"Found gc calls that hurt performance at scale: {gc_calls}. "
+        "These scan ALL Python objects and must not be used in disconnect()."
+    )
+
+    # Measure disconnect time - should be fast
+    rpc = RedisRPCConnection(event_bus, "perf-ws", "perf-client", user_info_admin, None)
+    messages = []
+    rpc.on_message(lambda data: messages.append(data))
+    await asyncio.sleep(0.1)
+
+    start = time.perf_counter()
+    await rpc.disconnect("test disconnect")
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 2.0, f"Disconnect took too long: {elapsed:.3f}s"
