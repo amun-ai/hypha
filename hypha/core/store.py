@@ -410,6 +410,24 @@ class RedisStore:
     def get_redis_cache(self):
         return self._redis_cache
 
+    async def _scan_keys(self, pattern: str) -> list:
+        """Non-blocking cursor-based SCAN replacing redis.keys().
+
+        redis.keys() is O(n_total_keys) and blocks the entire Redis server.
+        This helper uses cursor-based SCAN (O(n_matching)) which is non-blocking
+        and yields control between batches.
+        Returns decoded str keys, never bytes.
+        """
+        keys = []
+        cursor = 0
+        while True:
+            cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=500)
+            for key in batch:
+                keys.append(key.decode("utf-8") if isinstance(key, bytes) else key)
+            if cursor == 0:
+                break
+        return keys
+
     async def load_or_create_workspace(self, user_info: UserInfo, workspace: str):
         """Setup the workspace."""
         if workspace is None:
@@ -521,10 +539,10 @@ class RedisStore:
             }
         )
 
-        old_keys = await self._redis.keys(
+        old_keys = await self._scan_keys(
             f"services:*|*:{self._root_user.get_workspace()}/workspace-client-*:*@*"
         )
-        old_keys = old_keys + await self._redis.keys(
+        old_keys = old_keys + await self._scan_keys(
             f"services:*|*:public/workspace-client-*:*@*"
         )
         if old_keys:
@@ -536,12 +554,13 @@ class RedisStore:
                 await self._redis.delete(key)
 
         # For versions before 0.20.34
-        old_keys = await self._redis.keys("services:public:*")
-        old_keys = old_keys + await self._redis.keys("services:protected:*")
+        old_keys = await self._scan_keys("services:public:*")
+        old_keys = old_keys + await self._scan_keys("services:protected:*")
         if old_keys:
             logger.info("Upgrading service keys for version < 0.20.34")
             for key in old_keys:
-                key = key.decode()
+                # _scan_keys returns str already; keep decode() as no-op guard
+                key = key if isinstance(key, str) else key.decode()
                 logger.info(f"Upgrading service key: {key}")
                 service_data = await self._redis.hgetall(key)
                 try:
@@ -617,7 +636,7 @@ class RedisStore:
                         
                         all_keys = []
                         for pattern in patterns:
-                            keys = await self._redis.keys(pattern)
+                            keys = await self._scan_keys(pattern)
                             all_keys.extend(keys)
                         
                         if all_keys:
@@ -641,7 +660,7 @@ class RedisStore:
     async def _clear_client_services(self, workspace: str, client_id: str):
         """Clear a workspace."""
         pattern = f"services:*|*:{workspace}/{client_id}:*@*"
-        keys = await self._redis.keys(pattern)
+        keys = await self._scan_keys(pattern)
         # Remove all services related to the server
         logger.info(
             f"Removing services for client {client_id} in workspace {workspace}"
@@ -684,7 +703,7 @@ class RedisStore:
         for client_id in server_client_ids:
             # Pattern to match services from this specific client
             pattern = f"services:*|*:*/{client_id}:*@*"
-            keys = await self._redis.keys(pattern)
+            keys = await self._scan_keys(pattern)
             all_keys.extend(keys)
         
         if all_keys:
@@ -1004,11 +1023,11 @@ class RedisStore:
     async def list_servers(self):
         """List all servers."""
         pattern = f"services:*|*:public/*:built-in@*"
-        keys = await self._redis.keys(pattern)
+        keys = await self._scan_keys(pattern)
         clients = set()
         for key in keys:
-            # Extract the client ID from the service key
-            key_parts = key.decode("utf-8").split("/")
+            # Extract the client ID from the service key (_scan_keys returns str)
+            key_parts = key.split("/")
             client_id = key_parts[1].split(":")[0]
             clients.add(client_id)
         return list(clients)
@@ -1037,7 +1056,7 @@ class RedisStore:
         assert workspace is not None, "Workspace must be provided."
         assert client_id and "/" not in client_id, "Invalid client id: " + client_id
         pattern = f"services:*|*:{workspace}/{client_id}:built-in@*"
-        keys = await self._redis.keys(pattern)
+        keys = await self._scan_keys(pattern)
         return bool(keys)
 
     async def remove_client(self, client_id, workspace, user_info, unload):
@@ -1068,10 +1087,11 @@ class RedisStore:
         assert (
             ":" not in service_id
         ), f"Invalid service id: {service_id}, service id cannot contain `:`"
-        keys = await self._redis.keys(f"services:*|*:{workspace}/*:{service_id}@*")
+        keys = await self._scan_keys(f"services:*|*:{workspace}/*:{service_id}@*")
         if keys:
             # the service key format: "services:{visibility}|{type}:{workspace}/{client_id}:{service_id}@{app_id}"
-            return keys[0].decode().split(":")[1].split("|")[1]
+            # _scan_keys returns str, no decode() needed
+            return keys[0].split(":")[1].split("|")[1]
 
     async def parse_user_token(self, token):
         """Parse a client token."""
