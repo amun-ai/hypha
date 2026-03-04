@@ -1415,7 +1415,7 @@ class WorkspaceManager:
             svc = await self._rpc.get_remote_service(
                 client_id + ":built-in", {"timeout": timeout}
             )
-            return await svc.ping("ping")  # should return "pong"
+            return await asyncio.wait_for(svc.ping("ping"), timeout=timeout)  # should return "pong"
         except Exception as e:
             # If built-in service fails, try to find any other service for this client
             # Use SCAN (not KEYS) to avoid blocking Redis during the search
@@ -1443,9 +1443,9 @@ class WorkspaceManager:
                                 service_full_id, {"timeout": timeout}
                             )
                             if hasattr(svc, "ping"):
-                                return await svc.ping("ping")
+                                return await asyncio.wait_for(svc.ping("ping"), timeout=timeout)
                             elif hasattr(svc, "echo"):
-                                result = await svc.echo("ping")
+                                result = await asyncio.wait_for(svc.echo("ping"), timeout=timeout)
                                 return "pong" if result == "ping" else f"Client responded: {result}"
                             elif hasattr(svc, "_config"):
                                 return "pong"  # Client is alive but no ping method
@@ -3266,8 +3266,9 @@ class WorkspaceManager:
             async def _ping_client(client_id):
                 """Ping a single client and return (client_id, alive)."""
                 try:
-                    result = await self.ping_client(
-                        client_id, timeout=timeout, context=context
+                    result = await asyncio.wait_for(
+                        self.ping_client(client_id, timeout=timeout, context=context),
+                        timeout=timeout + 2,
                     )
                     return (client_id, result == "pong")
                 except Exception:
