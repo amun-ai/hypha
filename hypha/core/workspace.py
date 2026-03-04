@@ -1312,35 +1312,45 @@ class WorkspaceManager:
         return clients
 
     async def _list_client_keys(self, workspace: str):
-        """List all client keys in the workspace."""
-        # First, try to find all services for this workspace (not just built-in)
+        """List all client keys in the workspace.
+
+        Uses cursor-based SCAN instead of KEYS to avoid blocking Redis.
+        KEYS is O(n) over all Redis keys and blocks the server for the
+        entire scan duration — catastrophic with 100K+ service entries.
+        """
         pattern = f"services:*|*:{workspace}/*:*@*"
-        keys = await self._redis.keys(pattern)
         client_keys = set()
-        for key in keys:
-            # Extract the client ID from the service key
-            # Format: services:{visibility}|{service_id}:{workspace}/{client_id}:{service_name}@{app}
-            key_str = key.decode("utf-8")
-            # Split by workspace to find the client part
-            if f":{workspace}/" in key_str:
-                parts_after_ws = key_str.split(f":{workspace}/")[1]
-                # Extract client_id (everything before the next colon)
-                if ":" in parts_after_ws:
-                    client_id = parts_after_ws.split(":")[0]
-                    client_keys.add(workspace + "/" + client_id)
-        
-        # If no services found, check for client keys directly in Redis
+        cursor = 0
+        while True:
+            cursor, batch = await self._redis.scan(
+                cursor=cursor, match=pattern, count=500
+            )
+            for key in batch:
+                key_str = key.decode("utf-8") if isinstance(key, bytes) else key
+                if f":{workspace}/" in key_str:
+                    parts_after_ws = key_str.split(f":{workspace}/")[1]
+                    if ":" in parts_after_ws:
+                        client_id = parts_after_ws.split(":")[0]
+                        client_keys.add(workspace + "/" + client_id)
+            if cursor == 0:
+                break
+
+        # If no services found, fall back to checking client keys directly
         if not client_keys:
-            # Try alternative pattern for clients
             client_pattern = f"clients:{workspace}/*"
-            client_keys_raw = await self._redis.keys(client_pattern)
-            for key in client_keys_raw:
-                key_str = key.decode("utf-8")
-                # Extract client_id from clients:{workspace}/{client_id}
-                if f"clients:{workspace}/" in key_str:
-                    client_id = key_str.split(f"clients:{workspace}/")[1]
-                    client_keys.add(workspace + "/" + client_id)
-        
+            cursor = 0
+            while True:
+                cursor, batch = await self._redis.scan(
+                    cursor=cursor, match=client_pattern, count=500
+                )
+                for key in batch:
+                    key_str = key.decode("utf-8") if isinstance(key, bytes) else key
+                    if f"clients:{workspace}/" in key_str:
+                        client_id = key_str.split(f"clients:{workspace}/")[1]
+                        client_keys.add(workspace + "/" + client_id)
+                if cursor == 0:
+                    break
+
         return list(client_keys)
 
     @schema_method
@@ -1387,36 +1397,40 @@ class WorkspaceManager:
             return await svc.ping("ping")  # should return "pong"
         except Exception as e:
             # If built-in service fails, try to find any other service for this client
+            # Use SCAN (not KEYS) to avoid blocking Redis during the search
             workspace_id, client_name = client_id.split("/")
             pattern = f"services:*|*:{workspace_id}/{client_name}:*@*"
-            keys = await self._redis.keys(pattern)
-            
+            keys = []
+            cursor = 0
+            while True:
+                cursor, batch = await self._redis.scan(
+                    cursor=cursor, match=pattern, count=100
+                )
+                keys.extend(batch)
+                if cursor == 0 or len(keys) >= 3:
+                    break
+
             if keys:
                 # Try to ping using the first available service
                 for key in keys[:3]:  # Try up to 3 services
                     try:
-                        # Extract service ID from key
-                        key_str = key.decode("utf-8")
+                        key_str = key.decode("utf-8") if isinstance(key, bytes) else key
                         # Format: services:{visibility}|{service_id}:{workspace}/{client_id}:{service_name}@{app}
                         if "|" in key_str:
                             service_full_id = key_str.split("|")[1].split("@")[0]
-                            # Try to get this service
                             svc = await self._rpc.get_remote_service(
                                 service_full_id, {"timeout": timeout}
                             )
-                            # Try to call echo or ping method if available
                             if hasattr(svc, "ping"):
                                 return await svc.ping("ping")
                             elif hasattr(svc, "echo"):
                                 result = await svc.echo("ping")
                                 return "pong" if result == "ping" else f"Client responded: {result}"
-                            else:
-                                # Just check if we can get service info - if yes, client is alive
-                                if hasattr(svc, "_config"):
-                                    return "pong"  # Client is alive but no ping method
+                            elif hasattr(svc, "_config"):
+                                return "pong"  # Client is alive but no ping method
                     except Exception:
                         continue  # Try next service
-            
+
             # All attempts failed
             return f"Failed to ping client {client_id}: {e}"
 
