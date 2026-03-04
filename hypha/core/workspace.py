@@ -1290,7 +1290,7 @@ class WorkspaceManager:
         keys = []
         cursor = 0
         while True:
-            cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=500)
+            cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=10000)
             keys.extend(batch)
             if cursor == 0:
                 break
@@ -1311,12 +1311,18 @@ class WorkspaceManager:
             )
         return clients
 
-    async def _scan_keys(self, pattern: str) -> list:
+    async def _scan_keys(self, pattern: str, count: int = 10000) -> list:
         """Non-blocking key scan using cursor-based SCAN instead of KEYS.
 
         redis.keys(pattern) is O(n_total_keys) and blocks the entire Redis
         server for the full scan duration — with 100K+ service entries this
         can take hundreds of milliseconds and stalls all concurrent operations.
+
+        count=10000 is the default so that typical deployments (up to ~50K keys)
+        complete in a single round-trip.  The KEYS-vs-SCAN trade-off is:
+          - KEYS: 1 round-trip but blocks Redis for the full scan
+          - SCAN count=10000: non-blocking but ~N/500 round-trips (slow under load)
+          - SCAN count=10000: non-blocking and ~N/10000 round-trips (fast)
 
         Use this method for ALL wildcard key lookups in the workspace.
         """
@@ -1324,7 +1330,7 @@ class WorkspaceManager:
         cursor = 0
         while True:
             cursor, batch = await self._redis.scan(
-                cursor=cursor, match=pattern, count=500
+                cursor=cursor, match=pattern, count=count
             )
             for key in batch:
                 keys.append(key.decode("utf-8") if isinstance(key, bytes) else key)
@@ -1344,7 +1350,7 @@ class WorkspaceManager:
         cursor = 0
         while True:
             cursor, batch = await self._redis.scan(
-                cursor=cursor, match=pattern, count=500
+                cursor=cursor, match=pattern, count=10000
             )
             for key in batch:
                 key_str = key.decode("utf-8") if isinstance(key, bytes) else key
@@ -1362,7 +1368,7 @@ class WorkspaceManager:
             cursor = 0
             while True:
                 cursor, batch = await self._redis.scan(
-                    cursor=cursor, match=client_pattern, count=500
+                    cursor=cursor, match=client_pattern, count=10000
                 )
                 for key in batch:
                     key_str = key.decode("utf-8") if isinstance(key, bytes) else key
@@ -1425,7 +1431,7 @@ class WorkspaceManager:
             cursor = 0
             while True:
                 cursor, batch = await self._redis.scan(
-                    cursor=cursor, match=pattern, count=100
+                    cursor=cursor, match=pattern, count=10000
                 )
                 keys.extend(batch)
                 if cursor == 0 or len(keys) >= 3:
@@ -1812,7 +1818,7 @@ class WorkspaceManager:
         for pattern in patterns:
             cursor = 0
             while True:
-                cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=500)
+                cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=10000)
                 keys.extend(batch)
                 if cursor == 0:
                     break
@@ -1827,7 +1833,7 @@ class WorkspaceManager:
                 # Scan additional keys in current workspace to avoid blocking Redis
                 cursor = 0
                 while True:
-                    cursor, batch = await self._redis.scan(cursor=cursor, match=ws_pattern, count=500)
+                    cursor, batch = await self._redis.scan(cursor=cursor, match=ws_pattern, count=10000)
                     keys.extend(batch)
                     if cursor == 0:
                         break
@@ -3387,7 +3393,7 @@ class WorkspaceManager:
         keys = []
         cursor = 0
         while True:
-            cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=500)
+            cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=10000)
             keys.extend(batch)
             if cursor == 0:
                 break
