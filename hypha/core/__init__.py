@@ -1243,9 +1243,10 @@ class RedisEventBus:
         client_key = f"{workspace}/{client_id}"
         patterns_to_remove = []
         
-        # Find all patterns related to this client
+        # Find the exact pattern for this client (exact match, not substring)
+        expected_pattern = f"targeted:{client_key}:*"
         for pattern in list(self._subscribed_patterns):
-            if client_key in pattern:
+            if pattern == expected_pattern:
                 patterns_to_remove.append(pattern)
         
         # Unsubscribe from all related patterns
