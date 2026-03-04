@@ -2451,7 +2451,7 @@ class WorkspaceManager:
         # Public and unlisted services can be accessed by anyone who knows the service ID.
         # Unlisted services are hidden from listings/search but accessible directly.
         # Protected services require workspace read permission or authorized_workspaces.
-        if not key.startswith(b"services:public|") and not key.startswith(b"services:unlisted|"):
+        if not key.startswith("services:public|") and not key.startswith("services:unlisted|"):
             # For protected services, validate context and permissions
             self.validate_context(context, permission=UserPermission.read)
             # First check if user has read permission in the service's workspace
