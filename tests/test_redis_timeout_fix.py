@@ -161,26 +161,20 @@ class TestRedisTimeoutFix:
 
 @pytest.mark.asyncio
 async def test_integration_with_workspace_get_service():
-    """Integration test ensuring workspace get_service works with Redis timeout fix."""
-    
+    """Integration test ensuring workspace get_service_info raises clean KeyError on empty Redis.
+
+    Verifies that the scan-based service lookup raises a clean "not found" error
+    rather than a timeout or cancelled error when no services exist in Redis.
+    Uses FakeRedis (no mocks) so the full _scan_keys code path executes.
+    """
     from hypha.core.workspace import WorkspaceManager
-    from hypha.core.store import RedisStore
     from hypha.core.auth import UserInfo
-    from unittest.mock import AsyncMock, MagicMock
-    
-    # Mock Redis store
-    mock_store = AsyncMock(spec=RedisStore)
-    mock_store.get_service_info = AsyncMock(return_value=None)
-    mock_store.keys = AsyncMock(return_value=[])
+    from fakeredis.aioredis import FakeRedis
 
-    # Mock event bus with timeout handling
-    mock_event_bus = AsyncMock(spec=RedisEventBus)
-    mock_event_bus.subscribe_to_client_events = AsyncMock()
+    # Use real FakeRedis so _scan_keys → redis.scan() executes correctly
+    fake_redis = FakeRedis()
+    await fake_redis.flushall()
 
-    # Create workspace manager
-    workspace_mgr = WorkspaceManager("test-workspace", mock_store, mock_event_bus, None, None, None)
-    
-    # Mock user info
     user_info = UserInfo(
         id="test-user",
         email="test@example.com",
@@ -188,24 +182,38 @@ async def test_integration_with_workspace_get_service():
         is_anonymous=False,
         roles=["user"],
         expires_at=None,
-        parent=None
+        parent=None,
     )
-    
-    # Create proper context for the request
+
+    # WorkspaceManager(store, redis, root_user, event_bus, server_info, client_id)
+    workspace_mgr = WorkspaceManager(
+        store=None,
+        redis=fake_redis,
+        root_user=user_info,
+        event_bus=None,
+        server_info={"public_base_url": "http://localhost"},
+        client_id="test-client",
+    )
+
     context = {
         "user": user_info.model_dump(),
         "ws": "test-workspace",
-        "from": "test-workspace/test-client"
+        "from": "test-workspace/test-client",
     }
-    
-    # Test get_service with timeout-resistant event bus
+
+    # get_service_info on an empty Redis must raise a clean KeyError ("not found"),
+    # never a timeout or asyncio.CancelledError
+    raised = False
     try:
-        await workspace_mgr.get_service("non-existent-service", context=context)
-    except Exception as e:
-        # Should get a clean service not found error, not a timeout
-        assert "not found" in str(e).lower() or "permission" in str(e).lower()
-        assert "timeout" not in str(e).lower()
-        assert "cancelled" not in str(e).lower()
+        await workspace_mgr.get_service_info(
+            "non-existent-service", context=context
+        )
+    except KeyError as e:
+        raised = True
+        assert "not found" in str(e).lower(), f"Expected 'not found' in error: {e}"
+        assert "timeout" not in str(e).lower(), f"Got unexpected timeout: {e}"
+        assert "cancelled" not in str(e).lower(), f"Got unexpected cancellation: {e}"
+    assert raised, "Expected KeyError to be raised for non-existent service"
 
 
 if __name__ == "__main__":

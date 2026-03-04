@@ -1042,7 +1042,7 @@ class WorkspaceManager:
         if not user_info.check_permission(workspace, UserPermission.admin) and not workspace_info.owned_by(user_info):
             raise PermissionError(f"Permission denied for workspace {workspace}")
         # delete all the associated keys
-        keys = await self._redis.keys(f"{workspace_info.id}:*")
+        keys = await self._scan_keys(f"{workspace_info.id}:*")
         for key in keys:
             await self._redis.delete(key)
         if self._s3_controller:
@@ -1310,6 +1310,27 @@ class WorkspaceManager:
                 }
             )
         return clients
+
+    async def _scan_keys(self, pattern: str) -> list:
+        """Non-blocking key scan using cursor-based SCAN instead of KEYS.
+
+        redis.keys(pattern) is O(n_total_keys) and blocks the entire Redis
+        server for the full scan duration — with 100K+ service entries this
+        can take hundreds of milliseconds and stalls all concurrent operations.
+
+        Use this method for ALL wildcard key lookups in the workspace.
+        """
+        keys = []
+        cursor = 0
+        while True:
+            cursor, batch = await self._redis.scan(
+                cursor=cursor, match=pattern, count=500
+            )
+            for key in batch:
+                keys.append(key.decode("utf-8") if isinstance(key, bytes) else key)
+            if cursor == 0:
+                break
+        return keys
 
     async def _list_client_keys(self, workspace: str):
         """List all client keys in the workspace.
@@ -2129,7 +2150,7 @@ class WorkspaceManager:
         # Check for existing singleton services
         if service.config.singleton:
             key = f"services:*|*:{workspace}/*:{service_name}@*"
-            peer_keys = await self._redis.keys(key)
+            peer_keys = await self._scan_keys(key)
             if len(peer_keys) > 0:
                 # If it's the same service being re-registered, allow it
                 for peer_key in peer_keys:
@@ -2150,7 +2171,7 @@ class WorkspaceManager:
                         )
 
         key = f"services:*|*:{workspace}/*:{service_name}@*"
-        peer_keys = await self._redis.keys(key)
+        peer_keys = await self._scan_keys(key)
         if len(peer_keys) > 0:
             for peer_key in peer_keys:
                 peer_service = await self._load_service_from_redis(peer_key)
@@ -2163,7 +2184,7 @@ class WorkspaceManager:
 
         # Check if the clients exists if not a built-in service
         if ":built-in" not in service.id and ws not in ["ws-user-root", "public"]:
-            builtins = await self._redis.keys(f"services:*|*:{client_id}:built-in@*")
+            builtins = await self._scan_keys(f"services:*|*:{client_id}:built-in@*")
             if not builtins:
                 logger.warning(
                     "Refuse to add service %s, client %s has been removed.",
@@ -2172,7 +2193,7 @@ class WorkspaceManager:
                 )
                 return
         # Check if the service already exists
-        service_exists = await self._redis.keys(f"services:*|*:{service.id}@*")
+        service_exists = await self._scan_keys(f"services:*|*:{service.id}@*")
         visibility = (
             service.config.visibility.value
             if isinstance(service.config.visibility, VisibilityEnum)
@@ -2328,7 +2349,7 @@ class WorkspaceManager:
         read_app_manifest = config.get("read_app_manifest", False)
         user_info = UserInfo.from_context(context)
         key = f"services:*|*:{service_id}@{app_id}"
-        keys = await self._redis.keys(key)
+        keys = await self._scan_keys(key)
         if not keys:
             # If no services found in Redis, try to get from artifact manifest if app_id is provided
             if app_id != "*" and read_app_manifest and self._artifact_manager:
@@ -2508,7 +2529,7 @@ class WorkspaceManager:
         key = f"services:{visibility}|{service.type}:{service.id}@{service.app_id}"
 
         # Check if the service exists before removal
-        service_keys = await self._redis.keys(key)
+        service_keys = await self._scan_keys(key)
 
         if len(service_keys) > 1:
             raise ValueError(
@@ -3125,7 +3146,7 @@ class WorkspaceManager:
 
             if not winfo.persistent:
                 # For non-persistent workspaces, always clean up Redis and S3
-                keys = await self._redis.keys(f"{ws}:*")
+                keys = await self._scan_keys(f"{ws}:*")
                 for key in keys:
                     await self._redis.delete(key)
                 if self._s3_controller:
@@ -3134,7 +3155,7 @@ class WorkspaceManager:
             else:
                 # For persistent workspaces, clean up service data but preserve workspace info
                 if self._s3_controller:
-                    keys = await self._redis.keys(f"{ws}:*")
+                    keys = await self._scan_keys(f"{ws}:*")
                     for key in keys:
                         await self._redis.delete(key)
                     await self._s3_controller.cleanup_workspace(winfo)
@@ -3149,11 +3170,6 @@ class WorkspaceManager:
                     logger.warning(
                         f"Skipping cleanup of persistent workspace {ws} because S3 controller is not available"
                     )
-
-            try:
-                pass
-            except KeyError:
-                pass
 
             await self._close_workspace(winfo)
         except Exception as e:
