@@ -735,7 +735,7 @@ class RedisStore:
         """
         # Collect all unique workspace/client_id pairs from service keys
         pattern = "services:*|*:*/*:built-in@*"
-        keys = await self._redis.keys(pattern)
+        keys = await self._scan_keys(pattern)
         if not keys:
             return
 
@@ -791,7 +791,7 @@ class RedisStore:
                 total_keys = 0
                 for workspace, client_id in orphaned_clients:
                     svc_pattern = f"services:*|*:{workspace}/{client_id}:*@*"
-                    svc_keys = await self._redis.keys(svc_pattern)
+                    svc_keys = await self._scan_keys(svc_pattern)
                     for k in svc_keys:
                         pipeline.delete(k)
                         total_keys += 1
