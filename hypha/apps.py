@@ -462,10 +462,22 @@ class ServerAppController:
                         "ws": workspace,
                         "user": self.store.get_root_user().model_dump(),
                     }
-                    await worker.stop(full_client_id, context=context)
-
-                    # Remove session from Redis
-                    await self._remove_session_from_redis(full_client_id)
+                    app_type = session_data.get("app_type")
+                    if app_type == "python-eval":
+                        # Python-eval subprocesses disconnect naturally after completion.
+                        # Keep the session in Redis (with TTL) so logs remain retrievable.
+                        # Don't call worker.stop() — preserve _session_data for get_logs.
+                        try:
+                            session_data["status"] = "stopped"
+                            await self._store_session_in_redis(full_client_id, session_data)
+                            await self._redis.expire(f"sessions:{full_client_id}", 300)
+                        except Exception as e:
+                            logger.warning(f"Failed to update python-eval session {full_client_id} on disconnect: {e}")
+                            await self._remove_session_from_redis(full_client_id)
+                    else:
+                        await worker.stop(full_client_id, context=context)
+                        # Remove session from Redis
+                        await self._remove_session_from_redis(full_client_id)
             
             # Check if the disconnected client was a worker providing services to other sessions
             # Look for sessions that have this client as their worker
