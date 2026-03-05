@@ -144,17 +144,16 @@ class WorkspaceInterfaceContextManager:
         if self._workspace != "public":
             # Check if workspace exists or create if appropriate
             await self._store.load_or_create_workspace(self._user_info, self._workspace)
-        # Explicitly wait for the registration task to complete before calling
-        # get_manager_service().  register_local_client() must finish before any
-        # inbound RPC messages (e.g. _rintf callbacks from serve()) can be routed
-        # to this ephemeral client via the LOCAL-ONLY delivery path.
-        # Using asyncio.create_task() means the task only runs when the event loop
-        # is given control, which may not happen before get_manager_service() if all
-        # awaits complete without yielding (e.g. fakeredis, low-latency Redis).
+        # Wait for register_local_client() to complete before calling
+        # get_manager_service(). The client must be in _local_clients before any
+        # inbound RPC messages can be routed via the LOCAL-ONLY delivery path.
+        # We wait only for _local_registration_done (set right after register_local_client),
+        # NOT the full _registration_task (which also waits for psubscribe, which is
+        # slow under load and irrelevant for local routing).
         conn = getattr(self._rpc, "_connection", None)
-        reg_task = getattr(conn, "_registration_task", None) if conn else None
-        if reg_task is not None and not reg_task.done():
-            await asyncio.wait_for(asyncio.shield(reg_task), timeout=5.0)
+        local_reg_done = getattr(conn, "_local_registration_done", None) if conn else None
+        if local_reg_done is not None and not local_reg_done.is_set():
+            await asyncio.wait_for(local_reg_done.wait(), timeout=5.0)
         self._wm = await self._rpc.get_manager_service({"timeout": self._timeout})
         self._wm.rpc = self._rpc
         self._wm.disconnect = self._rpc.disconnect

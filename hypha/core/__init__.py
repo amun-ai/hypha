@@ -763,11 +763,18 @@ class RedisRPCConnection:
         self._event_bus.on(f"{self._workspace}/*:msg", filtered_handler)
         
         # Register this client for targeted event subscriptions
+        # _local_registration_done is set as soon as register_local_client() completes
+        # (i.e. the client is in _local_clients). This is distinct from _registration_task
+        # which also waits for subscribe_to_client_events() (psubscribe), which can be
+        # slow under load and is NOT needed for the LOCAL-ONLY delivery path.
+        self._local_registration_done = asyncio.Event()
+
         async def register_client():
             await self._event_bus.register_local_client(self._workspace, self._client_id)
+            self._local_registration_done.set()
             await self._event_bus.subscribe_to_client_events(self._workspace, self._client_id)
             logger.debug(f"Registered and subscribed to events for {self._workspace}/{self._client_id}")
-        
+
         self._registration_task = asyncio.create_task(register_client())
         background_tasks.add(self._registration_task)
         self._registration_task.add_done_callback(background_tasks.discard)
