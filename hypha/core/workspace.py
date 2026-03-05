@@ -3126,7 +3126,7 @@ class WorkspaceManager:
             raise
 
     @schema_method
-    async def unload(self, context=None):
+    async def unload(self, context=None, force=False):
         """Unload the workspace."""
         self.validate_context(context, permission=UserPermission.admin)
         ws = context["ws"]
@@ -3145,6 +3145,14 @@ class WorkspaceManager:
                 client_summary = ", ".join(client_keys[:10]) + (
                     "..." if len(client_keys) > 10 else ""
                 )
+                if not force:
+                    # Called from unload_if_empty: clients joined between the empty-check and
+                    # now (race condition). Abort instead of force-disconnecting active clients.
+                    logger.warning(
+                        f"Aborting unload of workspace {ws}: {len(client_keys)} client(s) "
+                        f"joined since empty-check: {client_summary}"
+                    )
+                    return
                 logger.info(
                     f"There are {len(client_keys)} clients in workspace {ws}: {client_summary}"
                 )
@@ -3440,7 +3448,7 @@ class WorkspaceManager:
         client_keys = await self._list_client_keys(workspace)
         if not client_keys:
             logger.info(f"No active clients in workspace {workspace}. Unloading...")
-            await self.unload(context=context)
+            await self.unload(context=context, force=False)
         else:
             logger.warning(
                 f"Skip unloading workspace {workspace} because it is not empty, remaining clients: {client_keys[:10]}..."
