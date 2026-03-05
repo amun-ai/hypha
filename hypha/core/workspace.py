@@ -2140,31 +2140,30 @@ class WorkspaceManager:
             if visibility != "protected":
                 raise ValueError(f"authorized_workspaces can only be set when visibility is 'protected', got visibility='{visibility}'")
 
-        # Check for existing singleton services
-        if service.config.singleton:
-            key = f"services:*|*:{workspace}/*:{service_name}@*"
-            peer_keys = await self._scan_keys(key)
-            if len(peer_keys) > 0:
-                # If it's the same service being re-registered, allow it
-                for peer_key in peer_keys:
-                    peer_service = await self._load_service_from_redis(peer_key)
-                    if peer_service is None:
-                        continue
-                    if (
-                        peer_service.config.singleton
-                        and peer_service.id == service.id
-                        and peer_service.app_id == service.app_id
-                    ):
-                        # Same service being re-registered, allow it
-                        await self._redis.delete(peer_key)
-                        break
-                    else:
-                        raise ValueError(
-                            f"A singleton service with the same name ({service_name}) already exists in the workspace ({workspace}), please remove it first or use a different name."
-                        )
+        # Scan once for existing services with the same name (reused by both checks below).
+        peer_keys = await self._scan_keys(f"services:*|*:{workspace}/*:{service_name}@*")
 
-        key = f"services:*|*:{workspace}/*:{service_name}@*"
-        peer_keys = await self._scan_keys(key)
+        # Check for existing singleton services: if *I* am singleton, no other service
+        # may hold my name (unless it is exactly me being re-registered).
+        if service.config.singleton and len(peer_keys) > 0:
+            for peer_key in peer_keys:
+                peer_service = await self._load_service_from_redis(peer_key)
+                if peer_service is None:
+                    continue
+                if (
+                    peer_service.config.singleton
+                    and peer_service.id == service.id
+                    and peer_service.app_id == service.app_id
+                ):
+                    # Same service being re-registered — remove the old entry and proceed.
+                    await self._redis.delete(peer_key)
+                    break
+                else:
+                    raise ValueError(
+                        f"A singleton service with the same name ({service_name}) already exists in the workspace ({workspace}), please remove it first or use a different name."
+                    )
+
+        # Check that no *existing* singleton already owns this name.
         if len(peer_keys) > 0:
             for peer_key in peer_keys:
                 peer_service = await self._load_service_from_redis(peer_key)
