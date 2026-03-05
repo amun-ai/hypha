@@ -30,13 +30,33 @@ def get_metric_value(metric_name, labels):
     return None
 
 
+async def _poll_metric_delta(metric_name, labels, baseline, expected_delta, timeout=3.0):
+    """Poll until the metric reaches baseline + expected_delta, return actual value."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    value = baseline
+    while asyncio.get_event_loop().time() < deadline:
+        value = get_metric_value(metric_name, labels) or 0
+        if expected_delta > 0 and value >= baseline + expected_delta:
+            return value
+        if expected_delta < 0 and value <= baseline + expected_delta:
+            return value
+        await asyncio.sleep(0.1)
+    return value
+
+
 async def test_websocket_connections_metric(fastapi_server, test_user_token):
-    """Test websocket_connections_total Prometheus metric (no workspace labels)."""
-    
-    # Get initial total connections (no workspace label)
-    initial_connections = get_metric_value("websocket_connections", {}) or 0
-    
-    # Connect first client
+    """Test websocket_connections_total Prometheus metric (no workspace labels).
+
+    This test uses a global gauge that is shared with ALL other tests running
+    concurrently in the same server, so other connections may open/close at any
+    time.  We therefore verify RELATIVE changes (our connect adds at least 1,
+    our disconnect removes at least 1) rather than exact absolute counts.
+    """
+    # Snapshot the count just before each action so concurrent changes in
+    # unrelated tests do not interfere with our delta assertions.
+
+    # --- connect api1 ---
+    before_api1 = get_metric_value("websocket_connections", {}) or 0
     api1 = await connect_to_server(
         {
             "client_id": "websocket-test-client-1",
@@ -45,44 +65,49 @@ async def test_websocket_connections_metric(fastapi_server, test_user_token):
         }
     )
     await api1.log("client 1 connected")
-    await asyncio.sleep(0.5)
-    
-    # Check total connections increased
-    connections_after_1 = get_metric_value("websocket_connections", {}) or 0
-    assert connections_after_1 == initial_connections + 1, f"Expected {initial_connections + 1} connections, got {connections_after_1}"
-    
-    # Connect second client  
+    connections_after_1 = await _poll_metric_delta("websocket_connections", {}, before_api1, +1)
+    assert connections_after_1 >= before_api1 + 1, (
+        f"Expected count to increase from {before_api1} after connecting api1, got {connections_after_1}"
+    )
+
+    # --- connect api2 ---
+    before_api2 = get_metric_value("websocket_connections", {}) or 0
     api2 = await connect_to_server(
         {
             "client_id": "websocket-test-client-2",
-            "server_url": SERVER_URL, 
+            "server_url": SERVER_URL,
             "token": test_user_token,
         }
     )
     await api2.log("client 2 connected")
-    await asyncio.sleep(0.5)
-    
-    # Check total connections increased again
-    connections_after_2 = get_metric_value("websocket_connections", {}) or 0
-    assert connections_after_2 == initial_connections + 2, f"Expected {initial_connections + 2} connections, got {connections_after_2}"
-    
-    # Disconnect first client
+    connections_after_2 = await _poll_metric_delta("websocket_connections", {}, before_api2, +1)
+    assert connections_after_2 >= before_api2 + 1, (
+        f"Expected count to increase from {before_api2} after connecting api2, got {connections_after_2}"
+    )
+
+    # --- disconnect api1 ---
+    before_disconnect1 = get_metric_value("websocket_connections", {}) or 0
     await api1.disconnect()
-    await asyncio.sleep(0.5)
-    
-    # Check total connections decreased
-    connections_after_disconnect = get_metric_value("websocket_connections", {}) or 0
-    assert connections_after_disconnect == initial_connections + 1, f"Expected {initial_connections + 1} connections after disconnect, got {connections_after_disconnect}"
-    
-    # Disconnect second client
+    connections_after_disconnect = await _poll_metric_delta("websocket_connections", {}, before_disconnect1, -1)
+    assert connections_after_disconnect <= before_disconnect1 - 1, (
+        f"Expected count to decrease from {before_disconnect1} after disconnecting api1, got {connections_after_disconnect}"
+    )
+
+    # --- disconnect api2 ---
+    before_disconnect2 = get_metric_value("websocket_connections", {}) or 0
     await api2.disconnect()
-    await asyncio.sleep(0.5)
-    
-    # Check connections back to initial
-    final_connections = get_metric_value("websocket_connections", {}) or 0
-    assert final_connections == initial_connections, f"Expected {initial_connections} connections after all disconnects, got {final_connections}"
-    
-    print(f"✓ WebSocket connections metric test passed (no labels): {initial_connections} -> {connections_after_1} -> {connections_after_2} -> {connections_after_disconnect} -> {final_connections}")
+    final_connections = await _poll_metric_delta("websocket_connections", {}, before_disconnect2, -1)
+    assert final_connections <= before_disconnect2 - 1, (
+        f"Expected count to decrease from {before_disconnect2} after disconnecting api2, got {final_connections}"
+    )
+
+    print(
+        f"✓ WebSocket connections metric test passed (relative deltas verified): "
+        f"api1 connect: {before_api1}->{connections_after_1}, "
+        f"api2 connect: {before_api2}->{connections_after_2}, "
+        f"api1 disconnect: {before_disconnect1}->{connections_after_disconnect}, "
+        f"api2 disconnect: {before_disconnect2}->{final_connections}"
+    )
 
 
 async def test_rpc_call_metrics(fastapi_server, test_user_token):
