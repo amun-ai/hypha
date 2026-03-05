@@ -144,14 +144,17 @@ class WorkspaceInterfaceContextManager:
         if self._workspace != "public":
             # Check if workspace exists or create if appropriate
             await self._store.load_or_create_workspace(self._user_info, self._workspace)
-        # Yield to the event loop so that any pending background tasks (e.g. the
-        # register_client task scheduled in RedisRPCConnection.on_message) get a
-        # chance to run.  In particular, register_local_client() must complete
-        # before any inbound RPC messages can be routed to this ephemeral client
-        # via the LOCAL-ONLY delivery optimisation.  Without this yield, fast
-        # in-process Redis operations (fakeredis / low-latency real Redis) can
-        # finish without ever suspending, starving the background tasks.
-        await asyncio.sleep(0)
+        # Explicitly wait for the registration task to complete before calling
+        # get_manager_service().  register_local_client() must finish before any
+        # inbound RPC messages (e.g. _rintf callbacks from serve()) can be routed
+        # to this ephemeral client via the LOCAL-ONLY delivery path.
+        # Using asyncio.create_task() means the task only runs when the event loop
+        # is given control, which may not happen before get_manager_service() if all
+        # awaits complete without yielding (e.g. fakeredis, low-latency Redis).
+        conn = getattr(self._rpc, "_connection", None)
+        reg_task = getattr(conn, "_registration_task", None) if conn else None
+        if reg_task is not None and not reg_task.done():
+            await asyncio.wait_for(asyncio.shield(reg_task), timeout=5.0)
         self._wm = await self._rpc.get_manager_service({"timeout": self._timeout})
         self._wm.rpc = self._rpc
         self._wm.disconnect = self._rpc.disconnect
