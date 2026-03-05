@@ -2572,6 +2572,27 @@ class ServerAppController:
                 context=context,
             )
             
+            # For python-eval apps the subprocess has already completed synchronously
+            # inside worker.start().  Eagerly fetch and cache the logs in the session
+            # data so that future get_logs() calls succeed even after worker.stop()
+            # clears the worker's in-memory state.
+            if app_type == "python-eval":
+                try:
+                    worker_obj = await self.get_worker_by_id(session_data["worker_id"])
+                    logs_result = await worker_obj.get_logs(full_client_id, context=context)
+                    # Convert items-format back to the raw {type: [entries]} dict
+                    # that the Redis-fallback path in get_logs() expects.
+                    if logs_result and "items" in logs_result:
+                        raw_logs: dict = {}
+                        for item in logs_result["items"]:
+                            log_type = item.get("type", "info")
+                            raw_logs.setdefault(log_type, []).append(item["content"])
+                        session_data["logs"] = raw_logs
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to cache python-eval logs for {full_client_id}: {e}"
+                    )
+
             # Store the initial session data in Redis immediately after starting
             # This ensures the session is tracked even if something goes wrong later
             await self._store_session_in_redis(full_client_id, session_data)
