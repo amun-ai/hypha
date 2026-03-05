@@ -144,6 +144,14 @@ class WorkspaceInterfaceContextManager:
         if self._workspace != "public":
             # Check if workspace exists or create if appropriate
             await self._store.load_or_create_workspace(self._user_info, self._workspace)
+        # Yield to the event loop so that any pending background tasks (e.g. the
+        # register_client task scheduled in RedisRPCConnection.on_message) get a
+        # chance to run.  In particular, register_local_client() must complete
+        # before any inbound RPC messages can be routed to this ephemeral client
+        # via the LOCAL-ONLY delivery optimisation.  Without this yield, fast
+        # in-process Redis operations (fakeredis / low-latency real Redis) can
+        # finish without ever suspending, starving the background tasks.
+        await asyncio.sleep(0)
         self._wm = await self._rpc.get_manager_service({"timeout": self._timeout})
         self._wm.rpc = self._rpc
         self._wm.disconnect = self._rpc.disconnect
