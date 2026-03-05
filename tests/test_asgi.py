@@ -102,6 +102,8 @@ async def test_asgi(fastapi_server, test_user_token):
         response = await client.get(f"{SERVER_URL}/{workspace}/apps/test-asgi/api/1")
         assert response.json()["item_id"] == 1
 
+    await api.disconnect()
+
 
 async def test_asgi_serverapp(fastapi_server, test_user_token):
     """Test the ASGI gateway apps via the server-apps service."""
