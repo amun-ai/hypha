@@ -502,18 +502,10 @@ class ServerAppController:
     async def _scan_keys(self, pattern: str) -> list:
         """Non-blocking cursor-based SCAN replacing redis.keys().
 
-        redis.keys() is O(n_total_keys) and blocks the entire Redis server.
-        Returns decoded str keys, never bytes.
+        Delegates to the shared ``scan_redis_keys`` utility.
         """
-        keys = []
-        cursor = 0
-        while True:
-            cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=500)
-            for key in batch:
-                keys.append(key.decode("utf-8") if isinstance(key, bytes) else key)
-            if cursor == 0:
-                break
-        return keys
+        from hypha.utils import scan_redis_keys
+        return await scan_redis_keys(self._redis, pattern)
 
     async def _worker_health_monitor_loop(self):
         """Periodic worker health monitoring loop."""

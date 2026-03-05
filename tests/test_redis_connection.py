@@ -283,6 +283,9 @@ async def test_client_metrics_ttl_expiry(event_bus, user_info_admin):
     rpc.on_message(lambda data: None)
     await asyncio.sleep(0.05)
 
+    # Reset the throttle counter so the very next call triggers a sweep
+    RedisRPCConnection._metrics_sweep_counter = 49
+
     # Directly invoke the metric update (the sweep runs inside it)
     rpc._update_load_metric()
 

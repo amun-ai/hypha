@@ -617,9 +617,9 @@ class WebsocketServer:
         """Core idle cleanup logic — extracted for testability.
 
         TOCTOU safety: after building the candidate list we re-read _last_seen
-        for each key before calling disconnect().  A connection that received a
-        message between the snapshot and the actual close call is no longer idle
-        and must not be forcibly terminated.
+        using a fresh timestamp for each key before calling disconnect().  A
+        connection that received a message between the snapshot and the actual
+        close call is no longer idle and must not be forcibly terminated.
         """
         now = time.time()
         to_disconnect = [
@@ -630,9 +630,10 @@ class WebsocketServer:
         for key in to_disconnect:
             ws = self._websockets.get(key)
             if ws:
-                # Re-check: did the connection become active after we snapshotted it?
+                # Re-check with a fresh timestamp: did the connection become
+                # active after we snapshotted it?
                 current_last = self._last_seen.get(key)
-                if current_last is not None and now - current_last <= self._idle_timeout:
+                if current_last is not None and time.time() - current_last <= self._idle_timeout:
                     continue  # No longer idle — skip
                 try:
                     await self.disconnect(
@@ -640,9 +641,9 @@ class WebsocketServer:
                         f"Idle timeout ({self._idle_timeout}s)",
                         status.WS_1001_GOING_AWAY,
                     )
-                except Exception:
-                    pass
-                finally:
+                    self._last_seen.pop(key, None)
+                except Exception as e:
+                    logger.debug("Error disconnecting idle WebSocket %s: %s", key, e)
                     self._last_seen.pop(key, None)
 
     async def _idle_cleanup_loop(self):

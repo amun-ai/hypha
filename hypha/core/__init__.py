@@ -898,14 +898,19 @@ class RedisRPCConnection:
             if not hasattr(RedisRPCConnection, "_client_metrics"):
                 RedisRPCConnection._client_metrics = {}
 
-            # TTL sweep: evict entries not updated recently (orphaned crashed clients)
-            ttl = RedisRPCConnection._METRICS_TTL_SECONDS
-            stale_keys = [
-                k for k, v in RedisRPCConnection._client_metrics.items()
-                if current_time - v.get("last_updated", v["last_time"]) > ttl
-            ]
-            for k in stale_keys:
-                del RedisRPCConnection._client_metrics[k]
+            # TTL sweep: evict stale orphan entries, but only every 50 calls to
+            # avoid O(n_clients) work on every incoming message.
+            if not hasattr(RedisRPCConnection, "_metrics_sweep_counter"):
+                RedisRPCConnection._metrics_sweep_counter = 0
+            RedisRPCConnection._metrics_sweep_counter += 1
+            if RedisRPCConnection._metrics_sweep_counter % 50 == 0:
+                ttl = RedisRPCConnection._METRICS_TTL_SECONDS
+                stale_keys = [
+                    k for k, v in RedisRPCConnection._client_metrics.items()
+                    if current_time - v.get("last_updated", v["last_time"]) > ttl
+                ]
+                for k in stale_keys:
+                    del RedisRPCConnection._client_metrics[k]
 
             metrics = RedisRPCConnection._client_metrics.get(client_key)
             if metrics is None:

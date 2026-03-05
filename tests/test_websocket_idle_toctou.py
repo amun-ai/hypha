@@ -3,13 +3,19 @@
 The race: between building the "to_disconnect" snapshot and actually calling
 disconnect(), a connection may have received new messages (updating _last_seen).
 Without the re-check guard the connection would be disconnected while active.
+
+No mocks: uses plain async functions and a minimal server stub.
 """
 import time
 import asyncio
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 pytestmark = pytest.mark.asyncio
+
+
+class _SimpleWS:
+    """Minimal WebSocket stand-in (no starlette dependency)."""
+    pass
 
 
 def _make_server(idle_timeout=60):
@@ -22,17 +28,8 @@ def _make_server(idle_timeout=60):
     server._last_seen = {}
     server._idle_timeout = idle_timeout
     server._idle_cleanup_task = None
-    server.store = MagicMock()
+    server.store = None
     return server
-
-
-def _mock_ws():
-    ws = MagicMock()
-    ws.client_state = MagicMock()
-    ws.client_state.name = "CONNECTED"
-    ws.send_text = AsyncMock()
-    ws.close = AsyncMock()
-    return ws
 
 
 async def test_stale_connection_is_disconnected():
@@ -41,7 +38,7 @@ async def test_stale_connection_is_disconnected():
     now = time.time()
 
     key = "ws/client-stale"
-    ws = _mock_ws()
+    ws = _SimpleWS()
     server._websockets[key] = ws
     server._last_seen[key] = now - 120  # 2 min ago → stale
 
@@ -64,7 +61,7 @@ async def test_active_connection_is_not_disconnected():
     now = time.time()
 
     key = "ws/client-active"
-    ws = _mock_ws()
+    ws = _SimpleWS()
     server._websockets[key] = ws
     server._last_seen[key] = now - 10  # 10 s ago → still active
 
@@ -96,8 +93,8 @@ async def test_toctou_connection_becomes_active_during_cleanup():
 
     key_a = "ws/client-a"
     key_b = "ws/client-b"
-    ws_a = _mock_ws()
-    ws_b = _mock_ws()
+    ws_a = _SimpleWS()
+    ws_b = _SimpleWS()
 
     server._websockets[key_a] = ws_a
     server._websockets[key_b] = ws_b
@@ -129,7 +126,6 @@ async def test_already_removed_connection_skipped():
     now = time.time()
 
     key = "ws/client-gone"
-    ws = _mock_ws()
     # Put it in _last_seen but NOT in _websockets (already cleaned up by disconnect handler)
     server._last_seen[key] = now - 120
 
@@ -151,7 +147,7 @@ async def test_multiple_stale_connections_all_disconnected():
     now = time.time()
 
     keys = [f"ws/client-{i}" for i in range(5)]
-    wss = [_mock_ws() for _ in range(5)]
+    wss = [_SimpleWS() for _ in range(5)]
 
     for key, ws in zip(keys, wss):
         server._websockets[key] = ws
@@ -169,3 +165,26 @@ async def test_multiple_stale_connections_all_disconnected():
     assert set(disconnected) == set(wss), "All stale connections should be disconnected"
     for key in keys:
         assert key not in server._last_seen
+
+
+async def test_disconnect_error_still_removes_last_seen():
+    """If disconnect() raises, _last_seen is still cleaned up (no retry loop)."""
+    server = _make_server(idle_timeout=60)
+    now = time.time()
+
+    key = "ws/client-erroring"
+    ws = _SimpleWS()
+    server._websockets[key] = ws
+    server._last_seen[key] = now - 200
+
+    async def failing_disconnect(websocket, reason, code):
+        raise RuntimeError("WebSocket already closed")
+
+    server.disconnect = failing_disconnect
+
+    await server._do_idle_cleanup()
+
+    # Even though disconnect raised, _last_seen must be cleaned up
+    assert key not in server._last_seen, (
+        "_last_seen entry should be removed even when disconnect() raises"
+    )

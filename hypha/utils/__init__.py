@@ -523,3 +523,22 @@ def sanitize_url_for_logging(url: str) -> str:
         sanitized = re.sub(r"&+", "&", sanitized)
         sanitized = re.sub(r"[?&]$", "", sanitized)
         return sanitized
+
+
+async def scan_redis_keys(redis, pattern: str, count: int = 10000) -> list:
+    """Cursor-based SCAN returning decoded str keys (never bytes).
+
+    Replaces ``redis.keys(pattern)`` which is O(n_total_keys) and blocks the
+    entire Redis server for the full scan duration.  SCAN is non-blocking and
+    yields control between batches.  count=10000 means typical deployments
+    (~50K keys) complete in a single round-trip.
+    """
+    keys = []
+    cursor = 0
+    while True:
+        cursor, batch = await redis.scan(cursor=cursor, match=pattern, count=count)
+        for key in batch:
+            keys.append(key.decode("utf-8") if isinstance(key, bytes) else key)
+        if cursor == 0:
+            break
+    return keys

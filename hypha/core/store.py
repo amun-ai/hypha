@@ -417,20 +417,10 @@ class RedisStore:
     async def _scan_keys(self, pattern: str) -> list:
         """Non-blocking cursor-based SCAN replacing redis.keys().
 
-        redis.keys() is O(n_total_keys) and blocks the entire Redis server.
-        This helper uses cursor-based SCAN (O(n_matching)) which is non-blocking
-        and yields control between batches.
-        Returns decoded str keys, never bytes.
+        Delegates to the shared ``scan_redis_keys`` utility.
         """
-        keys = []
-        cursor = 0
-        while True:
-            cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=500)
-            for key in batch:
-                keys.append(key.decode("utf-8") if isinstance(key, bytes) else key)
-            if cursor == 0:
-                break
-        return keys
+        from hypha.utils import scan_redis_keys
+        return await scan_redis_keys(self._redis, pattern)
 
     async def load_or_create_workspace(self, user_info: UserInfo, workspace: str):
         """Setup the workspace."""

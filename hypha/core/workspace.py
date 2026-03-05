@@ -1314,29 +1314,16 @@ class WorkspaceManager:
     async def _scan_keys(self, pattern: str, count: int = 10000) -> list:
         """Non-blocking key scan using cursor-based SCAN instead of KEYS.
 
+        Delegates to the shared ``scan_redis_keys`` utility.
+
         redis.keys(pattern) is O(n_total_keys) and blocks the entire Redis
         server for the full scan duration — with 100K+ service entries this
         can take hundreds of milliseconds and stalls all concurrent operations.
-
-        count=10000 is the default so that typical deployments (up to ~50K keys)
-        complete in a single round-trip.  The KEYS-vs-SCAN trade-off is:
-          - KEYS: 1 round-trip but blocks Redis for the full scan
-          - SCAN count=10000: non-blocking but ~N/500 round-trips (slow under load)
-          - SCAN count=10000: non-blocking and ~N/10000 round-trips (fast)
-
-        Use this method for ALL wildcard key lookups in the workspace.
+        count=10000 means typical deployments (~50K keys) complete in a single
+        round-trip.  Use this method for ALL wildcard key lookups.
         """
-        keys = []
-        cursor = 0
-        while True:
-            cursor, batch = await self._redis.scan(
-                cursor=cursor, match=pattern, count=count
-            )
-            for key in batch:
-                keys.append(key.decode("utf-8") if isinstance(key, bytes) else key)
-            if cursor == 0:
-                break
-        return keys
+        from hypha.utils import scan_redis_keys
+        return await scan_redis_keys(self._redis, pattern, count=count)
 
     async def _list_client_keys(self, workspace: str):
         """List all client keys in the workspace.
@@ -3126,8 +3113,15 @@ class WorkspaceManager:
             raise
 
     @schema_method
-    async def unload(self, context=None, force=False):
-        """Unload the workspace."""
+    async def unload(self, context=None, force: bool = False):
+        """Unload the workspace.
+
+        When force=False (the default) and active clients are present, the unload
+        is aborted — this prevents accidentally evicting active users when called
+        from unload_if_empty() with a TOCTOU race.  Pass force=True only when you
+        explicitly want to disconnect all active clients (e.g. emergency cleanup);
+        requires admin permission.
+        """
         self.validate_context(context, permission=UserPermission.admin)
         ws = context["ws"]
 
