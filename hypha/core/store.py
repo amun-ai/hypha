@@ -144,16 +144,10 @@ class WorkspaceInterfaceContextManager:
         if self._workspace != "public":
             # Check if workspace exists or create if appropriate
             await self._store.load_or_create_workspace(self._user_info, self._workspace)
-        # Wait for register_local_client() to complete before calling
-        # get_manager_service(). The client must be in _local_clients before any
-        # inbound RPC messages can be routed via the LOCAL-ONLY delivery path.
-        # We wait only for _local_registration_done (set right after register_local_client),
-        # NOT the full _registration_task (which also waits for psubscribe, which is
-        # slow under load and irrelevant for local routing).
-        conn = getattr(self._rpc, "_connection", None)
-        local_reg_done = getattr(conn, "_local_registration_done", None) if conn else None
-        if local_reg_done is not None and not local_reg_done.is_set():
-            await asyncio.wait_for(local_reg_done.wait(), timeout=5.0)
+        # The ephemeral client-* is already in _local_clients because
+        # RedisRPCConnection.on_message() calls register_local_client_sync()
+        # immediately (synchronous, no IO).  No further waiting is required
+        # before get_manager_service().
         self._wm = await self._rpc.get_manager_service({"timeout": self._timeout})
         self._wm.rpc = self._rpc
         self._wm.disconnect = self._rpc.disconnect

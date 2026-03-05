@@ -762,18 +762,19 @@ class RedisRPCConnection:
         
         self._event_bus.on(f"{self._workspace}/*:msg", filtered_handler)
         
-        # Register this client for targeted event subscriptions
-        # _local_registration_done is set as soon as register_local_client() completes
-        # (i.e. the client is in _local_clients). This is distinct from _registration_task
-        # which also waits for subscribe_to_client_events() (psubscribe), which can be
-        # slow under load and is NOT needed for the LOCAL-ONLY delivery path.
-        self._local_registration_done = asyncio.Event()
+        # Register this client in _local_clients IMMEDIATELY (synchronous, no IO).
+        # This must happen before any RPC message can arrive, so we do it right
+        # here rather than in a background task.  The LOCAL-ONLY delivery path
+        # checks _local_clients on every emit_message() call; if the client is
+        # not registered yet, messages fall through to Redis pub/sub and require
+        # psubscribe to be active – which causes a race condition under load.
+        self._event_bus.register_local_client_sync(self._workspace, self._client_id)
 
+        # Subscribe to pub/sub events in a background task (psubscribe can be
+        # slow under load, so we don't block on it).
         async def register_client():
-            await self._event_bus.register_local_client(self._workspace, self._client_id)
-            self._local_registration_done.set()
             await self._event_bus.subscribe_to_client_events(self._workspace, self._client_id)
-            logger.debug(f"Registered and subscribed to events for {self._workspace}/{self._client_id}")
+            logger.debug(f"Subscribed to events for {self._workspace}/{self._client_id}")
 
         self._registration_task = asyncio.create_task(register_client())
         background_tasks.add(self._registration_task)
@@ -1193,18 +1194,27 @@ class RedisEventBus:
         self._circuit_breaker_open = False
         self._last_successful_connection: Optional[float] = None
 
-    async def register_local_client(self, workspace: str, client_id: str):
-        """Register a local client for optimized event routing."""
+    def register_local_client_sync(self, workspace: str, client_id: str):
+        """Register a local client synchronously (no IO, just set.add).
+
+        Called directly from RedisRPCConnection.on_message() so that the client
+        is in _local_clients BEFORE any RPC messages can arrive.  The async
+        register_local_client() method is kept for backwards-compatibility but
+        delegates here.
+        """
         client_key = f"{workspace}/{client_id}"
         self._local_clients.add(client_key)
         # Clear from recently-disconnected cache if reconnecting
         self._recently_disconnected.pop(client_key, None)
-        logger.debug(f"Registered local client: {client_key}")
-        # metrics
+        logger.debug(f"Registered local client (sync): {client_key}")
         try:
             RedisEventBus._active_local_clients_gauge.set(len(self._local_clients))
         except Exception:
             pass
+
+    async def register_local_client(self, workspace: str, client_id: str):
+        """Register a local client for optimized event routing."""
+        self.register_local_client_sync(workspace, client_id)
 
     async def unregister_local_client(self, workspace: str, client_id: str):
         """Unregister a local client."""
