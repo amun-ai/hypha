@@ -45,18 +45,18 @@ async def _poll_metric_delta(metric_name, labels, baseline, expected_delta, time
 
 
 async def test_websocket_connections_metric(fastapi_server, test_user_token):
-    """Test websocket_connections_total Prometheus metric (no workspace labels).
+    """Test websocket_connections Gauge and websocket_connections_established Counter.
 
-    This test uses a global gauge that is shared with ALL other tests running
-    concurrently in the same server, so other connections may open/close at any
-    time.  We therefore verify RELATIVE changes (our connect adds at least 1,
-    our disconnect removes at least 1) rather than exact absolute counts.
+    The Gauge is shared with ALL other tests and can go up or down due to
+    concurrent connects/disconnects, making exact assertions unreliable.
+
+    We use the monotonically-increasing Counter for connect assertions
+    (it can only go up, so >= baseline+1 is always sound), and we use
+    relative gauge assertions for disconnect (gauge must drop after OUR
+    disconnect, which we can verify by polling).
     """
-    # Snapshot the count just before each action so concurrent changes in
-    # unrelated tests do not interfere with our delta assertions.
-
-    # --- connect api1 ---
-    before_api1 = get_metric_value("websocket_connections", {}) or 0
+    # --- connect api1: use monotonic counter to verify connection was counted ---
+    before_established_1 = get_metric_value("websocket_connections_established", {}) or 0
     api1 = await connect_to_server(
         {
             "client_id": "websocket-test-client-1",
@@ -65,13 +65,13 @@ async def test_websocket_connections_metric(fastapi_server, test_user_token):
         }
     )
     await api1.log("client 1 connected")
-    connections_after_1 = await _poll_metric_delta("websocket_connections", {}, before_api1, +1)
-    assert connections_after_1 >= before_api1 + 1, (
-        f"Expected count to increase from {before_api1} after connecting api1, got {connections_after_1}"
+    established_after_1 = await _poll_metric_delta("websocket_connections_established", {}, before_established_1, +1)
+    assert established_after_1 >= before_established_1 + 1, (
+        f"Expected established counter to increase from {before_established_1} after connecting api1, got {established_after_1}"
     )
 
-    # --- connect api2 ---
-    before_api2 = get_metric_value("websocket_connections", {}) or 0
+    # --- connect api2: use monotonic counter ---
+    before_established_2 = get_metric_value("websocket_connections_established", {}) or 0
     api2 = await connect_to_server(
         {
             "client_id": "websocket-test-client-2",
@@ -80,33 +80,33 @@ async def test_websocket_connections_metric(fastapi_server, test_user_token):
         }
     )
     await api2.log("client 2 connected")
-    connections_after_2 = await _poll_metric_delta("websocket_connections", {}, before_api2, +1)
-    assert connections_after_2 >= before_api2 + 1, (
-        f"Expected count to increase from {before_api2} after connecting api2, got {connections_after_2}"
+    established_after_2 = await _poll_metric_delta("websocket_connections_established", {}, before_established_2, +1)
+    assert established_after_2 >= before_established_2 + 1, (
+        f"Expected established counter to increase from {before_established_2} after connecting api2, got {established_after_2}"
     )
 
-    # --- disconnect api1 ---
+    # --- disconnect api1: gauge must decrease ---
     before_disconnect1 = get_metric_value("websocket_connections", {}) or 0
     await api1.disconnect()
     connections_after_disconnect = await _poll_metric_delta("websocket_connections", {}, before_disconnect1, -1)
     assert connections_after_disconnect <= before_disconnect1 - 1, (
-        f"Expected count to decrease from {before_disconnect1} after disconnecting api1, got {connections_after_disconnect}"
+        f"Expected gauge to decrease from {before_disconnect1} after disconnecting api1, got {connections_after_disconnect}"
     )
 
-    # --- disconnect api2 ---
+    # --- disconnect api2: gauge must decrease ---
     before_disconnect2 = get_metric_value("websocket_connections", {}) or 0
     await api2.disconnect()
     final_connections = await _poll_metric_delta("websocket_connections", {}, before_disconnect2, -1)
     assert final_connections <= before_disconnect2 - 1, (
-        f"Expected count to decrease from {before_disconnect2} after disconnecting api2, got {final_connections}"
+        f"Expected gauge to decrease from {before_disconnect2} after disconnecting api2, got {final_connections}"
     )
 
     print(
-        f"✓ WebSocket connections metric test passed (relative deltas verified): "
-        f"api1 connect: {before_api1}->{connections_after_1}, "
-        f"api2 connect: {before_api2}->{connections_after_2}, "
-        f"api1 disconnect: {before_disconnect1}->{connections_after_disconnect}, "
-        f"api2 disconnect: {before_disconnect2}->{final_connections}"
+        f"✓ WebSocket connections metric test passed: "
+        f"api1 established: {before_established_1}->{established_after_1}, "
+        f"api2 established: {before_established_2}->{established_after_2}, "
+        f"api1 disconnect gauge: {before_disconnect1}->{connections_after_disconnect}, "
+        f"api2 disconnect gauge: {before_disconnect2}->{final_connections}"
     )
 
 
@@ -326,7 +326,8 @@ async def test_redis_pubsub_latency_gauge(fastapi_server, test_user_token):
 async def test_all_metrics_exist(fastapi_server, test_user_token):
     """Test that all expected metrics are exposed in the /metrics endpoint."""
     expected_metrics = [
-        "websocket_connections",  # Prometheus exports without _total suffix
+        "websocket_connections",  # Gauge
+        "websocket_connections_established",  # Monotonic counter (never decrements)
         "rpc_call",  # Prometheus exports without _total suffix
         "client_requests",  # Prometheus exports without _total suffix
         "client_load_current",  # Gauge keeps its name

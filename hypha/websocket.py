@@ -10,7 +10,7 @@ import msgpack
 from fastapi import Query, WebSocket, status
 from starlette.websockets import WebSocketDisconnect
 from fastapi import HTTPException
-from prometheus_client import Gauge
+from prometheus_client import Counter, Gauge
 
 from hypha import __version__
 from hypha.core import UserInfo, UserPermission
@@ -30,6 +30,9 @@ logger.setLevel(LOGLEVEL)
 
 _gauge = Gauge(
     "websocket_connections", "Total number of websocket connections"
+)
+_connections_established = Counter(
+    "websocket_connections_established", "Total number of websocket connections ever established"
 )
 
 
@@ -383,6 +386,7 @@ class WebsocketServer:
         self._last_seen[conn_key] = time.time()
         try:
             _gauge.inc()  # Increment total connections without workspace label
+            _connections_established.inc()  # Monotonic counter, never decrements
             event_bus.on_local(f"unload:{workspace}", force_disconnect)
 
             async def send_bytes(data):
