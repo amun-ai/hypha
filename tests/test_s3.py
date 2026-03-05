@@ -1022,3 +1022,55 @@ async def test_s3_proxy_large_text_file_not_gzip_corrupted(
     await s3controller.remove_file(small_file_path)
     await api.disconnect()
     print("Successfully verified S3 proxy does not corrupt text files (both small and large)")
+
+
+async def test_s3_ttl_auto_deletion(minio_server, fastapi_server_sqlite, test_user_token):
+    """Test that files scheduled with TTL are automatically deleted (issue #919).
+
+    Uses fastapi_server_sqlite (no Docker) with --s3-cleanup-period=2 so the
+    cleanup task fires every 2 seconds.  Uploads a file with TTL=3 s, waits
+    for deletion, and verifies the file is gone from S3.
+    """
+    api = await connect_to_server(
+        {
+            "name": "test-ttl-deletion",
+            "server_url": f"ws://127.0.0.1:{SIO_PORT_SQLITE}/ws",
+            "token": test_user_token,
+        }
+    )
+    s3controller = await api.get_service("public/s3-storage")
+
+    ttl_seconds = 3
+    file_path = "ttl_test_issue919/auto_delete.txt"
+    content = b"This file should be automatically deleted by TTL"
+
+    # Upload a file with a short TTL
+    put_url = await s3controller.put_file(file_path, ttl=ttl_seconds)
+    assert put_url.startswith("http"), f"Expected presigned URL, got: {put_url}"
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.put(put_url, content=content)
+        assert response.status_code == 200, f"Upload failed: {response.text}"
+
+    # Verify the file exists immediately after upload
+    get_url = await s3controller.get_file(file_path)
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(get_url)
+        assert response.status_code == 200, "File should exist right after upload"
+        assert response.content == content
+
+    # Wait for TTL to expire + one cleanup cycle (2 s) + safety buffer
+    wait_time = ttl_seconds + 2 + 2  # TTL + cleanup period + buffer
+    await asyncio.sleep(wait_time)
+
+    # File must be gone — presigned GET still works but S3 returns 403/404
+    get_url_after = await s3controller.get_file(file_path)
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(get_url_after)
+        assert response.status_code in (403, 404), (
+            f"File should have been deleted by TTL cleanup but got "
+            f"HTTP {response.status_code}. "
+            "Issue #919: S3 files with TTL are not automatically deleted."
+        )
+
+    await api.disconnect()

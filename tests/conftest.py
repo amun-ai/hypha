@@ -667,6 +667,7 @@ def fastapi_server_sqlite_fixture(minio_server):
             f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
             f"--workspace-bucket=my-workspaces",
             "--s3-admin-type=generic",
+            "--s3-cleanup-period=2",
         ],
         env=test_env,
     ) as proc:
