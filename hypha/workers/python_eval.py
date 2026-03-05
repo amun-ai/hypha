@@ -242,10 +242,10 @@ class PythonEvalRunner(BaseWorker):
         - offset: The offset used for pagination
         - limit: The limit used for pagination
         """
-        if session_id not in self._sessions:
+        session_data = self._session_data.get(session_id)
+        if session_id not in self._sessions and session_data is None:
             raise SessionNotFoundError(f"Python eval session {session_id} not found")
 
-        session_data = self._session_data.get(session_id)
         if not session_data:
             return {"items": [], "total": 0, "offset": offset, "limit": limit}
 
