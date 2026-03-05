@@ -92,9 +92,14 @@ class EventBus:
             self._callbacks.pop(event_name, None)
 
     def emit(self, event_name, data):
-        """Trigger an event and return a task that completes when all handlers are done."""
+        """Trigger an event and return a task that completes when all handlers are done.
+
+        Iterates over a snapshot copy of the callback list so that handlers which
+        modify the list during execution (e.g. ``once()`` wrappers that call ``off()``)
+        do not cause subsequent handlers to be skipped.
+        """
         tasks = []
-        for func in self._callbacks.get(event_name, []):
+        for func in list(self._callbacks.get(event_name, [])):
             try:
                 result = func(data)
                 if asyncio.iscoroutine(result):
