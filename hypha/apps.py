@@ -2881,9 +2881,27 @@ class ServerAppController:
         session_data = await self._get_session_from_redis(session_id)
         if session_data:
             worker = await self.get_worker_by_id(session_data["worker_id"])
-            return await worker.get_logs(
-                session_id, type=type, offset=offset, limit=limit, context=context
-            )
+            try:
+                return await worker.get_logs(
+                    session_id, type=type, offset=offset, limit=limit, context=context
+                )
+            except Exception as e:
+                # Session may have been cleaned up after the subprocess disconnected
+                # (race condition: client_disconnected fires between Redis read and
+                # worker.get_logs call). Fall back to logs stored in session_data.
+                redis_logs = session_data.get("logs")
+                if redis_logs and isinstance(redis_logs, dict):
+                    all_items = []
+                    for log_type, log_entries in redis_logs.items():
+                        if isinstance(log_entries, list):
+                            for entry in log_entries:
+                                all_items.append({"type": log_type, "content": entry})
+                    if type:
+                        all_items = [item for item in all_items if item["type"] == type]
+                    total = len(all_items)
+                    paginated = all_items[offset:] if limit is None else all_items[offset:offset + limit]
+                    return {"items": paginated, "total": total, "offset": offset, "limit": limit}
+                raise
         else:
             raise Exception(f"Server app instance not found: {session_id}")
 
