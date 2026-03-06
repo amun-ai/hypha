@@ -7,7 +7,6 @@ import json
 import logging
 import sys
 import os
-import gc
 import uuid
 import time
 from enum import Enum
@@ -763,12 +762,20 @@ class RedisRPCConnection:
         
         self._event_bus.on(f"{self._workspace}/*:msg", filtered_handler)
         
-        # Register this client for targeted event subscriptions
+        # Register this client in _local_clients IMMEDIATELY (synchronous, no IO).
+        # This must happen before any RPC message can arrive, so we do it right
+        # here rather than in a background task.  The LOCAL-ONLY delivery path
+        # checks _local_clients on every emit_message() call; if the client is
+        # not registered yet, messages fall through to Redis pub/sub and require
+        # psubscribe to be active – which causes a race condition under load.
+        self._event_bus.register_local_client_sync(self._workspace, self._client_id)
+
+        # Subscribe to pub/sub events in a background task (psubscribe can be
+        # slow under load, so we don't block on it).
         async def register_client():
-            await self._event_bus.register_local_client(self._workspace, self._client_id)
             await self._event_bus.subscribe_to_client_events(self._workspace, self._client_id)
-            logger.debug(f"Registered and subscribed to events for {self._workspace}/{self._client_id}")
-        
+            logger.debug(f"Subscribed to events for {self._workspace}/{self._client_id}")
+
         self._registration_task = asyncio.create_task(register_client())
         background_tasks.add(self._registration_task)
         self._registration_task.add_done_callback(background_tasks.discard)
@@ -873,8 +880,17 @@ class RedisRPCConnection:
         """Check if load balancing is enabled for this client."""
         return self._client_id.endswith("__rlb")
 
+    # Entries not updated within this window are considered orphaned (e.g. crashed
+    # clients that never called disconnect()) and will be evicted on the next sweep.
+    _METRICS_TTL_SECONDS = 600  # 10 minutes
+
     def _update_load_metric(self):
-        """Update the load metric based on message rate (requests per minute)."""
+        """Update the load metric based on message rate (requests per minute).
+
+        Also sweeps out stale orphan entries whose last_updated timestamp is
+        older than _METRICS_TTL_SECONDS.  This prevents unbounded accumulation
+        when __rlb clients crash without calling disconnect().
+        """
         try:
             current_time = time.time()
             client_key = f"{self._workspace}/{self._client_id}"
@@ -882,16 +898,32 @@ class RedisRPCConnection:
             if not hasattr(RedisRPCConnection, "_client_metrics"):
                 RedisRPCConnection._client_metrics = {}
 
+            # TTL sweep: evict stale orphan entries, but only every 50 calls to
+            # avoid O(n_clients) work on every incoming message.
+            if not hasattr(RedisRPCConnection, "_metrics_sweep_counter"):
+                RedisRPCConnection._metrics_sweep_counter = 0
+            RedisRPCConnection._metrics_sweep_counter += 1
+            if RedisRPCConnection._metrics_sweep_counter % 50 == 0:
+                ttl = RedisRPCConnection._METRICS_TTL_SECONDS
+                stale_keys = [
+                    k for k, v in RedisRPCConnection._client_metrics.items()
+                    if current_time - v.get("last_updated", v["last_time"]) > ttl
+                ]
+                for k in stale_keys:
+                    del RedisRPCConnection._client_metrics[k]
+
             metrics = RedisRPCConnection._client_metrics.get(client_key)
             if metrics is None:
                 metrics = {
                     "last_time": current_time,
                     "last_requests": 0,
+                    "last_updated": current_time,
                 }
                 RedisRPCConnection._client_metrics[client_key] = metrics
 
             # Increment local request counter
             metrics["last_requests"] += 1
+            metrics["last_updated"] = current_time
 
             # Compute RPM over a 60s window
             time_diff = current_time - metrics["last_time"]
@@ -969,33 +1001,10 @@ class RedisRPCConnection:
             logger.debug(f"Error clearing circular references: {e}")
 
         
-        # PRIORITY 3: Clear RPC references (but less aggressively)
-        try:
-            cleared_refs = 0
-            # Only check a limited number of objects to avoid performance issues
-            objects_checked = 0
-            for obj in gc.get_objects():
-                if objects_checked > 1000:  # Limit to first 1000 objects
-                    break
-                objects_checked += 1
-                
-                if obj.__class__.__name__ == 'RPC':
-                    if hasattr(obj, '_connection') and obj._connection is self:
-                        obj._connection = None
-                        cleared_refs += 1
-                    if (hasattr(obj, '_emit_message') and 
-                        hasattr(obj._emit_message, '__self__') and 
-                        obj._emit_message.__self__ is self):
-                        async def _emit_disconnected(data):
-                            raise RuntimeError("Connection has been disconnected")
-                        obj._emit_message = _emit_disconnected
-                        cleared_refs += 1
-            
-            if cleared_refs > 0:
-                logger.debug(f"Cleared {cleared_refs} RPC references for {self._workspace}/{self._client_id}")
-                
-        except Exception as e:
-            logger.debug(f"Error clearing RPC references: {e}")
+        # NOTE: RPC references are cleaned up via the _handle_disconnected callback
+        # (registered by the RPC layer in hypha_rpc). We do NOT use gc.get_objects()
+        # here as it scans ALL Python objects O(n_total) and is catastrophically slow
+        # at scale (100K+ concurrent users each disconnecting).
         
         # Standard disconnect logic (preserved)
         try:
@@ -1083,15 +1092,6 @@ class RedisRPCConnection:
                     
         except Exception as e:
             logger.warning(f"Standard disconnect logic error: {e}")
-        
-        # Gentle garbage collection (only occasionally)
-        try:
-            if RedisRPCConnection._closed_total_int % 20 == 0:  # Every 20 disconnects
-                collected = gc.collect()
-                if collected > 0:
-                    logger.debug(f"Garbage collected {collected} objects")
-        except Exception as e:
-            logger.debug(f"GC error: {e}")
         
         # FINALLY: Clear event_bus reference after all operations are done
         # This must be last to avoid NoneType errors during cleanup
@@ -1199,18 +1199,27 @@ class RedisEventBus:
         self._circuit_breaker_open = False
         self._last_successful_connection: Optional[float] = None
 
-    async def register_local_client(self, workspace: str, client_id: str):
-        """Register a local client for optimized event routing."""
+    def register_local_client_sync(self, workspace: str, client_id: str):
+        """Register a local client synchronously (no IO, just set.add).
+
+        Called directly from RedisRPCConnection.on_message() so that the client
+        is in _local_clients BEFORE any RPC messages can arrive.  The async
+        register_local_client() method is kept for backwards-compatibility but
+        delegates here.
+        """
         client_key = f"{workspace}/{client_id}"
         self._local_clients.add(client_key)
         # Clear from recently-disconnected cache if reconnecting
         self._recently_disconnected.pop(client_key, None)
-        logger.debug(f"Registered local client: {client_key}")
-        # metrics
+        logger.debug(f"Registered local client (sync): {client_key}")
         try:
             RedisEventBus._active_local_clients_gauge.set(len(self._local_clients))
         except Exception:
             pass
+
+    async def register_local_client(self, workspace: str, client_id: str):
+        """Register a local client for optimized event routing."""
+        self.register_local_client_sync(workspace, client_id)
 
     async def unregister_local_client(self, workspace: str, client_id: str):
         """Unregister a local client."""
@@ -1256,19 +1265,22 @@ class RedisEventBus:
         client_key = f"{workspace}/{client_id}"
         patterns_to_remove = []
         
-        # Find all patterns related to this client
+        # Find the exact pattern for this client (exact match, not substring)
+        expected_pattern = f"targeted:{client_key}:*"
         for pattern in list(self._subscribed_patterns):
-            if client_key in pattern:
+            if pattern == expected_pattern:
                 patterns_to_remove.append(pattern)
         
         # Unsubscribe from all related patterns
         for pattern in patterns_to_remove:
             if self._pubsub:
                 try:
-                    await self._pubsub.punsubscribe(pattern)
+                    await asyncio.wait_for(self._pubsub.punsubscribe(pattern), timeout=5.0)
                     RedisEventBus._patterns_unsubscribed_total.inc()
                     RedisEventBus._patterns_unsubscribed_total_int += 1
                     logger.debug(f"Unsubscribed from pattern: {pattern}")
+                except asyncio.TimeoutError:
+                    logger.warning("Timeout unsubscribing from client events %s", pattern)
                 except Exception as e:
                     logger.warning("Failed to unsubscribe from client events %s: %s", pattern, e)
             self._subscribed_patterns.discard(pattern)
@@ -1333,9 +1345,11 @@ class RedisEventBus:
             # Clean up orphaned patterns
             for pattern in patterns_to_clean:
                 try:
-                    await self._pubsub.punsubscribe(pattern)
+                    await asyncio.wait_for(self._pubsub.punsubscribe(pattern), timeout=5.0)
                     self._subscribed_patterns.discard(pattern)
                     logger.debug(f"Cleaned up orphaned pattern: {pattern}")
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timeout cleaning up orphaned pattern: {pattern}")
                 except Exception as e:
                     logger.warning(f"Failed to clean up orphaned pattern {pattern}: {e}")
             

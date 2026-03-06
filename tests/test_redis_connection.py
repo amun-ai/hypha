@@ -210,3 +210,95 @@ async def test_broadcast_message_does_not_cross_workspaces(
     assert len(another_messages) == 0
     assert first_messages[0]["content"] == "Broadcast message"
     assert second_messages[0]["content"] == "Broadcast message"
+
+
+async def test_disconnect_does_not_use_gc_get_objects(event_bus, user_info_admin):
+    """Test that disconnect() completes quickly without scanning all Python objects.
+
+    The gc.get_objects() call was removed because it scans ALL Python objects
+    on every disconnect, which is O(n_total_objects) and catastrophically slow
+    at scale with 100K+ concurrent users.
+    """
+    import time
+    import ast
+    import inspect
+    import hypha.core
+
+    # Verify the source AST does not call gc.get_objects() or gc.collect()
+    source = inspect.getsource(hypha.core)
+    tree = ast.parse(source)
+
+    gc_calls = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute):
+                if (isinstance(func.value, ast.Name) and func.value.id == "gc"
+                        and func.attr in ("get_objects", "collect")):
+                    gc_calls.append(f"gc.{func.attr}() at line {func.value.col_offset}")
+
+    assert not gc_calls, (
+        f"Found gc calls that hurt performance at scale: {gc_calls}. "
+        "These scan ALL Python objects and must not be used in disconnect()."
+    )
+
+    # Measure disconnect time - should be fast
+    rpc = RedisRPCConnection(event_bus, "perf-ws", "perf-client", user_info_admin, None)
+    messages = []
+    rpc.on_message(lambda data: messages.append(data))
+    await asyncio.sleep(0.1)
+
+    start = time.perf_counter()
+    await rpc.disconnect("test disconnect")
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 2.0, f"Disconnect took too long: {elapsed:.3f}s"
+
+
+async def test_client_metrics_ttl_expiry(event_bus, user_info_admin):
+    """Test that orphan _client_metrics entries are evicted after TTL expiry.
+
+    When __rlb clients crash without calling disconnect(), their entries
+    accumulate in the class-level _client_metrics dict.  The fix adds
+    TTL-based sweep: any entry not updated within _METRICS_TTL_SECONDS is
+    removed the next time any __rlb client calls _update_load_metric().
+    """
+    import time
+
+    # Ensure fresh state
+    RedisRPCConnection._client_metrics = {}
+
+    # Plant a stale orphan entry (simulates a crashed __rlb client)
+    stale_key = "workspace-orphan/crashed-client__rlb"
+    RedisRPCConnection._client_metrics[stale_key] = {
+        "last_time": time.time() - 700,   # > TTL (600 s default)
+        "last_requests": 5,
+        "last_updated": time.time() - 700,
+    }
+
+    # A fresh __rlb client connects and sends a message, triggering the sweep
+    rpc = RedisRPCConnection(
+        event_bus, "workspace-fresh", "newclient__rlb", user_info_admin, None
+    )
+    rpc.on_message(lambda data: None)
+    await asyncio.sleep(0.05)
+
+    # Reset the throttle counter so the very next call triggers a sweep
+    RedisRPCConnection._metrics_sweep_counter = 49
+
+    # Directly invoke the metric update (the sweep runs inside it)
+    rpc._update_load_metric()
+
+    # The stale orphan must be gone
+    assert stale_key not in RedisRPCConnection._client_metrics, (
+        "Orphan _client_metrics entry was NOT evicted by TTL sweep; "
+        "this causes unbounded memory growth when __rlb clients crash."
+    )
+
+    # The fresh client's own entry must still exist
+    fresh_key = "workspace-fresh/newclient__rlb"
+    assert fresh_key in RedisRPCConnection._client_metrics, (
+        "Fresh client's own metrics entry was unexpectedly removed."
+    )
+
+    await rpc.disconnect("cleanup")

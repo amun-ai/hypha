@@ -462,10 +462,22 @@ class ServerAppController:
                         "ws": workspace,
                         "user": self.store.get_root_user().model_dump(),
                     }
-                    await worker.stop(full_client_id, context=context)
-
-                    # Remove session from Redis
-                    await self._remove_session_from_redis(full_client_id)
+                    app_type = session_data.get("app_type")
+                    if app_type == "python-eval":
+                        # Python-eval subprocesses disconnect naturally after completion.
+                        # Keep the session in Redis (with TTL) so logs remain retrievable.
+                        # Don't call worker.stop() — preserve _session_data for get_logs.
+                        try:
+                            session_data["status"] = "stopped"
+                            await self._store_session_in_redis(full_client_id, session_data)
+                            await self._redis.expire(f"sessions:{full_client_id}", 300)
+                        except Exception as e:
+                            logger.warning(f"Failed to update python-eval session {full_client_id} on disconnect: {e}")
+                            await self._remove_session_from_redis(full_client_id)
+                    else:
+                        await worker.stop(full_client_id, context=context)
+                        # Remove session from Redis
+                        await self._remove_session_from_redis(full_client_id)
             
             # Check if the disconnected client was a worker providing services to other sessions
             # Look for sessions that have this client as their worker
@@ -486,6 +498,14 @@ class ServerAppController:
 
         self.event_bus.on_local("client_disconnected", client_disconnected)
         store.set_server_app_controller(self)
+
+    async def _scan_keys(self, pattern: str) -> list:
+        """Non-blocking cursor-based SCAN replacing redis.keys().
+
+        Delegates to the shared ``scan_redis_keys`` utility.
+        """
+        from hypha.utils import scan_redis_keys
+        return await scan_redis_keys(self._redis, pattern)
 
     async def _worker_health_monitor_loop(self):
         """Periodic worker health monitoring loop."""
@@ -574,7 +594,7 @@ class ServerAppController:
         try:
             # Search for sessions using this worker_id
             pattern = "sessions:*"
-            keys = await self._redis.keys(pattern)
+            keys = await self._scan_keys(pattern)
             for key in keys:
                 session_data = await self._redis.hgetall(key)
                 if session_data.get(b"worker_id", b"").decode() == worker_id:
@@ -588,7 +608,7 @@ class ServerAppController:
         """Get all sessions from Redis for autoscaling and other operations."""
         try:
             pattern = "sessions:*"
-            keys = await self._redis.keys(pattern)
+            keys = await self._scan_keys(pattern)
             sessions = []
             for key in keys:
                 session_data = await self._redis.hgetall(key)
@@ -598,7 +618,7 @@ class ServerAppController:
                     for k, v in session_data.items():
                         key_str = k.decode() if isinstance(k, bytes) else k
                         value_str = v.decode() if isinstance(v, bytes) else v
-                        
+
                         # Handle prefixed JSON data
                         if key_str.startswith("json_list:"):
                             original_key = key_str[10:]  # Remove "json_list:" prefix
@@ -608,9 +628,9 @@ class ServerAppController:
                             session[original_key] = json.loads(value_str)
                         else:
                             session[key_str] = value_str
-                    
-                    # Extract full_client_id from Redis key
-                    session["id"] = key.decode().replace("sessions:", "") if isinstance(key, bytes) else key.replace("sessions:", "")
+
+                    # Extract full_client_id from Redis key (_scan_keys returns str)
+                    session["id"] = key.replace("sessions:", "")
                     sessions.append(session)
             return sessions
         except Exception as e:
@@ -622,10 +642,10 @@ class ServerAppController:
         try:
             logger.info(f"🧹 Cleaning up sessions for dead worker: {worker_id}")
             pattern = "sessions:*"
-            keys = await self._redis.keys(pattern)
+            keys = await self._scan_keys(pattern)
             logger.info(f"🔍 Found {len(keys)} session keys to check")
             cleaned_count = 0
-            
+
             for key in keys:
                 session_data = await self._redis.hgetall(key)
                 if session_data:
@@ -635,12 +655,12 @@ class ServerAppController:
                         stored_worker_id = session_data[b"worker_id"].decode()
                     elif "worker_id" in session_data:
                         stored_worker_id = session_data["worker_id"]
-                    
+
                     logger.debug(f"🔍 Session key {key}: stored_worker_id={stored_worker_id}, target_worker_id={worker_id}")
-                    
+
                     if stored_worker_id == worker_id:
-                        # Extract session ID from Redis key
-                        session_id = key.decode().replace("sessions:", "") if isinstance(key, bytes) else key.replace("sessions:", "")
+                        # Extract session ID from Redis key (_scan_keys returns str)
+                        session_id = key.replace("sessions:", "")
                         logger.info(f"🗑️ Removing orphaned session: {session_id}")
                         await self._redis.delete(key)
                         cleaned_count += 1
@@ -2544,6 +2564,27 @@ class ServerAppController:
                 context=context,
             )
             
+            # For python-eval apps the subprocess has already completed synchronously
+            # inside worker.start().  Eagerly fetch and cache the logs in the session
+            # data so that future get_logs() calls succeed even after worker.stop()
+            # clears the worker's in-memory state.
+            if app_type == "python-eval":
+                try:
+                    worker_obj = await self.get_worker_by_id(session_data["worker_id"])
+                    logs_result = await worker_obj.get_logs(full_client_id, context=context)
+                    # Convert items-format back to the raw {type: [entries]} dict
+                    # that the Redis-fallback path in get_logs() expects.
+                    if logs_result and "items" in logs_result:
+                        raw_logs: dict = {}
+                        for item in logs_result["items"]:
+                            log_type = item.get("type", "info")
+                            raw_logs.setdefault(log_type, []).append(item["content"])
+                        session_data["logs"] = raw_logs
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to cache python-eval logs for {full_client_id}: {e}"
+                    )
+
             # Store the initial session data in Redis immediately after starting
             # This ensures the session is tracked even if something goes wrong later
             await self._store_session_in_redis(full_client_id, session_data)
@@ -2865,9 +2906,27 @@ class ServerAppController:
         session_data = await self._get_session_from_redis(session_id)
         if session_data:
             worker = await self.get_worker_by_id(session_data["worker_id"])
-            return await worker.get_logs(
-                session_id, type=type, offset=offset, limit=limit, context=context
-            )
+            try:
+                return await worker.get_logs(
+                    session_id, type=type, offset=offset, limit=limit, context=context
+                )
+            except Exception as e:
+                # Session may have been cleaned up after the subprocess disconnected
+                # (race condition: client_disconnected fires between Redis read and
+                # worker.get_logs call). Fall back to logs stored in session_data.
+                redis_logs = session_data.get("logs")
+                if redis_logs and isinstance(redis_logs, dict):
+                    all_items = []
+                    for log_type, log_entries in redis_logs.items():
+                        if isinstance(log_entries, list):
+                            for entry in log_entries:
+                                all_items.append({"type": log_type, "content": entry})
+                    if type:
+                        all_items = [item for item in all_items if item["type"] == type]
+                    total = len(all_items)
+                    paginated = all_items[offset:] if limit is None else all_items[offset:offset + limit]
+                    return {"items": paginated, "total": total, "offset": offset, "limit": limit}
+                raise
         else:
             raise Exception(f"Server app instance not found: {session_id}")
 

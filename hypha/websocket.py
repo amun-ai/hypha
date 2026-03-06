@@ -10,7 +10,7 @@ import msgpack
 from fastapi import Query, WebSocket, status
 from starlette.websockets import WebSocketDisconnect
 from fastapi import HTTPException
-from prometheus_client import Gauge
+from prometheus_client import Counter, Gauge
 
 from hypha import __version__
 from hypha.core import UserInfo, UserPermission
@@ -30,6 +30,9 @@ logger.setLevel(LOGLEVEL)
 
 _gauge = Gauge(
     "websocket_connections", "Total number of websocket connections"
+)
+_connections_established = Counter(
+    "websocket_connections_established", "Total number of websocket connections ever established"
 )
 
 
@@ -383,6 +386,7 @@ class WebsocketServer:
         self._last_seen[conn_key] = time.time()
         try:
             _gauge.inc()  # Increment total connections without workspace label
+            _connections_established.inc()  # Monotonic counter, never decrements
             event_bus.on_local(f"unload:{workspace}", force_disconnect)
 
             async def send_bytes(data):
@@ -609,25 +613,45 @@ class WebsocketServer:
                 pass
             self._idle_cleanup_task = None
 
+    async def _do_idle_cleanup(self):
+        """Core idle cleanup logic — extracted for testability.
+
+        TOCTOU safety: after building the candidate list we re-read _last_seen
+        using a fresh timestamp for each key before calling disconnect().  A
+        connection that received a message between the snapshot and the actual
+        close call is no longer idle and must not be forcibly terminated.
+        """
+        now = time.time()
+        to_disconnect = [
+            key
+            for key, last in list(self._last_seen.items())
+            if now - last > self._idle_timeout
+        ]
+        for key in to_disconnect:
+            ws = self._websockets.get(key)
+            if ws:
+                # Re-check with a fresh timestamp: did the connection become
+                # active after we snapshotted it?
+                current_last = self._last_seen.get(key)
+                if current_last is not None and time.time() - current_last <= self._idle_timeout:
+                    continue  # No longer idle — skip
+                try:
+                    await self.disconnect(
+                        ws,
+                        f"Idle timeout ({self._idle_timeout}s)",
+                        status.WS_1001_GOING_AWAY,
+                    )
+                    self._last_seen.pop(key, None)
+                except Exception as e:
+                    logger.debug("Error disconnecting idle WebSocket %s: %s", key, e)
+                    self._last_seen.pop(key, None)
+
     async def _idle_cleanup_loop(self):
         """Periodically disconnect idle connections (prevents explosion without strict rate limiting)."""
         while not self._stop:
             try:
                 await asyncio.sleep(60)
-                now = time.time()
-                to_disconnect = []
-                for key, last in list(self._last_seen.items()):
-                    if now - last > self._idle_timeout:
-                        to_disconnect.append(key)
-                for key in to_disconnect:
-                    ws = self._websockets.get(key)
-                    if ws:
-                        try:
-                            await self.disconnect(ws, f"Idle timeout ({self._idle_timeout}s)", status.WS_1001_GOING_AWAY)
-                        except Exception:
-                            pass
-                        finally:
-                            self._last_seen.pop(key, None)
+                await self._do_idle_cleanup()
             except asyncio.CancelledError:
                 break
             except Exception:

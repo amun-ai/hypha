@@ -4166,10 +4166,11 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       // This ensures no remote function call hangs forever when the connection drops
       if (typeof connection.on_disconnected === "function") {
         connection.on_disconnected((reason) => {
-          // If reconnection is enabled, don't reject pending calls immediately.
-          // The timeout mechanism will handle them if reconnection fails,
-          // allowing calls to succeed after a successful reconnection.
-          if (connection._enable_reconnect) {
+          // If reconnection is enabled AND the connection is not permanently closed,
+          // don't reject pending calls immediately — they may succeed after reconnect.
+          // When _closed is true (max retries exhausted or server refused reconnect),
+          // we must reject immediately so callers are not left hanging forever.
+          if (connection._enable_reconnect && !connection._closed) {
             this._logger.info(
               `Connection lost (${reason}), reconnection enabled - pending calls will be handled by timeout`,
             );
@@ -4523,7 +4524,15 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
     delete this._rintfCallerIndex[clientId];
     let cleaned = 0;
     for (const sid of serviceIds) {
-      if (this._services[sid]) {
+      const svc = this._services[sid];
+      if (svc) {
+        if (typeof svc._dispose === "function") {
+          try {
+            svc._dispose();
+          } catch (e) {
+            /* ignore errors from dispose handlers */
+          }
+        }
         delete this._services[sid];
         cleaned++;
       }

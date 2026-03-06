@@ -1042,7 +1042,7 @@ class WorkspaceManager:
         if not user_info.check_permission(workspace, UserPermission.admin) and not workspace_info.owned_by(user_info):
             raise PermissionError(f"Permission denied for workspace {workspace}")
         # delete all the associated keys
-        keys = await self._redis.keys(f"{workspace_info.id}:*")
+        keys = await self._scan_keys(f"{workspace_info.id}:*")
         for key in keys:
             await self._redis.delete(key)
         if self._s3_controller:
@@ -1290,7 +1290,7 @@ class WorkspaceManager:
         keys = []
         cursor = 0
         while True:
-            cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=500)
+            cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=10000)
             keys.extend(batch)
             if cursor == 0:
                 break
@@ -1311,36 +1311,60 @@ class WorkspaceManager:
             )
         return clients
 
+    async def _scan_keys(self, pattern: str, count: int = 10000) -> list:
+        """Non-blocking key scan using cursor-based SCAN instead of KEYS.
+
+        Delegates to the shared ``scan_redis_keys`` utility.
+
+        redis.keys(pattern) is O(n_total_keys) and blocks the entire Redis
+        server for the full scan duration — with 100K+ service entries this
+        can take hundreds of milliseconds and stalls all concurrent operations.
+        count=10000 means typical deployments (~50K keys) complete in a single
+        round-trip.  Use this method for ALL wildcard key lookups.
+        """
+        from hypha.utils import scan_redis_keys
+        return await scan_redis_keys(self._redis, pattern, count=count)
+
     async def _list_client_keys(self, workspace: str):
-        """List all client keys in the workspace."""
-        # First, try to find all services for this workspace (not just built-in)
+        """List all client keys in the workspace.
+
+        Uses cursor-based SCAN instead of KEYS to avoid blocking Redis.
+        KEYS is O(n) over all Redis keys and blocks the server for the
+        entire scan duration — catastrophic with 100K+ service entries.
+        """
         pattern = f"services:*|*:{workspace}/*:*@*"
-        keys = await self._redis.keys(pattern)
         client_keys = set()
-        for key in keys:
-            # Extract the client ID from the service key
-            # Format: services:{visibility}|{service_id}:{workspace}/{client_id}:{service_name}@{app}
-            key_str = key.decode("utf-8")
-            # Split by workspace to find the client part
-            if f":{workspace}/" in key_str:
-                parts_after_ws = key_str.split(f":{workspace}/")[1]
-                # Extract client_id (everything before the next colon)
-                if ":" in parts_after_ws:
-                    client_id = parts_after_ws.split(":")[0]
-                    client_keys.add(workspace + "/" + client_id)
-        
-        # If no services found, check for client keys directly in Redis
+        cursor = 0
+        while True:
+            cursor, batch = await self._redis.scan(
+                cursor=cursor, match=pattern, count=10000
+            )
+            for key in batch:
+                key_str = key.decode("utf-8") if isinstance(key, bytes) else key
+                if f":{workspace}/" in key_str:
+                    parts_after_ws = key_str.split(f":{workspace}/")[1]
+                    if ":" in parts_after_ws:
+                        client_id = parts_after_ws.split(":")[0]
+                        client_keys.add(workspace + "/" + client_id)
+            if cursor == 0:
+                break
+
+        # If no services found, fall back to checking client keys directly
         if not client_keys:
-            # Try alternative pattern for clients
             client_pattern = f"clients:{workspace}/*"
-            client_keys_raw = await self._redis.keys(client_pattern)
-            for key in client_keys_raw:
-                key_str = key.decode("utf-8")
-                # Extract client_id from clients:{workspace}/{client_id}
-                if f"clients:{workspace}/" in key_str:
-                    client_id = key_str.split(f"clients:{workspace}/")[1]
-                    client_keys.add(workspace + "/" + client_id)
-        
+            cursor = 0
+            while True:
+                cursor, batch = await self._redis.scan(
+                    cursor=cursor, match=client_pattern, count=10000
+                )
+                for key in batch:
+                    key_str = key.decode("utf-8") if isinstance(key, bytes) else key
+                    if f"clients:{workspace}/" in key_str:
+                        client_id = key_str.split(f"clients:{workspace}/")[1]
+                        client_keys.add(workspace + "/" + client_id)
+                if cursor == 0:
+                    break
+
         return list(client_keys)
 
     @schema_method
@@ -1384,39 +1408,43 @@ class WorkspaceManager:
             svc = await self._rpc.get_remote_service(
                 client_id + ":built-in", {"timeout": timeout}
             )
-            return await svc.ping("ping")  # should return "pong"
+            return await asyncio.wait_for(svc.ping("ping"), timeout=timeout)  # should return "pong"
         except Exception as e:
             # If built-in service fails, try to find any other service for this client
+            # Use SCAN (not KEYS) to avoid blocking Redis during the search
             workspace_id, client_name = client_id.split("/")
             pattern = f"services:*|*:{workspace_id}/{client_name}:*@*"
-            keys = await self._redis.keys(pattern)
-            
+            keys = []
+            cursor = 0
+            while True:
+                cursor, batch = await self._redis.scan(
+                    cursor=cursor, match=pattern, count=10000
+                )
+                keys.extend(batch)
+                if cursor == 0 or len(keys) >= 3:
+                    break
+
             if keys:
                 # Try to ping using the first available service
                 for key in keys[:3]:  # Try up to 3 services
                     try:
-                        # Extract service ID from key
-                        key_str = key.decode("utf-8")
+                        key_str = key.decode("utf-8") if isinstance(key, bytes) else key
                         # Format: services:{visibility}|{service_id}:{workspace}/{client_id}:{service_name}@{app}
                         if "|" in key_str:
                             service_full_id = key_str.split("|")[1].split("@")[0]
-                            # Try to get this service
                             svc = await self._rpc.get_remote_service(
                                 service_full_id, {"timeout": timeout}
                             )
-                            # Try to call echo or ping method if available
                             if hasattr(svc, "ping"):
-                                return await svc.ping("ping")
+                                return await asyncio.wait_for(svc.ping("ping"), timeout=timeout)
                             elif hasattr(svc, "echo"):
-                                result = await svc.echo("ping")
+                                result = await asyncio.wait_for(svc.echo("ping"), timeout=timeout)
                                 return "pong" if result == "ping" else f"Client responded: {result}"
-                            else:
-                                # Just check if we can get service info - if yes, client is alive
-                                if hasattr(svc, "_config"):
-                                    return "pong"  # Client is alive but no ping method
+                            elif hasattr(svc, "_config"):
+                                return "pong"  # Client is alive but no ping method
                     except Exception:
                         continue  # Try next service
-            
+
             # All attempts failed
             return f"Failed to ping client {client_id}: {e}"
 
@@ -1777,7 +1805,7 @@ class WorkspaceManager:
         for pattern in patterns:
             cursor = 0
             while True:
-                cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=500)
+                cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=10000)
                 keys.extend(batch)
                 if cursor == 0:
                     break
@@ -1792,7 +1820,7 @@ class WorkspaceManager:
                 # Scan additional keys in current workspace to avoid blocking Redis
                 cursor = 0
                 while True:
-                    cursor, batch = await self._redis.scan(cursor=cursor, match=ws_pattern, count=500)
+                    cursor, batch = await self._redis.scan(cursor=cursor, match=ws_pattern, count=10000)
                     keys.extend(batch)
                     if cursor == 0:
                         break
@@ -2112,31 +2140,30 @@ class WorkspaceManager:
             if visibility != "protected":
                 raise ValueError(f"authorized_workspaces can only be set when visibility is 'protected', got visibility='{visibility}'")
 
-        # Check for existing singleton services
-        if service.config.singleton:
-            key = f"services:*|*:{workspace}/*:{service_name}@*"
-            peer_keys = await self._redis.keys(key)
-            if len(peer_keys) > 0:
-                # If it's the same service being re-registered, allow it
-                for peer_key in peer_keys:
-                    peer_service = await self._load_service_from_redis(peer_key)
-                    if peer_service is None:
-                        continue
-                    if (
-                        peer_service.config.singleton
-                        and peer_service.id == service.id
-                        and peer_service.app_id == service.app_id
-                    ):
-                        # Same service being re-registered, allow it
-                        await self._redis.delete(peer_key)
-                        break
-                    else:
-                        raise ValueError(
-                            f"A singleton service with the same name ({service_name}) already exists in the workspace ({workspace}), please remove it first or use a different name."
-                        )
+        # Scan once for existing services with the same name (reused by both checks below).
+        peer_keys = await self._scan_keys(f"services:*|*:{workspace}/*:{service_name}@*")
 
-        key = f"services:*|*:{workspace}/*:{service_name}@*"
-        peer_keys = await self._redis.keys(key)
+        # Check for existing singleton services: if *I* am singleton, no other service
+        # may hold my name (unless it is exactly me being re-registered).
+        if service.config.singleton and len(peer_keys) > 0:
+            for peer_key in peer_keys:
+                peer_service = await self._load_service_from_redis(peer_key)
+                if peer_service is None:
+                    continue
+                if (
+                    peer_service.config.singleton
+                    and peer_service.id == service.id
+                    and peer_service.app_id == service.app_id
+                ):
+                    # Same service being re-registered — remove the old entry and proceed.
+                    await self._redis.delete(peer_key)
+                    break
+                else:
+                    raise ValueError(
+                        f"A singleton service with the same name ({service_name}) already exists in the workspace ({workspace}), please remove it first or use a different name."
+                    )
+
+        # Check that no *existing* singleton already owns this name.
         if len(peer_keys) > 0:
             for peer_key in peer_keys:
                 peer_service = await self._load_service_from_redis(peer_key)
@@ -2149,7 +2176,7 @@ class WorkspaceManager:
 
         # Check if the clients exists if not a built-in service
         if ":built-in" not in service.id and ws not in ["ws-user-root", "public"]:
-            builtins = await self._redis.keys(f"services:*|*:{client_id}:built-in@*")
+            builtins = await self._scan_keys(f"services:*|*:{client_id}:built-in@*")
             if not builtins:
                 logger.warning(
                     "Refuse to add service %s, client %s has been removed.",
@@ -2158,7 +2185,7 @@ class WorkspaceManager:
                 )
                 return
         # Check if the service already exists
-        service_exists = await self._redis.keys(f"services:*|*:{service.id}@*")
+        service_exists = await self._scan_keys(f"services:*|*:{service.id}@*")
         visibility = (
             service.config.visibility.value
             if isinstance(service.config.visibility, VisibilityEnum)
@@ -2314,7 +2341,7 @@ class WorkspaceManager:
         read_app_manifest = config.get("read_app_manifest", False)
         user_info = UserInfo.from_context(context)
         key = f"services:*|*:{service_id}@{app_id}"
-        keys = await self._redis.keys(key)
+        keys = await self._scan_keys(key)
         if not keys:
             # If no services found in Redis, try to get from artifact manifest if app_id is provided
             if app_id != "*" and read_app_manifest and self._artifact_manager:
@@ -2416,7 +2443,7 @@ class WorkspaceManager:
         # Public and unlisted services can be accessed by anyone who knows the service ID.
         # Unlisted services are hidden from listings/search but accessible directly.
         # Protected services require workspace read permission or authorized_workspaces.
-        if not key.startswith(b"services:public|") and not key.startswith(b"services:unlisted|"):
+        if not key.startswith("services:public|") and not key.startswith("services:unlisted|"):
             # For protected services, validate context and permissions
             self.validate_context(context, permission=UserPermission.read)
             # First check if user has read permission in the service's workspace
@@ -2494,7 +2521,7 @@ class WorkspaceManager:
         key = f"services:{visibility}|{service.type}:{service.id}@{service.app_id}"
 
         # Check if the service exists before removal
-        service_keys = await self._redis.keys(key)
+        service_keys = await self._scan_keys(key)
 
         if len(service_keys) > 1:
             raise ValueError(
@@ -3085,8 +3112,15 @@ class WorkspaceManager:
             raise
 
     @schema_method
-    async def unload(self, context=None):
-        """Unload the workspace."""
+    async def unload(self, context=None, force: bool = False):
+        """Unload the workspace.
+
+        When force=False (the default) and active clients are present, the unload
+        is aborted — this prevents accidentally evicting active users when called
+        from unload_if_empty() with a TOCTOU race.  Pass force=True only when you
+        explicitly want to disconnect all active clients (e.g. emergency cleanup);
+        requires admin permission.
+        """
         self.validate_context(context, permission=UserPermission.admin)
         ws = context["ws"]
 
@@ -3104,6 +3138,14 @@ class WorkspaceManager:
                 client_summary = ", ".join(client_keys[:10]) + (
                     "..." if len(client_keys) > 10 else ""
                 )
+                if not force:
+                    # Called from unload_if_empty: clients joined between the empty-check and
+                    # now (race condition). Abort instead of force-disconnecting active clients.
+                    logger.warning(
+                        f"Aborting unload of workspace {ws}: {len(client_keys)} client(s) "
+                        f"joined since empty-check: {client_summary}"
+                    )
+                    return
                 logger.info(
                     f"There are {len(client_keys)} clients in workspace {ws}: {client_summary}"
                 )
@@ -3111,7 +3153,7 @@ class WorkspaceManager:
 
             if not winfo.persistent:
                 # For non-persistent workspaces, always clean up Redis and S3
-                keys = await self._redis.keys(f"{ws}:*")
+                keys = await self._scan_keys(f"{ws}:*")
                 for key in keys:
                     await self._redis.delete(key)
                 if self._s3_controller:
@@ -3120,7 +3162,7 @@ class WorkspaceManager:
             else:
                 # For persistent workspaces, clean up service data but preserve workspace info
                 if self._s3_controller:
-                    keys = await self._redis.keys(f"{ws}:*")
+                    keys = await self._scan_keys(f"{ws}:*")
                     for key in keys:
                         await self._redis.delete(key)
                     await self._s3_controller.cleanup_workspace(winfo)
@@ -3135,11 +3177,6 @@ class WorkspaceManager:
                     logger.warning(
                         f"Skipping cleanup of persistent workspace {ws} because S3 controller is not available"
                     )
-
-            try:
-                pass
-            except KeyError:
-                pass
 
             await self._close_workspace(winfo)
         except Exception as e:
@@ -3236,8 +3273,9 @@ class WorkspaceManager:
             async def _ping_client(client_id):
                 """Ping a single client and return (client_id, alive)."""
                 try:
-                    result = await self.ping_client(
-                        client_id, timeout=timeout, context=context
+                    result = await asyncio.wait_for(
+                        self.ping_client(client_id, timeout=timeout, context=context),
+                        timeout=timeout + 2,
                     )
                     return (client_id, result == "pong")
                 except Exception:
@@ -3356,7 +3394,7 @@ class WorkspaceManager:
         keys = []
         cursor = 0
         while True:
-            cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=500)
+            cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=10000)
             keys.extend(batch)
             if cursor == 0:
                 break
@@ -3403,7 +3441,7 @@ class WorkspaceManager:
         client_keys = await self._list_client_keys(workspace)
         if not client_keys:
             logger.info(f"No active clients in workspace {workspace}. Unloading...")
-            await self.unload(context=context)
+            await self.unload(context=context, force=False)
         else:
             logger.warning(
                 f"Skip unloading workspace {workspace} because it is not empty, remaining clients: {client_keys[:10]}..."
