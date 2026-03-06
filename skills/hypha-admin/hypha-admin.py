@@ -565,6 +565,7 @@ m = await store.get_metrics()
 rpc_m = m["rpc"]["rpc_connections"]
 eb_m = m["eventbus"]["eventbus"]
 ws_set = store._websocket_server._websockets
+server_id = store._server_id
 
 redis = store.get_redis()
 svc_total = 0
@@ -580,6 +581,7 @@ async for key in redis.scan_iter(match="services:*", count=500):
         if "|built-in:" in k and k.endswith(":built-in@*"):
             clients.add(parts[2])
 
+not_in_ws = sum(1 for c in clients if c not in ws_set and server_id not in c)
 redis_info = await redis.info("clients")
 import hypha as _hypha
 top_ws = sorted(ws_counts.items(), key=lambda x: -x[1])[:8]
@@ -594,6 +596,7 @@ print(json.dumps({
         "active_rpc": rpc_m["active"],
         "active_ws": len(ws_set),
         "total_redis_clients": len(clients),
+        "not_in_ws": not_in_ws,
         "redis_pool_connections": redis_info.get("connected_clients", 0),
     },
     "services": {"total": svc_total, "top_workspaces": top_ws},
@@ -715,6 +718,8 @@ print(json.dumps({
     if svcs > 1000: report["alerts"].append(f"HIGH SERVICES: {svcs}")
     if fds > 3000: report["alerts"].append(f"HIGH FDS: {fds}")
     if redis_pool > 500: report["alerts"].append(f"HIGH REDIS POOL: {redis_pool} connections")
+    not_in_ws = proc_data.get("connections", {}).get("not_in_ws", 0)
+    if not_in_ws > 5: report["alerts"].append(f"SUSPECT CLIENTS: {not_in_ws} not in WS (run 'zombies' to verify)")
     hb_stuck = proc_data.get("tasks", {}).get("heartbeat_stuck", 0)
     if hb_stuck > 10: report["alerts"].append(f"HEARTBEAT LEAK: {hb_stuck} stuck tasks (run cleanup-tasks)")
     ghost = proc_data.get("ghost_last_seen", 0)
