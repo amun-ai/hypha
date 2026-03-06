@@ -561,6 +561,9 @@ async def cmd_report(server):
     out = await exec_py(admin, '''
 import json, psutil, asyncio
 p = psutil.Process()
+_children = p.children(recursive=True)
+_children_rss = sum(c.memory_info().rss for c in _children if c.is_running())
+_browser_count = sum(1 for c in _children if "chrome" in c.name().lower())
 m = await store.get_metrics()
 rpc_m = m["rpc"]["rpc_connections"]
 eb_m = m["eventbus"]["eventbus"]
@@ -588,10 +591,21 @@ top_ws = sorted(ws_counts.items(), key=lambda x: -x[1])[:8]
 from collections import Counter as _Counter
 _task_snap = [t for t in asyncio.all_tasks() if not t.done()]
 _top_types = sorted(_Counter(getattr(t.get_coro(), "__qualname__", "?") for t in _task_snap).items(), key=lambda x: -x[1])[:8]
+_proc_rss = round(p.memory_info().rss/1024/1024)
+_children_mb = round(_children_rss/1024/1024)
+import os as _os
+_cgroup_path = "/sys/fs/cgroup/memory.current"
+if _os.path.exists(_cgroup_path):
+    _container_mb = round(int(open(_cgroup_path).read().strip()) / 1024 / 1024)
+else:
+    _container_mb = _proc_rss + _children_mb
 print(json.dumps({
     "version": _hypha.__version__,
     "process": {
-        "mem_mb": round(p.memory_info().rss/1024/1024),
+        "mem_mb": _proc_rss,
+        "children_mem_mb": _children_mb,
+        "container_mem_mb": _container_mb,
+        "browser_workers": _browser_count,
         "threads": p.num_threads(),
         "fds": p.num_fds(),
     },
@@ -714,11 +728,13 @@ print(json.dumps({
 
     # Alerts
     mem = proc_data.get("process", {}).get("mem_mb", 0)
+    container_mem = proc_data.get("process", {}).get("container_mem_mb", mem)
     rpc = proc_data.get("connections", {}).get("active_rpc", 0)
     svcs = proc_data.get("services", {}).get("total", 0)
     fds = proc_data.get("process", {}).get("fds", 0)
     redis_pool = proc_data.get("connections", {}).get("redis_pool_connections", 0)
-    if mem > 3000: report["alerts"].append(f"HIGH MEMORY: {mem} MB")
+    if mem > 3000: report["alerts"].append(f"HIGH MEMORY (process): {mem} MB")
+    if container_mem > 5000: report["alerts"].append(f"HIGH MEMORY (container): {container_mem} MB")
     if rpc > 300: report["alerts"].append(f"HIGH RPC: {rpc}")
     if svcs > 1000: report["alerts"].append(f"HIGH SERVICES: {svcs}")
     if fds > 3000: report["alerts"].append(f"HIGH FDS: {fds}")
