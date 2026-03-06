@@ -36,7 +36,7 @@ alembic==1.14.0
 hrid==0.3.0
 ollama==0.5.1
 fastembed==0.4.2
-stream-zip==0.0.83
+stream-zip==0.0.84
 starlette-compress>=1.6.0
 greenlet==3.1.1
 prompt-toolkit==3.0.50
