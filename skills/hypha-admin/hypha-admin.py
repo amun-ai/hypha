@@ -611,6 +611,10 @@ print(json.dumps({
                 for f in t.get_stack()
             )
         ),
+        "rpc_object_entries": sum(
+            len(v) for r in (o for o in __import__("gc").get_objects() if type(o).__name__ == "RPC" and hasattr(o, "_object_store"))
+            for v in r._object_store.values() if isinstance(v, dict)
+        ),
     },
     "ghost_last_seen": len(store._websocket_server._last_seen) - len(ws_set),
 }))
@@ -720,7 +724,13 @@ print(json.dumps({
                 if p["mem_pct"] is not None and p["mem_pct"] >= 60 and p["status"] == "Running"]
     if near_oom: report["alerts"].append(f"HC POD HIGH MEM: {', '.join(near_oom)}")
     top_ws = proc_data.get("services", {}).get("top_workspaces", [])
-    ws_anomalies = [f"{ws}({cnt})" for ws, cnt in top_ws if cnt > 100]
+    # hypha-agents is expected to have 100+ services (compute worker proxy registrations)
+    # Only alert at >200 for that workspace; other workspaces alert at >100
+    COMPUTE_WORKSPACES = {"hypha-agents"}
+    ws_anomalies = [
+        f"{ws}({cnt})" for ws, cnt in top_ws
+        if cnt > (200 if ws in COMPUTE_WORKSPACES else 100)
+    ]
     if ws_anomalies: report["alerts"].append(f"HIGH WS SERVICES: {', '.join(ws_anomalies)}")
 
     print(json.dumps(report, indent=2))

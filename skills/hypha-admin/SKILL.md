@@ -131,8 +131,9 @@ Examples:
 - Typical cleanup: ~30 zombie services removed per run; post-cleanup ~3 suspects remain (all HTTP transport)
 - **Cleanup "net change: +N"**: If services count increases after cleanup, new services came online during the cleanup window. This is NOT an error — cleanup ran but concurrent registrations arrived.
 - `redis` is available directly as a global in exec context; no need to call `store.get_redis()`
-- **hypha-agents 124 services is NORMAL**: `hypha-compute-worker` (HTTP transport) registers 56 app proxy services + 5 worker slots + 1 built-in. High service count in hypha-agents just means many compute apps are deployed. The `HIGH WS SERVICES` alert fires but can be acknowledged.
-- **`report` includes `top_workspaces`**: The services section of `report` now includes top 8 workspaces by service count and fires a `HIGH WS SERVICES` alert if any workspace exceeds 100 services.
+- **hypha-agents high service count is NORMAL**: `hypha-compute-worker` (HTTP transport) registers one proxy service per deployed app + 5 worker slots + 1 built-in. 120+ services in hypha-agents = many apps deployed, not a leak. The `HIGH WS SERVICES` alert only fires for `hypha-agents` above 200 services (not 100) to avoid false positives.
+- **`report` includes `top_workspaces`**: The services section now includes top 8 workspaces by service count. `HIGH WS SERVICES` alert threshold is 100 for normal workspaces, 200 for compute worker workspaces (hypha-agents).
+- **`rpc_object_entries` in tasks**: The `report` now tracks total entries across all RPC `_object_store` dicts. Normal baseline: 50,000-80,000 entries (mostly service method registrations for hypha-compute-worker). Rapid growth beyond 200,000 would indicate a leak. Each service with N methods contributes ~N entries; entries are cleaned up when the owning client disconnects.
 
 ## Health Baselines (March 2026)
 
@@ -143,11 +144,12 @@ Examples:
 | Total Redis services | 250-330 | >1000 |
 | Redis clients | 100-140 | >400 |
 | hypha-server CPU | 100-700m | >1500m |
-| hypha-server Memory (RSS) | 800-1000 MB | >3000 MB |
+| hypha-server Memory (RSS) | 800-1200 MB | >3000 MB |
 | Container Memory (kubectl top) | 1200-1600 Mi | >4 Gi |
 | Open file descriptors | 1200-1400 | >3000 |
 | Active event bus patterns | 80-130 | >300 |
 | Active workspaces | 35-45 | >200 |
+| RPC object store entries | 50,000-80,000 | >200,000 |
 
 ## Known Issues (March 2026)
 
