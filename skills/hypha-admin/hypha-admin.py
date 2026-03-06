@@ -464,8 +464,23 @@ async def cmd_hc_pods(server):
         if len(parts) >= 3 and parts[0].startswith("hc-"):
             top_mem[parts[0]] = parts[2]
 
-    print(f"{'Pod':<50} {'Workspace':<25} {'Status':<12} {'MemLimit':<10} {'MemUsed':<10} {'Age'}")
-    print("-" * 120)
+    def _parse_mem_mi(s: str) -> float:
+        """Parse memory string (e.g. '2Gi', '598Mi') to MiB float."""
+        s = s.strip()
+        if s.endswith("Gi"):
+            return float(s[:-2]) * 1024
+        if s.endswith("Mi"):
+            return float(s[:-2])
+        if s.endswith("G"):
+            return float(s[:-1]) * 1024
+        if s.endswith("M"):
+            return float(s[:-1])
+        if s.endswith("Ki"):
+            return float(s[:-2]) / 1024
+        return 0.0
+
+    print(f"{'Pod':<50} {'Workspace':<25} {'Status':<12} {'MemLimit':<10} {'MemUsed':<10} {'Mem%':<8} {'Age'}")
+    print("-" * 130)
     oom_count = 0
     running_count = 0
     for p in sorted(hc_pods, key=lambda x: x["metadata"]["name"]):
@@ -493,8 +508,19 @@ async def cmd_hc_pods(server):
         else:
             status = p.get("status", {}).get("phase", "?")
         mem_used = top_mem.get(name, "-")
+        mem_pct_str = "-"
+        if mem_used != "-" and mem_limit != "?":
+            limit_mi = _parse_mem_mi(mem_limit)
+            used_mi = _parse_mem_mi(mem_used)
+            if limit_mi > 0:
+                pct = used_mi / limit_mi * 100
+                mem_pct_str = f"{pct:.0f}%"
+                if pct >= 80:
+                    mem_pct_str += " ⚠⚠"
+                elif pct >= 60:
+                    mem_pct_str += " ⚠"
         oom_flag = " ⚠" if status == "OOMKilled" else ""
-        print(f"  {name:<48} {workspace:<25} {status:<12} {mem_limit:<10} {mem_used:<10} {age}{oom_flag}")
+        print(f"  {name:<48} {workspace:<25} {status:<12} {mem_limit:<10} {mem_used:<10} {mem_pct_str:<8} {age}{oom_flag}")
 
     print(f"\n  Total: {len(hc_pods)} | Running: {running_count} | OOMKilled: {oom_count}")
 
