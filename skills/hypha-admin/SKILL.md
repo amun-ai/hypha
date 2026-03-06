@@ -51,6 +51,9 @@ python3 skills/hypha-admin/hypha-admin.py help
 | `hc-pods` | Compute (hc-*) pods: workspace, mem limit, status, OOM | ~3s |
 | `logs [pod]` | Tail logs from hypha-server or specific pod | ~3s |
 | `exec "<code>"` | Execute Python in admin-utils context | varies |
+| `tasks` | List all asyncio task types with counts; shows stuck heartbeats | ~5s |
+| `cleanup-tasks` | Cancel stuck heartbeat tasks (method_task already done) | ~5s |
+| `clients` | List all connected clients with workspace and WS status | ~5s |
 | `report` | Full JSON health report (for automation/monitoring) | ~10s |
 | `status` | Full status: health + workspaces + quick-zombies | ~15s |
 | `kickout <ws> <client>` | Kick a client from a workspace | ~3s |
@@ -152,10 +155,26 @@ Examples:
 |-----|----------|------------|--------|
 | hypha-server | 3 | OOM killed (exit 137), 8G limit | Monitor memory growth |
 | hypha-weaviate | 85 | OOM killed (exit 137), 6Gi limit — memory bursts under vector search load | Under investigation |
-| bioimageio-colab | 34 | SIGTERM (exit 15) — periodic external restart | Benign |
-| deno-app-engine | 20 | Clean exit (0) — intentional restart loop | Normal |
+| bioimageio-colab | 34 | SIGTERM (exit 15) — liveness probe fails when Hypha connection slow | Benign/recurring |
+| deno-app-engine | 21 | Clean exit (0) — intentional restart loop | Normal |
 | hypha-compute | 10 | Clean exit (0) | Normal |
 | hc-hypha-agents-* | recurring | OOM killed (exit 137), 2Gi limit — ML workloads in agent-sandbox exceed limit after ~1-2h | Needs higher memory limit |
+
+## Version Notes
+
+| Version | Key Fix | Deployed |
+|---------|---------|---------|
+| 0.21.73 | hypha-rpc 0.21.33: heartbeat task leak fix (cancel on exception/CancelledError) | **Not yet** (live: 0.21.70) |
+| 0.21.72 | hypha-rpc 0.21.32: scan-vs-keys migration, GC fixes | Not yet deployed |
+| 0.21.71 | All redis.keys() → scan fixes, anonymous-workspace-unload TOCTOU fix | Not yet deployed |
+
+> **Note**: Live server is at 0.21.70. Use `report` → `server.version` to confirm. Upgrade to 0.21.73 will eliminate stuck heartbeat tasks entirely.
+
+### Stuck heartbeat tasks (pre-0.21.73)
+- Cause: hypha-rpc <0.21.33 did not cancel heartbeat task on exception/CancelledError
+- Symptom: `report` shows `tasks.heartbeat_stuck > 0`
+- Workaround: Run `cleanup-tasks` to cancel stuck tasks manually
+- Permanent fix: upgrade server to 0.21.73
 
 ## Hypha-Compute (hc-*) Pod Notes
 
