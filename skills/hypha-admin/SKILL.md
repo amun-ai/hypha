@@ -134,6 +134,9 @@ Examples:
 - **hypha-agents high service count is NORMAL**: `hypha-compute-worker` (HTTP transport) registers one proxy service per deployed app + 5 worker slots + 1 built-in. 120+ services in hypha-agents = many apps deployed, not a leak. The `HIGH WS SERVICES` alert only fires for `hypha-agents` above 200 services (not 100) to avoid false positives.
 - **`report` includes `top_workspaces`**: The services section now includes top 8 workspaces by service count. `HIGH WS SERVICES` alert threshold is 100 for normal workspaces, 200 for compute worker workspaces (hypha-agents).
 - **`rpc_object_entries` in tasks**: The `report` now tracks total entries across all RPC `_object_store` dicts. Normal baseline: 50,000-80,000 entries (mostly service method registrations for hypha-compute-worker). Rapid growth beyond 200,000 would indicate a leak. Each service with N methods contributes ~N entries; entries are cleaned up when the owning client disconnects.
+- **`pending_rpc_calls` in tasks**: Count of `Timer._job` asyncio tasks, one per active in-flight RPC call (each call creates a 30s timeout timer). Normal: 10-50. A burst to 200-500 is transient — it means many concurrent calls fired at once (e.g. hypha-agents starting many services). Alert fires at >200. Does NOT indicate a leak — these tasks complete once the call resolves or times out.
+- **`top_types` in tasks**: Top 8 asyncio task types by count. Typical profile: 6 WS infrastructure types × ~N per connection, plus heartbeats and Timer._job. Use to detect new accumulating patterns. `WebSocketCommonProtocol.*` tasks are 1:1 with WS connections — if they exceed active_ws×6 significantly, connections may be lingering in teardown.
+- **Memory grows with service count**: Each new service registration creates Python routing objects. ~2-3 MB per service. hypha-agents 162 services ≈ +200 MB over baseline. This is expected, not a leak.
 
 ## Health Baselines (March 2026)
 
@@ -150,6 +153,7 @@ Examples:
 | Active event bus patterns | 80-130 | >300 |
 | Active workspaces | 35-45 | >200 |
 | RPC object store entries | 50,000-80,000 | >200,000 |
+| Pending RPC calls (Timer._job) | 10-50 (burst: up to 500) | >200 sustained |
 
 ## Known Issues (March 2026)
 
