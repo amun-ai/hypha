@@ -128,6 +128,8 @@ Examples:
 - Typical cleanup: ~30 zombie services removed per run; post-cleanup ~3 suspects remain (all HTTP transport)
 - **Cleanup "net change: +N"**: If services count increases after cleanup, new services came online during the cleanup window. This is NOT an error — cleanup ran but concurrent registrations arrived.
 - `redis` is available directly as a global in exec context; no need to call `store.get_redis()`
+- **hypha-agents 124 services is NORMAL**: `hypha-compute-worker` (HTTP transport) registers 56 app proxy services + 5 worker slots + 1 built-in. High service count in hypha-agents just means many compute apps are deployed. The `HIGH WS SERVICES` alert fires but can be acknowledged.
+- **`report` includes `top_workspaces`**: The services section of `report` now includes top 8 workspaces by service count and fires a `HIGH WS SERVICES` alert if any workspace exceeds 100 services.
 
 ## Health Baselines (March 2026)
 

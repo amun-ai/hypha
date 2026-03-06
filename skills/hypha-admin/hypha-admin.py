@@ -130,7 +130,9 @@ async def cmd_health(server):
         restarts = container.get("restartCount", 0)
         last_terminated = container.get("lastState", {}).get("terminated", {})
         cur_terminated = container.get("state", {}).get("terminated", {})
-        exit_code = last_terminated.get("exitCode") or cur_terminated.get("exitCode")
+        exit_code = last_terminated.get("exitCode")
+        if exit_code is None:
+            exit_code = cur_terminated.get("exitCode")
         start = item.get("status", {}).get("startTime", "")
         age = _fmt_age(start)
         oom_flag = ""
@@ -155,7 +157,11 @@ async def cmd_health(server):
         if restarts >= 5:
             last_terminated = container.get("lastState", {}).get("terminated", {})
             cur_terminated = container.get("state", {}).get("terminated", {})
-            exit_code = last_terminated.get("exitCode") or cur_terminated.get("exitCode") or "?"
+            exit_code = last_terminated.get("exitCode")
+            if exit_code is None:
+                exit_code = cur_terminated.get("exitCode")
+            if exit_code is None:
+                exit_code = "?"
             phase = item.get("status", {}).get("phase", "?")
             print(f"  {name:<55} restarts={restarts:<4} last_exit={exit_code} phase={phase}")
             found = True
@@ -562,18 +568,21 @@ ws_set = store._websocket_server._websockets
 
 redis = store.get_redis()
 svc_total = 0
-async for _ in redis.scan_iter(match="services:*", count=500):
-    svc_total += 1
-
+ws_counts = {}
 clients = set()
-async for key in redis.scan_iter(match="services:*|built-in:*:built-in@*", count=500):
+async for key in redis.scan_iter(match="services:*", count=500):
     k = key.decode() if isinstance(key, bytes) else key
+    svc_total += 1
     parts = k.split(":")
     if len(parts) >= 3:
-        clients.add(parts[2])
+        ws = parts[2].split("/")[0] if "/" in parts[2] else parts[2]
+        ws_counts[ws] = ws_counts.get(ws, 0) + 1
+        if "|built-in:" in k and k.endswith(":built-in@*"):
+            clients.add(parts[2])
 
 redis_info = await redis.info("clients")
 import hypha as _hypha
+top_ws = sorted(ws_counts.items(), key=lambda x: -x[1])[:8]
 print(json.dumps({
     "version": _hypha.__version__,
     "process": {
@@ -587,7 +596,7 @@ print(json.dumps({
         "total_redis_clients": len(clients),
         "redis_pool_connections": redis_info.get("connected_clients", 0),
     },
-    "services": {"total": svc_total},
+    "services": {"total": svc_total, "top_workspaces": top_ws},
     "eventbus": {"patterns": eb_m["patterns"]["active"]},
     "tasks": {
         "total": len(asyncio.all_tasks()),
@@ -619,7 +628,9 @@ print(json.dumps({
         # Check both lastState (restarted pods) and state (first-crash pods, restartCount=0)
         last_terminated = container.get("lastState", {}).get("terminated", {})
         cur_terminated = container.get("state", {}).get("terminated", {})
-        exit_code = last_terminated.get("exitCode") or cur_terminated.get("exitCode")
+        exit_code = last_terminated.get("exitCode")
+        if exit_code is None:
+            exit_code = cur_terminated.get("exitCode")
         if exit_code == 137:
             oom_pods.append(name)
         pods_summary.append({"name": name, "restarts": restarts, "last_exit": exit_code})
@@ -708,6 +719,9 @@ print(json.dumps({
     near_oom = [f"{p['name']}({p['mem_pct']:.0f}%)" for p in hc_pod_summary
                 if p["mem_pct"] is not None and p["mem_pct"] >= 60 and p["status"] == "Running"]
     if near_oom: report["alerts"].append(f"HC POD HIGH MEM: {', '.join(near_oom)}")
+    top_ws = proc_data.get("services", {}).get("top_workspaces", [])
+    ws_anomalies = [f"{ws}({cnt})" for ws, cnt in top_ws if cnt > 100]
+    if ws_anomalies: report["alerts"].append(f"HIGH WS SERVICES: {', '.join(ws_anomalies)}")
 
     print(json.dumps(report, indent=2))
 
