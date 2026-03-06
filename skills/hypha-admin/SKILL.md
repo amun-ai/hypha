@@ -145,7 +145,7 @@ Examples:
 | Redis clients | 100-140 | >400 |
 | hypha-server CPU | 100-700m | >1500m |
 | hypha-server Memory (RSS) | 800-1200 MB | >3000 MB |
-| Container Memory (kubectl top) | 1200-1600 Mi | >4 Gi |
+| Container Memory (kubectl top) | 1400-1800 Mi | >4 Gi |
 | Open file descriptors | 1200-1400 | >3000 |
 | Active event bus patterns | 80-130 | >300 |
 | Active workspaces | 35-45 | >200 |
@@ -156,7 +156,7 @@ Examples:
 | Pod | Restarts | Root Cause | Status |
 |-----|----------|------------|--------|
 | hypha-server | 3 | OOM killed (exit 137), 8G limit | Monitor memory growth |
-| hypha-weaviate | 85 | OOM killed (exit 137), 6Gi limit — memory bursts under vector search load | Under investigation |
+| hypha-weaviate | 0 (new pod) | Previous pod had 85 OOM restarts; replaced Mar 6 2026. New pod stable at ~115 Mi. | Monitor |
 | bioimageio-colab | 34 | SIGTERM (exit 15) — liveness probe fails when Hypha connection slow | Benign/recurring |
 | deno-app-engine | 21 | Clean exit (0) — intentional restart loop | Normal |
 | hypha-compute | 10 | Clean exit (0) | Normal |
