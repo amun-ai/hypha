@@ -613,6 +613,54 @@ print(json.dumps({
             oom_pods.append(name)
         pods_summary.append({"name": name, "restarts": restarts, "last_exit": exit_code})
 
+    # hc-* pod memory usage
+    def _parse_mem_mi(s: str) -> float:
+        s = s.strip()
+        if s.endswith("Gi"): return float(s[:-2]) * 1024
+        if s.endswith("Mi"): return float(s[:-2])
+        if s.endswith("G"):  return float(s[:-1]) * 1024
+        if s.endswith("M"):  return float(s[:-1])
+        if s.endswith("Ki"): return float(s[:-2]) / 1024
+        return 0.0
+
+    top_mem = {}
+    top_out = _kubectl("top", "pods", "--no-headers")
+    for line in top_out.strip().splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0].startswith("hc-"):
+            top_mem[parts[0]] = parts[2]
+
+    hc_pod_summary = []
+    for item in pods_data.get("items", []):
+        name = item["metadata"]["name"]
+        if not name.startswith("hc-"):
+            continue
+        spec_c = item["spec"]["containers"][0] if item["spec"].get("containers") else {}
+        mem_limit = spec_c.get("resources", {}).get("limits", {}).get("memory", "")
+        mem_used = top_mem.get(name, "")
+        mem_pct = None
+        if mem_limit and mem_used:
+            limit_mi = _parse_mem_mi(mem_limit)
+            used_mi = _parse_mem_mi(mem_used)
+            if limit_mi > 0:
+                mem_pct = round(used_mi / limit_mi * 100, 1)
+        cs = item.get("status", {}).get("containerStatuses", [{}])
+        c = cs[0] if cs else {}
+        cur_term = c.get("state", {}).get("terminated", {})
+        if cur_term.get("reason") == "OOMKilled":
+            status = "OOMKilled"
+        elif c.get("state", {}).get("running"):
+            status = "Running"
+        else:
+            status = item.get("status", {}).get("phase", "Unknown")
+        hc_pod_summary.append({
+            "name": name,
+            "status": status,
+            "mem_limit": mem_limit,
+            "mem_used": mem_used or None,
+            "mem_pct": mem_pct,
+        })
+
     try:
         proc_data = json.loads(out.strip())
     except Exception:
@@ -626,6 +674,7 @@ print(json.dumps({
             "oom_killed": oom_pods,
             "high_restart": [p for p in pods_summary if p["restarts"] >= 10],
         },
+        "hc_pods": hc_pod_summary,
         "alerts": [],
     }
 
@@ -643,6 +692,9 @@ print(json.dumps({
     hb_stuck = proc_data.get("tasks", {}).get("heartbeat_stuck", 0)
     if hb_stuck > 50: report["alerts"].append(f"HEARTBEAT LEAK: {hb_stuck} stuck tasks (run cleanup-tasks)")
     if oom_pods: report["alerts"].append(f"OOM PODS: {', '.join(oom_pods)}")
+    near_oom = [f"{p['name']}({p['mem_pct']:.0f}%)" for p in hc_pod_summary
+                if p["mem_pct"] is not None and p["mem_pct"] >= 60 and p["status"] == "Running"]
+    if near_oom: report["alerts"].append(f"HC POD HIGH MEM: {', '.join(near_oom)}")
 
     print(json.dumps(report, indent=2))
 
