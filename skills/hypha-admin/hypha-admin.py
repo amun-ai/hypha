@@ -585,6 +585,9 @@ not_in_ws = sum(1 for c in clients if c not in ws_set and server_id not in c)
 redis_info = await redis.info("clients")
 import hypha as _hypha
 top_ws = sorted(ws_counts.items(), key=lambda x: -x[1])[:8]
+from collections import Counter as _Counter
+_task_snap = [t for t in asyncio.all_tasks() if not t.done()]
+_top_types = sorted(_Counter(getattr(t.get_coro(), "__qualname__", "?") for t in _task_snap).items(), key=lambda x: -x[1])[:8]
 print(json.dumps({
     "version": _hypha.__version__,
     "process": {
@@ -602,11 +605,11 @@ print(json.dumps({
     "services": {"total": svc_total, "top_workspaces": top_ws},
     "eventbus": {"patterns": eb_m["patterns"]["active"]},
     "tasks": {
-        "total": len(asyncio.all_tasks()),
-        "heartbeat_total": sum(1 for t in asyncio.all_tasks() if not t.done() and "heartbeat" in getattr(t.get_coro(), "__qualname__", "")),
+        "total": len(_task_snap),
+        "heartbeat_total": sum(1 for t in _task_snap if "heartbeat" in getattr(t.get_coro(), "__qualname__", "")),
         "heartbeat_stuck": sum(
-            1 for t in asyncio.all_tasks()
-            if not t.done() and "heartbeat" in getattr(t.get_coro(), "__qualname__", "")
+            1 for t in _task_snap
+            if "heartbeat" in getattr(t.get_coro(), "__qualname__", "")
             and any(
                 f.f_locals.get("method_task") is not None
                 and hasattr(f.f_locals["method_task"], "done")
@@ -614,10 +617,12 @@ print(json.dumps({
                 for f in t.get_stack()
             )
         ),
+        "pending_rpc_calls": sum(1 for t in _task_snap if "Timer._job" in getattr(t.get_coro(), "__qualname__", "")),
         "rpc_object_entries": sum(
             len(v) for r in (o for o in __import__("gc").get_objects() if type(o).__name__ == "RPC" and hasattr(o, "_object_store"))
             for v in r._object_store.values() if isinstance(v, dict)
         ),
+        "top_types": _top_types,
     },
     "ghost_last_seen": len(store._websocket_server._last_seen) - len(ws_set),
 }))
@@ -722,6 +727,8 @@ print(json.dumps({
     if not_in_ws > 5: report["alerts"].append(f"SUSPECT CLIENTS: {not_in_ws} not in WS (run 'zombies' to verify)")
     hb_stuck = proc_data.get("tasks", {}).get("heartbeat_stuck", 0)
     if hb_stuck > 10: report["alerts"].append(f"HEARTBEAT LEAK: {hb_stuck} stuck tasks (run cleanup-tasks)")
+    pending_rpc = proc_data.get("tasks", {}).get("pending_rpc_calls", 0)
+    if pending_rpc > 200: report["alerts"].append(f"HIGH PENDING RPC: {pending_rpc} calls in flight (Timer._job tasks)")
     ghost = proc_data.get("ghost_last_seen", 0)
     if ghost > 0: report["alerts"].append(f"GHOST LAST_SEEN: {ghost} entries (clients disconnected without cleanup)")
     if oom_pods: report["alerts"].append(f"OOM PODS: {', '.join(oom_pods)}")
