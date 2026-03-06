@@ -645,6 +645,12 @@ class WebsocketServer:
                 except Exception as e:
                     logger.debug("Error disconnecting idle WebSocket %s: %s", key, e)
                     self._last_seen.pop(key, None)
+            else:
+                # Ghost entry: in _last_seen but no active WebSocket — clean it up.
+                # This can happen when a reconnection race leaves _last_seen populated
+                # but the WebSocket was already removed from _websockets.
+                logger.debug("Removing ghost _last_seen entry for %s (no active WebSocket)", key)
+                self._last_seen.pop(key, None)
 
     async def _idle_cleanup_loop(self):
         """Periodically disconnect idle connections (prevents explosion without strict rate limiting)."""
