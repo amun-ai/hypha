@@ -447,6 +447,58 @@ async def cmd_pods(server):
     print(_kubectl("top", "pods", "--sort-by=memory"))
 
 
+async def cmd_hc_pods(server):
+    """Show hypha-compute (hc-*) pod status: workspace, memory limit, age, OOM info."""
+    print("=== Hypha-Compute (hc-*) Pods ===")
+    pods_data = _kubectl_json("get", "pods")
+    hc_pods = [p for p in pods_data.get("items", []) if p["metadata"]["name"].startswith("hc-")]
+    if not hc_pods:
+        print("  No hc-* pods found.")
+        return
+
+    # Try to get live memory from kubectl top
+    top_mem = {}
+    top_out = _kubectl("top", "pods", "--no-headers", "--sort-by=memory")
+    for line in top_out.strip().splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0].startswith("hc-"):
+            top_mem[parts[0]] = parts[2]
+
+    print(f"{'Pod':<50} {'Workspace':<25} {'Status':<12} {'MemLimit':<10} {'MemUsed':<10} {'Age'}")
+    print("-" * 120)
+    oom_count = 0
+    running_count = 0
+    for p in sorted(hc_pods, key=lambda x: x["metadata"]["name"]):
+        name = p["metadata"]["name"]
+        labels = p["metadata"].get("labels", {})
+        workspace = labels.get("sandbox-namespace", "?").replace("hc-", "")
+        spec_c = p["spec"]["containers"][0] if p["spec"].get("containers") else {}
+        mem_limit = spec_c.get("resources", {}).get("limits", {}).get("memory", "?")
+        start = p.get("status", {}).get("startTime", "")
+        age = _fmt_age(start) if start else "?"
+        cs = p.get("status", {}).get("containerStatuses", [{}])
+        c = cs[0] if cs else {}
+        state = c.get("state", {})
+        cur_term = state.get("terminated", {})
+        if cur_term.get("reason") == "OOMKilled":
+            status = "OOMKilled"
+            oom_count += 1
+        elif cur_term.get("exitCode") == 0:
+            status = "Completed"
+        elif cur_term:
+            status = f"Exit:{cur_term.get('exitCode','?')}"
+        elif state.get("running"):
+            status = "Running"
+            running_count += 1
+        else:
+            status = p.get("status", {}).get("phase", "?")
+        mem_used = top_mem.get(name, "-")
+        oom_flag = " ⚠" if status == "OOMKilled" else ""
+        print(f"  {name:<48} {workspace:<25} {status:<12} {mem_limit:<10} {mem_used:<10} {age}{oom_flag}")
+
+    print(f"\n  Total: {len(hc_pods)} | Running: {running_count} | OOMKilled: {oom_count}")
+
+
 async def cmd_logs(server, pod: str = ""):
     if not pod:
         # Find hypha-server pod
@@ -714,6 +766,7 @@ COMMANDS = {
     "zombies":        (cmd_zombies,        "Ping-verified zombie detection (~2s per suspect)"),
     "cleanup":        (cmd_cleanup_zombies,"Run orphan cleanup with before/after count"),
     "pods":           (cmd_pods,           "Pod status + resource usage"),
+    "hc-pods":        (cmd_hc_pods,        "Compute (hc-*) pods: workspace, mem limit, status, age"),
     "logs":           (cmd_logs,           "Tail logs [pod-name]"),
     "exec":           (cmd_exec,           "Execute Python on server"),
     "report":         (cmd_report,         "Full JSON health report"),

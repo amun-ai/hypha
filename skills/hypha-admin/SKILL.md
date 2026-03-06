@@ -48,6 +48,7 @@ python3 skills/hypha-admin/hypha-admin.py help
 | `zombies` | Ping only suspect (non-WS) clients; skips alive WS clients | ~5-30s |
 | `cleanup` | Run built-in orphan cleanup with before/after counts | ~120s |
 | `pods` | Pod status + resource usage | ~3s |
+| `hc-pods` | Compute (hc-*) pods: workspace, mem limit, status, OOM | ~3s |
 | `logs [pod]` | Tail logs from hypha-server or specific pod | ~3s |
 | `exec "<code>"` | Execute Python in admin-utils context | varies |
 | `report` | Full JSON health report (for automation/monitoring) | ~10s |
@@ -152,3 +153,12 @@ Examples:
 | bioimageio-colab | 34 | SIGTERM (exit 15) — periodic external restart | Benign |
 | deno-app-engine | 20 | Clean exit (0) — intentional restart loop | Normal |
 | hypha-compute | 10 | Clean exit (0) | Normal |
+| hc-hypha-agents-* | recurring | OOM killed (exit 137), 2Gi limit — ML workloads in agent-sandbox exceed limit after ~1-2h | Needs higher memory limit |
+
+## Hypha-Compute (hc-*) Pod Notes
+
+- `hc-*` pods are Kubernetes **Jobs** spawned by hypha-compute on demand — `restartPolicy: Never`
+- They do NOT auto-restart after OOM; hypha-compute spawns a new pod on next request
+- Image: `oeway/agent-sandbox:0.3.2`, memory limit: 2Gi (as of March 2026)
+- OOM pattern for hypha-agents: pods run ~1-2h then OOM — 2Gi limit too low for ML workloads
+- Use `hc-pods` command to inspect all compute pods and catch recurring OOM cycles
