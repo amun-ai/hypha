@@ -591,8 +591,19 @@ print(json.dumps({
     "eventbus": {"patterns": eb_m["patterns"]["active"]},
     "tasks": {
         "total": len(asyncio.all_tasks()),
-        "heartbeat_stuck": sum(1 for t in asyncio.all_tasks() if not t.done() and "heartbeat" in getattr(t.get_coro(), "__qualname__", "")),
+        "heartbeat_total": sum(1 for t in asyncio.all_tasks() if not t.done() and "heartbeat" in getattr(t.get_coro(), "__qualname__", "")),
+        "heartbeat_stuck": sum(
+            1 for t in asyncio.all_tasks()
+            if not t.done() and "heartbeat" in getattr(t.get_coro(), "__qualname__", "")
+            and any(
+                f.f_locals.get("method_task") is not None
+                and hasattr(f.f_locals["method_task"], "done")
+                and f.f_locals["method_task"].done()
+                for f in t.get_stack()
+            )
+        ),
     },
+    "ghost_last_seen": len(store._websocket_server._last_seen) - len(ws_set),
 }))
 ''', 30)
 
@@ -690,7 +701,9 @@ print(json.dumps({
     if fds > 3000: report["alerts"].append(f"HIGH FDS: {fds}")
     if redis_pool > 500: report["alerts"].append(f"HIGH REDIS POOL: {redis_pool} connections")
     hb_stuck = proc_data.get("tasks", {}).get("heartbeat_stuck", 0)
-    if hb_stuck > 50: report["alerts"].append(f"HEARTBEAT LEAK: {hb_stuck} stuck tasks (run cleanup-tasks)")
+    if hb_stuck > 10: report["alerts"].append(f"HEARTBEAT LEAK: {hb_stuck} stuck tasks (run cleanup-tasks)")
+    ghost = proc_data.get("ghost_last_seen", 0)
+    if ghost > 0: report["alerts"].append(f"GHOST LAST_SEEN: {ghost} entries (clients disconnected without cleanup)")
     if oom_pods: report["alerts"].append(f"OOM PODS: {', '.join(oom_pods)}")
     near_oom = [f"{p['name']}({p['mem_pct']:.0f}%)" for p in hc_pod_summary
                 if p["mem_pct"] is not None and p["mem_pct"] >= 60 and p["status"] == "Running"]
