@@ -121,7 +121,7 @@ async def test_toctou_connection_becomes_active_during_cleanup():
 
 
 async def test_already_removed_connection_skipped():
-    """If a websocket is removed from _websockets before cleanup reaches it, skip it gracefully."""
+    """Ghost _last_seen entry (no active WebSocket) is cleaned up without calling disconnect()."""
     server = _make_server(idle_timeout=60)
     now = time.time()
 
@@ -139,6 +139,7 @@ async def test_already_removed_connection_skipped():
     await server._do_idle_cleanup()
 
     assert disconnected == [], "No disconnect should be called for already-removed connection"
+    assert key not in server._last_seen, "Ghost _last_seen entry must be removed by idle cleanup"
 
 
 async def test_multiple_stale_connections_all_disconnected():
