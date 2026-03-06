@@ -1824,6 +1824,7 @@ class ServerAppController:
                     version=version,
                     context=context,
                     progress_callback=progress_callback,
+                    worker_id=worker_id,
                     **startup_config_kwargs,
                 )
                 # After commit, read the updated artifact to get the collected services
@@ -1953,6 +1954,10 @@ class ServerAppController:
             None,
             description="Callback function to receive progress updates from the app.",
         ),
+        worker_id: Optional[str] = Field(
+            None,
+            description="Specific worker ID to use for starting the verification run. If provided, the worker type must match the app type. If not provided, a worker will be selected automatically within the current workspace.",
+        ),
         context: Optional[dict] = Field(
             None,
             description="Additional context information including user and workspace details. Usually provided automatically by the system.",
@@ -1997,7 +2002,7 @@ class ServerAppController:
                 start_config["progress_callback"] = progress_callback
 
             info = await self.start(
-                app_id, version="stage", stage=True, context=context, **start_config
+                app_id, version="stage", stage=True, context=context, worker_id=worker_id, **start_config
             )
             await self.stop(info["id"], context=context)
 
