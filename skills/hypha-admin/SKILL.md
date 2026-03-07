@@ -174,13 +174,13 @@ Peak hours (daytime UTC+1 to UTC+8) see many concurrent user sessions. Normal ra
 
 | Version | Key Fix | Deployed |
 |---------|---------|---------|
-| 0.21.77 | remove limit_max_requests from uvicorn (PR #932): fixes "connection refused" liveness probe failures | **LIVE** (deployed 2026-03-07, ~08:24 UTC) |
+| 0.21.78 | perf(workspace): batch Redis pipeline for list_services/list_clients/delete_workspace/cleanup_client (PR #934); admin: fast cleanup cmd (O(non-WS) not O(all)), updated thresholds for 2000+ connection scale | Pending |
+| 0.21.77 | remove limit_max_requests from uvicorn (PR #932): fixes "connection refused" liveness probe failures | Deployed 2026-03-07, ~08:24 UTC |
 | 0.21.76 | worker_managed session persist fix (PR #930) | Superseded by 0.21.77 |
 | 0.21.74 | OOM fix: use reason=OOMKilled instead of exitCode=137; worker_id propagation; admin improvements | Superseded |
 | 0.21.73 | hypha-rpc 0.21.33: heartbeat task leak fix; ghost _last_seen cleanup; scan/GC fixes | Included in 0.21.74 |
-| 0.21.72 | hypha-rpc 0.21.32: scan-vs-keys migration, GC fixes | Included in 0.21.74 |
 
-> **Note**: Live server is at **0.21.77** (deployed Mar 7 2026, ~08:24 UTC). Key fix: removed `limit_max_requests=10000` from uvicorn — this was causing "connection refused" liveness probe failures after ~10k requests (reconnection storm after deploy). Heartbeat leak fixed. Redis pool ~560 at 530 active connections (proportional, ~1.06 per connection). Crisis was 1218 pre-upgrade; threshold set at 900.
+> **Note**: Live server is at **0.21.77**. **0.21.78 pending deploy** (PR #934 merged): batches Redis pipeline calls in list_services/list_clients/delete_workspace/cleanup_client — reduces N sequential HGETALL to 1 pipeline round-trip per operation. Significant latency improvement under high load (2000+ services).
 
 ### OOM Detection Note
 - `reason == "OOMKilled"` is the only reliable OOM signal (k8s sets this for memory kills)
