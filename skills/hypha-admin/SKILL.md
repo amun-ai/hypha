@@ -166,28 +166,34 @@ Examples:
 | bioimageio-colab | 35 | SIGTERM (exit 15) — liveness probe fails when Hypha connection slow | Benign/recurring |
 | deno-app-engine | 21 | Clean exit (0) — intentional restart loop | Normal |
 | hypha-biomni | 17 | exit 252 (app error), old hypha-rpc causes built-in service registration to fail | Needs image update |
-| hc-hypha-agents-* | recurring | OOM killed (exit 137, reason=OOMKilled), 2Gi limit — ML workloads exceed limit after ~1-2h | 4Gi fix in hypha-compute (not yet deployed) |
+| hc-hypha-agents-* | recurring | OOM killed (reason=OOMKilled), was 2Gi limit — fixed: 4Gi default in hypha-compute main (Mar 7 2026) | New spawned pods get 4Gi; current running pods keep 2Gi until restart |
 
 ## Version Notes
 
 | Version | Key Fix | Deployed |
 |---------|---------|---------|
-| 0.21.74 | OOM fix: use reason=OOMKilled instead of exitCode=137; admin tool improvements | Pending PR #928 |
-| 0.21.73 | hypha-rpc 0.21.33: heartbeat task leak fix; ghost _last_seen cleanup; worker_id propagation | **LIVE** (deployed 2026-03-07) |
+| 0.21.74 | OOM fix: use reason=OOMKilled instead of exitCode=137; worker_id propagation; admin improvements | CI building (PR #928 merged) |
+| 0.21.73 | hypha-rpc 0.21.33: heartbeat task leak fix; ghost _last_seen cleanup; scan/GC fixes | **LIVE** (deployed 2026-03-07) |
 | 0.21.72 | hypha-rpc 0.21.32: scan-vs-keys migration, GC fixes | Included in 0.21.73 |
 | 0.21.71 | All redis.keys() → scan fixes, anonymous-workspace-unload TOCTOU fix | Included in 0.21.73 |
 
-> **Note**: Live server is at **0.21.73** (deployed Mar 7 2026). Heartbeat leak fixed. Redis pool healthy at ~100 connections.
+> **Note**: Live server is at **0.21.73** (deployed Mar 7 2026). Heartbeat leak fixed. Redis pool healthy at ~100 connections. 0.21.74 deploying soon.
 
 ### OOM Detection Note
 - `reason == "OOMKilled"` is the only reliable OOM signal (k8s sets this for memory kills)
 - `exitCode == 137` alone is NOT sufficient — liveness probe kills also use exit 137 with `reason = "Error"`
-- Admin tool (`report`, `health`) now correctly uses reason check (commit aa1b92dd)
+- Admin tool (`report`, `health`) correctly uses reason check
+
+### Stuck heartbeat tasks (pre-0.21.73)
+- Cause: hypha-rpc <0.21.33 did not cancel heartbeat task on exception/CancelledError
+- Symptom: `report` shows `tasks.heartbeat_stuck > 0`
+- Permanent fix: upgrade server to 0.21.73 (already deployed Mar 7 2026)
 
 ## Hypha-Compute (hc-*) Pod Notes
 
 - `hc-*` pods are Kubernetes **Jobs** spawned by hypha-compute on demand — `restartPolicy: Never`
 - They do NOT auto-restart after OOM; hypha-compute spawns a new pod on next request
-- Image: `oeway/agent-sandbox:0.3.2`, memory limit: 2Gi (as of March 2026)
-- OOM pattern for hypha-agents: pods run ~1-2h then OOM — 2Gi limit too low for ML workloads
+- Image: `oeway/agent-sandbox:0.3.2`, memory limit: **4Gi** (bumped from 2Gi, Mar 7 2026)
+- hypha-compute installs itself from `amun-ai/hypha-compute` GitHub main at startup — no version pin needed
+- Verify active config: `kubectl exec hypha-compute-* -n hypha -- python3 -c "from hypha_compute.worker import ComputeAppConfig; print(ComputeAppConfig().resources)"`
 - Use `hc-pods` command to inspect all compute pods and catch recurring OOM cycles
