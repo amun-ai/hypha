@@ -3435,8 +3435,8 @@ class WorkspaceManager:
             if cursor == 0:
                 break
         logger.info(f"Removing {len(keys)} services for client {client_id} in {cws}")
-        for key in keys:
-            await self._redis.delete(key)
+        if keys:
+            await self._redis.delete(*keys)
 
         await self._event_bus.broadcast(
             cws, "client_disconnected", {"id": client_id, "workspace": cws}
