@@ -551,22 +551,31 @@ class ServerAppController:
         """Store session data in Redis."""
         try:
             key = f"sessions:{full_client_id}"
-            # Store session metadata in Redis (excluding worker instance and None values)
+            # Store session metadata in Redis (excluding internal _-prefixed fields)
             redis_data = {}
+            null_keys = []  # Keys explicitly set to None — remove from Redis hash
             for k, v in session_data.items():
-                if not k.startswith("_") and v is not None:
-                    # Use key prefixes to indicate data type for explicit deserialization
-                    if isinstance(v, list):
-                        redis_data[f"json_list:{k}"] = json.dumps(v)
-                    elif isinstance(v, dict):
-                        redis_data[f"json_dict:{k}"] = json.dumps(v)
-                    elif isinstance(v, bool):
-                        redis_data[k] = int(v)  # Redis doesn't accept bool
-                    elif isinstance(v, (str, bytes, int, float)):
-                        redis_data[k] = v
-                    else:
-                        redis_data[k] = str(v)
-            await self._redis.hset(key, mapping=redis_data)
+                if k.startswith("_"):
+                    continue
+                if v is None:
+                    null_keys.append(k)
+                    continue
+                # Use key prefixes to indicate data type for explicit deserialization
+                if isinstance(v, list):
+                    redis_data[f"json_list:{k}"] = json.dumps(v)
+                elif isinstance(v, dict):
+                    redis_data[f"json_dict:{k}"] = json.dumps(v)
+                elif isinstance(v, bool):
+                    redis_data[k] = int(v)  # Redis doesn't accept bool
+                elif isinstance(v, (str, bytes, int, float)):
+                    redis_data[k] = v
+                else:
+                    redis_data[k] = str(v)
+            if redis_data:
+                await self._redis.hset(key, mapping=redis_data)
+            # Explicitly delete keys set to None so stale values don't persist
+            if null_keys:
+                await self._redis.hdel(key, *null_keys)
             
             # Cache worker instance locally by worker_id
             if "_worker" in session_data and "worker_id" in session_data:
