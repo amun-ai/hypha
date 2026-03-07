@@ -745,6 +745,8 @@ print(json.dumps({
     if hb_stuck > 10: report["alerts"].append(f"HEARTBEAT LEAK: {hb_stuck} stuck tasks (run cleanup-tasks)")
     pending_rpc = proc_data.get("tasks", {}).get("pending_rpc_calls", 0)
     if pending_rpc > 200: report["alerts"].append(f"HIGH PENDING RPC: {pending_rpc} calls in flight (Timer._job tasks)")
+    rpc_obj = proc_data.get("tasks", {}).get("rpc_object_entries", 0)
+    if rpc_obj > 200000: report["alerts"].append(f"HIGH RPC OBJECTS: {rpc_obj} entries in _object_store (>200k, investigate leak)")
     ghost = proc_data.get("ghost_last_seen", 0)
     if ghost > 0: report["alerts"].append(f"GHOST LAST_SEEN: {ghost} entries (clients disconnected without cleanup)")
     if oom_pods: report["alerts"].append(f"OOM PODS: {', '.join(oom_pods)}")
