@@ -131,14 +131,15 @@ async def cmd_health(server):
         last_terminated = container.get("lastState", {}).get("terminated", {})
         cur_terminated = container.get("state", {}).get("terminated", {})
         exit_code = last_terminated.get("exitCode")
+        oom_reason = last_terminated.get("reason") or cur_terminated.get("reason")
         if exit_code is None:
             exit_code = cur_terminated.get("exitCode")
         start = item.get("status", {}).get("startTime", "")
         age = _fmt_age(start)
         oom_flag = ""
-        if exit_code == 137:
+        if oom_reason == "OOMKilled":
             oom_flag = " ⚠ OOM-KILLED"
-            oom_alerts.append(f"{name} (OOM exit code 137)")
+            oom_alerts.append(f"{name} (OOMKilled)")
         print(f"  {name:<50} {phase:<10} restarts={restarts:<4} age={age}{oom_flag}")
 
     if oom_alerts:
@@ -655,9 +656,10 @@ print(json.dumps({
         last_terminated = container.get("lastState", {}).get("terminated", {})
         cur_terminated = container.get("state", {}).get("terminated", {})
         exit_code = last_terminated.get("exitCode")
+        oom_reason = last_terminated.get("reason") or cur_terminated.get("reason")
         if exit_code is None:
             exit_code = cur_terminated.get("exitCode")
-        if exit_code == 137:
+        if oom_reason == "OOMKilled":
             oom_pods.append(name)
         pods_summary.append({"name": name, "restarts": restarts, "last_exit": exit_code})
 
