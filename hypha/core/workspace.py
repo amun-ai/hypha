@@ -1043,8 +1043,8 @@ class WorkspaceManager:
             raise PermissionError(f"Permission denied for workspace {workspace}")
         # delete all the associated keys
         keys = await self._scan_keys(f"{workspace_info.id}:*")
-        for key in keys:
-            await self._redis.delete(key)
+        if keys:
+            await self._redis.delete(*keys)
         if self._s3_controller:
             await self._s3_controller.cleanup_workspace(workspace_info, force=True)
         await self._redis.hdel("workspaces", workspace_info.id)
@@ -3190,8 +3190,8 @@ class WorkspaceManager:
             if not winfo.persistent:
                 # For non-persistent workspaces, always clean up Redis and S3
                 keys = await self._scan_keys(f"{ws}:*")
-                for key in keys:
-                    await self._redis.delete(key)
+                if keys:
+                    await self._redis.delete(*keys)
                 if self._s3_controller:
                     await self._s3_controller.cleanup_workspace(winfo)
                 await self._redis.hdel("workspaces", ws)
@@ -3199,8 +3199,8 @@ class WorkspaceManager:
                 # For persistent workspaces, clean up service data but preserve workspace info
                 if self._s3_controller:
                     keys = await self._scan_keys(f"{ws}:*")
-                    for key in keys:
-                        await self._redis.delete(key)
+                    if keys:
+                        await self._redis.delete(*keys)
                     await self._s3_controller.cleanup_workspace(winfo)
                     # For persistent workspaces, register with activity manager for intelligent cleanup
                     # System workspaces are protected and won't be registered
