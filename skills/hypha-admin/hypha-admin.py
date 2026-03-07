@@ -745,7 +745,7 @@ print(json.dumps({
     if rpc > 600: report["alerts"].append(f"HIGH RPC: {rpc}")
     if svcs > 1500: report["alerts"].append(f"HIGH SERVICES: {svcs}")
     if fds > 3000: report["alerts"].append(f"HIGH FDS: {fds}")
-    if redis_pool > 500: report["alerts"].append(f"HIGH REDIS POOL: {redis_pool} connections")
+    if redis_pool > 900: report["alerts"].append(f"HIGH REDIS POOL: {redis_pool} connections")
     not_in_ws = proc_data.get("connections", {}).get("not_in_ws", 0)
     if not_in_ws > 5: report["alerts"].append(f"SUSPECT CLIENTS: {not_in_ws} not in WS (run 'zombies' to verify)")
     hb_stuck = proc_data.get("tasks", {}).get("heartbeat_stuck", 0)
