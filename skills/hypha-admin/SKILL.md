@@ -164,28 +164,29 @@ Examples:
 | bioimageio-colab | 34 | SIGTERM (exit 15) — liveness probe fails when Hypha connection slow | Benign/recurring |
 | deno-app-engine | 21 | Clean exit (0) — intentional restart loop | Normal |
 | hypha-compute | 10 | Clean exit (0) | Normal |
-| hc-hypha-agents-* | recurring | OOM killed (exit 137), 2Gi limit — ML workloads in agent-sandbox exceed limit after ~1-2h | Needs higher memory limit |
+| hc-hypha-agents-* | recurring | OOM killed (exit 137), was 2Gi limit — fixed: 4Gi default in hypha-compute main (Mar 7 2026) | New spawned pods get 4Gi; current running pods keep 2Gi until restart |
 
 ## Version Notes
 
 | Version | Key Fix | Deployed |
 |---------|---------|---------|
-| 0.21.73 | hypha-rpc 0.21.33: heartbeat task leak fix (cancel on exception/CancelledError) | **Not yet** (live: 0.21.70) |
-| 0.21.72 | hypha-rpc 0.21.32: scan-vs-keys migration, GC fixes | Not yet deployed |
-| 0.21.71 | All redis.keys() → scan fixes, anonymous-workspace-unload TOCTOU fix | Not yet deployed |
+| 0.21.74 | ghost _last_seen fix (#925) + worker_id propagation (#926) | CI building (Mar 7 2026) |
+| 0.21.73 | hypha-rpc 0.21.33: heartbeat task leak fix + scan/GC fixes + anonymous-ws-unload | **YES** (deployed Mar 7 2026) |
+| 0.21.72 | hypha-rpc 0.21.32: scan-vs-keys migration, GC fixes | Included in 0.21.73 |
+| 0.21.71 | All redis.keys() → scan fixes, anonymous-workspace-unload TOCTOU fix | Included in 0.21.73 |
 
-> **Note**: Live server is at 0.21.70. Use `report` → `server.version` to confirm. Upgrade to 0.21.73 will eliminate stuck heartbeat tasks entirely.
+> **Note**: Live server is at 0.21.73. Use `report` → `server.version` to confirm. 0.21.73 includes heartbeat fix — `heartbeat_stuck` should always be 0.
 
 ### Stuck heartbeat tasks (pre-0.21.73)
 - Cause: hypha-rpc <0.21.33 did not cancel heartbeat task on exception/CancelledError
 - Symptom: `report` shows `tasks.heartbeat_stuck > 0`
-- Workaround: Run `cleanup-tasks` to cancel stuck tasks manually
-- Permanent fix: upgrade server to 0.21.73
+- Permanent fix: upgrade server to 0.21.73 (already deployed Mar 7 2026)
 
 ## Hypha-Compute (hc-*) Pod Notes
 
 - `hc-*` pods are Kubernetes **Jobs** spawned by hypha-compute on demand — `restartPolicy: Never`
 - They do NOT auto-restart after OOM; hypha-compute spawns a new pod on next request
-- Image: `oeway/agent-sandbox:0.3.2`, memory limit: 2Gi (as of March 2026)
-- OOM pattern for hypha-agents: pods run ~1-2h then OOM — 2Gi limit too low for ML workloads
+- Image: `oeway/agent-sandbox:0.3.2`, memory limit: **4Gi** (bumped from 2Gi, Mar 7 2026)
+- hypha-compute installs itself from `amun-ai/hypha-compute` GitHub main at startup — no version pin needed
+- Verify active config: `kubectl exec hypha-compute-* -n hypha -- python3 -c "from hypha_compute.worker import ComputeAppConfig; print(ComputeAppConfig().resources)"`
 - Use `hc-pods` command to inspect all compute pods and catch recurring OOM cycles
