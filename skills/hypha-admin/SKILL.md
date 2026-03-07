@@ -174,13 +174,13 @@ Peak hours (daytime UTC+1 to UTC+8) see many concurrent user sessions. Normal ra
 
 | Version | Key Fix | Deployed |
 |---------|---------|---------|
-| 0.21.78 | perf(workspace): batch Redis pipeline for list_services/list_clients/delete_workspace/cleanup_client (PR #934); admin: fast cleanup cmd (O(non-WS) not O(all)), updated thresholds for 2000+ connection scale | Pending |
-| 0.21.77 | remove limit_max_requests from uvicorn (PR #932): fixes "connection refused" liveness probe failures | Deployed 2026-03-07, ~08:24 UTC |
-| 0.21.76 | worker_managed session persist fix (PR #930) | Superseded by 0.21.77 |
+| 0.21.78 | perf(workspace): batch Redis pipeline for list_services/list_clients/delete_workspace/cleanup_client (PR #934); admin: fast cleanup cmd (O(non-WS) not O(all)), updated thresholds for 2000+ connection scale | **LIVE** (deployed 2026-03-07, ~13:14 UTC) |
+| 0.21.77 | remove limit_max_requests from uvicorn (PR #932): fixes "connection refused" liveness probe failures | Superseded by 0.21.78 |
+| 0.21.76 | worker_managed session persist fix (PR #930) | Superseded |
 | 0.21.74 | OOM fix: use reason=OOMKilled instead of exitCode=137; worker_id propagation; admin improvements | Superseded |
-| 0.21.73 | hypha-rpc 0.21.33: heartbeat task leak fix; ghost _last_seen cleanup; scan/GC fixes | Included in 0.21.74 |
+| 0.21.73 | hypha-rpc 0.21.33: heartbeat task leak fix; ghost _last_seen cleanup; scan/GC fixes | Superseded |
 
-> **Note**: Live server is at **0.21.77**. **0.21.78 pending deploy** (PR #934 merged): batches Redis pipeline calls in list_services/list_clients/delete_workspace/cleanup_client — reduces N sequential HGETALL to 1 pipeline round-trip per operation. Significant latency improvement under high load (2000+ services).
+> **Note**: Live server is at **0.21.78** (deployed Mar 7 2026, ~13:14 UTC). Key changes: batched Redis pipeline for workspace list operations (N sequential HGETALL → 1 round-trip); admin `cleanup` cmd now O(non-WS suspects) not O(all clients); alert thresholds updated for peak production scale (5000/8000/6000).
 
 ### OOM Detection Note
 - `reason == "OOMKilled"` is the only reliable OOM signal (k8s sets this for memory kills)
