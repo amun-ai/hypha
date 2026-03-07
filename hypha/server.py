@@ -797,8 +797,6 @@ if __name__ == "__main__":
             port=int(opt.port),
             # Enable HTTP/1.1 keep-alive for connection reuse
             timeout_keep_alive=300,  # Match client keep-alive (5 minutes)
-            # Limit max request body size for security
-            limit_max_requests=10000,  # Restart worker after 10k requests (prevents memory leaks)
             # Enable access log only if needed (disable for production performance)
             access_log=os.environ.get("HYPHA_ACCESS_LOG", "false").lower() == "true",
             # Disable uvicorn's WebSocket protocol-level ping to prevent
