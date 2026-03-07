@@ -954,6 +954,34 @@ async def cmd_scale(server, deployment: str, replicas: int):
     print(out)
 
 
+async def cmd_version_check(server):
+    """Compare live server version against latest GitHub release."""
+    import urllib.request
+    admin = await get_admin(server)
+
+    # Get live version
+    out = await exec_py(admin, "import hypha; print(hypha.__version__)", 10)
+    live_ver = out.strip()
+
+    # Get latest GitHub release
+    url = "https://api.github.com/repos/amun-ai/hypha/releases/latest"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            data = json.loads(resp.read())
+        latest_tag = data.get("tag_name", "?").lstrip("v")
+        published = data.get("published_at", "?")[:10]
+    except Exception as e:
+        latest_tag = f"(error: {e})"
+        published = "?"
+
+    status = "UP TO DATE" if live_ver == latest_tag else "UPGRADE AVAILABLE"
+    flag = "" if live_ver == latest_tag else " ⚠"
+    print(f"=== Version Check ===")
+    print(f"  Live server:     {live_ver}")
+    print(f"  Latest release:  {latest_tag}  (published {published})")
+    print(f"  Status:          {status}{flag}")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 COMMANDS = {
@@ -976,6 +1004,7 @@ COMMANDS = {
     "status":         (cmd_status,         "Full status: health + workspaces + quick-zombies"),
     "kickout":        (cmd_kickout,        "Kick client: kickout <workspace> <client_id>"),
     "scale":          (cmd_scale,          "Scale deployment: scale <name> <replicas>"),
+    "version-check":  (cmd_version_check,  "Compare live server version against latest GitHub release"),
 }
 
 
