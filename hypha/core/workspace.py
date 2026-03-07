@@ -1295,9 +1295,25 @@ class WorkspaceManager:
             if cursor == 0:
                 break
         clients = []
-        for key in set(keys):
-            service = await self._load_service_from_redis(key)
-            if service is None:
+        unique_keys = list(set(keys))
+        if unique_keys:
+            pipeline = self._redis.pipeline()
+            for key in unique_keys:
+                pipeline.hgetall(key)
+            raw_results = await pipeline.execute()
+        else:
+            raw_results = []
+        for key, service_data in zip(unique_keys, raw_results):
+            if not service_data:
+                continue
+            try:
+                service = ServiceInfo.from_redis_dict(service_data, in_bytes=True)
+            except Exception as e:
+                key_str = key.decode("utf-8") if isinstance(key, bytes) else key
+                logger.warning(
+                    "Corrupted service entry %s: %s. Removing from Redis.", key_str, e
+                )
+                await self._redis.delete(key)
                 continue
             if "/" in service.id:
                 client_id = service.id.split("/")[1].split(":")[0]
