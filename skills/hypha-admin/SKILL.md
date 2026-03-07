@@ -172,12 +172,12 @@ Examples:
 
 | Version | Key Fix | Deployed |
 |---------|---------|---------|
-| 0.21.75 | worker_managed session persist fix (PR #930) | CI building (Mar 7 2026) |
+| 0.21.75 | worker_managed session persist fix (PR #930) | **LIVE** (deployed 2026-03-07, 05:48 UTC) |
 | 0.21.74 | OOM fix: use reason=OOMKilled instead of exitCode=137; worker_id propagation; admin improvements | **LIVE** (deployed 2026-03-07) |
 | 0.21.73 | hypha-rpc 0.21.33: heartbeat task leak fix; ghost _last_seen cleanup; scan/GC fixes | Included in 0.21.74 |
 | 0.21.72 | hypha-rpc 0.21.32: scan-vs-keys migration, GC fixes | Included in 0.21.74 |
 
-> **Note**: Live server is at **0.21.74** (deployed Mar 7 2026). Heartbeat leak fixed. Redis pool healthy at ~200-370 connections (was 1218 before upgrade). 0.21.75 deploying soon.
+> **Note**: Live server is at **0.21.75** (deployed Mar 7 2026, 05:48 UTC). Heartbeat leak fixed. Redis pool ~560 at 530 active connections (proportional, ~1.06 per connection). Crisis was 1218 pre-upgrade; threshold set at 900.
 
 ### OOM Detection Note
 - `reason == "OOMKilled"` is the only reliable OOM signal (k8s sets this for memory kills)
