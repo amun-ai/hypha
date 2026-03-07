@@ -405,46 +405,104 @@ print(json.dumps(result, indent=2))
 
 
 async def cmd_cleanup_zombies(server):
-    """Delete services from zombie clients (ping-verified dead)."""
+    """Delete services from zombie clients (ping-verified dead).
+
+    Uses targeted non-WS client detection rather than scanning all clients,
+    making it O(non-WS clients) instead of O(all clients × 3s timeout).
+    """
     print("=== Cleanup Zombie Services ===")
     admin = await get_admin(server)
 
-    count_code = '''
+    cleanup_code = r'''
 import json
-async def _count_svcs():
-    redis = store.get_redis()
-    n = 0
+redis = store.get_redis()
+
+async def _cleanup():
+    ws_server = store._websocket_server
+    ws_set = set(ws_server._websockets.keys())
+
+    # Collect all unique workspace/client_id pairs from Redis service keys
+    rpc_clients = set()
+    async for key in redis.scan_iter(match="services:*|*:*/*:built-in@*", count=500):
+        key_str = key.decode("utf-8") if isinstance(key, bytes) else key
+        parts = key_str.split(":")
+        if len(parts) >= 3 and "/" in parts[2]:
+            rpc_clients.add(parts[2])
+
+    # Only check clients NOT in active WS dict (fast: small set)
+    suspects = [c for c in rpc_clients if c not in ws_set]
+
+    # Count services before
+    before = 0
     async for _ in redis.scan_iter(match="services:*", count=500):
-        n += 1
-    return n
-print(json.dumps({"count": await _count_svcs()}))
+        before += 1
+
+    if not suspects:
+        after = 0
+        async for _ in redis.scan_iter(match="services:*", count=500):
+            after += 1
+        print(json.dumps({"before": before, "after": after, "zombies": [], "deleted_keys": 0}))
+        return
+
+    # Ping each suspect
+    rpc = store.create_rpc("root", store._root_user, client_id="cleanup-checker", silent=True)
+    zombies = []
+    try:
+        for ws_client in suspects:
+            workspace, client_id = ws_client.split("/", 1)
+            if client_id.startswith("manager-") or client_id in ("cleanup-checker", "orphan-checker"):
+                continue
+            try:
+                svc = await rpc.get_remote_service(f"{workspace}/{client_id}:built-in", {"timeout": 2})
+                await svc.ping("ping")
+            except Exception:
+                zombies.append((workspace, client_id))
+    finally:
+        await rpc.disconnect()
+
+    # Delete service keys for confirmed zombies via pipeline
+    deleted = 0
+    if zombies:
+        pipeline = redis.pipeline()
+        for workspace, client_id in zombies:
+            svc_keys = []
+            async for k in redis.scan_iter(match=f"services:*|*:{workspace}/{client_id}:*@*", count=200):
+                svc_keys.append(k)
+                pipeline.delete(k)
+            deleted += len(svc_keys)
+        if deleted:
+            await pipeline.execute()
+
+    after = 0
+    async for _ in redis.scan_iter(match="services:*", count=500):
+        after += 1
+
+    print(json.dumps({
+        "before": before,
+        "after": after,
+        "suspects": len(suspects),
+        "zombies": [f"{ws}/{cid}" for ws, cid in zombies],
+        "deleted_keys": deleted,
+    }))
+
+await _cleanup()
 '''
 
-    # Count before
-    before_out = await exec_py(admin, count_code, 30)
-
-    # Run built-in cleanup
-    out = await exec_py(admin,
-        'await store._cleanup_orphaned_client_services(); print("Cleanup complete")', 120)
-    print(out)
-
-    # Count after
-    after_out = await exec_py(admin, count_code, 30)
-
+    out = await exec_py(admin, cleanup_code, 90)
     try:
-        before = json.loads(before_out.strip()).get("count", "?")
-        after = json.loads(after_out.strip()).get("count", "?")
-        if isinstance(before, int) and isinstance(after, int):
-            removed = before - after
-            if removed >= 0:
-                label = f"removed {removed}"
-            else:
-                label = f"net change: +{-removed} (new services joined during cleanup window)"
-        else:
-            label = "?"
+        data = json.loads(out.strip())
+        before = data["before"]
+        after = data["after"]
+        removed = before - after
+        label = f"removed {removed}" if removed >= 0 else f"net change: +{-removed} (new services joined)"
         print(f"Services: {before} → {after} ({label})")
+        print(f"Suspects checked: {data.get('suspects', 0)} | Zombies found: {len(data.get('zombies', []))} | Keys deleted: {data.get('deleted_keys', 0)}")
+        if data.get("zombies"):
+            print("Cleaned up:")
+            for z in data["zombies"]:
+                print(f"  {z}")
     except Exception:
-        print(f"Before: {before_out.strip()} | After: {after_out.strip()}")
+        print(out)
 
 
 async def cmd_pods(server):
@@ -742,9 +800,9 @@ print(json.dumps({
     redis_pool = proc_data.get("connections", {}).get("redis_pool_connections", 0)
     if mem > 3000: report["alerts"].append(f"HIGH MEMORY (process): {mem} MB")
     if container_mem > 5000: report["alerts"].append(f"HIGH MEMORY (container): {container_mem} MB")
-    if rpc > 600: report["alerts"].append(f"HIGH RPC: {rpc}")
-    if svcs > 1500: report["alerts"].append(f"HIGH SERVICES: {svcs}")
-    if fds > 3000: report["alerts"].append(f"HIGH FDS: {fds}")
+    if rpc > 5000: report["alerts"].append(f"HIGH RPC: {rpc}")
+    if svcs > 8000: report["alerts"].append(f"HIGH SERVICES: {svcs}")
+    if fds > 6000: report["alerts"].append(f"HIGH FDS: {fds}")
     if redis_pool > 900: report["alerts"].append(f"HIGH REDIS POOL: {redis_pool} connections")
     not_in_ws = proc_data.get("connections", {}).get("not_in_ws", 0)
     if not_in_ws > 5: report["alerts"].append(f"SUSPECT CLIENTS: {not_in_ws} not in WS (run 'zombies' to verify)")

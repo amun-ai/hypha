@@ -46,7 +46,7 @@ python3 skills/hypha-admin/hypha-admin.py help
 | `services [ws]` | List services (optionally filter by workspace) | ~5s |
 | `quick-zombies` | WS-dict based zombie check, no ping needed | ~1s |
 | `zombies` | Ping only suspect (non-WS) clients; skips alive WS clients | ~5-30s |
-| `cleanup` | Run built-in orphan cleanup with before/after counts | ~120s |
+| `cleanup` | Targeted orphan cleanup: ping only non-WS suspects, delete confirmed zombies | ~10-30s |
 | `pods` | Pod status + resource usage | ~3s |
 | `hc-pods` | Compute (hc-*) pods: workspace, mem limit, status, OOM | ~3s |
 | `logs [pod]` | Tail logs from hypha-server or specific pod | ~3s |
@@ -127,9 +127,9 @@ Examples:
 - `async for` must be wrapped in `async def` when using `exec`
 - WorkspaceInfo attributes: `.id`, `.name` (NOT subscriptable like dict)
 - UserInfo requires `is_anonymous` field — use `store.get_root_user().model_dump()` for admin context
-- `_cleanup_orphaned_client_services` uses `_scan_keys` (cursor-based scan, NOT `redis.keys()`)
+- `_cleanup_orphaned_client_services` is O(N×3s) where N = all active clients — at 2000+ clients this takes 100+ minutes and is NOT usable at scale. The admin `cleanup` command avoids it by only pinging non-WS suspects (typically <10).
 - `_rapp_*__rlb` clients are app load-balancer instances (hypha-agents) — expected alive in WS dict
-- Typical cleanup: ~30 zombie services removed per run; post-cleanup ~3 suspects remain (all HTTP transport)
+- Typical cleanup: 0-5 zombie services removed per run; suspects are usually 4-7 (mostly HTTP transport alive clients)
 - **Cleanup "net change: +N"**: If services count increases after cleanup, new services came online during the cleanup window. This is NOT an error — cleanup ran but concurrent registrations arrived.
 - `redis` is available directly as a global in exec context; no need to call `store.get_redis()`
 - **hypha-agents high service count is NORMAL**: `hypha-compute-worker` (HTTP transport) registers one proxy service per deployed app + 5 worker slots + 1 built-in. 300-700+ services in hypha-agents = many apps deployed, not a leak. The `HIGH WS SERVICES` alert only fires for `hypha-agents` above **1000** services (not 100) to avoid false positives.
@@ -140,22 +140,24 @@ Examples:
 - **`top_types` in tasks**: Top 8 asyncio task types by count. Typical profile: 6 WS infrastructure types × ~N per connection, plus heartbeats and Timer._job. Use to detect new accumulating patterns. `WebSocketCommonProtocol.*` tasks are 1:1 with WS connections — if they exceed active_ws×6 significantly, connections may be lingering in teardown.
 - **Memory grows with service count**: Each new service registration creates Python routing objects. ~2-3 MB per service. hypha-agents 162 services ≈ +200 MB over baseline. This is expected, not a leak.
 
-## Health Baselines (March 2026, updated for high-load)
+## Health Baselines (March 2026, updated for peak-load scale)
 
-| Metric | Normal Range | Alert Threshold |
-|--------|-------------|-----------------|
-| Active RPC connections | 150-350 | >600 |
-| Active WS connections | 140-300 | >600 |
-| Total Redis services | 300-750 | >1500 |
-| Redis clients | 150-300 | >400 |
-| hypha-server CPU | 100-700m | >1500m |
-| hypha-server Memory (RSS) | 800-2200 MB | >3000 MB |
-| Container Memory (kubectl top) | 1400-2500 Mi | >4 Gi |
-| Open file descriptors | 500-700 | >3000 |
-| Active event bus patterns | 150-350 | >600 |
-| Active workspaces | 35-45 | >200 |
-| RPC object store entries | 20,000-80,000 | >200,000 |
-| Pending RPC calls (Timer._job) | 10-50 (burst: up to 500) | >200 sustained |
+Peak hours (daytime UTC+1 to UTC+8) see many concurrent user sessions. Normal range is much higher than off-peak. Thresholds are set to catch genuine anomalies, not normal daily peaks.
+
+| Metric | Off-peak Range | Peak Range | Alert Threshold |
+|--------|---------------|-----------|-----------------|
+| Active RPC connections | 100-500 | 2000-3000 | >5000 |
+| Active WS connections | 100-500 | 2000-3000 | >5000 |
+| Total Redis services | 200-800 | 2000-3500 | >8000 |
+| Distinct workspaces connected | 50-200 | 1000-2500 | — |
+| Redis clients | 100-300 | 2000-3000 | — |
+| hypha-server CPU | 100-700m | 700-1200m | >1500m |
+| hypha-server Memory (RSS) | 400-600 MB | 1000-2000 MB | >3000 MB |
+| Container Memory (cgroup) | 500-700 Mi | 1400-2000 Mi | >5000 Mi |
+| Open file descriptors | 500-1000 | 2000-3000 | >6000 |
+| Active event bus patterns | 100-500 | 2000-3000 | — |
+| RPC object store entries | 10-30 (0.21.77+) | ~30-100 | >500 sustained |
+| Pending RPC calls (Timer._job) | 10-50 (burst: up to 500) | same | >200 sustained |
 
 ## Known Issues (March 2026)
 

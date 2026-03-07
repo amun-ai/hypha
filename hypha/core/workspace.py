@@ -1043,8 +1043,8 @@ class WorkspaceManager:
             raise PermissionError(f"Permission denied for workspace {workspace}")
         # delete all the associated keys
         keys = await self._scan_keys(f"{workspace_info.id}:*")
-        for key in keys:
-            await self._redis.delete(key)
+        if keys:
+            await self._redis.delete(*keys)
         if self._s3_controller:
             await self._s3_controller.cleanup_workspace(workspace_info, force=True)
         await self._redis.hdel("workspaces", workspace_info.id)
@@ -1295,9 +1295,25 @@ class WorkspaceManager:
             if cursor == 0:
                 break
         clients = []
-        for key in set(keys):
-            service = await self._load_service_from_redis(key)
-            if service is None:
+        unique_keys = list(set(keys))
+        if unique_keys:
+            pipeline = self._redis.pipeline()
+            for key in unique_keys:
+                pipeline.hgetall(key)
+            raw_results = await pipeline.execute()
+        else:
+            raw_results = []
+        for key, service_data in zip(unique_keys, raw_results):
+            if not service_data:
+                continue
+            try:
+                service = ServiceInfo.from_redis_dict(service_data, in_bytes=True)
+            except Exception as e:
+                key_str = key.decode("utf-8") if isinstance(key, bytes) else key
+                logger.warning(
+                    "Corrupted service entry %s: %s. Removing from Redis.", key_str, e
+                )
+                await self._redis.delete(key)
                 continue
             if "/" in service.id:
                 client_id = service.id.split("/")[1].split(":")[0]
@@ -1826,9 +1842,29 @@ class WorkspaceManager:
                         break
 
         services = []
-        for key in set(keys):
-            service_info = await self._load_service_from_redis(key)
-            if service_info is None:
+        unique_keys = list(set(keys))
+        if unique_keys:
+            # Batch-fetch all service hashes in one Redis pipeline round-trip
+            # instead of N sequential HGETALL calls (avoids N+1 latency).
+            pipeline = self._redis.pipeline()
+            for key in unique_keys:
+                pipeline.hgetall(key)
+            raw_results = await pipeline.execute()
+        else:
+            raw_results = []
+        for key, service_data in zip(unique_keys, raw_results):
+            if not service_data:
+                continue
+            try:
+                service_info = ServiceInfo.from_redis_dict(service_data, in_bytes=True)
+            except Exception as e:
+                key_str = key.decode("utf-8") if isinstance(key, bytes) else key
+                logger.warning(
+                    "Corrupted service entry %s: %s. Removing from Redis.",
+                    key_str,
+                    e,
+                )
+                await self._redis.delete(key)
                 continue
             service_dict = service_info.model_dump()
             service_visibility = service_dict.get("config", {}).get("visibility")
@@ -3154,8 +3190,8 @@ class WorkspaceManager:
             if not winfo.persistent:
                 # For non-persistent workspaces, always clean up Redis and S3
                 keys = await self._scan_keys(f"{ws}:*")
-                for key in keys:
-                    await self._redis.delete(key)
+                if keys:
+                    await self._redis.delete(*keys)
                 if self._s3_controller:
                     await self._s3_controller.cleanup_workspace(winfo)
                 await self._redis.hdel("workspaces", ws)
@@ -3163,8 +3199,8 @@ class WorkspaceManager:
                 # For persistent workspaces, clean up service data but preserve workspace info
                 if self._s3_controller:
                     keys = await self._scan_keys(f"{ws}:*")
-                    for key in keys:
-                        await self._redis.delete(key)
+                    if keys:
+                        await self._redis.delete(*keys)
                     await self._s3_controller.cleanup_workspace(winfo)
                     # For persistent workspaces, register with activity manager for intelligent cleanup
                     # System workspaces are protected and won't be registered
@@ -3399,8 +3435,8 @@ class WorkspaceManager:
             if cursor == 0:
                 break
         logger.info(f"Removing {len(keys)} services for client {client_id} in {cws}")
-        for key in keys:
-            await self._redis.delete(key)
+        if keys:
+            await self._redis.delete(*keys)
 
         await self._event_bus.broadcast(
             cws, "client_disconnected", {"id": client_id, "workspace": cws}
