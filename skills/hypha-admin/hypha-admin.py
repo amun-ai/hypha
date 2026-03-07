@@ -724,7 +724,12 @@ print(json.dumps({
             "oom_killed": oom_pods,
             "high_restart": [p for p in pods_summary if p["restarts"] >= 10],
         },
-        "hc_pods": hc_pod_summary,
+        "hc_pods": {
+            "total": len(hc_pod_summary),
+            "running": sum(1 for p in hc_pod_summary if p["status"] == "Running"),
+            "oom_killed": sum(1 for p in hc_pod_summary if p["status"] == "OOMKilled"),
+            "pods": hc_pod_summary,
+        },
         "alerts": [],
     }
 
@@ -737,7 +742,7 @@ print(json.dumps({
     redis_pool = proc_data.get("connections", {}).get("redis_pool_connections", 0)
     if mem > 3000: report["alerts"].append(f"HIGH MEMORY (process): {mem} MB")
     if container_mem > 5000: report["alerts"].append(f"HIGH MEMORY (container): {container_mem} MB")
-    if rpc > 300: report["alerts"].append(f"HIGH RPC: {rpc}")
+    if rpc > 600: report["alerts"].append(f"HIGH RPC: {rpc}")
     if svcs > 1000: report["alerts"].append(f"HIGH SERVICES: {svcs}")
     if fds > 3000: report["alerts"].append(f"HIGH FDS: {fds}")
     if redis_pool > 500: report["alerts"].append(f"HIGH REDIS POOL: {redis_pool} connections")
@@ -753,15 +758,15 @@ print(json.dumps({
     if ghost > 0: report["alerts"].append(f"GHOST LAST_SEEN: {ghost} entries (clients disconnected without cleanup)")
     if oom_pods: report["alerts"].append(f"OOM PODS: {', '.join(oom_pods)}")
     near_oom = [f"{p['name']}({p['mem_pct']:.0f}%)" for p in hc_pod_summary
-                if p["mem_pct"] is not None and p["mem_pct"] >= 60 and p["status"] == "Running"]
+                if p["mem_pct"] is not None and p["mem_pct"] >= 75 and p["status"] == "Running"]
     if near_oom: report["alerts"].append(f"HC POD HIGH MEM: {', '.join(near_oom)}")
     top_ws = proc_data.get("services", {}).get("top_workspaces", [])
-    # hypha-agents is expected to have 100+ services (compute worker proxy registrations)
-    # Only alert at >200 for that workspace; other workspaces alert at >100
+    # hypha-agents is expected to have many services (compute worker proxy registrations per app)
+    # Only alert at >1000 for that workspace; other workspaces alert at >100
     COMPUTE_WORKSPACES = {"hypha-agents"}
     ws_anomalies = [
         f"{ws}({cnt})" for ws, cnt in top_ws
-        if cnt > (200 if ws in COMPUTE_WORKSPACES else 100)
+        if cnt > (1000 if ws in COMPUTE_WORKSPACES else 100)
     ]
     if ws_anomalies: report["alerts"].append(f"HIGH WS SERVICES: {', '.join(ws_anomalies)}")
 
