@@ -161,28 +161,28 @@ Examples:
 
 | Pod | Restarts | Root Cause | Status |
 |-----|----------|------------|--------|
-| hypha-server | 3 | OOM killed (exit 137), 8G limit | Monitor memory growth |
-| hypha-weaviate | 0 (new pod) | Previous pod had 85 OOM restarts; replaced Mar 6 2026. New pod stable at ~115 Mi. | Monitor |
-| bioimageio-colab | 34 | SIGTERM (exit 15) — liveness probe fails when Hypha connection slow | Benign/recurring |
+| hypha-server | 3 | OOM killed (exit 137), 8G limit | Stable — last OOM >3 days ago |
+| hypha-weaviate | 1 | 1 restart during Mar-7 server upgrade (liveness probe kill, NOT OOM). New pod stable at ~117 Mi. | Healthy |
+| bioimageio-colab | 35 | SIGTERM (exit 15) — liveness probe fails when Hypha connection slow | Benign/recurring |
 | deno-app-engine | 21 | Clean exit (0) — intentional restart loop | Normal |
-| hypha-compute | 10 | Clean exit (0) | Normal |
-| hc-hypha-agents-* | recurring | OOM killed (exit 137), 2Gi limit — ML workloads in agent-sandbox exceed limit after ~1-2h | Needs higher memory limit |
+| hypha-biomni | 17 | exit 252 (app error), old hypha-rpc causes built-in service registration to fail | Needs image update |
+| hc-hypha-agents-* | recurring | OOM killed (exit 137, reason=OOMKilled), 2Gi limit — ML workloads exceed limit after ~1-2h | 4Gi fix in hypha-compute (not yet deployed) |
 
 ## Version Notes
 
 | Version | Key Fix | Deployed |
 |---------|---------|---------|
-| 0.21.73 | hypha-rpc 0.21.33: heartbeat task leak fix (cancel on exception/CancelledError) | **Not yet** (live: 0.21.70) |
-| 0.21.72 | hypha-rpc 0.21.32: scan-vs-keys migration, GC fixes | Not yet deployed |
-| 0.21.71 | All redis.keys() → scan fixes, anonymous-workspace-unload TOCTOU fix | Not yet deployed |
+| 0.21.74 | OOM fix: use reason=OOMKilled instead of exitCode=137; admin tool improvements | Pending PR #928 |
+| 0.21.73 | hypha-rpc 0.21.33: heartbeat task leak fix; ghost _last_seen cleanup; worker_id propagation | **LIVE** (deployed 2026-03-07) |
+| 0.21.72 | hypha-rpc 0.21.32: scan-vs-keys migration, GC fixes | Included in 0.21.73 |
+| 0.21.71 | All redis.keys() → scan fixes, anonymous-workspace-unload TOCTOU fix | Included in 0.21.73 |
 
-> **Note**: Live server is at 0.21.70. Use `report` → `server.version` to confirm. Upgrade to 0.21.73 will eliminate stuck heartbeat tasks entirely.
+> **Note**: Live server is at **0.21.73** (deployed Mar 7 2026). Heartbeat leak fixed. Redis pool healthy at ~100 connections.
 
-### Stuck heartbeat tasks (pre-0.21.73)
-- Cause: hypha-rpc <0.21.33 did not cancel heartbeat task on exception/CancelledError
-- Symptom: `report` shows `tasks.heartbeat_stuck > 0`
-- Workaround: Run `cleanup-tasks` to cancel stuck tasks manually
-- Permanent fix: upgrade server to 0.21.73
+### OOM Detection Note
+- `reason == "OOMKilled"` is the only reliable OOM signal (k8s sets this for memory kills)
+- `exitCode == 137` alone is NOT sufficient — liveness probe kills also use exit 137 with `reason = "Error"`
+- Admin tool (`report`, `health`) now correctly uses reason check (commit aa1b92dd)
 
 ## Hypha-Compute (hc-*) Pod Notes
 
