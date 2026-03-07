@@ -131,14 +131,15 @@ async def cmd_health(server):
         last_terminated = container.get("lastState", {}).get("terminated", {})
         cur_terminated = container.get("state", {}).get("terminated", {})
         exit_code = last_terminated.get("exitCode")
+        oom_reason = last_terminated.get("reason") or cur_terminated.get("reason")
         if exit_code is None:
             exit_code = cur_terminated.get("exitCode")
         start = item.get("status", {}).get("startTime", "")
         age = _fmt_age(start)
         oom_flag = ""
-        if exit_code == 137:
+        if oom_reason == "OOMKilled":
             oom_flag = " ⚠ OOM-KILLED"
-            oom_alerts.append(f"{name} (OOM exit code 137)")
+            oom_alerts.append(f"{name} (OOMKilled)")
         print(f"  {name:<50} {phase:<10} restarts={restarts:<4} age={age}{oom_flag}")
 
     if oom_alerts:
@@ -655,9 +656,10 @@ print(json.dumps({
         last_terminated = container.get("lastState", {}).get("terminated", {})
         cur_terminated = container.get("state", {}).get("terminated", {})
         exit_code = last_terminated.get("exitCode")
+        oom_reason = last_terminated.get("reason") or cur_terminated.get("reason")
         if exit_code is None:
             exit_code = cur_terminated.get("exitCode")
-        if exit_code == 137:
+        if oom_reason == "OOMKilled":
             oom_pods.append(name)
         pods_summary.append({"name": name, "restarts": restarts, "last_exit": exit_code})
 
@@ -745,6 +747,8 @@ print(json.dumps({
     if hb_stuck > 10: report["alerts"].append(f"HEARTBEAT LEAK: {hb_stuck} stuck tasks (run cleanup-tasks)")
     pending_rpc = proc_data.get("tasks", {}).get("pending_rpc_calls", 0)
     if pending_rpc > 200: report["alerts"].append(f"HIGH PENDING RPC: {pending_rpc} calls in flight (Timer._job tasks)")
+    rpc_obj = proc_data.get("tasks", {}).get("rpc_object_entries", 0)
+    if rpc_obj > 200000: report["alerts"].append(f"HIGH RPC OBJECTS: {rpc_obj} entries in _object_store (>200k, investigate leak)")
     ghost = proc_data.get("ghost_last_seen", 0)
     if ghost > 0: report["alerts"].append(f"GHOST LAST_SEEN: {ghost} entries (clients disconnected without cleanup)")
     if oom_pods: report["alerts"].append(f"OOM PODS: {', '.join(oom_pods)}")
@@ -871,6 +875,60 @@ print(json.dumps(data))
         print(out)
 
 
+async def cmd_sessions(server):
+    """List active app sessions in Redis with status and metadata summary."""
+    print("=== Active App Sessions ===")
+    admin = await get_admin(server)
+    out = await exec_py(admin, '''
+import json, time
+
+async def get_sessions():
+    keys = []
+    async for k in redis.scan_iter("sessions:*"):
+        keys.append(k.decode())
+
+    rows = []
+    for key in keys:
+        data = await redis.hgetall(key)
+        ttl = await redis.ttl(key)
+        fields = {fk.decode(): fv.decode() for fk, fv in data.items()}
+        # Extract workspace/client from key: sessions:<ws>/<client_id>
+        parts = key.split(":", 1)
+        ws_client = parts[1] if len(parts) > 1 else key
+        ws = ws_client.split("/")[0] if "/" in ws_client else ws_client
+        app_id = fields.get("app_id", fields.get("alias", "?"))
+        status = fields.get("status", "?")
+        worker_id = fields.get("worker_id", "")
+        worker_id_short = worker_id[-12:] if worker_id else ""
+        rows.append({
+            "key": ws_client,
+            "workspace": ws,
+            "app_id": app_id,
+            "status": status,
+            "worker_id": worker_id_short,
+            "ttl": ttl,
+            "fields": len(fields),
+        })
+    return sorted(rows, key=lambda r: r["workspace"])
+
+rows = await get_sessions()
+print(json.dumps(rows))
+''', 20)
+    try:
+        rows = json.loads(out.strip())
+        if not rows:
+            print("No active sessions in Redis.")
+            return
+        print(f"{'Workspace/Client':<40} {'App':<25} {'Status':<12} {'TTL':>6} {'Fields':>6}")
+        print("-" * 94)
+        for r in rows:
+            ttl_str = f"{r['ttl']}s" if r["ttl"] > 0 else "no-ttl"
+            print(f"  {r['key'][:38]:<38} {r['app_id'][:23]:<25} {r['status']:<12} {ttl_str:>6} {r['fields']:>6}")
+        print(f"\nTotal: {len(rows)} sessions")
+    except Exception:
+        print(out)
+
+
 async def cmd_status(server):
     await cmd_health(server)
     print()
@@ -944,6 +1002,7 @@ COMMANDS = {
     "cleanup-tasks":  (cmd_cleanup_tasks,  "Cancel stuck heartbeat tasks (method already done)"),
     "tasks":          (cmd_tasks,          "Asyncio task breakdown by type (leak detection)"),
     "clients":        (cmd_clients,        "Active clients per workspace with service count"),
+    "sessions":       (cmd_sessions,       "List active app sessions in Redis with status/TTL"),
     "status":         (cmd_status,         "Full status: health + workspaces + quick-zombies"),
     "kickout":        (cmd_kickout,        "Kick client: kickout <workspace> <client_id>"),
     "scale":          (cmd_scale,          "Scale deployment: scale <name> <replicas>"),

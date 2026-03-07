@@ -146,7 +146,7 @@ replicaCount: 1
 image:
   repository: ghcr.io/amun-ai/hypha
   pullPolicy: IfNotPresent
-  tag: "0.21.73"
+  tag: "0.21.74"
 
 serviceAccount:
   create: true

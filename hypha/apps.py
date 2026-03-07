@@ -557,22 +557,31 @@ class ServerAppController:
         """Store session data in Redis."""
         try:
             key = f"sessions:{full_client_id}"
-            # Store session metadata in Redis (excluding worker instance and None values)
+            # Store session metadata in Redis (excluding internal _-prefixed fields)
             redis_data = {}
+            null_keys = []  # Keys explicitly set to None — remove from Redis hash
             for k, v in session_data.items():
-                if not k.startswith("_") and v is not None:
-                    # Use key prefixes to indicate data type for explicit deserialization
-                    if isinstance(v, list):
-                        redis_data[f"json_list:{k}"] = json.dumps(v)
-                    elif isinstance(v, dict):
-                        redis_data[f"json_dict:{k}"] = json.dumps(v)
-                    elif isinstance(v, bool):
-                        redis_data[k] = int(v)  # Redis doesn't accept bool
-                    elif isinstance(v, (str, bytes, int, float)):
-                        redis_data[k] = v
-                    else:
-                        redis_data[k] = str(v)
-            await self._redis.hset(key, mapping=redis_data)
+                if k.startswith("_"):
+                    continue
+                if v is None:
+                    null_keys.append(k)
+                    continue
+                # Use key prefixes to indicate data type for explicit deserialization
+                if isinstance(v, list):
+                    redis_data[f"json_list:{k}"] = json.dumps(v)
+                elif isinstance(v, dict):
+                    redis_data[f"json_dict:{k}"] = json.dumps(v)
+                elif isinstance(v, bool):
+                    redis_data[k] = int(v)  # Redis doesn't accept bool
+                elif isinstance(v, (str, bytes, int, float)):
+                    redis_data[k] = v
+                else:
+                    redis_data[k] = str(v)
+            if redis_data:
+                await self._redis.hset(key, mapping=redis_data)
+            # Explicitly delete keys set to None so stale values don't persist
+            if null_keys:
+                await self._redis.hdel(key, *null_keys)
             
             # Cache worker instance locally by worker_id
             if "_worker" in session_data and "worker_id" in session_data:
@@ -1830,6 +1839,7 @@ class ServerAppController:
                     version=version,
                     context=context,
                     progress_callback=progress_callback,
+                    worker_id=worker_id,
                     **startup_config_kwargs,
                 )
                 # After commit, read the updated artifact to get the collected services
@@ -1959,6 +1969,10 @@ class ServerAppController:
             None,
             description="Callback function to receive progress updates from the app.",
         ),
+        worker_id: Optional[str] = Field(
+            None,
+            description="Specific worker ID to use for starting the verification run. If provided, the worker type must match the app type. If not provided, a worker will be selected automatically within the current workspace.",
+        ),
         context: Optional[dict] = Field(
             None,
             description="Additional context information including user and workspace details. Usually provided automatically by the system.",
@@ -2003,7 +2017,7 @@ class ServerAppController:
                 start_config["progress_callback"] = progress_callback
 
             info = await self.start(
-                app_id, version="stage", stage=True, context=context, **start_config
+                app_id, version="stage", stage=True, context=context, worker_id=worker_id, **start_config
             )
             await self.stop(info["id"], context=context)
 

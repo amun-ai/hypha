@@ -54,6 +54,7 @@ python3 skills/hypha-admin/hypha-admin.py help
 | `tasks` | List all asyncio task types with counts; shows stuck heartbeats | ~5s |
 | `cleanup-tasks` | Cancel stuck heartbeat tasks (method_task already done) | ~5s |
 | `clients` | List all connected clients with workspace and WS status | ~5s |
+| `sessions` | List active app sessions in Redis with app_id, status, TTL | ~5s |
 | `report` | Full JSON health report (for automation/monitoring) | ~10s |
 | `status` | Full status: health + workspaces + quick-zombies | ~15s |
 | `kickout <ws> <client>` | Kick a client from a workspace | ~3s |
@@ -135,6 +136,7 @@ Examples:
 - **`report` includes `top_workspaces`**: The services section now includes top 8 workspaces by service count. `HIGH WS SERVICES` alert threshold is 100 for normal workspaces, 200 for compute worker workspaces (hypha-agents).
 - **`rpc_object_entries` in tasks**: The `report` now tracks total entries across all RPC `_object_store` dicts. Normal baseline: 50,000-80,000 entries (mostly service method registrations for hypha-compute-worker). Rapid growth beyond 200,000 would indicate a leak. Each service with N methods contributes ~N entries; entries are cleaned up when the owning client disconnects.
 - **`pending_rpc_calls` in tasks**: Count of `Timer._job` asyncio tasks, one per active in-flight RPC call (each call creates a 30s timeout timer). Normal: 10-50. A burst to 200-500 is transient — it means many concurrent calls fired at once (e.g. hypha-agents starting many services). Alert fires at >200. Does NOT indicate a leak — these tasks complete once the call resolves or times out.
+- **`_session_gc_loop` tasks in top_types**: One `RPC._session_gc_loop` task per active RPC instance on the server (e.g., 7-10 tasks is normal). Each sweeps `_object_store` sessions with no activity older than `_session_ttl`. Not a leak; completely normal background maintenance.
 - **`top_types` in tasks**: Top 8 asyncio task types by count. Typical profile: 6 WS infrastructure types × ~N per connection, plus heartbeats and Timer._job. Use to detect new accumulating patterns. `WebSocketCommonProtocol.*` tasks are 1:1 with WS connections — if they exceed active_ws×6 significantly, connections may be lingering in teardown.
 - **Memory grows with service count**: Each new service registration creates Python routing objects. ~2-3 MB per service. hypha-agents 162 services ≈ +200 MB over baseline. This is expected, not a leak.
 
@@ -159,23 +161,28 @@ Examples:
 
 | Pod | Restarts | Root Cause | Status |
 |-----|----------|------------|--------|
-| hypha-server | 3 | OOM killed (exit 137), 8G limit | Monitor memory growth |
-| hypha-weaviate | 0 (new pod) | Previous pod had 85 OOM restarts; replaced Mar 6 2026. New pod stable at ~115 Mi. | Monitor |
-| bioimageio-colab | 34 | SIGTERM (exit 15) — liveness probe fails when Hypha connection slow | Benign/recurring |
+| hypha-server | 3 | OOM killed (exit 137), 8G limit | Stable — last OOM >3 days ago |
+| hypha-weaviate | 1 | 1 restart during Mar-7 server upgrade (liveness probe kill, NOT OOM). New pod stable at ~117 Mi. | Healthy |
+| bioimageio-colab | 35 | SIGTERM (exit 15) — liveness probe fails when Hypha connection slow | Benign/recurring |
 | deno-app-engine | 21 | Clean exit (0) — intentional restart loop | Normal |
-| hypha-compute | 10 | Clean exit (0) | Normal |
-| hc-hypha-agents-* | recurring | OOM killed (exit 137), was 2Gi limit — fixed: 4Gi default in hypha-compute main (Mar 7 2026) | New spawned pods get 4Gi; current running pods keep 2Gi until restart |
+| hypha-biomni | 17 | exit 252 (app error), old hypha-rpc causes built-in service registration to fail | Needs image update |
+| hc-hypha-agents-* | recurring | OOM killed (reason=OOMKilled), was 2Gi limit — fixed: 4Gi default in hypha-compute main (Mar 7 2026) | New spawned pods get 4Gi; current running pods keep 2Gi until restart |
 
 ## Version Notes
 
 | Version | Key Fix | Deployed |
 |---------|---------|---------|
-| 0.21.74 | ghost _last_seen fix (#925) + worker_id propagation (#926) | CI building (Mar 7 2026) |
-| 0.21.73 | hypha-rpc 0.21.33: heartbeat task leak fix + scan/GC fixes + anonymous-ws-unload | **YES** (deployed Mar 7 2026) |
+| 0.21.74 | OOM fix: use reason=OOMKilled instead of exitCode=137; worker_id propagation; admin improvements | CI building (PR #928 merged) |
+| 0.21.73 | hypha-rpc 0.21.33: heartbeat task leak fix; ghost _last_seen cleanup; scan/GC fixes | **LIVE** (deployed 2026-03-07) |
 | 0.21.72 | hypha-rpc 0.21.32: scan-vs-keys migration, GC fixes | Included in 0.21.73 |
 | 0.21.71 | All redis.keys() → scan fixes, anonymous-workspace-unload TOCTOU fix | Included in 0.21.73 |
 
-> **Note**: Live server is at 0.21.73. Use `report` → `server.version` to confirm. 0.21.73 includes heartbeat fix — `heartbeat_stuck` should always be 0.
+> **Note**: Live server is at **0.21.73** (deployed Mar 7 2026). Heartbeat leak fixed. Redis pool healthy at ~100 connections. 0.21.74 deploying soon.
+
+### OOM Detection Note
+- `reason == "OOMKilled"` is the only reliable OOM signal (k8s sets this for memory kills)
+- `exitCode == 137` alone is NOT sufficient — liveness probe kills also use exit 137 with `reason = "Error"`
+- Admin tool (`report`, `health`) correctly uses reason check
 
 ### Stuck heartbeat tasks (pre-0.21.73)
 - Cause: hypha-rpc <0.21.33 did not cancel heartbeat task on exception/CancelledError
