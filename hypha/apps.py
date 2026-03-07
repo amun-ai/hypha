@@ -449,10 +449,16 @@ class ServerAppController:
                 # Do NOT stop them on disconnect — only explicit stop() calls
                 # or the inactivity tracker should terminate them.
                 is_daemon = session_data.get("daemon") in (True, 1, "1")
+                is_worker_managed = session_data.get("worker_managed") in (True, 1, "1")
                 if is_daemon:
                     logger.info(
                         f"Daemon session {full_client_id} disconnected, "
                         f"keeping alive (will reconnect)"
+                    )
+                elif is_worker_managed:
+                    logger.info(
+                        f"Worker-managed session {full_client_id} disconnected, "
+                        f"keeping alive (worker controls lifecycle)"
                     )
                 else:
                     # Get worker from cache
@@ -2259,6 +2265,7 @@ class ServerAppController:
             ),
             "worker_id": worker.id,
             "daemon": manifest.daemon,
+            "worker_managed": manifest.worker_managed,
         }
         # Return session_data instead of just the client_id
         # The caller (start method) will store it in Redis after adding services

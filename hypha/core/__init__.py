@@ -545,6 +545,7 @@ class ApplicationManifest(Artifact):
     entry_point: Optional[str] = None  # entry point for the application
     daemon: Optional[bool] = False  # whether the application is a daemon
     singleton: Optional[bool] = False  # whether the application is a singleton
+    worker_managed: Optional[bool] = False  # lifecycle managed by worker (don't stop on client disconnect)
     services: Optional[List[SerializeAsAny[ServiceInfo]]] = None  # for application
     startup_config: Optional[Dict[str, Any]] = None  # default startup configuration
     service_selection_mode: Optional[str] = (
