@@ -132,29 +132,29 @@ Examples:
 - Typical cleanup: ~30 zombie services removed per run; post-cleanup ~3 suspects remain (all HTTP transport)
 - **Cleanup "net change: +N"**: If services count increases after cleanup, new services came online during the cleanup window. This is NOT an error — cleanup ran but concurrent registrations arrived.
 - `redis` is available directly as a global in exec context; no need to call `store.get_redis()`
-- **hypha-agents high service count is NORMAL**: `hypha-compute-worker` (HTTP transport) registers one proxy service per deployed app + 5 worker slots + 1 built-in. 120+ services in hypha-agents = many apps deployed, not a leak. The `HIGH WS SERVICES` alert only fires for `hypha-agents` above 200 services (not 100) to avoid false positives.
-- **`report` includes `top_workspaces`**: The services section now includes top 8 workspaces by service count. `HIGH WS SERVICES` alert threshold is 100 for normal workspaces, 200 for compute worker workspaces (hypha-agents).
+- **hypha-agents high service count is NORMAL**: `hypha-compute-worker` (HTTP transport) registers one proxy service per deployed app + 5 worker slots + 1 built-in. 300-700+ services in hypha-agents = many apps deployed, not a leak. The `HIGH WS SERVICES` alert only fires for `hypha-agents` above **1000** services (not 100) to avoid false positives.
+- **`report` includes `top_workspaces`**: The services section now includes top 8 workspaces by service count. `HIGH WS SERVICES` alert threshold is 100 for normal workspaces, **1000** for compute worker workspaces (hypha-agents).
 - **`rpc_object_entries` in tasks**: The `report` now tracks total entries across all RPC `_object_store` dicts. Normal baseline: 50,000-80,000 entries (mostly service method registrations for hypha-compute-worker). Rapid growth beyond 200,000 would indicate a leak. Each service with N methods contributes ~N entries; entries are cleaned up when the owning client disconnects.
 - **`pending_rpc_calls` in tasks**: Count of `Timer._job` asyncio tasks, one per active in-flight RPC call (each call creates a 30s timeout timer). Normal: 10-50. A burst to 200-500 is transient — it means many concurrent calls fired at once (e.g. hypha-agents starting many services). Alert fires at >200. Does NOT indicate a leak — these tasks complete once the call resolves or times out.
 - **`_session_gc_loop` tasks in top_types**: One `RPC._session_gc_loop` task per active RPC instance on the server (e.g., 7-10 tasks is normal). Each sweeps `_object_store` sessions with no activity older than `_session_ttl`. Not a leak; completely normal background maintenance.
 - **`top_types` in tasks**: Top 8 asyncio task types by count. Typical profile: 6 WS infrastructure types × ~N per connection, plus heartbeats and Timer._job. Use to detect new accumulating patterns. `WebSocketCommonProtocol.*` tasks are 1:1 with WS connections — if they exceed active_ws×6 significantly, connections may be lingering in teardown.
 - **Memory grows with service count**: Each new service registration creates Python routing objects. ~2-3 MB per service. hypha-agents 162 services ≈ +200 MB over baseline. This is expected, not a leak.
 
-## Health Baselines (March 2026)
+## Health Baselines (March 2026, updated for high-load)
 
 | Metric | Normal Range | Alert Threshold |
 |--------|-------------|-----------------|
-| Active RPC connections | 80-130 | >300 |
-| Active WS connections | 80-115 | >300 |
-| Total Redis services | 250-330 | >1000 |
-| Redis clients | 100-140 | >400 |
+| Active RPC connections | 150-350 | >600 |
+| Active WS connections | 140-300 | >600 |
+| Total Redis services | 300-750 | >1500 |
+| Redis clients | 150-300 | >400 |
 | hypha-server CPU | 100-700m | >1500m |
-| hypha-server Memory (RSS) | 800-1200 MB | >3000 MB |
-| Container Memory (kubectl top) | 1400-1800 Mi | >4 Gi |
-| Open file descriptors | 1200-1400 | >3000 |
-| Active event bus patterns | 80-130 | >300 |
+| hypha-server Memory (RSS) | 800-2200 MB | >3000 MB |
+| Container Memory (kubectl top) | 1400-2500 Mi | >4 Gi |
+| Open file descriptors | 500-700 | >3000 |
+| Active event bus patterns | 150-350 | >600 |
 | Active workspaces | 35-45 | >200 |
-| RPC object store entries | 50,000-80,000 | >200,000 |
+| RPC object store entries | 20,000-80,000 | >200,000 |
 | Pending RPC calls (Timer._job) | 10-50 (burst: up to 500) | >200 sustained |
 
 ## Known Issues (March 2026)
@@ -166,18 +166,18 @@ Examples:
 | bioimageio-colab | 35 | SIGTERM (exit 15) — liveness probe fails when Hypha connection slow | Benign/recurring |
 | deno-app-engine | 21 | Clean exit (0) — intentional restart loop | Normal |
 | hypha-biomni | 17 | exit 252 (app error), old hypha-rpc causes built-in service registration to fail | Needs image update |
-| hc-hypha-agents-* | recurring | OOM killed (reason=OOMKilled), was 2Gi limit — fixed: 4Gi default in hypha-compute main (Mar 7 2026) | New spawned pods get 4Gi; current running pods keep 2Gi until restart |
+| hc-hypha-agents-* | recurring | OOM killed (reason=OOMKilled): 2Gi limit bumped to 4Gi (early Mar 7 2026), then OOMed again at 94-97% → bumped to **6Gi** via kubectl patch (Mar 7 2026) | All new pods get 6Gi; running pods keep old limit until OOM cycle |
 
 ## Version Notes
 
 | Version | Key Fix | Deployed |
 |---------|---------|---------|
-| 0.21.74 | OOM fix: use reason=OOMKilled instead of exitCode=137; worker_id propagation; admin improvements | CI building (PR #928 merged) |
-| 0.21.73 | hypha-rpc 0.21.33: heartbeat task leak fix; ghost _last_seen cleanup; scan/GC fixes | **LIVE** (deployed 2026-03-07) |
-| 0.21.72 | hypha-rpc 0.21.32: scan-vs-keys migration, GC fixes | Included in 0.21.73 |
-| 0.21.71 | All redis.keys() → scan fixes, anonymous-workspace-unload TOCTOU fix | Included in 0.21.73 |
+| 0.21.75 | worker_managed session persist fix (PR #930) | CI building (Mar 7 2026) |
+| 0.21.74 | OOM fix: use reason=OOMKilled instead of exitCode=137; worker_id propagation; admin improvements | **LIVE** (deployed 2026-03-07) |
+| 0.21.73 | hypha-rpc 0.21.33: heartbeat task leak fix; ghost _last_seen cleanup; scan/GC fixes | Included in 0.21.74 |
+| 0.21.72 | hypha-rpc 0.21.32: scan-vs-keys migration, GC fixes | Included in 0.21.74 |
 
-> **Note**: Live server is at **0.21.73** (deployed Mar 7 2026). Heartbeat leak fixed. Redis pool healthy at ~100 connections. 0.21.74 deploying soon.
+> **Note**: Live server is at **0.21.74** (deployed Mar 7 2026). Heartbeat leak fixed. Redis pool healthy at ~200-370 connections (was 1218 before upgrade). 0.21.75 deploying soon.
 
 ### OOM Detection Note
 - `reason == "OOMKilled"` is the only reliable OOM signal (k8s sets this for memory kills)
@@ -193,7 +193,7 @@ Examples:
 
 - `hc-*` pods are Kubernetes **Jobs** spawned by hypha-compute on demand — `restartPolicy: Never`
 - They do NOT auto-restart after OOM; hypha-compute spawns a new pod on next request
-- Image: `oeway/agent-sandbox:0.3.2`, memory limit: **4Gi** (bumped from 2Gi, Mar 7 2026)
+- Image: `oeway/agent-sandbox:0.3.2`, memory limit: **6Gi** (bumped 2Gi→4Gi→6Gi, all Mar 7 2026)
 - hypha-compute installs itself from `amun-ai/hypha-compute` GitHub main at startup — no version pin needed
 - Verify active config: `kubectl exec hypha-compute-* -n hypha -- python3 -c "from hypha_compute.worker import ComputeAppConfig; print(ComputeAppConfig().resources)"`
 - Use `hc-pods` command to inspect all compute pods and catch recurring OOM cycles
