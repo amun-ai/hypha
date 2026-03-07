@@ -947,7 +947,7 @@ async def cmd_kickout(server, workspace: str, client_id: str):
     out = await exec_py(admin, f'''
 import json
 try:
-    result = await store.kickout_client("{client_id}", context={{"ws": "ws-user-root", "user": store.get_root_user().model_dump()}})
+    result = await store.kickout_client("{workspace}", "{client_id}", 1001, "Admin kickout")
     print(json.dumps({{"kicked": True, "result": str(result)}}))
 except Exception as e:
     print(json.dumps({{"kicked": False, "error": str(e)}}))
