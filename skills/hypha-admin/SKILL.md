@@ -54,6 +54,7 @@ python3 skills/hypha-admin/hypha-admin.py help
 | `tasks` | List all asyncio task types with counts; shows stuck heartbeats | ~5s |
 | `cleanup-tasks` | Cancel stuck heartbeat tasks (method_task already done) | ~5s |
 | `clients` | List all connected clients with workspace and WS status | ~5s |
+| `sessions` | List active app sessions in Redis with app_id, status, TTL | ~5s |
 | `report` | Full JSON health report (for automation/monitoring) | ~10s |
 | `status` | Full status: health + workspaces + quick-zombies | ~15s |
 | `kickout <ws> <client>` | Kick a client from a workspace | ~3s |
