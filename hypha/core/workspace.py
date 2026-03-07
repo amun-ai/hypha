@@ -1826,9 +1826,29 @@ class WorkspaceManager:
                         break
 
         services = []
-        for key in set(keys):
-            service_info = await self._load_service_from_redis(key)
-            if service_info is None:
+        unique_keys = list(set(keys))
+        if unique_keys:
+            # Batch-fetch all service hashes in one Redis pipeline round-trip
+            # instead of N sequential HGETALL calls (avoids N+1 latency).
+            pipeline = self._redis.pipeline()
+            for key in unique_keys:
+                pipeline.hgetall(key)
+            raw_results = await pipeline.execute()
+        else:
+            raw_results = []
+        for key, service_data in zip(unique_keys, raw_results):
+            if not service_data:
+                continue
+            try:
+                service_info = ServiceInfo.from_redis_dict(service_data, in_bytes=True)
+            except Exception as e:
+                key_str = key.decode("utf-8") if isinstance(key, bytes) else key
+                logger.warning(
+                    "Corrupted service entry %s: %s. Removing from Redis.",
+                    key_str,
+                    e,
+                )
+                await self._redis.delete(key)
                 continue
             service_dict = service_info.model_dump()
             service_visibility = service_dict.get("config", {}).get("visibility")
