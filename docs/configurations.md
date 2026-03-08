@@ -1044,6 +1044,14 @@ Each user has a maximum number of workspaces they can own. The root user is exem
 |---------------------|---------|-------------|
 | `HYPHA_MAX_WORKSPACES_PER_USER` | `100` | Maximum number of workspaces a single user can own |
 
+### Connection Admission Control
+
+To prevent reconnection storms (e.g., after a server restart, when dozens of clients reconnect simultaneously) from saturating the event loop and Redis, Hypha limits the number of WebSocket connections being set up concurrently. Excess connections wait in a queue (up to 30 seconds) and reconnecting clients receive a small random delay (0–1s jitter) to spread the load.
+
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `HYPHA_MAX_CONCURRENT_CONNECTIONS` | `10` | Maximum number of WebSocket connections being set up simultaneously |
+
 ### Connection Idle Timeout
 
 Idle WebSocket connections are automatically disconnected after a configurable timeout. This is especially useful for cleaning up anonymous client connections that are no longer active.

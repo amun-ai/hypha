@@ -1,5 +1,10 @@
 # Hypha Change Log
 
+### 0.21.80
+
+ - Add connection admission control to prevent reconnection storms from overwhelming the server (configurable via `HYPHA_MAX_CONCURRENT_CONNECTIONS`, default 10)
+ - Reconnecting clients receive random jitter (0–1s) to spread reconnection load after server restarts
+
 ### 0.21.79
 
  - Add per-client WebSocket rate limiting to prevent RPC message spam (configurable via `HYPHA_WS_MSG_RATE_LIMIT`, `HYPHA_WS_MSG_BURST_LIMIT`)
