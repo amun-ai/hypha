@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import sys
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -258,6 +259,90 @@ def detected_response_type(request: Request):
     """Detect the response type."""
     content_type = request.headers.get("content-type", "application/json")
     return content_type
+
+
+class HTTPRateLimitMiddleware:
+    """ASGI middleware that applies per-IP token-bucket rate limiting to HTTP requests.
+
+    Exempts health/liveness/readiness endpoints to avoid interfering with
+    Kubernetes probes.  Configurable via environment variables:
+      HYPHA_HTTP_RATE_LIMIT  – sustained requests/sec per IP (default 20)
+      HYPHA_HTTP_BURST_LIMIT – burst capacity per IP (default 100)
+    """
+
+    # Paths that must never be rate-limited (K8s probes, metrics)
+    _EXEMPT_PREFIXES = ("/health",)
+
+    def __init__(self, app: ASGIApp, **kwargs):
+        self.app = app
+        self._rate = float(os.environ.get("HYPHA_HTTP_RATE_LIMIT", "20"))
+        self._burst = int(os.environ.get("HYPHA_HTTP_BURST_LIMIT", "100"))
+        # per-IP buckets: {ip: (tokens, last_monotonic)}
+        self._buckets: dict = {}
+        self._last_cleanup = time.monotonic()
+        self._cleanup_interval = 300  # purge stale entries every 5 min
+
+    def _consume(self, ip: str) -> bool:
+        """Try to consume one token for the given IP. Returns True if allowed."""
+        import time as _time
+
+        now = _time.monotonic()
+        if ip in self._buckets:
+            tokens, last = self._buckets[ip]
+            tokens = min(self._burst, tokens + (now - last) * self._rate)
+        else:
+            tokens = float(self._burst)
+        if tokens >= 1:
+            self._buckets[ip] = (tokens - 1, now)
+            return True
+        self._buckets[ip] = (tokens, now)
+        return False
+
+    def _maybe_cleanup(self):
+        """Periodically remove IPs that haven't been seen in a while."""
+        import time as _time
+
+        now = _time.monotonic()
+        if now - self._last_cleanup < self._cleanup_interval:
+            return
+        self._last_cleanup = now
+        stale = [
+            ip
+            for ip, (_, last) in self._buckets.items()
+            if now - last > self._cleanup_interval
+        ]
+        for ip in stale:
+            del self._buckets[ip]
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        if any(path.startswith(p) for p in self._EXEMPT_PREFIXES):
+            await self.app(scope, receive, send)
+            return
+
+        # Extract client IP (first entry in X-Forwarded-For or direct peer)
+        headers = Headers(scope=scope)
+        forwarded = headers.get("x-forwarded-for")
+        if forwarded:
+            ip = forwarded.split(",")[0].strip()
+        else:
+            ip = scope.get("client", ("unknown",))[0]
+
+        self._maybe_cleanup()
+
+        if not self._consume(ip):
+            response = JSONResponse(
+                {"detail": "Rate limit exceeded. Please slow down."},
+                status_code=429,
+            )
+            await response(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
 
 
 class ASGIRoutingMiddleware:
@@ -983,6 +1068,9 @@ class HTTPProxy:
             base_path=base_path,
             store=store,
         )
+
+        # Per-IP HTTP rate limiting (outermost middleware, runs first)
+        app.add_middleware(HTTPRateLimitMiddleware)
 
         # Add A2A middleware for A2A services if enabled
         logger.info(f"enable_a2a = {enable_a2a}")
