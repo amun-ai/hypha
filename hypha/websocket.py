@@ -34,6 +34,32 @@ _gauge = Gauge(
 _connections_established = Counter(
     "websocket_connections_established", "Total number of websocket connections ever established"
 )
+_rate_limited_disconnects = Counter(
+    "websocket_rate_limited_disconnects", "Total number of clients disconnected due to rate limiting"
+)
+
+
+class TokenBucketRateLimiter:
+    """Simple token-bucket rate limiter for per-client message throttling."""
+
+    __slots__ = ("rate", "burst", "_tokens", "_last")
+
+    def __init__(self, rate: float, burst: int):
+        self.rate = rate  # tokens refilled per second
+        self.burst = burst  # max tokens (bucket capacity)
+        self._tokens = float(burst)
+        self._last = time.monotonic()
+
+    def consume(self, tokens: int = 1) -> tuple:
+        """Try to consume tokens. Returns (allowed, tokens_remaining)."""
+        now = time.monotonic()
+        elapsed = now - self._last
+        self._last = now
+        self._tokens = min(self.burst, self._tokens + elapsed * self.rate)
+        if self._tokens >= tokens:
+            self._tokens -= tokens
+            return True, self._tokens
+        return False, self._tokens
 
 
 class WebsocketServer:
@@ -49,6 +75,9 @@ class WebsocketServer:
         self._last_seen = {}
         # Idle timeout in seconds (applied to all connections, especially effective for anonymous churn)
         self._idle_timeout = int(os.environ.get("HYPHA_WS_IDLE_TIMEOUT", "600"))
+        # Per-client message rate limiting (token bucket)
+        self._msg_rate_limit = float(os.environ.get("HYPHA_WS_MSG_RATE_LIMIT", "20"))
+        self._msg_burst_limit = int(os.environ.get("HYPHA_WS_MSG_BURST_LIMIT", "50"))
         # Background task to clean up idle connections
         try:
             # Check if there's a running event loop before creating the coroutine
@@ -384,6 +413,7 @@ class WebsocketServer:
         self._ws_generation[conn_key] = gen
         self._websockets[conn_key] = websocket
         self._last_seen[conn_key] = time.time()
+        rate_limiter = TokenBucketRateLimiter(self._msg_rate_limit, self._msg_burst_limit)
         try:
             _gauge.inc()  # Increment total connections without workspace label
             _connections_established.inc()  # Monotonic counter, never decrements
@@ -433,6 +463,19 @@ class WebsocketServer:
                 self._last_seen[conn_key] = time.time()
                 if "bytes" in data:
                     data = data["bytes"]
+                    allowed, remaining = rate_limiter.consume()
+                    if not allowed:
+                        logger.warning(
+                            "Rate limit exceeded for %s, disconnecting",
+                            conn_key,
+                        )
+                        _rate_limited_disconnects.inc()
+                        await self.disconnect(
+                            websocket,
+                            reason="Rate limit exceeded: too many messages per second",
+                            code=status.WS_1008_POLICY_VIOLATION,
+                        )
+                        break
                     try:
                         await conn.emit_message(data)
                     except Exception as emit_err:
