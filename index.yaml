@@ -3,9 +3,9 @@ entries:
   hypha-server:
   - apiVersion: v2
     appVersion: 0.20.14
-    created: "2026-03-07T11:31:42.965389743Z"
+    created: "2026-03-08T10:12:26.604152461Z"
     description: A Helm chart for deploying Hypha Server to Kubernetes
-    digest: 35180a5335c23908bdfb05cefc16903b8dd3426684ea36e9c371564900751ca8
+    digest: 87abd64408f1ca8664f235ddb52fd23e15fbf93ada23c5c7b5be2354e9b2e3c3
     name: hypha-server
     type: application
     urls:
@@ -14,7 +14,7 @@ entries:
   hypha-server-kit:
   - apiVersion: v2
     appVersion: 0.21.78
-    created: "2026-03-07T11:31:42.983895678Z"
+    created: "2026-03-08T10:12:26.621740948Z"
     dependencies:
     - condition: hypha-server.enabled
       name: hypha-server
@@ -33,7 +33,7 @@ entries:
       repository: https://charts.bitnami.com/bitnami
       version: 21.2.13
     description: A comprehensive Helm chart for Hypha server with integrated dependencies
-    digest: 605b80ec96e360289ce6144c74d8d22a19f5423a50bbac3615980abb079b26b1
+    digest: e9b76ca80270ad067cbfd7cb566ebe8309ec86c8334b7aa1ef350d364890f0f2
     home: https://github.com/amun-ai/hypha
     keywords:
     - hypha
@@ -57,12 +57,12 @@ entries:
   redis:
   - apiVersion: v2
     appVersion: 5.0.8
-    created: "2026-03-07T11:31:42.984046938Z"
+    created: "2026-03-08T10:12:26.62187174Z"
     description: A Helm chart for deploying Redis to Kubernetes
-    digest: db6e18e4124840414ee2f576fc30be20c73a96efb201329a5f996d407a9c66f5
+    digest: bb23786c7fe3586f6ff1f4138dc249ec48787d0fc485bfaef9e207fa8782cc74
     name: redis
     type: application
     urls:
     - https://docs.amun.ai/redis-0.1.0.tgz
     version: 0.1.0
-generated: "2026-03-07T11:31:42.964560025Z"
+generated: "2026-03-08T10:12:26.603311905Z"
