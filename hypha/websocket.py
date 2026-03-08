@@ -76,8 +76,8 @@ class WebsocketServer:
         # Idle timeout in seconds (applied to all connections, especially effective for anonymous churn)
         self._idle_timeout = int(os.environ.get("HYPHA_WS_IDLE_TIMEOUT", "600"))
         # Per-client message rate limiting (token bucket)
-        self._msg_rate_limit = float(os.environ.get("HYPHA_WS_MSG_RATE_LIMIT", "20"))
-        self._msg_burst_limit = int(os.environ.get("HYPHA_WS_MSG_BURST_LIMIT", "200"))
+        self._msg_rate_limit = float(os.environ.get("HYPHA_WS_MSG_RATE_LIMIT", "200"))
+        self._msg_burst_limit = int(os.environ.get("HYPHA_WS_MSG_BURST_LIMIT", "2000"))
         # Background task to clean up idle connections
         try:
             # Check if there's a running event loop before creating the coroutine

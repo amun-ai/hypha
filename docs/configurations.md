@@ -1008,8 +1008,8 @@ Each WebSocket connection has a per-client token-bucket rate limiter that thrott
 
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
-| `HYPHA_WS_MSG_RATE_LIMIT` | `20` | Sustained messages per second allowed per client |
-| `HYPHA_WS_MSG_BURST_LIMIT` | `200` | Maximum burst capacity (messages a client can send before throttling begins) |
+| `HYPHA_WS_MSG_RATE_LIMIT` | `200` | Sustained messages per second allowed per client |
+| `HYPHA_WS_MSG_BURST_LIMIT` | `2000` | Maximum burst capacity (messages a client can send before throttling begins) |
 
 Only binary (RPC) messages are rate-limited. Text messages such as ping/pong and token refresh are exempt.
 
