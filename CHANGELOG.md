@@ -1,5 +1,13 @@
 # Hypha Change Log
 
+### 0.21.79
+
+ - Add per-client WebSocket rate limiting to prevent RPC message spam (configurable via `HYPHA_WS_MSG_RATE_LIMIT`, `HYPHA_WS_MSG_BURST_LIMIT`)
+ - Add per-IP HTTP rate limiting middleware for all HTTP endpoints (configurable via `HYPHA_HTTP_RATE_LIMIT`, `HYPHA_HTTP_BURST_LIMIT`)
+ - Add per-client service registration quota (configurable via `HYPHA_MAX_SERVICES_PER_CLIENT`, default 1000)
+ - Add per-user workspace creation quota (configurable via `HYPHA_MAX_WORKSPACES_PER_USER`, default 100)
+ - Health check endpoints (`/health/*`) are exempt from HTTP rate limiting
+
 ### 0.20.55
 
  - Add `get_secret` and `set_secret` to the artifact manager to allow storing and retrieving secret values in the artifact.

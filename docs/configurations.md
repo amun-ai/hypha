@@ -998,6 +998,60 @@ This approach makes it simple to create custom workers without complex wrapper c
 
 For large data or low-latency streaming between clients, Hypha supports P2P via WebRTC. You can establish a WebRTC channel after a normal connection. See the hypha-rpc docs for details on P2P setup: [WebRTC support](/hypha-rpc?id=peer-to-peer-connection-via-webrtc).
 
+## Rate Limiting and Resource Quotas
+
+Hypha includes built-in rate limiting and resource quotas to protect the server from abusive clients and resource exhaustion. All limits are configurable via environment variables.
+
+### WebSocket Rate Limiting
+
+Each WebSocket connection has a per-client token-bucket rate limiter that throttles RPC messages. If a client exceeds the rate limit, it is immediately disconnected with a policy violation error.
+
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `HYPHA_WS_MSG_RATE_LIMIT` | `20` | Sustained messages per second allowed per client |
+| `HYPHA_WS_MSG_BURST_LIMIT` | `50` | Maximum burst capacity (messages a client can send before throttling begins) |
+
+Only binary (RPC) messages are rate-limited. Text messages such as ping/pong and token refresh are exempt.
+
+**Example:** To allow heavier agent workloads:
+```bash
+export HYPHA_WS_MSG_RATE_LIMIT=50
+export HYPHA_WS_MSG_BURST_LIMIT=100
+```
+
+### HTTP Rate Limiting
+
+All HTTP endpoints are protected by a per-IP token-bucket rate limiter implemented as ASGI middleware. Health check endpoints (`/health`, `/health/liveness`, `/health/readiness`) are exempt to avoid interfering with Kubernetes probes. When the limit is exceeded, the server returns HTTP 429 (Too Many Requests).
+
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `HYPHA_HTTP_RATE_LIMIT` | `20` | Sustained HTTP requests per second allowed per IP |
+| `HYPHA_HTTP_BURST_LIMIT` | `100` | Maximum burst capacity per IP |
+
+### Service Registration Quota
+
+Each client has a maximum number of services it can register (excluding built-in services). This prevents a single client from polluting Redis and the vector search index with an unbounded number of service entries.
+
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `HYPHA_MAX_SERVICES_PER_CLIENT` | `1000` | Maximum number of services a single client can register |
+
+### Workspace Creation Quota
+
+Each user has a maximum number of workspaces they can own. The root user is exempt from this limit. This prevents resource exhaustion from unbounded workspace creation (each persistent workspace consumes S3 storage and database entries).
+
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `HYPHA_MAX_WORKSPACES_PER_USER` | `100` | Maximum number of workspaces a single user can own |
+
+### Connection Idle Timeout
+
+Idle WebSocket connections are automatically disconnected after a configurable timeout. This is especially useful for cleaning up anonymous client connections that are no longer active.
+
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `HYPHA_WS_IDLE_TIMEOUT` | `600` | Idle timeout in seconds before a WebSocket connection is closed |
+
 ## Production Deployment
 
 ### Using a Public Server
