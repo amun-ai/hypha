@@ -908,6 +908,25 @@ class WorkspaceManager:
         if user_info.is_anonymous:
             raise Exception("Only registered user can create workspace.")
 
+        # Enforce per-user workspace quota to prevent resource exhaustion
+        max_workspaces = int(os.environ.get("HYPHA_MAX_WORKSPACES_PER_USER", "100"))
+        if user_info.id != "root":
+            all_workspaces = await self._redis.hgetall("workspaces")
+            owned_count = 0
+            for _ws_data in all_workspaces.values():
+                try:
+                    ws_info = json.loads(_ws_data)
+                    if user_info.id in ws_info.get("owners", []):
+                        owned_count += 1
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            if owned_count >= max_workspaces:
+                raise RuntimeError(
+                    f"Workspace quota exceeded: user {user_info.id} already owns "
+                    f"{owned_count} workspaces (max {max_workspaces}). "
+                    f"Delete unused workspaces before creating new ones."
+                )
+
         # Check if workspace exists (only if overwrite=True)
         exists = False
         if overwrite:
@@ -2158,6 +2177,23 @@ class WorkspaceManager:
                 client_id,
             )
             return
+
+        # Enforce per-client service quota to prevent resource exhaustion
+        max_services = int(os.environ.get("HYPHA_MAX_SERVICES_PER_CLIENT", "1000"))
+        if ":built-in" not in service.id:
+            client_service_keys = await self._scan_keys(
+                f"services:*|*:{client_id}:*@*"
+            )
+            # Exclude built-in entries from the count
+            client_service_count = sum(
+                1 for k in client_service_keys if ":built-in@" not in k
+            )
+            if client_service_count >= max_services:
+                raise RuntimeError(
+                    f"Service quota exceeded: client {client_id} already has "
+                    f"{client_service_count} services (max {max_services}). "
+                    f"Remove unused services before registering new ones."
+                )
 
         service.name = service.name or service_name
 
