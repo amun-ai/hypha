@@ -3425,7 +3425,8 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   API_VERSION: () => (/* binding */ API_VERSION),
 /* harmony export */   RPC: () => (/* binding */ RPC),
-/* harmony export */   _applyEncryptionKeyToService: () => (/* binding */ _applyEncryptionKeyToService)
+/* harmony export */   _applyEncryptionKeyToService: () => (/* binding */ _applyEncryptionKeyToService),
+/* harmony export */   getParamNames: () => (/* binding */ getParamNames)
 /* harmony export */ });
 /* harmony import */ var _utils_index_js__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ./utils/index.js */ "./src/utils/index.js");
 /* harmony import */ var _utils_schema_js__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! ./utils/schema.js */ "./src/utils/schema.js");
@@ -3441,6 +3442,35 @@ __webpack_require__.r(__webpack_exports__);
 
 
 
+
+/**
+ * Extract parameter names from a function's source text.
+ * Works with regular functions, arrow functions, async functions,
+ * destructured params, default values, and rest params.
+ * Note: will not work with minified/bundled code where param names are mangled.
+ * @param {Function} fn - The function to inspect.
+ * @returns {string[]} Array of parameter names.
+ */
+function getParamNames(fn) {
+  const src = fn.toString();
+  // Match: function(a, b), async function name(a, b), (a, b) =>, async (a, b) =>
+  // Also handles single param arrow without parens: a =>
+  const match = src.match(
+    /^(?:async\s+)?(?:function\s*\w*)?\s*\(([^)]*)\)|^(?:async\s+)?(\w+)\s*=>/,
+  );
+  if (!match) return [];
+  const paramStr = match[1] !== undefined ? match[1] : match[2];
+  if (!paramStr || !paramStr.trim()) return [];
+  return paramStr
+    .split(",")
+    .map((p) =>
+      p
+        .trim()
+        .replace(/\s*=.*$/, "") // strip default values
+        .replace(/^\.\.\.\s*/, ""), // strip rest operator
+    )
+    .filter(Boolean);
+}
 
 /**
  * Apply an out-of-band encryption public key to all remote methods in a service.
@@ -6390,6 +6420,24 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
       } else {
         args = [];
       }
+
+      // Unpack kwargs into positional arguments when with_kwargs is set.
+      // This mirrors Python's _handle_method which pops the last arg as
+      // a kwargs dict and passes it via **kwargs. Since JS doesn't have
+      // **kwargs, we map the dict keys to the function's parameter names.
+      if (data.with_kwargs && args.length > 0) {
+        const kwargs = args.pop();
+        if (typeof kwargs === "object" && kwargs !== null) {
+          const paramNames = getParamNames(method);
+          // Filter out 'context' — it's handled separately by require_context
+          const mappableParams = paramNames.filter((n) => n !== "context");
+          args = mappableParams.map((name) => kwargs[name]);
+        } else {
+          // Not a dict — push it back (shouldn't happen, but be safe)
+          args.push(kwargs);
+        }
+      }
+
       if (
         this._method_annotations.has(method) &&
         this._method_annotations.get(method).require_context
