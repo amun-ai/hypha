@@ -2110,6 +2110,12 @@ class WorkspaceManager:
             )
         service_name = service.id.split(":")[1]
 
+        # ── Per-client service limit check ──────────────────────────────
+        resource_limits = self._store.get_resource_limits()
+        rejection = resource_limits.check_service_registration_allowed(client_id)
+        if rejection:
+            raise ValueError(rejection)
+
         # Silently reject local-only services — these are callback proxies
         # (e.g. _rintf_) created by hypha-rpc that should never be stored
         # server-side.  Older clients may leak them during reconnection;
@@ -2287,6 +2293,8 @@ class WorkspaceManager:
                     ws, "service_added", service.model_dump(mode="json")
                 )
                 logger.info(f"Adding service {service.id}")
+            # Increment service counter for resource limits (new service only)
+            resource_limits.on_service_registered(client_id)
 
     @schema_method
     async def get_service_info(
@@ -3401,6 +3409,10 @@ class WorkspaceManager:
         logger.info(f"Removing {len(keys)} services for client {client_id} in {cws}")
         for key in keys:
             await self._redis.delete(key)
+        # Clear service counter for this client
+        self._store.get_resource_limits().on_client_services_cleared(
+            f"{cws}/{client_id}"
+        )
 
         await self._event_bus.broadcast(
             cws, "client_disconnected", {"id": client_id, "workspace": cws}

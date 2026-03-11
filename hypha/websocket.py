@@ -165,7 +165,31 @@ class WebsocketServer:
                 
                 # Mark as authenticated before checking client
                 authenticated = True
-                
+
+                # ── Resource limit checks ──────────────────────────────
+                resource_limits = self.store.get_resource_limits()
+                # Extract client IP for blocklist check
+                _fwd = websocket.headers.get("x-forwarded-for")
+                client_ip = (
+                    _fwd.split(",")[0].strip()
+                    if _fwd
+                    else (websocket.scope.get("client") or ("unknown",))[0]
+                )
+                rejection = await resource_limits.check_connection_allowed(
+                    user_info.id, client_ip, workspace
+                )
+                if rejection:
+                    logger.warning(
+                        "Connection rejected for %s/%s: %s",
+                        workspace, client_id, rejection,
+                    )
+                    await self.disconnect(
+                        websocket,
+                        reason=rejection,
+                        code=status.WS_1008_POLICY_VIOLATION,
+                    )
+                    return
+
                 # If the client is not reconnecting, check if it exists
                 if not reconnection_token:
                     # We operate as the root user to remove and add clients
@@ -383,6 +407,9 @@ class WebsocketServer:
         gen = self._ws_generation.get(conn_key, 0) + 1
         self._ws_generation[conn_key] = gen
         self._websockets[conn_key] = websocket
+        # Track connection in resource limits
+        resource_limits = self.store.get_resource_limits()
+        resource_limits.on_client_connected(conn_key, user_info.id, workspace)
         self._last_seen[conn_key] = time.time()
         try:
             _gauge.inc()  # Increment total connections without workspace label
@@ -433,6 +460,18 @@ class WebsocketServer:
                 self._last_seen[conn_key] = time.time()
                 if "bytes" in data:
                     data = data["bytes"]
+                    # Per-client message rate limiting
+                    if not resource_limits.check_message_allowed(conn_key):
+                        logger.warning(
+                            "Rate limited WS message from %s", conn_key
+                        )
+                        try:
+                            await websocket.send_text(
+                                json.dumps({"type": "error", "message": "Rate limit exceeded"})
+                            )
+                        except Exception:
+                            pass
+                        continue
                     try:
                         await conn.emit_message(data)
                     except Exception as emit_err:
@@ -551,6 +590,9 @@ class WebsocketServer:
                 code,
             )
             return
+
+        # Decrement resource limit counters for this connection
+        self.store.get_resource_limits().on_client_disconnected(conn_key)
 
         # Track WebSocket client as recently disconnected for dead-peer detection
         self.store._event_bus.track_recently_disconnected(workspace, client_id)

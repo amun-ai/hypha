@@ -49,6 +49,7 @@ from hypha.core.workspace import WorkspaceManager
 from hypha.startup import run_startup_function
 from hypha.utils import random_id
 from hypha.admin import AdminUtilities, setup_admin_services
+from hypha.resource_limits import ResourceLimitsManager
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
@@ -352,6 +353,7 @@ class RedisStore:
         self._root_user = None
         self._root_token = root_token
         self._event_bus = RedisEventBus(self._redis)
+        self._resource_limits = ResourceLimitsManager(redis=self._redis)
 
         self._tracker = None
         self._tracker_task = None
@@ -365,6 +367,10 @@ class RedisStore:
         if self._root_token:
             set_root_token(self._root_token)
             logger.info(f"Root token configured in RedisStore.__init__: {self._root_token[:10]}...")
+
+    def get_resource_limits(self):
+        """Get the resource limits manager."""
+        return self._resource_limits
 
     def set_websocket_server(self, websocket_server):
         """Set the websocket server."""

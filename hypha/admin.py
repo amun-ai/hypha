@@ -690,7 +690,79 @@ class AdminUtilities:
     async def get_metrics(self):
         """Get server metrics and statistics."""
         return await self.store.get_metrics()
-    
+
+    @schema_method
+    async def block_user(
+        self,
+        user_id: str = Field(..., description="User ID to block"),
+        duration: int = Field(
+            3600,
+            description="Block duration in seconds (default 1 hour, 0 for 30-day block)",
+        ),
+        reason: str = Field("", description="Reason for blocking"),
+    ) -> dict:
+        """Block a user and force-disconnect all their active connections."""
+        rl = self.store.get_resource_limits()
+        await rl.block_user(user_id, duration, reason)
+        # Kick all active connections for this user
+        kicked = 0
+        ws_server = self.store._websocket_server
+        if ws_server:
+            for conn_key in list(rl._conn_user):
+                if rl._conn_user.get(conn_key) == user_id:
+                    parts = conn_key.split("/", 1)
+                    if len(parts) == 2:
+                        try:
+                            await ws_server.force_disconnect(
+                                parts[0], parts[1], 1008, f"User blocked: {reason}"
+                            )
+                            kicked += 1
+                        except Exception:
+                            pass
+        return {"blocked": user_id, "duration": duration, "kicked_connections": kicked}
+
+    @schema_method
+    async def unblock_user(
+        self,
+        user_id: str = Field(..., description="User ID to unblock"),
+    ) -> dict:
+        """Unblock a previously blocked user."""
+        await self.store.get_resource_limits().unblock_user(user_id)
+        return {"unblocked": user_id}
+
+    @schema_method
+    async def block_ip(
+        self,
+        ip: str = Field(..., description="IP address to block"),
+        duration: int = Field(
+            3600,
+            description="Block duration in seconds (default 1 hour, 0 for 30-day block)",
+        ),
+        reason: str = Field("", description="Reason for blocking"),
+    ) -> dict:
+        """Block an IP address from connecting."""
+        await self.store.get_resource_limits().block_ip(ip, duration, reason)
+        return {"blocked_ip": ip, "duration": duration}
+
+    @schema_method
+    async def unblock_ip(
+        self,
+        ip: str = Field(..., description="IP address to unblock"),
+    ) -> dict:
+        """Unblock a previously blocked IP address."""
+        await self.store.get_resource_limits().unblock_ip(ip)
+        return {"unblocked_ip": ip}
+
+    @schema_method
+    async def list_blocked(self) -> dict:
+        """List all currently blocked users and IPs."""
+        return await self.store.get_resource_limits().list_blocked()
+
+    @schema_method
+    async def get_resource_usage(self) -> dict:
+        """Get current resource usage per user and workspace."""
+        return self.store.get_resource_limits().get_resource_usage()
+
     def get_service_api(self):
         """Get the admin service API definition."""
         service_config = {
@@ -705,6 +777,12 @@ class AdminUtilities:
             "list_workspaces": self.list_workspaces,
             "unload_workspace": self.unload_workspace,
             "get_metrics": self.get_metrics,
+            "block_user": self.block_user,
+            "unblock_user": self.unblock_user,
+            "block_ip": self.block_ip,
+            "unblock_ip": self.unblock_ip,
+            "list_blocked": self.list_blocked,
+            "get_resource_usage": self.get_resource_usage,
         }
         
         # Add terminal methods if terminal is setup
