@@ -191,7 +191,26 @@ class WebsocketServer:
                 assert workspace_info and workspace and client_id, (
                     "Failed to authenticate user to workspace: %s" % workspace_info.id
                 )
-                
+
+                # Check resource limits (blocked user/IP, connection limits)
+                resource_limits = self.store.get_resource_limits()
+                _fwd = websocket.headers.get("x-forwarded-for")
+                client_ip = (
+                    _fwd.split(",")[0].strip()
+                    if _fwd
+                    else (websocket.scope.get("client") or ("unknown",))[0]
+                )
+                rejection = await resource_limits.check_connection_allowed(
+                    user_info.id, client_ip, workspace
+                )
+                if rejection:
+                    await self.disconnect(
+                        websocket,
+                        reason=rejection,
+                        code=status.WS_1008_POLICY_VIOLATION,
+                    )
+                    return
+
                 # Mark as authenticated before checking client
                 authenticated = True
                 
@@ -414,6 +433,10 @@ class WebsocketServer:
         self._websockets[conn_key] = websocket
         self._last_seen[conn_key] = time.time()
         rate_limiter = TokenBucketRateLimiter(self._msg_rate_limit, self._msg_burst_limit)
+        # Track connection in resource limits manager
+        self.store.get_resource_limits().on_client_connected(
+            conn_key, user_info.id, workspace
+        )
         try:
             _gauge.inc()  # Increment total connections without workspace label
             _connections_established.inc()  # Monotonic counter, never decrements
@@ -597,6 +620,8 @@ class WebsocketServer:
 
         # Track WebSocket client as recently disconnected for dead-peer detection
         self.store._event_bus.track_recently_disconnected(workspace, client_id)
+        # Decrement resource limits counters
+        self.store.get_resource_limits().on_client_disconnected(conn_key)
         cleanup_succeeded = False
         try:
             await self.store.remove_client(client_id, workspace, user_info, unload=True)

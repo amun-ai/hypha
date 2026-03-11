@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import logging
+import math
 import os
 import sys
 import time
@@ -264,10 +265,11 @@ def detected_response_type(request: Request):
 class HTTPRateLimitMiddleware:
     """ASGI middleware that applies per-IP token-bucket rate limiting to HTTP requests.
 
-    Exempts health/liveness/readiness endpoints to avoid interfering with
-    Kubernetes probes.  Configurable via environment variables:
-      HYPHA_HTTP_RATE_LIMIT  – sustained requests/sec per IP (default 20)
-      HYPHA_HTTP_BURST_LIMIT – burst capacity per IP (default 100)
+    Exempts health/liveness/readiness endpoints and WebSocket upgrade
+    requests to avoid interfering with Kubernetes probes and WS connections.
+    Configurable via environment variables:
+      HYPHA_HTTP_RATE_LIMIT  – sustained requests/sec per IP (default 100)
+      HYPHA_HTTP_BURST_LIMIT – burst capacity per IP (default 500)
     """
 
     # Paths that must never be rate-limited (K8s probes, metrics)
@@ -275,15 +277,19 @@ class HTTPRateLimitMiddleware:
 
     def __init__(self, app: ASGIApp, **kwargs):
         self.app = app
-        self._rate = float(os.environ.get("HYPHA_HTTP_RATE_LIMIT", "20"))
-        self._burst = int(os.environ.get("HYPHA_HTTP_BURST_LIMIT", "100"))
+        self._rate = float(os.environ.get("HYPHA_HTTP_RATE_LIMIT", "100"))
+        self._burst = int(os.environ.get("HYPHA_HTTP_BURST_LIMIT", "500"))
         # per-IP buckets: {ip: (tokens, last_monotonic)}
         self._buckets: dict = {}
         self._last_cleanup = time.monotonic()
         self._cleanup_interval = 300  # purge stale entries every 5 min
 
-    def _consume(self, ip: str) -> bool:
-        """Try to consume one token for the given IP. Returns True if allowed."""
+    def _consume(self, ip: str) -> tuple:
+        """Try to consume one token for the given IP.
+
+        Returns (allowed: bool, retry_after: float).
+        retry_after is only meaningful when allowed is False.
+        """
         import time as _time
 
         now = _time.monotonic()
@@ -294,9 +300,10 @@ class HTTPRateLimitMiddleware:
             tokens = float(self._burst)
         if tokens >= 1:
             self._buckets[ip] = (tokens - 1, now)
-            return True
+            return True, 0.0
         self._buckets[ip] = (tokens, now)
-        return False
+        retry_after = (1.0 - tokens) / self._rate if self._rate > 0 else 1.0
+        return False, retry_after
 
     def _maybe_cleanup(self):
         """Periodically remove IPs that haven't been seen in a while."""
@@ -324,9 +331,14 @@ class HTTPRateLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # Exempt WebSocket upgrade requests — they have their own rate limiting
+        req_headers = Headers(scope=scope)
+        if req_headers.get("upgrade", "").lower() == "websocket":
+            await self.app(scope, receive, send)
+            return
+
         # Extract client IP (first entry in X-Forwarded-For or direct peer)
-        headers = Headers(scope=scope)
-        forwarded = headers.get("x-forwarded-for")
+        forwarded = req_headers.get("x-forwarded-for")
         if forwarded:
             ip = forwarded.split(",")[0].strip()
         else:
@@ -334,10 +346,13 @@ class HTTPRateLimitMiddleware:
 
         self._maybe_cleanup()
 
-        if not self._consume(ip):
+        allowed, retry_after = self._consume(ip)
+        if not allowed:
+            retry_after_ceil = math.ceil(retry_after)
             response = JSONResponse(
                 {"detail": "Rate limit exceeded. Please slow down."},
                 status_code=429,
+                headers={"Retry-After": str(retry_after_ceil)},
             )
             await response(scope, receive, send)
             return

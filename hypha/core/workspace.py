@@ -2352,6 +2352,8 @@ class WorkspaceManager:
                 logger.info(f"Adding built-in service: {service.id}")
 
             else:
+                # Track service registration in resource limits
+                self._store.get_resource_limits().on_service_registered(client_id)
                 # Remove the service embedding from the config
                 if service.config and service.config.service_embedding is not None:
                     service.config.service_embedding = None
@@ -2602,6 +2604,8 @@ class WorkspaceManager:
         elif len(service_keys) == 1:
             logger.info("Removing service: %s", service_keys[0])
             await self._redis.delete(service_keys[0])
+            # Track service unregistration in resource limits
+            self._store.get_resource_limits().on_service_unregistered(client_id)
             if ":built-in@" in key:
                 await self._event_bus.broadcast(
                     ws, "client_disconnected", {"id": client_id, "workspace": ws}
@@ -3473,6 +3477,11 @@ class WorkspaceManager:
         logger.info(f"Removing {len(keys)} services for client {client_id} in {cws}")
         if keys:
             await self._redis.delete(*keys)
+
+        # Clear resource limits service counters for this client
+        self._store.get_resource_limits().on_client_services_cleared(
+            f"{cws}/{client_id}"
+        )
 
         await self._event_bus.broadcast(
             cws, "client_disconnected", {"id": client_id, "workspace": cws}

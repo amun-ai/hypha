@@ -2966,15 +2966,47 @@ class HTTPStreamingRPCConnection {
 
   /**
    * Process msgpack stream with 4-byte length prefix.
+   *
+   * Includes a read timeout to detect dead connections. The Hypha server
+   * sends pings every ~30s, so if no data arrives within READ_TIMEOUT_MS,
+   * the connection is considered dead and the stream is cancelled to
+   * trigger reconnection.
    */
   async _processMsgpackStream(response) {
     const reader = response.body.getReader();
+    // Expose the reader so external code (e.g. daemon heartbeat) can cancel it
+    this._reader = reader;
     // Growing buffer to avoid O(n^2) re-allocation on every chunk
     let buffer = new Uint8Array(4096);
     let bufferLen = 0;
 
+    // Read timeout: server sends pings every ~30s, so 120s = 4 missed pings = dead
+    const READ_TIMEOUT_MS = 120_000;
+
     while (!this._closed) {
-      const { done, value } = await reader.read();
+      let readResult;
+      let timeoutId;
+      try {
+        readResult = await Promise.race([
+          reader.read(),
+          new Promise((_, reject) => {
+            timeoutId = setTimeout(
+              () => reject(new Error("Stream read timeout (no data for 120s)")),
+              READ_TIMEOUT_MS,
+            );
+          }),
+        ]);
+        clearTimeout(timeoutId);
+      } catch (error) {
+        clearTimeout(timeoutId);
+        console.warn(`Stream read error: ${error.message}`);
+        try {
+          reader.cancel();
+        } catch {}
+        break;
+      }
+
+      const { done, value } = readResult;
 
       if (done) break;
 
@@ -3054,6 +3086,8 @@ class HTTPStreamingRPCConnection {
         bufferLen = remaining;
       }
     }
+
+    this._reader = null;
   }
 
   /**
@@ -3999,7 +4033,7 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
             this._fire("manager_refreshed", { manager });
 
             const services = Object.values(this._services);
-            const servicesCount = services.length;
+            let servicesCount = services.length;
             let registeredCount = 0;
             const failedServices = [];
 
@@ -4056,6 +4090,11 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
               registered: registeredCount,
               failed: failedServices,
             });
+
+            // Track whether all services were registered so the
+            // reconnection loop can detect partial failures and retry.
+            this._connection._services_registered_ok =
+              failedServices.length === 0;
 
             // Subscribe to client_disconnected events if the manager supports it
             try {
@@ -4149,6 +4188,9 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
               error: managerError.toString(),
               total_services: Object.keys(this._services).length,
             });
+            // Mark registration as failed so the reconnection loop
+            // can detect and retry
+            this._connection._services_registered_ok = false;
           }
         } else {
           // console.debug("Connection established", connectionInfo);
@@ -10683,6 +10725,19 @@ class WebsocketRPCConnection {
               this._closedDuringReconnect = false;
               // Fall through to the retry logic below
               throw new Error("Connection lost during reconnection settle");
+            }
+
+            // Check if service re-registration succeeded.
+            // The on_connected callback sets this flag; if any
+            // services failed to register, retry instead of
+            // declaring success with missing services.
+            if (this._services_registered_ok === false) {
+              this._logger.warn(
+                "Service re-registration failed, retrying...",
+              );
+              throw new Error(
+                "Service re-registration failed after reconnection",
+              );
             }
 
             this._logger.warn(
