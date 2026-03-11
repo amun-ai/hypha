@@ -201,17 +201,18 @@ async def test_http_proxy(
     service_id = svc1.id.split("/")[-1]
 
     response = requests.get(
-        f"{SERVER_URL}/{service_ws}/services/{service_id}/echo?v=3345"
+        f"{SERVER_URL}/{service_ws}/services/{service_id}/echo?data=3345"
     )
     assert response.ok, response.json()["detail"]
+    assert response.json() == 3345
 
     response = requests.get(
-        f"{SERVER_URL}/{service_ws}/services/{service_id}/echo?v=33",
+        f"{SERVER_URL}/{service_ws}/services/{service_id}/echo?data=33",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.ok, response.json()["detail"]
     service_info = response.json()
-    assert service_info["v"] == 33
+    assert service_info == 33
 
     response = requests.post(
         f"{SERVER_URL}/{service_ws}/services/{service_id}/echo",
