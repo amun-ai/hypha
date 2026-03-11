@@ -47,10 +47,10 @@ class ResourceLimitsManager:
 
         # Limits from environment (with sensible defaults)
         self.max_connections_per_user = int(
-            os.environ.get("HYPHA_MAX_CONNECTIONS_PER_USER", "50")
+            os.environ.get("HYPHA_MAX_CONNECTIONS_PER_USER", "200")
         )
         self.max_clients_per_workspace = int(
-            os.environ.get("HYPHA_MAX_CLIENTS_PER_WORKSPACE", "200")
+            os.environ.get("HYPHA_MAX_CLIENTS_PER_WORKSPACE", "1000")
         )
         self.max_services_per_client = int(
             os.environ.get("HYPHA_MAX_SERVICES_PER_CLIENT", "50")

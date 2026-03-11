@@ -335,18 +335,18 @@ class TestConnectionLimitProtection:
         from hypha.resource_limits import ResourceLimitsManager
 
         rl = ResourceLimitsManager(redis=None)
-        rl.max_connections_per_user = 50
+        rl.max_connections_per_user = 200
 
-        # Simulate 50 successful connections
-        for i in range(50):
+        # Simulate 200 successful connections
+        for i in range(200):
             assert await rl.check_connection_allowed("attacker", "10.0.0.1", "ws1") is None
             rl.on_client_connected(f"ws1/client{i}", "attacker", "ws1")
 
-        # 51st connection should be rejected
+        # 201st connection should be rejected
         result = await rl.check_connection_allowed("attacker", "10.0.0.1", "ws1")
         assert result is not None
         assert "Connection limit exceeded" in result
-        assert "50/50" in result
+        assert "200/200" in result
 
     @pytest.mark.asyncio
     async def test_workspace_flood_rejected(self):
@@ -354,14 +354,14 @@ class TestConnectionLimitProtection:
         from hypha.resource_limits import ResourceLimitsManager
 
         rl = ResourceLimitsManager(redis=None)
-        rl.max_clients_per_workspace = 200
+        rl.max_clients_per_workspace = 1000
 
-        # 200 different users connect to same workspace
-        for i in range(200):
-            assert await rl.check_connection_allowed(f"user{i}", f"10.0.0.{i % 256}", "target-ws") is None
+        # 1000 different users connect to same workspace
+        for i in range(1000):
+            assert await rl.check_connection_allowed(f"user{i}", f"10.0.{i // 256}.{i % 256}", "target-ws") is None
             rl.on_client_connected(f"target-ws/client{i}", f"user{i}", "target-ws")
 
-        # 201st should be rejected regardless of user
+        # 1001st should be rejected regardless of user
         result = await rl.check_connection_allowed("new-user", "10.0.0.1", "target-ws")
         assert result is not None
         assert "workspace target-ws" in result
@@ -372,10 +372,10 @@ class TestConnectionLimitProtection:
         from hypha.resource_limits import ResourceLimitsManager
 
         rl = ResourceLimitsManager(redis=None)
-        rl.max_connections_per_user = 50
+        rl.max_connections_per_user = 200
 
         # Attacker maxes out their connections
-        for i in range(50):
+        for i in range(200):
             rl.on_client_connected(f"ws1/attacker-{i}", "attacker", "ws1")
 
         # Attacker can't connect more
