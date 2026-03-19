@@ -221,7 +221,7 @@ async def test_http_proxy(
     )
     assert response.ok
     result = msgpack.loads(response.content)
-    assert result["data"] == 123
+    assert result == 123
 
     response = requests.post(
         f"{SERVER_URL}/{service_ws}/services/{service_id}/echo",
@@ -230,7 +230,7 @@ async def test_http_proxy(
     )
     assert response.ok
     result = json.loads(response.content)
-    assert result["data"] == 123
+    assert result == 123
 
     response = requests.post(
         f"{SERVER_URL}/{service_ws}/services/{service_id}/echo",
@@ -245,7 +245,7 @@ async def test_http_proxy(
     assert response.headers["Access-Control-Allow-Origin"] == "http://localhost:3000"
 
     result = msgpack.loads(response.content)
-    assert result["data"] == 123
+    assert result == 123
 
     # Test numpy array
     input_array = np.random.randint(0, 255, [3, 10, 100]).astype("float32")
