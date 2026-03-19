@@ -268,8 +268,7 @@ async def test_http_proxy(
     )
 
     assert response.ok
-    results = msgpack.loads(response.content)
-    result = results["data"]
+    result = msgpack.loads(response.content)
 
     output_array = np.frombuffer(result["_rvalue"], dtype=result["_rdtype"]).reshape(
         result["_rshape"]
