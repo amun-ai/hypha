@@ -431,6 +431,8 @@ class WebsocketServer:
         gen = self._ws_generation.get(conn_key, 0) + 1
         self._ws_generation[conn_key] = gen
         self._websockets[conn_key] = websocket
+        # Tag websocket with its generation for use in handle_disconnection
+        websocket._ws_gen = gen
         self._last_seen[conn_key] = time.time()
         rate_limiter = TokenBucketRateLimiter(self._msg_rate_limit, self._msg_burst_limit)
         # Track connection in resource limits manager
@@ -603,12 +605,16 @@ class WebsocketServer:
         avoid deleting the new connection's services.
         """
         conn_key = f"{workspace}/{client_id}"
-        current_ws = self._websockets.get(conn_key)
-        if current_ws is not None and current_ws is not websocket:
+        # Use generation counter to detect if a newer connection has taken over.
+        # Each new connection bumps the generation and tags it on the websocket.
+        # If our generation doesn't match the current one, a reconnection happened.
+        my_gen = getattr(websocket, "_ws_gen", 0)
+        current_gen = self._ws_generation.get(conn_key, 0)
+        if my_gen < current_gen:
             # A newer connection has taken over — do NOT remove services
             logger.info(
-                "Skipping remove_client for %s: superseded by a newer connection",
-                conn_key,
+                "Skipping remove_client for %s: superseded by newer connection (gen %s < %s)",
+                conn_key, my_gen, current_gen,
             )
             # Still close this old websocket gracefully
             await self.disconnect(
@@ -624,6 +630,15 @@ class WebsocketServer:
         self.store.get_resource_limits().on_client_disconnected(conn_key)
         cleanup_succeeded = False
         try:
+            # Re-check generation right before the destructive remove_client.
+            # A reconnecting client may have bumped the generation while we
+            # were doing earlier async work (event tracking, etc.).
+            if self._ws_generation.get(conn_key, 0) > my_gen:
+                logger.info(
+                    "Skipping remove_client for %s: new connection during cleanup (gen %s -> %s)",
+                    conn_key, my_gen, self._ws_generation.get(conn_key, 0),
+                )
+                return
             await self.store.remove_client(client_id, workspace, user_info, unload=True)
             cleanup_succeeded = True
             if code in [status.WS_1000_NORMAL_CLOSURE, status.WS_1001_GOING_AWAY]:
