@@ -3453,13 +3453,22 @@ __webpack_require__.r(__webpack_exports__);
  */
 function getParamNames(fn) {
   const src = fn.toString();
-  // Match: function(a, b), async function name(a, b), (a, b) =>, async (a, b) =>
-  // Also handles single param arrow without parens: a =>
+  // Match these forms (with optional leading async):
+  //   function(a, b)           – anonymous function
+  //   function name(a, b)      – named function
+  //   (a, b) =>                – arrow function
+  //   a =>                     – single-param arrow (no parens)
+  //   name(a, b) {             – shorthand method (object literal / class)
   const match = src.match(
-    /^(?:async\s+)?(?:function\s*\w*)?\s*\(([^)]*)\)|^(?:async\s+)?(\w+)\s*=>/,
+    /^(?:async\s+)?(?:function\s*\w*)?\s*\(([^)]*)\)|^(?:async\s+)?(\w+)\s*=>|^(?:async\s+)?\w+\s*\(([^)]*)\)/,
   );
   if (!match) return [];
-  const paramStr = match[1] !== undefined ? match[1] : match[2];
+  const paramStr =
+    match[1] !== undefined
+      ? match[1]
+      : match[2] !== undefined
+        ? match[2]
+        : match[3];
   if (!paramStr || !paramStr.trim()) return [];
   return paramStr
     .split(",")
