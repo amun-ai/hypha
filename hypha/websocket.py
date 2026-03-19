@@ -611,7 +611,8 @@ class WebsocketServer:
         my_gen = getattr(websocket, "_ws_gen", 0)
         current_gen = self._ws_generation.get(conn_key, 0)
         if my_gen < current_gen:
-            # A newer connection has taken over — do NOT remove services
+            # A newer connection has taken over — do NOT remove services,
+            # but DO decrement the resource counter for this old connection.
             logger.info(
                 "Skipping remove_client for %s: superseded by newer connection (gen %s < %s)",
                 conn_key, my_gen, current_gen,
@@ -622,6 +623,11 @@ class WebsocketServer:
                 f"Old connection for {conn_key} superseded",
                 code,
             )
+            # Note: on_client_disconnected uses _conn_user/_conn_workspace which
+            # were overwritten by the new connection's on_client_connected call,
+            # so we decrement directly using the user_info we have.
+            rl = self.store.get_resource_limits()
+            rl._decrement_connection(user_info.id, workspace)
             return
 
         # Track WebSocket client as recently disconnected for dead-peer detection
@@ -734,13 +740,24 @@ class WebsocketServer:
                 # but the WebSocket was already removed from _websockets.
                 logger.debug("Removing ghost _last_seen entry for %s (no active WebSocket)", key)
                 self._last_seen.pop(key, None)
+                # Ensure resource counters are decremented for this ghost entry
+                self.store.get_resource_limits().on_client_disconnected(key)
 
     async def _idle_cleanup_loop(self):
-        """Periodically disconnect idle connections (prevents explosion without strict rate limiting)."""
+        """Periodically disconnect idle connections and reconcile counters."""
+        reconcile_counter = 0
         while not self._stop:
             try:
                 await asyncio.sleep(60)
                 await self._do_idle_cleanup()
+                # Reconcile resource counters every ~5 minutes (every 5th iteration)
+                reconcile_counter += 1
+                if reconcile_counter >= 5:
+                    reconcile_counter = 0
+                    active_keys = set(self._websockets.keys())
+                    self.store.get_resource_limits().reconcile_connections(
+                        active_keys
+                    )
             except asyncio.CancelledError:
                 break
             except Exception:

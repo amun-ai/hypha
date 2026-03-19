@@ -120,7 +120,16 @@ class ResourceLimitsManager:
         return None
 
     def on_client_connected(self, conn_key: str, user_id: str, workspace: str):
-        """Increment counters when a client connects."""
+        """Increment counters when a client connects.
+
+        If conn_key already exists (reconnection with the same client_id),
+        decrement the old counters first to avoid double-counting.
+        """
+        old_user = self._conn_user.get(conn_key)
+        old_workspace = self._conn_workspace.get(conn_key)
+        if old_user is not None:
+            self._decrement_connection(old_user, old_workspace)
+
         self._connections_per_user[user_id] = (
             self._connections_per_user.get(user_id, 0) + 1
         )
@@ -135,6 +144,18 @@ class ResourceLimitsManager:
         user_id = self._conn_user.pop(conn_key, None)
         workspace = self._conn_workspace.pop(conn_key, None)
 
+        self._decrement_connection(user_id, workspace)
+
+        # Clean up rate limiter
+        self._ws_rate_limiters.pop(conn_key, None)
+
+    def _decrement_connection(self, user_id: str, workspace: str):
+        """Decrement user and workspace connection counters.
+
+        This is used both by on_client_disconnected (normal path) and directly
+        when a superseded connection needs to release its counter without
+        touching the conn_key maps (which belong to the newer connection).
+        """
         if user_id and user_id in self._connections_per_user:
             self._connections_per_user[user_id] = max(
                 0, self._connections_per_user[user_id] - 1
@@ -148,9 +169,6 @@ class ResourceLimitsManager:
             )
             if self._connections_per_workspace[workspace] == 0:
                 del self._connections_per_workspace[workspace]
-
-        # Clean up rate limiter
-        self._ws_rate_limiters.pop(conn_key, None)
 
     # ── Service limits ─────────────────────────────────────────────────
 
@@ -260,6 +278,70 @@ class ResourceLimitsManager:
                 if cursor == 0:
                     break
         return result
+
+    # ── Connection reconciliation ─────────────────────────────────────
+
+    def reconcile_connections(self, active_conn_keys: set):
+        """Reconcile connection counters against actual active connections.
+
+        This is a self-healing mechanism that corrects counter drift caused
+        by missed disconnection events (e.g., reconnection races, unclean
+        shutdowns).  It should be called periodically (e.g., every few
+        minutes) by the WebSocket server.
+
+        Two-phase approach:
+        1. Remove stale entries from _conn_user/_conn_workspace
+        2. Rebuild per-user/per-workspace counters from the cleaned maps
+        """
+        from collections import Counter
+
+        corrections = 0
+
+        # Phase 1: Remove stale conn_keys no longer in active WebSockets
+        stale_keys = set(self._conn_user.keys()) - active_conn_keys
+        for conn_key in stale_keys:
+            self._conn_user.pop(conn_key, None)
+            self._conn_workspace.pop(conn_key, None)
+            self._ws_rate_limiters.pop(conn_key, None)
+
+        # Phase 2: Rebuild counters from the authoritative conn maps
+        correct_user = Counter(self._conn_user.values())
+        correct_workspace = Counter(self._conn_workspace.values())
+
+        # Detect and fix user counter drift
+        all_users = set(self._connections_per_user.keys()) | set(correct_user.keys())
+        for user_id in all_users:
+            tracked = self._connections_per_user.get(user_id, 0)
+            actual = correct_user.get(user_id, 0)
+            if tracked != actual:
+                corrections += 1
+                if actual == 0:
+                    self._connections_per_user.pop(user_id, None)
+                else:
+                    self._connections_per_user[user_id] = actual
+
+        # Detect and fix workspace counter drift
+        all_ws = set(self._connections_per_workspace.keys()) | set(
+            correct_workspace.keys()
+        )
+        for ws in all_ws:
+            tracked = self._connections_per_workspace.get(ws, 0)
+            actual = correct_workspace.get(ws, 0)
+            if tracked != actual:
+                corrections += 1
+                if actual == 0:
+                    self._connections_per_workspace.pop(ws, None)
+                else:
+                    self._connections_per_workspace[ws] = actual
+
+        if stale_keys or corrections:
+            logger.warning(
+                "Reconciled connections: removed %d stale entries, "
+                "fixed %d counter(s)",
+                len(stale_keys),
+                corrections,
+            )
+        return len(stale_keys) + corrections
 
     # ── Resource usage snapshot ────────────────────────────────────────
 
