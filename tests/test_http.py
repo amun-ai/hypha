@@ -201,17 +201,18 @@ async def test_http_proxy(
     service_id = svc1.id.split("/")[-1]
 
     response = requests.get(
-        f"{SERVER_URL}/{service_ws}/services/{service_id}/echo?v=3345"
+        f"{SERVER_URL}/{service_ws}/services/{service_id}/echo?data=3345"
     )
     assert response.ok, response.json()["detail"]
+    assert response.json() == 3345
 
     response = requests.get(
-        f"{SERVER_URL}/{service_ws}/services/{service_id}/echo?v=33",
+        f"{SERVER_URL}/{service_ws}/services/{service_id}/echo?data=33",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.ok, response.json()["detail"]
     service_info = response.json()
-    assert service_info["v"] == 33
+    assert service_info == 33
 
     response = requests.post(
         f"{SERVER_URL}/{service_ws}/services/{service_id}/echo",
@@ -220,7 +221,7 @@ async def test_http_proxy(
     )
     assert response.ok
     result = msgpack.loads(response.content)
-    assert result["data"] == 123
+    assert result == 123
 
     response = requests.post(
         f"{SERVER_URL}/{service_ws}/services/{service_id}/echo",
@@ -229,7 +230,7 @@ async def test_http_proxy(
     )
     assert response.ok
     result = json.loads(response.content)
-    assert result["data"] == 123
+    assert result == 123
 
     response = requests.post(
         f"{SERVER_URL}/{service_ws}/services/{service_id}/echo",
@@ -244,7 +245,7 @@ async def test_http_proxy(
     assert response.headers["Access-Control-Allow-Origin"] == "http://localhost:3000"
 
     result = msgpack.loads(response.content)
-    assert result["data"] == 123
+    assert result == 123
 
     # Test numpy array
     input_array = np.random.randint(0, 255, [3, 10, 100]).astype("float32")
@@ -267,8 +268,7 @@ async def test_http_proxy(
     )
 
     assert response.ok
-    results = msgpack.loads(response.content)
-    result = results["data"]
+    result = msgpack.loads(response.content)
 
     output_array = np.frombuffer(result["_rvalue"], dtype=result["_rdtype"]).reshape(
         result["_rshape"]
