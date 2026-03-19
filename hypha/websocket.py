@@ -741,7 +741,8 @@ class WebsocketServer:
                 logger.debug("Removing ghost _last_seen entry for %s (no active WebSocket)", key)
                 self._last_seen.pop(key, None)
                 # Ensure resource counters are decremented for this ghost entry
-                self.store.get_resource_limits().on_client_disconnected(key)
+                if self.store is not None:
+                    self.store.get_resource_limits().on_client_disconnected(key)
 
     async def _idle_cleanup_loop(self):
         """Periodically disconnect idle connections and reconcile counters."""
@@ -752,7 +753,7 @@ class WebsocketServer:
                 await self._do_idle_cleanup()
                 # Reconcile resource counters every ~5 minutes (every 5th iteration)
                 reconcile_counter += 1
-                if reconcile_counter >= 5:
+                if reconcile_counter >= 5 and self.store is not None:
                     reconcile_counter = 0
                     active_keys = set(self._websockets.keys())
                     self.store.get_resource_limits().reconcile_connections(
