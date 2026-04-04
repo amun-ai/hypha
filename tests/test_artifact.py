@@ -11892,3 +11892,198 @@ async def test_staging_intent_preserved_across_edits(
     # Clean up
     await artifact_manager.delete(artifact_id=artifact.id)
     await api.disconnect()
+
+
+async def test_wildcard_artifact_scoped_token(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test that wildcard scoped tokens (get_file:<artifact_id>:*) grant access to all files in an artifact."""
+    from urllib.parse import quote
+
+    api = await connect_to_server(
+        {
+            "name": "test-wildcard-scope",
+            "server_url": WS_SERVER_URL,
+            "token": test_user_token,
+        }
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+    workspace = api.config.workspace
+
+    # Create a collection
+    collection = await artifact_manager.create(
+        type="collection",
+        alias="test-wildcard-scope-collection",
+        manifest={"name": "Wildcard Scope Test Collection"},
+    )
+
+    # Create an artifact with multiple files
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        alias="wildcard-scope-dataset",
+        manifest={"name": "Wildcard Scope Dataset"},
+        version="stage",
+    )
+
+    # Upload two files
+    put_url = await artifact_manager.put_file(
+        artifact_id=dataset.id, file_path="file1.txt"
+    )
+    response = requests.put(put_url, data="content of file 1")
+    assert response.ok
+
+    put_url = await artifact_manager.put_file(
+        artifact_id=dataset.id, file_path="subdir/file2.txt"
+    )
+    response = requests.put(put_url, data="content of file 2")
+    assert response.ok
+
+    # Commit the artifact
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    # Generate a wildcard scoped token for this artifact
+    wildcard_token = await api.generate_token(
+        {"extra_scopes": [f"get_file:{dataset.id}:*"]}
+    )
+
+    # Generate an exact scoped token for only file1.txt
+    exact_token = await api.generate_token(
+        {"extra_scopes": [f"get_file:{dataset.id}:{quote('file1.txt', safe='')}"]}
+    )
+
+    # Wildcard token should be able to access both files
+    base_url = f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/files"
+    response = requests.get(f"{base_url}/file1.txt?token={wildcard_token}")
+    assert response.status_code == 200 or response.status_code == 302, (
+        f"Wildcard token failed for file1.txt: {response.status_code} {response.text}"
+    )
+
+    response = requests.get(
+        f"{base_url}/subdir/file2.txt?token={wildcard_token}"
+    )
+    assert response.status_code == 200 or response.status_code == 302, (
+        f"Wildcard token failed for subdir/file2.txt: {response.status_code} {response.text}"
+    )
+
+    # Exact token should only access file1.txt
+    response = requests.get(f"{base_url}/file1.txt?token={exact_token}")
+    assert response.status_code == 200 or response.status_code == 302, (
+        f"Exact token failed for file1.txt: {response.status_code} {response.text}"
+    )
+
+    # Exact token should be rejected for file2.txt
+    response = requests.get(
+        f"{base_url}/subdir/file2.txt?token={exact_token}",
+        allow_redirects=False,
+    )
+    assert response.status_code == 403, (
+        f"Exact token should be rejected for file2.txt but got: {response.status_code}"
+    )
+
+    # Create a second artifact to test cross-artifact rejection
+    dataset2 = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        alias="wildcard-scope-dataset-2",
+        manifest={"name": "Another Dataset"},
+        version="stage",
+    )
+    put_url = await artifact_manager.put_file(
+        artifact_id=dataset2.id, file_path="secret.txt"
+    )
+    response = requests.put(put_url, data="secret content")
+    assert response.ok
+    await artifact_manager.commit(artifact_id=dataset2.id)
+
+    # Wildcard token for dataset1 should NOT access dataset2 files
+    base_url2 = f"{SERVER_URL}/{workspace}/artifacts/{dataset2.alias}/files"
+    response = requests.get(
+        f"{base_url2}/secret.txt?token={wildcard_token}",
+        allow_redirects=False,
+    )
+    assert response.status_code == 403, (
+        f"Wildcard token for dataset1 should be rejected for dataset2 but got: {response.status_code}"
+    )
+
+    # --- Test put_file wildcard scope ---
+
+    # Create a third artifact for put_file testing (needs to be in staging mode)
+    dataset3 = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        alias="wildcard-scope-dataset-3",
+        manifest={"name": "Put File Test Dataset"},
+        version="stage",
+    )
+
+    # Generate a wildcard put_file scoped token
+    put_wildcard_token = await api.generate_token(
+        {"extra_scopes": [f"put_file:{dataset3.id}:*"]}
+    )
+
+    # Generate an exact put_file scoped token for only one file
+    put_exact_token = await api.generate_token(
+        {"extra_scopes": [f"put_file:{dataset3.id}:{quote('upload1.txt', safe='')}"]}
+    )
+
+    # Wildcard put_file token should allow uploading any file
+    base_url3 = f"{SERVER_URL}/{workspace}/artifacts/{dataset3.alias}/files"
+    response = requests.put(
+        f"{base_url3}/upload1.txt?token={put_wildcard_token}",
+        data="uploaded content 1",
+    )
+    assert response.status_code == 200, (
+        f"Wildcard put_file token failed for upload1.txt: {response.status_code} {response.text}"
+    )
+
+    response = requests.put(
+        f"{base_url3}/subdir/upload2.txt?token={put_wildcard_token}",
+        data="uploaded content 2",
+    )
+    assert response.status_code == 200, (
+        f"Wildcard put_file token failed for subdir/upload2.txt: {response.status_code} {response.text}"
+    )
+
+    # Exact put_file token should only allow upload1.txt
+    response = requests.put(
+        f"{base_url3}/upload1.txt?token={put_exact_token}",
+        data="uploaded content 1 again",
+    )
+    assert response.status_code == 200, (
+        f"Exact put_file token failed for upload1.txt: {response.status_code} {response.text}"
+    )
+
+    # Exact put_file token should be rejected for other files
+    response = requests.put(
+        f"{base_url3}/other.txt?token={put_exact_token}",
+        data="should fail",
+    )
+    assert response.status_code == 403, (
+        f"Exact put_file token should be rejected for other.txt but got: {response.status_code}"
+    )
+
+    # put_file token for dataset3 should NOT allow uploading to dataset3-2 (a different staged artifact)
+    dataset3_2 = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        alias="wildcard-scope-dataset-3-2",
+        manifest={"name": "Cross-artifact Upload Test"},
+        version="stage",
+    )
+    base_url3_2 = f"{SERVER_URL}/{workspace}/artifacts/{dataset3_2.alias}/files"
+    response = requests.put(
+        f"{base_url3_2}/hack.txt?token={put_wildcard_token}",
+        data="should fail",
+    )
+    assert response.status_code == 403, (
+        f"put_file token for dataset3 should be rejected for dataset3_2 but got: {response.status_code}"
+    )
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=dataset.id)
+    await artifact_manager.delete(artifact_id=dataset2.id)
+    await artifact_manager.delete(artifact_id=dataset3.id)
+    await artifact_manager.delete(artifact_id=dataset3_2.id)
+    await artifact_manager.delete(artifact_id=collection.id)
+    await api.disconnect()
