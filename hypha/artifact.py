@@ -970,6 +970,7 @@ class ArtifactController:
                     ), "You cannot specify a version when using stage mode."
                     version = "stage"
                 session = await self._get_session(read_only=True)
+                scope_validated = False
                 if token:
                     user_info = await self.store.parse_user_token(token)
                     # Validate scope for specialized tokens
@@ -983,24 +984,47 @@ class ArtifactController:
                             artifact_for_scope = await self._get_artifact(
                                 temp_session, artifact_id
                             )
-                            # Path must be URL-encoded to match the scope format (scopes are space-delimited in JWT)
-                            expected_scope = f"get_file:{artifact_for_scope.id}:{quote(path, safe='')}"
-                            if not user_info.has_scope(expected_scope):
+                            # Build alias-based ID (workspace/alias) for scope matching
+                            # Tokens may use either the UUID or workspace/alias format
+                            alias_id = f"{artifact_for_scope.workspace}/{artifact_for_scope.alias}" if artifact_for_scope.alias else None
+                            encoded_path = quote(path, safe='')
+                            # Check scope using both UUID and alias-based identifiers
+                            scope_matched = False
+                            for aid in [artifact_for_scope.id, alias_id]:
+                                if aid is None:
+                                    continue
+                                if user_info.has_scope(f"get_file:{aid}:{encoded_path}"):
+                                    scope_matched = True
+                                    break
+                                if user_info.has_scope(f"get_file:{aid}:*"):
+                                    scope_matched = True
+                                    break
+                            if not scope_matched:
                                 allowed_scopes = ", ".join(user_info.scope.extra_scopes)
+                                expected_scope = f"get_file:{alias_id or artifact_for_scope.id}:{encoded_path}"
                                 raise PermissionError(
                                     f"Token scope does not match requested file. "
                                     f"Token has scopes [{allowed_scopes}], but requested "
                                     f"file requires scope '{expected_scope}'."
                                 )
+                            scope_validated = True
                         await temp_session.close()
                 async with session.begin():
-                    # Fetch artifact and check permissions
-                    (
-                        artifact,
-                        parent_artifact,
-                    ) = await self._get_artifact_with_permission(
-                        user_info, artifact_id, "get_file", session
-                    )
+                    if scope_validated:
+                        # Scope-validated specialized tokens bypass workspace permission checks
+                        artifact, parent_artifact = await self._get_artifact_with_parent(
+                            session, artifact_id
+                        )
+                        if not artifact:
+                            raise KeyError(f"Artifact with ID '{artifact_id}' does not exist.")
+                    else:
+                        # Fetch artifact and check permissions
+                        (
+                            artifact,
+                            parent_artifact,
+                        ) = await self._get_artifact_with_permission(
+                            user_info, artifact_id, "get_file", session
+                        )
 
                     # Check if this is a git-storage artifact
                     config = artifact.config or {}
@@ -1218,6 +1242,7 @@ class ArtifactController:
             use_proxy: bool = None,
             use_local_url: Union[bool, str] = False,
             expires_in: int = 3600,
+            token: str = None,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
             """
@@ -1228,12 +1253,14 @@ class ArtifactController:
             This is efficient for handling large files. After a successful upload,
             it updates the artifact's manifest.
             """
+            if token:
+                user_info = await self.store.parse_user_token(token)
             context = {"ws": workspace, "user": user_info.model_dump()}
             try:
                 artifact_id = self._validate_artifact_id(
                     artifact_alias, context=context
                 )
-                
+
                 # Check if artifact is in staging mode first
                 session = await self._get_session(read_only=True)
                 try:
@@ -1246,11 +1273,36 @@ class ArtifactController:
                             raise KeyError(f"Artifact not found: {artifact_id}")
                         if artifact.staging is None:
                             raise ValueError("Artifact must be in staging mode to upload files")
+                        # Validate scope for specialized tokens
+                        if user_info.is_specialized_token():
+                            alias_id = f"{artifact.workspace}/{artifact.alias}" if artifact.alias else None
+                            encoded_path = quote(file_path, safe='')
+                            scope_matched = False
+                            for aid in [artifact.id, alias_id]:
+                                if aid is None:
+                                    continue
+                                if user_info.has_scope(f"put_file:{aid}:{encoded_path}"):
+                                    scope_matched = True
+                                    break
+                                if user_info.has_scope(f"put_file:{aid}:*"):
+                                    scope_matched = True
+                                    break
+                            if not scope_matched:
+                                allowed_scopes = ", ".join(user_info.scope.extra_scopes)
+                                expected_scope = f"put_file:{alias_id or artifact.id}:{encoded_path}"
+                                raise PermissionError(
+                                    f"Token scope does not match requested file. "
+                                    f"Token has scopes [{allowed_scopes}], but requested "
+                                    f"file requires scope '{expected_scope}'."
+                                )
                 except Exception:
                     raise
                 finally:
                     await session.close()
-                
+
+                # If scope was validated, mark context to skip permission checks
+                if user_info.is_specialized_token():
+                    context["_scope_validated"] = True
                 presigned_url = await self.put_file(
                     artifact_id=artifact_id,
                     file_path=file_path,
@@ -7230,13 +7282,21 @@ class ArtifactController:
 
         artifact_id = self._validate_artifact_id(artifact_id, context)
         user_info = UserInfo.from_context(context)
+        scope_validated = context.get("_scope_validated", False) if context else False
         session = await self._get_session()
 
         try:
             async with session.begin():
-                artifact, parent_artifact = await self._get_artifact_with_permission(
-                    user_info, artifact_id, "put_file", session
-                )
+                if scope_validated:
+                    artifact, parent_artifact = await self._get_artifact_with_parent(
+                        session, artifact_id
+                    )
+                    if not artifact:
+                        raise KeyError(f"Artifact with ID '{artifact_id}' does not exist.")
+                else:
+                    artifact, parent_artifact = await self._get_artifact_with_permission(
+                        user_info, artifact_id, "put_file", session
+                    )
 
                 # Require artifact to be in staging mode
                 assert artifact.staging is not None, "Artifact must be in staging mode."
