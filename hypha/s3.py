@@ -229,7 +229,22 @@ class S3Controller:
                     time.sleep(retry_delay)
                     retry_delay = min(retry_delay * 1.5, 5)  # Exponential backoff up to 5 seconds
                 else:
-                    # Other error or max retries reached
+                    # Some S3-compatible providers (notably GCS with scoped HMAC
+                    # keys) return AccessDenied on CreateBucket even when the
+                    # bucket already exists and the key can read/write to it.
+                    # Verify via HeadBucket before giving up.
+                    try:
+                        s3client.head_bucket(Bucket=self.workspace_bucket)
+                        logger.warning(
+                            "CreateBucket for %r failed with %s, but HeadBucket "
+                            "succeeded; assuming bucket exists and proceeding.",
+                            self.workspace_bucket,
+                            error_code,
+                        )
+                        break
+                    except botocore.exceptions.ClientError:
+                        # Bucket is not reachable — re-raise the original error
+                        pass
                     raise
 
         # Apply CORS policy if not using MinIO
