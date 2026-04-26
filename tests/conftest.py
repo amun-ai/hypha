@@ -283,6 +283,32 @@ def generate_authenticated_user_2():
     yield from _generate_token("user-2", [])
 
 
+@pytest_asyncio.fixture(name="admin_role_user_token", scope="session")
+def generate_admin_role_user_token():
+    """Generate a token for a user carrying the 'admin' role (superadmin).
+
+    Includes ``*: admin`` workspace scope so the user passes per-workspace
+    permission checks in addition to carrying the ``admin`` role tag.
+    """
+    auth.JWT_SECRET = JWT_SECRET
+    user_info = UserInfo(
+        id="admin-role-user",
+        is_anonymous=False,
+        email="admin-role-user@test.com",
+        parent=None,
+        roles=["admin"],
+        scope=create_scope(workspaces={"*": UserPermission.admin}),
+        expires_at=None,
+    )
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        token = loop.run_until_complete(generate_auth_token(user_info, 18000))
+        yield token
+    finally:
+        loop.close()
+
+
 @pytest_asyncio.fixture(name="test_user_token_temporary", scope="session")
 def generate_authenticated_user_temporary():
     """Generate a temporary test user token."""

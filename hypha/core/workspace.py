@@ -1265,6 +1265,16 @@ class WorkspaceManager:
             client_id=config.client_id,
             extra_scopes=extra_scopes,
         )
+        # Email override: admins may mint user-attributed tokens (e.g. to
+        # satisfy downstream services that require an email claim for quota
+        # attribution). Restricted to callers with the 'admin' role so a
+        # workspace admin cannot forge emails for another user.
+        if config.email is not None:
+            if "admin" not in (user_info.roles or []):
+                raise PermissionError(
+                    "Only callers with the 'admin' role may set TokenConfig.email"
+                )
+            user_info.email = config.email
         config.expires_in = config.expires_in or 3600
         token = await generate_auth_token(user_info, config.expires_in)
         return token

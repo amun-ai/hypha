@@ -616,6 +616,15 @@ class TokenConfig(BaseModel):
         None,
         description="Optional client ID to restrict the token to a specific client",
     )
+    email: Optional[EmailStr] = Field(
+        None,
+        description=(
+            "Override the email claim on the generated token. Only callers "
+            "with the 'admin' role may set this — it lets operators mint "
+            "user-attributed tokens for downstream services (e.g. quota-"
+            "enforcing LLM gateways) that require an email claim."
+        ),
+    )
 
     @field_validator("extra_scopes")
     @classmethod
