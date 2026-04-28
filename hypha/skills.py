@@ -741,6 +741,8 @@ curl -X POST "{server_url}/{workspace}/services/SERVICE_ID/METHOD" \\
 
 Generate tokens (requires admin): `await server.generate_token({{"permission": "read_write", "expires_in": 86400}})`
 
+Full login flow (Python + JavaScript, `login_callback`, `generate_token`, expiration handling): [GUIDE/login.md](GUIDE/login.md). Server-side auth config: [GUIDE/auth.md](GUIDE/auth.md).
+
 ## Built-in Services
 
 | Service | Get via SDK | HTTP prefix | Reference |
@@ -755,13 +757,16 @@ Generate tokens (requires admin): `await server.generate_token({{"permission": "
 
 | Capability | Transport | Details |
 |-----------|-----------|---------|
+| Authentication & tokens | SDK + HTTP | [GUIDE/login.md](GUIDE/login.md), [GUIDE/auth.md](GUIDE/auth.md) |
 | Call remote services | SDK + HTTP | [REFERENCE.md](REFERENCE.md) |
 | Register services | SDK only | Requires WebSocket; ephemeral unless managed by server-apps |
-| Artifacts (files, datasets) | SDK + HTTP | Git-like versioning, presigned S3 URLs. [REFERENCE/artifact-manager.md](REFERENCE/artifact-manager.md) |
-| Serverless apps | SDK + HTTP | ASGI or Functions type. [GUIDE/asgi-apps.md](GUIDE/asgi-apps.md), [GUIDE/serverless-functions.md](GUIDE/serverless-functions.md) |
-| MCP endpoints | HTTP | `/{workspace}/mcp/{{svc_id}}/mcp` — expose services to Claude, Cursor, etc. |
-| A2A protocol | HTTP | `/{workspace}/a2a/{{svc_id}}` — agent-to-agent communication |
-| Vector search | SDK + HTTP | Semantic search over collections and services |
+| Artifacts (files, datasets) | SDK + HTTP | Git-like versioning, presigned S3 URLs. [REFERENCE/artifact-manager.md](REFERENCE/artifact-manager.md), [GUIDE/artifact-manager.md](GUIDE/artifact-manager.md) |
+| Serverless apps | SDK + HTTP | ASGI or Functions type. [GUIDE/apps.md](GUIDE/apps.md), [GUIDE/asgi-apps.md](GUIDE/asgi-apps.md), [GUIDE/serverless-functions.md](GUIDE/serverless-functions.md) |
+| MCP endpoints | HTTP | `/{workspace}/mcp/{{svc_id}}/mcp` — expose services to Claude, Cursor, etc. [GUIDE/mcp.md](GUIDE/mcp.md) |
+| A2A protocol | HTTP | `/{workspace}/a2a/{{svc_id}}` — agent-to-agent communication. [GUIDE/a2a.md](GUIDE/a2a.md) |
+| Vector search | SDK + HTTP | Semantic search over collections and services. [GUIDE/vector-search.md](GUIDE/vector-search.md) |
+| Workers (browser, conda, k8s…) | SDK | [GUIDE/workers.md](GUIDE/workers.md), [GUIDE/browser-worker.md](GUIDE/browser-worker.md), [GUIDE/conda-worker.md](GUIDE/conda-worker.md), [GUIDE/k8s.md](GUIDE/k8s.md) |
+| Server configuration | — | [GUIDE/configurations.md](GUIDE/configurations.md) |
 
 ## JavaScript Notes
 
@@ -791,8 +796,22 @@ const svc = await server.getService("service-id", {{ case_conversion: "camel", _
 - [REFERENCE.md](REFERENCE.md) — API reference overview with all services
 - [EXAMPLES.md](EXAMPLES.md) — Code examples for every feature
 - [WORKSPACE_CONTEXT.md](WORKSPACE_CONTEXT.md) — This workspace's current state
+- [GUIDE/login.md](GUIDE/login.md) — Login, `login_callback`, programmatic tokens, expiration handling
+- [GUIDE/auth.md](GUIDE/auth.md) — Auth0, custom auth providers, server-side identity
+- [GUIDE/configurations.md](GUIDE/configurations.md) — Server startup flags and environment variables
+- [GUIDE/artifact-manager.md](GUIDE/artifact-manager.md) — Datasets, files, versioning, S3-backed storage
+- [GUIDE/apps.md](GUIDE/apps.md) — Serverless app lifecycle and manifests
 - [GUIDE/asgi-apps.md](GUIDE/asgi-apps.md) — Deploy FastAPI/Django as Hypha services
 - [GUIDE/serverless-functions.md](GUIDE/serverless-functions.md) — Simple HTTP function endpoints
+- [GUIDE/mcp.md](GUIDE/mcp.md) — Expose services as MCP endpoints for Claude, Cursor, etc.
+- [GUIDE/a2a.md](GUIDE/a2a.md) — Agent-to-agent protocol integration
+- [GUIDE/vector-search.md](GUIDE/vector-search.md) — Embedding-backed semantic search
+- [GUIDE/workers.md](GUIDE/workers.md) — Worker types (browser, conda, terminal, k8s, mcp-proxy, a2a-proxy)
+- [GUIDE/service-type-annotation.md](GUIDE/service-type-annotation.md) — `@schema_method` and JSON Schema generation
+- [GUIDE/operate-files.md](GUIDE/operate-files.md) — Upload, download, multipart, presigned URLs
+- [GUIDE/zip-streaming.md](GUIDE/zip-streaming.md) — Streaming zip downloads of artifacts
+- [GUIDE/autoscaling.md](GUIDE/autoscaling.md) — Worker autoscaling policies
+- [GUIDE/service-load-balancing.md](GUIDE/service-load-balancing.md) — Selecting among replicas
 - Source code: `{server_url}/{workspace}/agent-skills/SOURCE/{{service-id}}/{{method}}`
 - Download all docs: `{server_url}/{workspace}/agent-skills/create-zip-file`
 """
@@ -2213,6 +2232,22 @@ For high-level usage, refer to REFERENCE.md and EXAMPLES.md.
             zf.writestr("EXAMPLES.md", get_examples_md(ws, server_url))
             zf.writestr("WORKSPACE_CONTEXT.md", get_workspace_context_md(ws, server_url, workspace_info, services))
 
+            # Bundle guide documents referenced from SKILL.md
+            guide_files = [
+                "login.md", "auth.md", "configurations.md",
+                "artifact-manager.md", "apps.md",
+                "asgi-apps.md", "serverless-functions.md",
+                "mcp.md", "a2a.md", "vector-search.md",
+                "workers.md", "browser-worker.md", "conda-worker.md",
+                "terminal-worker.md", "k8s.md",
+                "service-type-annotation.md", "service-load-balancing.md",
+                "operate-files.md", "zip-streaming.md", "autoscaling.md",
+            ]
+            for guide in guide_files:
+                guide_content = load_documentation_file(guide)
+                if guide_content is not None:
+                    zf.writestr(f"GUIDE/{guide}", guide_content)
+
             # Add source code for each enabled built-in service
             enabled_services = await doc_generator.get_all_enabled_services()
             # Derive service_id -> class_name from the module-level constant
@@ -2544,6 +2579,8 @@ curl -H "Authorization: Bearer TOKEN" "{server_url}/WORKSPACE/services/"
 token = await server.generate_token({{"permission": "read_write", "expires_in": 86400}})
 ```
 
+Full login flow with `login_callback`, programmatic token generation, and expiration handling: [GUIDE/login.md](GUIDE/login.md). Server-side auth configuration (Auth0, custom providers): [GUIDE/auth.md](GUIDE/auth.md).
+
 ## Built-in Services
 
 | Service | SDK ID | HTTP prefix | Reference |
@@ -2597,8 +2634,17 @@ const svc = await server.getService("svc-id", {{ case_conversion: "camel", _rkwa
 | API Reference | `{server_url}/ws/agent-skills/REFERENCE.md` |
 | Per-Service API | `{server_url}/ws/agent-skills/REFERENCE/{{service-id}}.md` |
 | Examples | `{server_url}/ws/agent-skills/EXAMPLES.md` |
+| Login Guide | `{server_url}/ws/agent-skills/GUIDE/login.md` |
+| Auth Guide | `{server_url}/ws/agent-skills/GUIDE/auth.md` |
+| Configuration Guide | `{server_url}/ws/agent-skills/GUIDE/configurations.md` |
+| Artifact Manager Guide | `{server_url}/ws/agent-skills/GUIDE/artifact-manager.md` |
+| Apps Guide | `{server_url}/ws/agent-skills/GUIDE/apps.md` |
 | ASGI Guide | `{server_url}/ws/agent-skills/GUIDE/asgi-apps.md` |
 | Functions Guide | `{server_url}/ws/agent-skills/GUIDE/serverless-functions.md` |
+| MCP Guide | `{server_url}/ws/agent-skills/GUIDE/mcp.md` |
+| A2A Guide | `{server_url}/ws/agent-skills/GUIDE/a2a.md` |
+| Vector Search Guide | `{server_url}/ws/agent-skills/GUIDE/vector-search.md` |
+| Workers Guide | `{server_url}/ws/agent-skills/GUIDE/workers.md` |
 
 ### Auth Required (Workspace-Specific)
 
