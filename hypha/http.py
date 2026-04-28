@@ -1249,23 +1249,26 @@ class HTTPProxy:
                     # controls access to individual services, and the public
                     # workspace exists to host publicly accessible services.
                     if workspace != "public":
+                        # Probe the user's permission on the URL workspace.
+                        # If granted, run the request in that workspace's
+                        # context. If not, defer to the per-service visibility
+                        # check inside the workspace manager: public services
+                        # remain reachable; protected services raise
+                        # PermissionError -> 403 below. (Issue #952: a
+                        # signed-in browser cookie must not block access to a
+                        # public service URL in an unowned workspace.)
+                        original_scope = user_info.scope
                         user_info.scope = update_user_scope(
                             user_info, workspace_info
                         )
-                        if not user_info.check_permission(
+                        if user_info.check_permission(
                             workspace, UserPermission.read
                         ):
-                            return JSONResponse(
-                                status_code=403,
-                                content={
-                                    "success": False,
-                                    "detail": (
-                                        f"Permission denied for workspace"
-                                        f" '{workspace}'"
-                                    ),
-                                },
-                            )
-                    target_workspace = workspace
+                            target_workspace = workspace
+                        else:
+                            user_info.scope = original_scope
+                    else:
+                        target_workspace = workspace
 
                 async with self.store.get_workspace_interface(
                     user_info, target_workspace

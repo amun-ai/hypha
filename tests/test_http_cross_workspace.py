@@ -456,6 +456,114 @@ async def test_workspace_scoped_token_same_workspace_works(
     await api.disconnect()
 
 
+async def test_generic_token_public_service_in_unowned_workspace(
+    minio_server, fastapi_server, test_user_token
+):
+    """Regression test for issue #952.
+
+    A signed-in user (generic token, e.g. Auth0 cookie) hitting a PUBLIC
+    service URL in a workspace they have no permission for must NOT receive
+    a workspace-level 403. Service visibility (public) must grant access
+    just as it does for anonymous (no-token) callers.
+
+    Before the fix, the HTTP route enforced workspace-level read permission
+    before resolving the service, so a signed-in browser cookie caused a
+    workspace-level 403 even when the requested service was public.
+    """
+    loop = asyncio.get_event_loop()
+
+    # User-1 owns a workspace and registers BOTH a public and a protected
+    # service in it.
+    api = await connect_to_server(
+        {
+            "name": "owner",
+            "server_url": WS_SERVER_URL,
+            "token": test_user_token,
+        }
+    )
+    target_ws = await api.create_workspace(
+        {
+            "name": "public-cross-ws-952",
+            "description": "Issue 952 regression",
+        }
+    )
+    target_ws_name = target_ws["id"] if isinstance(target_ws, dict) else target_ws
+
+    api2 = await connect_to_server(
+        {
+            "name": "svc-provider",
+            "server_url": WS_SERVER_URL,
+            "token": test_user_token,
+            "workspace": target_ws_name,
+        }
+    )
+    public_svc = await api2.register_service(
+        {
+            "id": "public-issue-952",
+            "name": "public-issue-952",
+            "config": {"visibility": "public"},
+            "echo": lambda data: data,
+        }
+    )
+    public_id = public_svc["id"].split("/")[-1]
+
+    protected_svc = await api2.register_service(
+        {
+            "id": "protected-issue-952",
+            "name": "protected-issue-952",
+            "config": {"visibility": "protected"},
+            "echo": lambda data: data,
+        }
+    )
+    protected_id = protected_svc["id"].split("/")[-1]
+
+    # User-2 holds a generic token (no wid:, simulates an Auth0 cookie) with
+    # NO permission on user-1's workspace.
+    generic_token_user2 = await _generate_generic_token("user-2-952")
+
+    # 1. Public service via Authorization header — must succeed (200).
+    url_pub = f"{SERVER_URL}/{target_ws_name}/services/{public_id}/echo"
+    response = await loop.run_in_executor(
+        None,
+        lambda: _http_post(url_pub, {"data": "auth-header"}, token=generic_token_user2),
+    )
+    assert response.status_code == 200, (
+        f"Public service must be reachable with a generic token. "
+        f"Got {response.status_code}: {response.text}"
+    )
+    assert response.json() == "auth-header"
+
+    # 2. Public service via cookie (the actual issue #952 scenario).
+    response = await loop.run_in_executor(
+        None,
+        lambda: _http_post(
+            url_pub, {"data": "cookie-auth"}, cookie_token=generic_token_user2
+        ),
+    )
+    assert response.status_code == 200, (
+        f"Public service must be reachable with a session cookie. "
+        f"Got {response.status_code}: {response.text}"
+    )
+    assert response.json() == "cookie-auth"
+
+    # 3. Protected service must still 403 — the deferred check must not
+    #    accidentally widen access to protected services.
+    url_prot = f"{SERVER_URL}/{target_ws_name}/services/{protected_id}/echo"
+    response = await loop.run_in_executor(
+        None,
+        lambda: _http_post(
+            url_prot, {"data": "should-fail"}, token=generic_token_user2
+        ),
+    )
+    assert response.status_code == 403, (
+        f"Protected service in unowned workspace must remain forbidden. "
+        f"Got {response.status_code}: {response.text}"
+    )
+
+    await api2.disconnect()
+    await api.disconnect()
+
+
 async def test_anonymous_user_public_service_cross_workspace(
     minio_server, fastapi_server, test_user_token
 ):
