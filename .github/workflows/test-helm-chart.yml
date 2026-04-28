@@ -18,7 +18,7 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Set up Kubernetes cluster using KinD
       uses: helm/kind-action@v1.10.0
