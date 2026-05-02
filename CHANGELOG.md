@@ -1,5 +1,9 @@
 # Hypha Change Log
 
+### 0.21.84
+
+ - Fix `/zip-files/` endpoint failing with "Corrupt zip64 end of central directory locator" on ZIP64 archives (>4 GB or >65535 entries). `fetch_zip_tail` now parses the ZIP64 EOCD locator/record to determine the central directory's actual offset and size, ensures the fetched tail covers the entire central directory, and exposes a sparse file-like view (`_SparseZipReader`) that lets `zipfile.ZipFile` resolve absolute offsets in EOCD64/CD records correctly.
+
 ### 0.21.80
 
  - Add connection admission control to prevent reconnection storms from overwhelming the server (configurable via `HYPHA_MAX_CONCURRENT_CONNECTIONS`, default 10)
