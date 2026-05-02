@@ -5,6 +5,7 @@ import sys
 import json
 import asyncio
 import time
+import random
 import msgpack
 
 from fastapi import Query, WebSocket, status
@@ -78,6 +79,14 @@ class WebsocketServer:
         # Per-client message rate limiting (token bucket)
         self._msg_rate_limit = float(os.environ.get("HYPHA_WS_MSG_RATE_LIMIT", "200"))
         self._msg_burst_limit = int(os.environ.get("HYPHA_WS_MSG_BURST_LIMIT", "2000"))
+        # Connection admission control: limit concurrent connection setups to
+        # prevent reconnection storms from saturating the event loop and Redis.
+        self._max_concurrent_connections = int(
+            os.environ.get("HYPHA_MAX_CONCURRENT_CONNECTIONS", "10")
+        )
+        self._connection_semaphore = asyncio.Semaphore(
+            self._max_concurrent_connections
+        )
         # Background task to clean up idle connections
         try:
             # Check if there's a running event loop before creating the coroutine
@@ -141,7 +150,31 @@ class WebsocketServer:
             # Track if we successfully authenticated for cleanup purposes
             authenticated = False
             user_info = None
-            
+
+            # Admission control: wait for a semaphore slot before doing
+            # the heavy auth + workspace-load + client-check work.
+            # This prevents 50+ simultaneous reconnections from hammering
+            # Redis with concurrent SCAN/DELETE operations.
+            try:
+                await asyncio.wait_for(
+                    self._connection_semaphore.acquire(), timeout=30
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Connection admission timeout — too many concurrent connections"
+                )
+                await self.disconnect(
+                    websocket,
+                    reason="Server busy, please retry",
+                    code=status.WS_1013_TRY_AGAIN_LATER,
+                )
+                return
+
+            # Add jitter for reconnecting clients to spread the load
+            if reconnection_token:
+                jitter = random.uniform(0, 1.0)
+                await asyncio.sleep(jitter)
+
             try:
                 if token or reconnection_token:
                     user_info, workspace = await self.authenticate_user(
@@ -222,7 +255,7 @@ class WebsocketServer:
                 # Log the full exception for debugging
                 logger.error(f"Exception during connection setup: {e}", exc_info=True)
                 reason = f"Failed to establish connection: {str(e)}"
-                
+
                 # If we authenticated but failed later, try to clean up
                 # This handles the case where check_client creates services but then fails
                 if authenticated and user_info and workspace and client_id:
@@ -234,13 +267,17 @@ class WebsocketServer:
                             logger.info(f"Cleaned up partially created client {workspace}/{client_id} after setup failure")
                     except Exception as cleanup_error:
                         logger.warning(f"Could not cleanup client after setup failure: {cleanup_error}")
-                
+
                 await self.disconnect(
                     websocket,
                     reason=reason,
                     code=status.WS_1001_GOING_AWAY,
                 )
                 return
+            finally:
+                # Release the admission semaphore after setup is done (or failed).
+                # The long-running communication loop does not need to hold the slot.
+                self._connection_semaphore.release()
 
             try:
                 await self.establish_websocket_communication(
