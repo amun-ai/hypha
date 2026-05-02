@@ -16,9 +16,19 @@ The implementation uses an adaptive approach to handle ZIP files of different si
 - The implementation supports both standard ZIP and ZIP64 formats
 - For very large files, it implements streaming decompression to avoid loading the entire
   file content into memory at once
+
+ZIP64 handling: when a partial tail is fetched from S3, fetch_zip_tail parses the
+ZIP64 EOCD locator + record (or the regular EOCD record for non-ZIP64 archives) to
+determine the actual offset and size of the central directory, then ensures the tail
+covers [cd_offset, EOF]. _open_zip_from_tail wraps the partial tail in a sparse
+file-like view so Python's zipfile module can resolve absolute offsets in the EOCD64
+record and central directory entries — without that wrapper, Python would seek to
+absolute offsets that lie before the start of the partial buffer and fail with
+"Corrupt zip64 end of central directory locator/record".
 """
 
 import asyncio
+import io
 import logging
 import struct
 from io import BytesIO
@@ -33,6 +43,168 @@ import zlib
 
 # Setup logger
 logger = logging.getLogger("zip_utils")
+
+
+# --- ZIP / ZIP64 record signatures and sizes (per APPNOTE.TXT) ---------------
+EOCD_SIGNATURE = b"PK\x05\x06"          # End of Central Directory Record
+ZIP64_EOCD_LOCATOR_SIGNATURE = b"PK\x06\x07"  # ZIP64 EOCD Locator
+ZIP64_EOCD_SIGNATURE = b"PK\x06\x06"    # ZIP64 EOCD Record
+ZIP64_EOCD_LOCATOR_SIZE = 20            # 4 sig + 4 disk + 8 offset + 4 disks
+ZIP64_EOCD_SIZE = 56                    # minimum, without extensible data sector
+EOCD_SIZE = 22                          # minimum, without zip comment
+
+
+class _SparseZipReader(io.RawIOBase):
+    """Read-only file-like view of a partial ZIP archive tail.
+
+    Bytes [0, tail_start) are virtual zeros; bytes [tail_start, total_size)
+    come from `tail`. This lets ``zipfile.ZipFile`` resolve absolute offsets
+    in the ZIP64 EOCD locator/record and central-directory entries even when
+    we only have the tail of the file in memory — Python seeks to absolute
+    offsets and we serve bytes correctly for any offset >= tail_start.
+    Reads in the virtual-zero region return zero-filled bytes (zipfile only
+    seeks there during ``open()``/``read()`` of an entry, which we never
+    call: the higher-level streaming code uses ranged S3 reads keyed off
+    ``ZipInfo.header_offset`` directly).
+    """
+
+    def __init__(self, tail: bytes, tail_start: int, total_size: int):
+        if tail_start < 0:
+            raise ValueError(f"tail_start must be >= 0, got {tail_start}")
+        if tail_start + len(tail) != total_size:
+            raise ValueError(
+                f"tail must end at total_size: tail_start={tail_start}, "
+                f"len(tail)={len(tail)}, total_size={total_size}"
+            )
+        self._tail = tail
+        self._tail_start = tail_start
+        self._total = total_size
+        self._pos = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def seek(self, offset, whence=io.SEEK_SET):
+        if whence == io.SEEK_SET:
+            new_pos = offset
+        elif whence == io.SEEK_CUR:
+            new_pos = self._pos + offset
+        elif whence == io.SEEK_END:
+            new_pos = self._total + offset
+        else:
+            raise ValueError(f"invalid whence: {whence}")
+        if new_pos < 0:
+            raise ValueError(f"negative seek position: {new_pos}")
+        self._pos = new_pos
+        return self._pos
+
+    def tell(self) -> int:
+        return self._pos
+
+    def read(self, n=-1) -> bytes:
+        if n is None or n < 0:
+            n = max(0, self._total - self._pos)
+        end = min(self._pos + n, self._total)
+        if end <= self._pos:
+            return b""
+        out = bytearray()
+        # Virtual-zero region [pos, min(end, tail_start))
+        zero_end = min(end, self._tail_start)
+        if self._pos < zero_end:
+            out.extend(b"\x00" * (zero_end - self._pos))
+        # Real-data region [max(pos, tail_start), end)
+        actual_start = max(self._pos, self._tail_start)
+        if actual_start < end:
+            buf_off = actual_start - self._tail_start
+            out.extend(self._tail[buf_off : buf_off + (end - actual_start)])
+        self._pos = end
+        return bytes(out)
+
+    # zipfile.ZipFile may call readinto on a RawIOBase; provide it so that
+    # zlib decompression and friends work even though we don't expect those
+    # paths to fire here.
+    def readinto(self, b) -> int:
+        data = self.read(len(b))
+        n = len(data)
+        b[:n] = data
+        return n
+
+
+def _open_zip_from_tail(
+    zip_tail: bytes, tail_start_offset: int, total_size: int
+) -> zipfile.ZipFile:
+    """Open a ZipFile from a (possibly partial) tail of a ZIP archive.
+
+    For complete files (tail_start_offset == 0 and tail length == total_size)
+    uses BytesIO directly. For partial tails, wraps the bytes in a
+    :class:`_SparseZipReader` so absolute offsets in EOCD64/CD records resolve
+    correctly. With this wrapper, ``ZipInfo.header_offset`` returned from
+    ``infolist()`` is the real absolute offset in the original archive — no
+    post-hoc adjustment required.
+    """
+    if tail_start_offset == 0 and len(zip_tail) == total_size:
+        return zipfile.ZipFile(BytesIO(zip_tail))
+    return zipfile.ZipFile(_SparseZipReader(zip_tail, tail_start_offset, total_size))
+
+
+def _parse_zip64_locator(buf: bytes, locator_offset: int) -> int:
+    """Parse a ZIP64 EOCD locator and return the absolute offset of the
+    ZIP64 EOCD record in the original archive.
+
+    locator format (20 bytes total):
+        4: signature (PK\\x06\\x07)
+        4: number of the disk with EOCD64 (uint32)
+        8: relative offset of EOCD64 record (uint64)
+        4: total number of disks (uint32)
+    """
+    if buf[locator_offset : locator_offset + 4] != ZIP64_EOCD_LOCATOR_SIGNATURE:
+        raise ValueError("Buffer does not start with ZIP64 EOCD locator signature")
+    diskno, eocd64_offset, total_disks = struct.unpack(
+        "<LQL", buf[locator_offset + 4 : locator_offset + 20]
+    )
+    if diskno != 0 or total_disks not in (0, 1):
+        raise ValueError(
+            f"ZIP spans multiple disks (diskno={diskno}, total_disks={total_disks}); "
+            "multi-disk archives are not supported"
+        )
+    return eocd64_offset
+
+
+def _parse_zip64_eocd(buf: bytes, record_offset: int) -> tuple[int, int]:
+    """Parse a ZIP64 EOCD record and return (cd_offset, cd_size).
+
+    record format (56 bytes minimum):
+        4: signature (PK\\x06\\x06)
+        8: size of zip64 EOCD record - 12
+        2: version made by
+        2: version needed to extract
+        4: this disk number
+        4: number of the disk with start of CD
+        8: total entries on this disk
+        8: total entries
+        8: size of central directory (cd_size)
+        8: offset of start of CD with respect to starting disk (cd_offset)
+        ...: extensible data sector (variable)
+    """
+    if buf[record_offset : record_offset + 4] != ZIP64_EOCD_SIGNATURE:
+        raise ValueError("Buffer does not start with ZIP64 EOCD record signature")
+    cd_size, cd_offset = struct.unpack("<QQ", buf[record_offset + 40 : record_offset + 56])
+    return cd_offset, cd_size
+
+
+def _parse_eocd(buf: bytes, eocd_offset: int) -> tuple[int, int]:
+    """Parse a regular (non-ZIP64) EOCD record and return (cd_offset, cd_size).
+
+    Returns 0xFFFFFFFF for either field if the value overflowed and the real
+    value lives in the ZIP64 EOCD record.
+    """
+    if buf[eocd_offset : eocd_offset + 4] != EOCD_SIGNATURE:
+        raise ValueError("Buffer does not start with EOCD signature")
+    cd_size, cd_offset = struct.unpack("<II", buf[eocd_offset + 12 : eocd_offset + 20])
+    return cd_offset, cd_size
 
 
 async def fetch_zip_tail(
@@ -96,12 +268,6 @@ async def fetch_zip_tail(
             logger.error(f"Failed to download entire ZIP file: {str(e)}")
             # Continue with partial download approach
 
-    # ZIP End of Central Directory (EOCD) signature
-    EOCD_SIGNATURE = b"PK\x05\x06"
-    ZIP64_EOCD_LOCATOR = (
-        b"PK\x06\x07"  # ZIP64 End of Central Directory Locator signature
-    )
-
     # Adaptive tail size based on file size
     MAX_TAIL = 128 * 1024 * 1024  # 128MB absolute maximum for very large ZIP files
 
@@ -126,24 +292,46 @@ async def fetch_zip_tail(
     tail_length = min_tail
     found = False
     zip_tail = b""
-    current_offset = content_length
     tail_start_offset = max(content_length - tail_length, 0)  # Initialize properly
 
-    # Adaptive approach: start small and increase until we find the central directory
+    async def _ensure_tail_covers(target_start: int) -> None:
+        """Extend zip_tail backwards so it covers [target_start, content_length).
+
+        Mutates the enclosing zip_tail / tail_start_offset locals via nonlocal.
+        """
+        nonlocal zip_tail, tail_start_offset
+        target_start = max(0, target_start)
+        if target_start >= tail_start_offset:
+            return
+        # Fetch [target_start, tail_start_offset - 1] and prepend.
+        range_header = f"bytes={target_start}-{tail_start_offset - 1}"
+        logger.debug(
+            f"Extending ZIP tail backwards to cover central directory: {range_header}"
+        )
+        response = await s3_client.get_object(
+            Bucket=bucket, Key=key, Range=range_header
+        )
+        prefix = await response["Body"].read()
+        zip_tail = prefix + zip_tail
+        tail_start_offset = target_start
+
+    # Adaptive approach: start small and grow until we find an EOCD/ZIP64
+    # locator signature anywhere in the tail.
+    eocd_offset_in_tail = -1
+    zip64_locator_offset_in_tail = -1
     while tail_length <= MAX_TAIL:
         new_tail_start = max(content_length - tail_length, 0)
         # Only fetch the new part if we've already read a smaller tail
-        if zip_tail and new_tail_start < current_offset:
-            # Fetch only the missing part
-            range_header = f"bytes={new_tail_start}-{current_offset - 1}"
+        if zip_tail and new_tail_start < tail_start_offset:
+            # Fetch only the missing prefix
+            range_header = f"bytes={new_tail_start}-{tail_start_offset - 1}"
             logger.debug(f"Fetching additional ZIP tail: {range_header}")
             response = await s3_client.get_object(
                 Bucket=bucket, Key=key, Range=range_header
             )
             new_part = await response["Body"].read()
             zip_tail = new_part + zip_tail
-            current_offset = new_tail_start
-            tail_start_offset = new_tail_start  # Update tail_start_offset
+            tail_start_offset = new_tail_start
         else:
             range_header = f"bytes={new_tail_start}-{content_length - 1}"
             logger.debug(f"Fetching ZIP tail: {range_header}")
@@ -151,27 +339,16 @@ async def fetch_zip_tail(
                 Bucket=bucket, Key=key, Range=range_header
             )
             zip_tail = await response["Body"].read()
-            current_offset = new_tail_start
-            tail_start_offset = new_tail_start  # Update tail_start_offset
+            tail_start_offset = new_tail_start
 
-        # First check for regular ZIP EOCD signature
-        eocd_offset = zip_tail.rfind(EOCD_SIGNATURE)
+        eocd_offset_in_tail = zip_tail.rfind(EOCD_SIGNATURE)
+        zip64_locator_offset_in_tail = zip_tail.rfind(ZIP64_EOCD_LOCATOR_SIGNATURE)
 
-        # Also check for ZIP64 format
-        zip64_locator_offset = zip_tail.rfind(ZIP64_EOCD_LOCATOR)
-
-        if eocd_offset != -1:
-            # Found standard ZIP EOCD
+        if eocd_offset_in_tail != -1 or zip64_locator_offset_in_tail != -1:
             found = True
             logger.debug(
-                f"Found EOCD at offset {eocd_offset} in tail of size {len(zip_tail)}"
-            )
-            break
-        elif zip64_locator_offset != -1:
-            # Found ZIP64 EOCD Locator
-            found = True
-            logger.debug(
-                f"Found ZIP64 EOCD Locator at offset {zip64_locator_offset} in tail of size {len(zip_tail)}"
+                f"Found ZIP directory signatures in tail of size {len(zip_tail)} "
+                f"(eocd@{eocd_offset_in_tail}, zip64_locator@{zip64_locator_offset_in_tail})"
             )
             break
 
@@ -179,55 +356,145 @@ async def fetch_zip_tail(
         tail_length *= 2
         logger.debug(f"Increasing tail size to {tail_length}")
 
-    # If we still haven't found the central directory, try one final approach: get the whole file
-    # This is only for small enough files where it's reasonable to do so
-    if not found and content_length <= 100 * 1024 * 1024:  # Only for files <= 100MB
+    if not found and content_length <= 100 * 1024 * 1024:
+        # Last-resort fallback for moderate-sized files: download the whole thing.
+        # We do NOT extend this fallback to bigger files — for true large ZIP64
+        # archives the proper path below (parse EOCD64 → range-fetch CD) is far
+        # cheaper.
         logger.warning(
             f"Central directory not found in tail, downloading entire ZIP file for {key}"
         )
         try:
             response = await s3_client.get_object(Bucket=bucket, Key=key)
             zip_tail = await response["Body"].read()
-            tail_start_offset = 0  # Full file
-
-            # Verify this is a valid ZIP file
+            tail_start_offset = 0
             try:
-                with zipfile.ZipFile(BytesIO(zip_tail)) as zf:
-                    # Just checking if it opens correctly
+                with zipfile.ZipFile(BytesIO(zip_tail)):
                     found = True
                     logger.debug(
                         f"Successfully loaded complete ZIP file ({len(zip_tail)} bytes)"
                     )
             except zipfile.BadZipFile:
                 logger.error(f"File is not a valid ZIP file: {key}")
-                # Continue with what we have anyway
         except Exception as e:
             logger.error(f"Failed to download entire ZIP file: {str(e)}")
-            # Continue with what we have
 
     if not found:
-        # Fallback: return the largest tail we got, but warn
         logger.warning(
-            f"ZIP directory signatures not found in last {tail_length//2} bytes of zip file {key}. Returning largest tail."
+            f"ZIP directory signatures not found in last {tail_length//2} bytes "
+            f"of zip file {key}. Returning largest tail."
         )
 
-    # Verify the tail can be opened as a ZIP file before returning
+    # Once we've located an EOCD or ZIP64 locator, parse it to determine the
+    # actual offset and size of the central directory, and ensure the tail
+    # covers [cd_offset, EOF]. Without this step, ZIP64 archives whose CD
+    # spills past the initial tail (e.g. >65535 entries) can't be opened —
+    # see comments at the top of this module.
+    if found and tail_start_offset > 0:
+        try:
+            cd_start_required = await _resolve_cd_start(
+                zip_tail,
+                tail_start_offset,
+                eocd_offset_in_tail,
+                zip64_locator_offset_in_tail,
+                s3_client,
+                bucket,
+                key,
+                content_length,
+            )
+            if cd_start_required is not None and cd_start_required < tail_start_offset:
+                await _ensure_tail_covers(cd_start_required)
+        except Exception as e:
+            logger.error(
+                f"Failed to resolve central directory bounds for {key}: {e}",
+                exc_info=True,
+            )
+
+    # Validation: open the (possibly partial) tail via the sparse-reader helper.
+    # For partial tails this resolves absolute offsets correctly; for full files
+    # it's equivalent to BytesIO. Failures here are logged but not fatal — the
+    # caller can still surface a meaningful error.
     try:
-        with zipfile.ZipFile(BytesIO(zip_tail)) as zf:
+        with _open_zip_from_tail(zip_tail, tail_start_offset, content_length) as zf:
             num_files = len(zf.namelist())
-            logger.debug(f"Validated ZIP tail contains {num_files} files, tail starts at offset {tail_start_offset}")
+            logger.debug(
+                f"Validated ZIP tail contains {num_files} files, "
+                f"tail starts at offset {tail_start_offset}"
+            )
     except zipfile.BadZipFile as e:
         logger.error(f"Invalid ZIP file structure: {str(e)}")
-        # We'll still return what we have, the caller will handle the error
 
     result = (zip_tail, tail_start_offset)
-    
+
     # Cache result if cache instance provided and we found something valid
     if cache_instance and found:
         logger.debug(f"Caching ZIP tail for {key}")
         await cache_instance.set(cache_key, result, ttl=3600)  # Cache for 1 hour
 
     return result
+
+
+async def _resolve_cd_start(
+    zip_tail: bytes,
+    tail_start_offset: int,
+    eocd_offset_in_tail: int,
+    zip64_locator_offset_in_tail: int,
+    s3_client,
+    bucket: str,
+    key: str,
+    content_length: int,
+) -> Optional[int]:
+    """Determine the absolute offset where the central directory starts.
+
+    For ZIP64 archives this requires parsing the ZIP64 EOCD locator + record;
+    for plain ZIP archives it's the cd_offset field of the EOCD record.
+
+    Returns None if the EOCD/EOCD64 records can't be located. Otherwise
+    returns the absolute offset of the CD start (which may be smaller than
+    tail_start_offset, indicating the tail must be extended).
+    """
+    # Prefer ZIP64 if its locator was found — the ZIP64 record is authoritative
+    # when present, and the regular EOCD's cd_offset will be 0xFFFFFFFF in that
+    # case anyway.
+    if zip64_locator_offset_in_tail != -1:
+        eocd64_record_offset = _parse_zip64_locator(
+            zip_tail, zip64_locator_offset_in_tail
+        )
+        # The EOCD64 record itself may live before our current tail.
+        if eocd64_record_offset < tail_start_offset:
+            range_header = (
+                f"bytes={eocd64_record_offset}-"
+                f"{eocd64_record_offset + ZIP64_EOCD_SIZE - 1}"
+            )
+            logger.debug(f"Fetching ZIP64 EOCD record: {range_header}")
+            resp = await s3_client.get_object(Bucket=bucket, Key=key, Range=range_header)
+            record_bytes = await resp["Body"].read()
+            cd_offset, cd_size = _parse_zip64_eocd(record_bytes, 0)
+        else:
+            local_offset = eocd64_record_offset - tail_start_offset
+            cd_offset, cd_size = _parse_zip64_eocd(zip_tail, local_offset)
+        logger.debug(
+            f"ZIP64 central directory: cd_offset={cd_offset}, cd_size={cd_size}"
+        )
+        return cd_offset
+
+    if eocd_offset_in_tail != -1:
+        cd_offset, cd_size = _parse_eocd(zip_tail, eocd_offset_in_tail)
+        # If the value overflowed (0xFFFFFFFF), this is actually a ZIP64
+        # archive but we didn't find the locator — caller will surface the
+        # error via _open_zip_from_tail.
+        if cd_offset == 0xFFFFFFFF or cd_size == 0xFFFFFFFF:
+            logger.warning(
+                f"EOCD reports overflow values for {key} but no ZIP64 locator was "
+                "found in the tail; the tail may need to be extended further."
+            )
+            return None
+        logger.debug(
+            f"Standard central directory: cd_offset={cd_offset}, cd_size={cd_size}"
+        )
+        return cd_offset
+
+    return None
 
 
 async def get_zip_file_content(
@@ -302,11 +569,16 @@ async def get_zip_file_content(
                 # (this is for backward compatibility with existing callers)
                 tail_start_offset = 0
 
-        # Open the in-memory ZIP tail and parse it
+        # Open the in-memory ZIP tail and parse it. _open_zip_from_tail uses
+        # a sparse-file wrapper for partial tails so absolute offsets in
+        # EOCD64/CD records resolve correctly — without it, ZIP64 archives
+        # whose CD lives at an offset > tail_start fail with "Corrupt zip64
+        # end of central directory locator/record".
         try:
-            # Create a tuple for backward compatibility with the streaming functions
             zip_tail_with_offset = (zip_tail, tail_start_offset)
-            with zipfile.ZipFile(BytesIO(zip_tail)) as zip_file:
+            with _open_zip_from_tail(
+                zip_tail, tail_start_offset, content_length
+            ) as zip_file:
                 # If `path` ends with "/" or is empty, treat it as a directory listing
                 if not path or path.endswith("/"):
                     logger.info(f"[zip] Listing directory: path={path}")
@@ -599,37 +871,18 @@ async def stream_file_chunks_from_zip(
         logger.error(f"Failed to get ZIP file size: {str(e)}")
         raise
     
-    # Determine if we have a partial ZIP based on tail_start_offset
-    # This is more reliable than comparing lengths
+    # _open_zip_from_tail provides Python's zipfile with a sparse view that
+    # makes ZipInfo.header_offset the real absolute offset in the original
+    # archive, regardless of whether zip_tail covers the full file or only
+    # the tail. No post-hoc offset adjustment is needed.
     zip_tail_is_partial = tail_start_offset > 0
-    
-    # Get the local header offset from the central directory
     file_header_offset = zip_info.header_offset
-    
-    # Handle partial ZIP files where Python's zipfile gives us adjusted offsets
-    if zip_tail_is_partial and file_header_offset < tail_start_offset:
-        # When we have a partial ZIP, Python's zipfile module adjusts offsets
-        # The offsets in the central directory are relative to the start of the tail
-        # We need to calculate the actual offset in the full ZIP file
-        
-        # The offset is adjusted by Python to be relative to the tail start
-        # To get the actual offset: add back the tail_start_offset
-        actual_offset = tail_start_offset + file_header_offset
-        
-        logger.info(
-            f"Partial ZIP offset adjustment for {zip_info.filename}: "
-            f"header_offset={file_header_offset} (from central dir), "
-            f"tail_start={tail_start_offset}, "
-            f"actual_offset={actual_offset} (in full ZIP)"
-        )
-        file_header_offset = actual_offset
-    else:
-        logger.debug(
-            f"Using direct offset for {zip_info.filename}: "
-            f"header_offset={file_header_offset}, "
-            f"tail_start={tail_start_offset}, "
-            f"is_partial={zip_tail_is_partial}"
-        )
+    logger.debug(
+        f"Using absolute offset for {zip_info.filename}: "
+        f"header_offset={file_header_offset}, "
+        f"tail_start={tail_start_offset}, "
+        f"is_partial={zip_tail_is_partial}"
+    )
 
     # Calculate data offset: header offset + size of the local file header + filename length + extra field length
     try:
