@@ -907,14 +907,19 @@ class ArtifactController:
                                     },
                                 )
 
-                        # Fetch the ZIP's central directory from cache or download if not cached
+                        # Fetch the ZIP's central directory from cache or download if not cached.
+                        # Cache key includes content_length so changes to the artifact
+                        # (which produce a new uploaded zip with a different size) naturally
+                        # invalidate. TTL set to 1 hour because committed artifact files are
+                        # immutable; for very large archives (3.6M-entry / 270 MB CD) the
+                        # previous 60 s TTL meant most requests re-downloaded the CD.
                         cache_key = f"zip_tail:{self.workspace_bucket}:{s3_key}:{content_length}"
                         zip_tail_data = await self._cache.get(cache_key)
                         if zip_tail_data is None:
                             zip_tail_data = await zip_utils.fetch_zip_tail(
                                 s3_client, self.workspace_bucket, s3_key, content_length
                             )
-                            await self._cache.set(cache_key, zip_tail_data, ttl=60)
+                            await self._cache.set(cache_key, zip_tail_data, ttl=3600)
 
                         # Process zip file using the utility function
                         # Pass the full tuple to get_zip_file_content

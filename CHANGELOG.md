@@ -1,5 +1,9 @@
 # Hypha Change Log
 
+### 0.21.85
+
+ - Fix `/zip-files/` perf cliff on very large ZIP64 archives (236 GB / 3.6M entries observed at 28–55 s per request, even on cache hits). The Redis cache stored the raw central-directory bytes but `zipfile.ZipFile()` re-parsed all 3.6M CDH entries on every request (~20–30 s). Adds an in-process `{filename: ZipInfo}` memo keyed on `(bucket, key, content_length)` so sequential requests on the same replica share a single parse; subsequent requests now resolve in milliseconds. Bumps the Redis CD-bytes cache TTL from 60 s → 1 h (committed artifacts are immutable). Drops the eager full-CD validation parse in `fetch_zip_tail` that doubled the cost on cache misses.
+
 ### 0.21.84
 
  - Fix `/zip-files/` endpoint failing with "Corrupt zip64 end of central directory locator" on ZIP64 archives (>4 GB or >65535 entries). `fetch_zip_tail` now parses the ZIP64 EOCD locator/record to determine the central directory's actual offset and size, ensures the fetched tail covers the entire central directory, and exposes a sparse file-like view (`_SparseZipReader`) that lets `zipfile.ZipFile` resolve absolute offsets in EOCD64/CD records correctly.

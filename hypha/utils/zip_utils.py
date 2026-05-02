@@ -33,6 +33,7 @@ import logging
 import struct
 from io import BytesIO
 from typing import Dict, List, Optional, Tuple, Union, AsyncGenerator
+import time
 import zipfile
 from botocore.exceptions import ClientError
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -52,6 +53,92 @@ ZIP64_EOCD_SIGNATURE = b"PK\x06\x06"    # ZIP64 EOCD Record
 ZIP64_EOCD_LOCATOR_SIZE = 20            # 4 sig + 4 disk + 8 offset + 4 disks
 ZIP64_EOCD_SIZE = 56                    # minimum, without extensible data sector
 EOCD_SIZE = 22                          # minimum, without zip comment
+
+
+# --- In-process parsed-CD memo ----------------------------------------------
+# For very large archives (>200 MB central directory, e.g. 3.6M entries) the
+# `zipfile.ZipFile()` constructor takes 20–30 s just to walk and decode every
+# CDH entry. Caching the raw tail bytes in Redis avoids re-downloading but
+# every request still re-parses. This module-level memo caches the parsed
+# {filename: ZipInfo} dict per archive identity, keyed on
+# (bucket, key, content_length), so repeat requests on the same replica
+# return in milliseconds.
+#
+# Memory cost: ZipInfo objects are heavy (~300 B each); a 3.6M-entry archive
+# memo costs ~1 GB. We cap concurrent memoized archives at
+# `_ZIP_INDEX_MEMO_MAX` and evict by LRU.
+_zip_index_memo: dict = {}  # cache_key -> (timestamp, (info_list, info_by_name))
+_zip_index_locks: dict = {}  # cache_key -> asyncio.Lock for parse coalescing
+_zip_index_parse_count: int = 0  # observability hook for tests
+_ZIP_INDEX_MEMO_TTL = 600       # seconds — artifact archives are immutable
+_ZIP_INDEX_MEMO_MAX = 4         # at most N archives memoized concurrently
+
+
+def _zip_index_memo_get(cache_key: str):
+    entry = _zip_index_memo.get(cache_key)
+    if entry is None:
+        return None
+    ts, value = entry
+    if time.monotonic() - ts > _ZIP_INDEX_MEMO_TTL:
+        _zip_index_memo.pop(cache_key, None)
+        return None
+    return value
+
+
+def _zip_index_memo_set(cache_key: str, value):
+    _zip_index_memo[cache_key] = (time.monotonic(), value)
+    if len(_zip_index_memo) > _ZIP_INDEX_MEMO_MAX:
+        oldest_key = min(_zip_index_memo.items(), key=lambda kv: kv[1][0])[0]
+        _zip_index_memo.pop(oldest_key, None)
+        _zip_index_locks.pop(oldest_key, None)
+
+
+async def _get_zip_index(
+    zip_tail: bytes,
+    tail_start_offset: int,
+    total_size: int,
+    cache_key: Optional[str],
+) -> tuple[list, dict]:
+    """Return ``(info_list, info_by_name)`` for a ZIP, memoized per cache_key.
+
+    ``info_list`` is the ordered list of ``ZipInfo`` (from ``zf.infolist()``)
+    needed for directory listings; ``info_by_name`` is a ``{filename: ZipInfo}``
+    dict for direct path lookups. Concurrent parses for the same archive are
+    coalesced via a per-key lock.
+
+    If ``cache_key`` is None, parses without caching (used for one-shot calls
+    where the caller doesn't have a stable identity for the archive).
+    """
+    global _zip_index_parse_count
+
+    if cache_key is not None:
+        cached = _zip_index_memo_get(cache_key)
+        if cached is not None:
+            return cached
+
+        # Coalesce concurrent parses for the same archive.
+        lock = _zip_index_locks.get(cache_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _zip_index_locks[cache_key] = lock
+        async with lock:
+            cached = _zip_index_memo_get(cache_key)
+            if cached is not None:
+                return cached
+            with _open_zip_from_tail(zip_tail, tail_start_offset, total_size) as zf:
+                info_list = zf.infolist()
+                info_by_name = {info.filename: info for info in info_list}
+            _zip_index_parse_count += 1
+            value = (info_list, info_by_name)
+            _zip_index_memo_set(cache_key, value)
+            return value
+
+    # Uncached path
+    with _open_zip_from_tail(zip_tail, tail_start_offset, total_size) as zf:
+        info_list = zf.infolist()
+        info_by_name = {info.filename: info for info in info_list}
+    _zip_index_parse_count += 1
+    return info_list, info_by_name
 
 
 class _SparseZipReader(io.RawIOBase):
@@ -410,19 +497,16 @@ async def fetch_zip_tail(
                 exc_info=True,
             )
 
-    # Validation: open the (possibly partial) tail via the sparse-reader helper.
-    # For partial tails this resolves absolute offsets correctly; for full files
-    # it's equivalent to BytesIO. Failures here are logged but not fatal — the
-    # caller can still surface a meaningful error.
-    try:
-        with _open_zip_from_tail(zip_tail, tail_start_offset, content_length) as zf:
-            num_files = len(zf.namelist())
-            logger.debug(
-                f"Validated ZIP tail contains {num_files} files, "
-                f"tail starts at offset {tail_start_offset}"
-            )
-    except zipfile.BadZipFile as e:
-        logger.error(f"Invalid ZIP file structure: {str(e)}")
+    # Skip the eager full-CD validation parse — it cost an extra 20–30 s on
+    # very large archives (3.6M-entry / 270 MB CD) without changing what we
+    # return. A structural check (signature found above) is sufficient at
+    # this layer; downstream consumers will surface any deeper corruption
+    # via the memoized parse in get_zip_file_content.
+    if found:
+        logger.debug(
+            f"ZIP tail ready for {key}: tail starts at offset {tail_start_offset}, "
+            f"size {len(zip_tail)} bytes"
+        )
 
     result = (zip_tail, tail_start_offset)
 
@@ -569,160 +653,166 @@ async def get_zip_file_content(
                 # (this is for backward compatibility with existing callers)
                 tail_start_offset = 0
 
-        # Open the in-memory ZIP tail and parse it. _open_zip_from_tail uses
-        # a sparse-file wrapper for partial tails so absolute offsets in
-        # EOCD64/CD records resolve correctly — without it, ZIP64 archives
-        # whose CD lives at an offset > tail_start fail with "Corrupt zip64
-        # end of central directory locator/record".
+        # Parse the central directory once per archive (memoized in process).
+        # This avoids the 20–30 s per-request `zipfile.ZipFile()` parse cost on
+        # very large archives (3.6M-entry / 270 MB CD). Cache key is keyed on
+        # the archive identity (bucket, key, content_length) — content_length
+        # naturally invalidates when the artifact changes.
         try:
             zip_tail_with_offset = (zip_tail, tail_start_offset)
-            with _open_zip_from_tail(
-                zip_tail, tail_start_offset, content_length
-            ) as zip_file:
-                # If `path` ends with "/" or is empty, treat it as a directory listing
-                if not path or path.endswith("/"):
-                    logger.info(f"[zip] Listing directory: path={path}")
-                    directory_contents = []
+            index_cache_key = f"{bucket}:{key}:{content_length}"
+            try:
+                info_list, info_by_name = await _get_zip_index(
+                    zip_tail, tail_start_offset, content_length, index_cache_key
+                )
+            except zipfile.BadZipFile as e:
+                logger.error(f"[zip] Bad ZIP file: {str(e)}")
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "detail": f"Invalid ZIP file: {str(e)}"},
+                )
 
-                    for zip_info in zip_file.infolist():
-                        # Handle root directory or subdirectory files
-                        if not path:
-                            # Root directory - extract immediate children
-                            relative_path = zip_info.filename.strip("/")
-                            if "/" not in relative_path:
-                                # Top-level file
+            # Directory listing: iterate the cached info_list.
+            if not path or path.endswith("/"):
+                logger.info(f"[zip] Listing directory: path={path}")
+                directory_contents = []
+
+                for zip_info in info_list:
+                    # Handle root directory or subdirectory files
+                    if not path:
+                        # Root directory - extract immediate children
+                        relative_path = zip_info.filename.strip("/")
+                        if "/" not in relative_path:
+                            # Top-level file
+                            directory_contents.append(
+                                {
+                                    "type": (
+                                        "file"
+                                        if not zip_info.is_dir()
+                                        else "directory"
+                                    ),
+                                    "name": relative_path,
+                                    "size": (
+                                        zip_info.file_size
+                                        if not zip_info.is_dir()
+                                        else None
+                                    ),
+                                    "last_modified": datetime(
+                                        *zip_info.date_time
+                                    ).timestamp(),
+                                }
+                            )
+                        else:
+                            # Top-level directory
+                            top_level_dir = relative_path.split("/")[0]
+                            if not any(
+                                d["name"] == top_level_dir
+                                and d["type"] == "directory"
+                                for d in directory_contents
+                            ):
+                                directory_contents.append(
+                                    {"type": "directory", "name": top_level_dir}
+                                )
+                    else:
+                        # Subdirectory: Include only immediate children
+                        if (
+                            zip_info.filename.startswith(path)
+                            and zip_info.filename != path
+                        ):
+                            relative_path = zip_info.filename[len(path):].strip("/")
+                            if "/" in relative_path:
+                                # Subdirectory case
+                                child_name = relative_path.split("/")[0]
+                                if not any(
+                                    d["name"] == child_name
+                                    and d["type"] == "directory"
+                                    for d in directory_contents
+                                ):
+                                    directory_contents.append(
+                                        {"type": "directory", "name": child_name}
+                                    )
+                            else:
+                                # File case
                                 directory_contents.append(
                                     {
-                                        "type": (
-                                            "file"
-                                            if not zip_info.is_dir()
-                                            else "directory"
-                                        ),
+                                        "type": "file",
                                         "name": relative_path,
-                                        "size": (
-                                            zip_info.file_size
-                                            if not zip_info.is_dir()
-                                            else None
-                                        ),
+                                        "size": zip_info.file_size,
                                         "last_modified": datetime(
                                             *zip_info.date_time
                                         ).timestamp(),
                                     }
                                 )
-                            else:
-                                # Top-level directory
-                                top_level_dir = relative_path.split("/")[0]
-                                if not any(
-                                    d["name"] == top_level_dir
-                                    and d["type"] == "directory"
-                                    for d in directory_contents
-                                ):
-                                    directory_contents.append(
-                                        {"type": "directory", "name": top_level_dir}
-                                    )
-                        else:
-                            # Subdirectory: Include only immediate children
-                            if (
-                                zip_info.filename.startswith(path)
-                                and zip_info.filename != path
-                            ):
-                                relative_path = zip_info.filename[len(path) :].strip(
-                                    "/"
-                                )
-                                if "/" in relative_path:
-                                    # Subdirectory case
-                                    child_name = relative_path.split("/")[0]
-                                    if not any(
-                                        d["name"] == child_name
-                                        and d["type"] == "directory"
-                                        for d in directory_contents
-                                    ):
-                                        directory_contents.append(
-                                            {"type": "directory", "name": child_name}
-                                        )
-                                else:
-                                    # File case
-                                    directory_contents.append(
-                                        {
-                                            "type": "file",
-                                            "name": relative_path,
-                                            "size": zip_info.file_size,
-                                            "last_modified": datetime(
-                                                *zip_info.date_time
-                                            ).timestamp(),
-                                        }
-                                    )
-
-                    logger.info(
-                        f"[zip] Directory listing complete, returning {len(directory_contents)} items"
-                    )
-                    return JSONResponse(status_code=200, content=directory_contents)
-
-                # Otherwise, find the file inside the ZIP
-                try:
-                    zip_info = zip_file.getinfo(path)
-                    logger.info(
-                        f"[zip] Found file in ZIP: {path}, size: {zip_info.file_size}, compression: {zip_info.compress_type}"
-                    )
-                except KeyError:
-                    logger.error(f"[zip] File not found inside ZIP: {path}")
-                    return JSONResponse(
-                        status_code=404,
-                        content={
-                            "success": False,
-                            "detail": f"File not found inside ZIP: {path}",
-                        },
-                    )
-
-                # Set content type based on file extension if possible
-                content_type = "application/octet-stream"
-                file_extension = os.path.splitext(path)[1].lower()
-                if file_extension:
-                    # Basic content type mapping
-                    content_type_map = {
-                        ".txt": "text/plain",
-                        ".html": "text/html",
-                        ".htm": "text/html",
-                        ".json": "application/json",
-                        ".xml": "application/xml",
-                        ".csv": "text/csv",
-                        ".jpg": "image/jpeg",
-                        ".jpeg": "image/jpeg",
-                        ".png": "image/png",
-                        ".gif": "image/gif",
-                        ".pdf": "application/pdf",
-                        ".js": "application/javascript",
-                        ".css": "text/css",
-                        ".md": "text/markdown",
-                    }
-                    content_type = content_type_map.get(file_extension, content_type)
-
-                # Use our streaming implementation with proper chunking
-                # Check file size to decide on the best chunk size for streaming
-                if zip_info.file_size > 10 * 1024 * 1024:  # > 10MB
-                    # For larger files, use larger chunks to improve throughput
-                    chunk_size = 256 * 1024  # 256KB
-                else:
-                    # For smaller files, use smaller chunks for lower latency
-                    chunk_size = 64 * 1024  # 64KB
 
                 logger.info(
-                    f"[zip] Returning StreamingResponse for {path} with chunk size {chunk_size}"
+                    f"[zip] Directory listing complete, returning {len(directory_contents)} items"
                 )
+                return JSONResponse(status_code=200, content=directory_contents)
 
-                # Stream the file data
-                return StreamingResponse(
-                    stream_file_from_zip(
-                        s3_client, bucket, key, zip_info, zip_tail_with_offset, chunk_size
-                    ),
-                    media_type=content_type,
-                    headers={
-                        "Content-Disposition": f'attachment; filename="{os.path.basename(path)}"',
-                        "Content-Length": str(
-                            zip_info.file_size
-                        ),  # Add file size for client progress tracking
+            # Otherwise, find the file inside the ZIP via the memoized index.
+            zip_info = info_by_name.get(path)
+            if zip_info is None:
+                logger.error(f"[zip] File not found inside ZIP: {path}")
+                return JSONResponse(
+                    status_code=404,
+                    content={
+                        "success": False,
+                        "detail": f"File not found inside ZIP: {path}",
                     },
                 )
+            logger.info(
+                f"[zip] Found file in ZIP: {path}, size: {zip_info.file_size}, compression: {zip_info.compress_type}"
+            )
+
+            # Set content type based on file extension if possible
+            content_type = "application/octet-stream"
+            file_extension = os.path.splitext(path)[1].lower()
+            if file_extension:
+                # Basic content type mapping
+                content_type_map = {
+                    ".txt": "text/plain",
+                    ".html": "text/html",
+                    ".htm": "text/html",
+                    ".json": "application/json",
+                    ".xml": "application/xml",
+                    ".csv": "text/csv",
+                    ".jpg": "image/jpeg",
+                    ".jpeg": "image/jpeg",
+                    ".png": "image/png",
+                    ".gif": "image/gif",
+                    ".pdf": "application/pdf",
+                    ".js": "application/javascript",
+                    ".css": "text/css",
+                    ".md": "text/markdown",
+                }
+                content_type = content_type_map.get(file_extension, content_type)
+
+            # Use our streaming implementation with proper chunking
+            # Check file size to decide on the best chunk size for streaming
+            if zip_info.file_size > 10 * 1024 * 1024:  # > 10MB
+                # For larger files, use larger chunks to improve throughput
+                chunk_size = 256 * 1024  # 256KB
+            else:
+                # For smaller files, use smaller chunks for lower latency
+                chunk_size = 64 * 1024  # 64KB
+
+            logger.info(
+                f"[zip] Returning StreamingResponse for {path} with chunk size {chunk_size}"
+            )
+
+            # Stream the file data
+            return StreamingResponse(
+                stream_file_from_zip(
+                    s3_client, bucket, key, zip_info, zip_tail_with_offset, chunk_size
+                ),
+                media_type=content_type,
+                headers={
+                    "Content-Disposition": f'attachment; filename="{os.path.basename(path)}"',
+                    "Content-Length": str(
+                        zip_info.file_size
+                    ),  # Add file size for client progress tracking
+                },
+            )
         except zipfile.BadZipFile as e:
             logger.error(f"[zip] Bad ZIP file: {str(e)}")
             return JSONResponse(

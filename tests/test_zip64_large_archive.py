@@ -221,3 +221,101 @@ async def test_non_zip64_still_works_above_50mb():
     async for chunk in response.body_iterator:
         chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode())
     assert b"".join(chunks) == b"plain-zip-hello"
+
+
+# ---------------------------------------------------------------------------
+# Performance regression: parse the CD only once across requests
+# ---------------------------------------------------------------------------
+
+
+async def test_repeated_requests_parse_central_directory_only_once():
+    """Regression for production perf cliff on a 236 GB / 3.6M-entry archive
+    where /zip-files/ took 28–55 s per request.
+
+    Even when the raw CD bytes are cached, ``zipfile.ZipFile()`` re-parses
+    the entire central directory on every call (~20–30 s for a 270 MB CD
+    with 3.6M entries). The fix is an in-process memo of the parsed
+    {filename: ZipInfo} dict, keyed on (bucket, key, content_length), so
+    sequential requests on the same replica skip the parse entirely.
+
+    This test counts how many times the underlying parse fires across
+    several requests against the same archive — it must stay at 1.
+    """
+    from hypha.utils import zip_utils
+
+    archive = _build_zip64_archive(num_entries=65540, padding_bytes=50 * 1024 * 1024)
+    _assert_is_zip64(archive)
+
+    s3 = MockAsyncS3Client(archive)
+
+    # Reset the parse counter and any pre-existing memo state for this archive.
+    zip_utils._zip_index_memo.clear()
+    zip_utils._zip_index_parse_count = 0
+
+    paths = ["metadata/.zattrs", "data/chunk-0", "metadata/.zattrs", "e/000000", "data/chunk-0"]
+    for p in paths:
+        response = await get_zip_file_content(s3, bucket="b", key="big.zip", path=p)
+        assert response.status_code == 200, getattr(response, "body", response)
+        # drain streaming response so the request fully completes
+        if hasattr(response, "body_iterator"):
+            async for _ in response.body_iterator:
+                pass
+
+    # The 5 sequential requests must share a single parse — that's the whole
+    # point of the memo. If this fails, we're back to the perf cliff.
+    assert zip_utils._zip_index_parse_count == 1, (
+        f"Expected exactly 1 CD parse across 5 requests, "
+        f"got {zip_utils._zip_index_parse_count}"
+    )
+
+
+async def test_directory_listing_uses_memo_too():
+    """Directory listing must use the same in-process memo as file lookup."""
+    from hypha.utils import zip_utils
+
+    archive = _build_zip64_archive(num_entries=65540, padding_bytes=50 * 1024 * 1024)
+    _assert_is_zip64(archive)
+
+    s3 = MockAsyncS3Client(archive)
+    zip_utils._zip_index_memo.clear()
+    zip_utils._zip_index_parse_count = 0
+
+    # Mix of directory listings and file extractions on the same archive.
+    response = await get_zip_file_content(s3, bucket="b", key="big.zip", path="")
+    assert response.status_code == 200
+    response = await get_zip_file_content(
+        s3, bucket="b", key="big.zip", path="metadata/.zattrs"
+    )
+    assert response.status_code == 200
+    if hasattr(response, "body_iterator"):
+        async for _ in response.body_iterator:
+            pass
+    response = await get_zip_file_content(s3, bucket="b", key="big.zip", path="data/")
+    assert response.status_code == 200
+
+    assert zip_utils._zip_index_parse_count == 1, (
+        f"Expected exactly 1 CD parse across mixed-mode requests, "
+        f"got {zip_utils._zip_index_parse_count}"
+    )
+
+
+async def test_memo_is_keyed_on_archive_identity():
+    """Different archives must each produce their own memo entry."""
+    from hypha.utils import zip_utils
+
+    archive_a = _build_zip64_archive(num_entries=65540, padding_bytes=50 * 1024 * 1024)
+    archive_b = _build_zip64_archive(num_entries=65541, padding_bytes=50 * 1024 * 1024)
+    s3_a = MockAsyncS3Client(archive_a)
+    s3_b = MockAsyncS3Client(archive_b)
+
+    zip_utils._zip_index_memo.clear()
+    zip_utils._zip_index_parse_count = 0
+
+    # Two different archives → two parses. Then repeated access → still two.
+    for _ in range(3):
+        await get_zip_file_content(s3_a, bucket="b", key="a.zip", path="metadata/.zattrs")
+        await get_zip_file_content(s3_b, bucket="b", key="b.zip", path="metadata/.zattrs")
+
+    assert zip_utils._zip_index_parse_count == 2, (
+        f"Expected 2 parses (one per archive), got {zip_utils._zip_index_parse_count}"
+    )
