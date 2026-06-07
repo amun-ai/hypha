@@ -367,13 +367,28 @@ class UserInfo(BaseModel):
         self._metadata[key] = value
 
     def get_permission(self, workspace: str):
-        """Get the workspace permission."""
+        """Get the workspace permission.
+
+        Returns the STRONGEST of the wildcard ("*") permission and the
+        specific-workspace permission, so a per-workspace admin grant (e.g. the
+        own-workspace elevation in auth.get_user_info) is not shadowed by a
+        broader-but-weaker "*" scope. See amun-ai/hypha#958.
+        """
         if not self.scope:
             return None
         assert isinstance(workspace, str)
-        if self.scope.workspaces.get("*"):
-            return self.scope.workspaces["*"]
-        return self.scope.workspaces.get(workspace, None)
+        star = self.scope.workspaces.get("*")
+        specific = self.scope.workspaces.get(workspace)
+        _rank = {
+            UserPermission.read: 1,
+            UserPermission.read_write: 2,
+            UserPermission.admin: 3,
+        }
+        best = None
+        for p in (star, specific):
+            if p is not None and (best is None or _rank.get(p, 0) > _rank.get(best, 0)):
+                best = p
+        return best
 
     def check_permission(self, workspace: str, minimal_permission: UserPermission):
         permission = self.get_permission(workspace)

@@ -439,6 +439,15 @@ All vulnerabilities documented with tests in `tests/test_security_vulnerabilitie
 | V6 | Missing ownership check | Verify ownership before destructive ops |
 | V9 | Conditional token validation | ALWAYS validate tokens |
 | V10-V14 | Cross-workspace bypass | Extract workspace from ID, validate permission on TARGET workspace |
+| V15 | Wildcard shadows specific permission | `get_permission` must return the STRONGEST of `*` and the per-workspace grant, never short-circuit on `*` |
+
+#### V15: Wildcard `*` Permission Shadows Specific Workspace Grant (HIGH — availability/authorization)
+
+- **Pattern**: `UserInfo.get_permission(ws)` returned the `"*"` (wildcard) scope whenever present, ignoring a stronger per-workspace entry.
+- **Root Cause**: `auth.get_user_info()` elevates a caller's own workspace to `admin` (`scope.workspaces[own_ws] = admin`), but `get_permission` did `if scope.workspaces.get("*"): return scope.workspaces["*"]` first. A login/session token carrying `*#rw` (below admin) shadowed the own-workspace admin grant, so a workspace owner who was not a global admin could not `generate_token` — and thus `apps.start` raised `Only admin can generate token`.
+- **Fix**: `get_permission` returns the maximum (by rank read < read_write < admin) of the `"*"` and specific-workspace permissions. `hypha/core/__init__.py::UserInfo.get_permission`.
+- **Location**: `hypha/core/__init__.py` (`get_permission`); failing call at `hypha/apps.py::start` → `hypha/core/workspace.py::generate_token`.
+- **Key Lesson**: Never let a broad-but-weaker scope mask a narrow-but-stronger grant. Aggregate permissions by strength. See amun-ai/hypha#958, tests in `tests/test_auth.py` and `tests/test_owner_generate_token.py`.
 
 ### Known Performance Anti-Patterns (NEVER DO)
 

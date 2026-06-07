@@ -309,6 +309,38 @@ def generate_admin_role_user_token():
         loop.close()
 
 
+@pytest_asyncio.fixture(name="wildcard_owner_user_token", scope="session")
+def generate_wildcard_owner_user_token():
+    """Token for a non-admin workspace owner carrying a weaker "*" scope.
+
+    Reproduces amun-ai/hypha#958: the user owns ``ws-user-wildcard-owner`` but
+    their token carries a broad ``*#rw`` scope (e.g. a login/session token)
+    *below* admin. Previously this weaker wildcard shadowed the own-workspace
+    admin elevation, so the owner could not ``generate_token`` (or start a
+    server-app) in their own workspace.
+    """
+    auth.JWT_SECRET = JWT_SECRET
+    user_info = UserInfo(
+        id="wildcard-owner",
+        is_anonymous=False,
+        email="wildcard-owner@test.com",
+        parent=None,
+        roles=[],
+        scope=create_scope(
+            workspaces={"*": UserPermission.read_write},
+            current_workspace="ws-user-wildcard-owner",
+        ),
+        expires_at=None,
+    )
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        token = loop.run_until_complete(generate_auth_token(user_info, 18000))
+        yield token
+    finally:
+        loop.close()
+
+
 @pytest_asyncio.fixture(name="test_user_token_temporary", scope="session")
 def generate_authenticated_user_temporary():
     """Generate a temporary test user token."""

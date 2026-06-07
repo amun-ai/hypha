@@ -165,6 +165,89 @@ class TestBasicAuth:
         # Test no permission
         assert not user_info.check_permission("ws4", UserPermission.read)
 
+    def test_get_permission_wildcard_does_not_shadow_specific(self):
+        """A specific-workspace grant must not be shadowed by a weaker "*".
+
+        Regression test for amun-ai/hypha#958: a workspace owner whose token
+        carries a broad "*" scope at a permission *lower* than admin (e.g. a
+        login/session token with ``*#rw``) was denied admin on their OWN
+        workspace because ``get_permission`` short-circuited on "*" and never
+        consulted the stronger per-workspace entry (set by
+        ``auth.get_user_info``). ``get_permission`` must return the STRONGEST
+        of the two.
+        """
+        # "*" is weaker than the specific own-workspace admin grant.
+        user_info = UserInfo(
+            id="owner",
+            is_anonymous=False,
+            email="owner@example.com",
+            roles=["user"],
+            scope=create_scope(
+                workspaces={
+                    "*": UserPermission.read_write,
+                    "ws-user-owner": UserPermission.admin,
+                }
+            ),
+        )
+        # Must surface the stronger specific grant, not the weaker wildcard.
+        assert user_info.get_permission("ws-user-owner") == UserPermission.admin
+        assert user_info.check_permission("ws-user-owner", UserPermission.admin)
+
+        # A workspace with only the wildcard still resolves to the wildcard.
+        assert user_info.get_permission("some-other-ws") == UserPermission.read_write
+        assert not user_info.check_permission("some-other-ws", UserPermission.admin)
+
+        # The reverse direction must also pick the strongest: wildcard admin
+        # must win over a weaker specific grant (no accidental downgrade).
+        admin_wildcard = UserInfo(
+            id="admin",
+            is_anonymous=False,
+            email="admin@example.com",
+            roles=["user"],
+            scope=create_scope(
+                workspaces={
+                    "*": UserPermission.admin,
+                    "ws-foo": UserPermission.read,
+                }
+            ),
+        )
+        assert admin_wildcard.get_permission("ws-foo") == UserPermission.admin
+        assert admin_wildcard.check_permission("ws-foo", UserPermission.admin)
+
+    def test_get_user_info_wildcard_does_not_shadow_own_workspace_admin(self):
+        """get_user_info elevates own workspace to admin even with weaker "*".
+
+        Regression test for amun-ai/hypha#958. ``get_user_info`` always sets
+        the caller's own workspace to admin, but that elevation was being
+        shadowed by a weaker "*" entry inside ``get_permission``.
+        """
+        current_time = datetime.datetime.now(datetime.timezone.utc)
+        expires_at = current_time + datetime.timedelta(seconds=3600)
+        expires_at_timestamp = timegm(expires_at.utctimetuple())
+
+        credentials = {
+            "sub": "auth0|owner-123",
+            "exp": expires_at_timestamp,
+            # Broad session token: read_write on everything, no admin.
+            "scope": "ws:*#rw",
+            AUTH0_NAMESPACE + "roles": ["user"],
+            AUTH0_NAMESPACE + "email": "owner@example.com",
+        }
+
+        user_info = get_user_info(credentials)
+        own_ws = user_info.get_workspace()
+
+        # The own-workspace admin elevation must be honored despite "*#rw".
+        assert user_info.scope.workspaces[own_ws] == UserPermission.admin
+        assert user_info.get_permission(own_ws) == UserPermission.admin
+        assert user_info.check_permission(own_ws, UserPermission.admin)
+
+        # Other workspaces still resolve to the weaker wildcard.
+        assert user_info.get_permission("ws-someone-else") == UserPermission.read_write
+        assert not user_info.check_permission(
+            "ws-someone-else", UserPermission.admin
+        )
+
     def test_update_user_scope(self):
         """Test updating user scope for workspace."""
         user_info = UserInfo(
