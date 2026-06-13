@@ -151,6 +151,37 @@ class HTTPStreamingRPCServer:
         except Exception as e:
             logger.warning(f"Error disconnecting: {e}")
 
+    async def close_all_streams(self) -> int:
+        """Signal every active HTTP streaming connection to close cleanly.
+
+        Used during graceful shutdown (SIGTERM/rollout). Pushes the ``None``
+        sentinel that ``stream_messages()`` interprets as a close signal, which
+        ends the StreamingResponse so the client observes a clean stream EOF and
+        reconnects immediately — instead of waiting for its read/heartbeat
+        timeout, which would otherwise produce a reconnection storm when a pod
+        is redeployed.
+
+        Returns the number of connections that were signaled.
+        """
+        async with self._lock:
+            queues = list(self._connections.values())
+        if not queues:
+            return 0
+        count = 0
+        for queue in queues:
+            try:
+                queue.put_nowait(None)  # None signals stream to close
+                count += 1
+            except asyncio.QueueFull:
+                # Queue backed up by a slow client; the stream will still end via
+                # request.is_disconnected() once the socket drops. We cannot
+                # block here during shutdown.
+                logger.warning(
+                    "Stream queue full during shutdown; relying on disconnect detection"
+                )
+        logger.info("Signaled %d HTTP streaming connection(s) to close", count)
+        return count
+
     async def _authenticate_with_reconnection_token(
         self, reconnection_token: str, client_id: str, workspace: str
     ) -> tuple[UserInfo, str]:

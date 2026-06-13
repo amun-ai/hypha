@@ -144,7 +144,8 @@ def start_builtin_services(
         )
 
     # Set up HTTP Streaming RPC (always enabled)
-    setup_http_rpc(store, app, base_path=args.base_path)
+    http_streaming_server = setup_http_rpc(store, app, base_path=args.base_path)
+    store.set_http_streaming_server(http_streaming_server)
     logger.info("HTTP Streaming RPC enabled")
 
     # Register agent skills service BEFORE HTTPProxy (must be registered before _ready=True)
