@@ -726,6 +726,46 @@ class WebsocketServer:
         """Check if the server is alive."""
         return True
 
+    async def close_all_clients(
+        self,
+        code=status.WS_1001_GOING_AWAY,
+        reason="Server is shutting down",
+    ):
+        """Proactively send a close frame to every active websocket client.
+
+        Used during graceful shutdown (SIGTERM/rollout): emitting an explicit
+        "going away" close frame lets clients reconnect immediately instead of
+        waiting out their heartbeat timeout, which prevents a thundering-herd
+        reconnection storm when a pod is redeployed.
+
+        The hypha-rpc client treats close codes 1000/1001 (when not
+        user-initiated) as a signal to reconnect, so a single replica draining
+        its connections hands clients straight to the surviving replica.
+
+        Returns the number of clients that were signaled.
+        """
+        websockets = list(self._websockets.values())
+        if not websockets:
+            return 0
+        logger.info(
+            "Gracefully closing %d websocket client(s) with code %s",
+            len(websockets),
+            code,
+        )
+
+        async def _close(ws):
+            try:
+                if ws.client_state.name == "CONNECTED":
+                    await ws.close(code=code, reason=reason)
+            except GeneratorExit:
+                pass  # Suppress GeneratorExit to avoid RuntimeError
+            except Exception as e:
+                # One unresponsive socket must not block draining the rest.
+                logger.warning("Error closing websocket during shutdown: %s", e)
+
+        await asyncio.gather(*[_close(ws) for ws in websockets])
+        return len(websockets)
+
     async def stop(self):
         """Stop the server."""
         self._stop = True

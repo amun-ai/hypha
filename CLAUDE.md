@@ -458,6 +458,30 @@ All vulnerabilities documented with tests in `tests/test_security_vulnerabilitie
 | `redis.keys(pattern)` in workspace ops | Blocks entire Redis for duration of scan | Use `redis.scan(cursor, match, count)` cursor-based iteration |
 | Unbounded `asyncio.wait_for()` on Redis ops | Can hang indefinitely if Redis is slow | Always add `timeout=5.0` to Redis operations in cleanup |
 
+### Graceful Shutdown / Connection Draining (Reliability)
+
+On a rollout/redeploy, abruptly cutting long-lived connections forces clients to
+detect the dead pod only via their heartbeat/read timeout — every client then
+reconnects in the same window, producing a thundering-herd reconnection storm on
+the new pod. **Always proactively signal connected clients to reconnect during
+graceful shutdown** so they re-establish immediately (and, with a preStop drain,
+land on the surviving replica).
+
+- **WebSocket**: `WebsocketServer.close_all_clients()` sends an explicit close
+  frame with code **1001 GOING_AWAY**. The hypha-rpc client reconnects on close
+  codes 1000/1001 when the close was not user-initiated.
+- **HTTP streaming** (`/rpc`): `HTTPStreamingRPCServer.close_all_streams()` pushes
+  the `None` sentinel into each active stream queue (the same signal used for
+  connection replacement), ending the StreamingResponse so the client sees a clean
+  EOF and reconnects. **This transport had NO graceful drain before F4** — only
+  WebSockets were closed in `store.teardown()`, so HTTP-stream clients (e.g. svamp
+  daemons) waited out their read timeout. Both transports are now drained in
+  `RedisStore.teardown()`.
+- **Key Lesson**: when adding any long-lived transport, wire it into the shutdown
+  drain path. A transport that is invisible to `teardown()` will always degrade to
+  timeout-based disconnect detection. Tracked as F4; see amun-ai/hypha (svamp
+  reliability audit).
+
 **Critical Pattern (V10-V14)**: When an ID contains a workspace prefix (e.g., `workspace/client_id`), always validate permission on the embedded workspace, not just `context["ws"]`.
 
 ```python

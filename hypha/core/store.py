@@ -236,6 +236,7 @@ class RedisStore:
         self._ready = False
         self._workspace_manager = None
         self._websocket_server = None
+        self._http_streaming_server = None
         self._cache_dir = cache_dir
         self._server_id = server_id or random_id(readable=True)
         self._manager_id = "manager-" + self._server_id
@@ -372,6 +373,10 @@ class RedisStore:
         """Set the websocket server."""
         assert self._websocket_server is None, "Websocket server already set"
         self._websocket_server = websocket_server
+
+    def set_http_streaming_server(self, http_streaming_server):
+        """Set the HTTP streaming RPC server (used for graceful drain)."""
+        self._http_streaming_server = http_streaming_server
 
 
     @schema_method
@@ -1457,13 +1462,20 @@ class RedisStore:
         except Exception as e:
             logger.warning(f"Error removing root workspace client: {e}")
         
+        # Graceful drain: proactively signal connected clients to reconnect with
+        # an explicit "going away" close so they re-establish immediately on the
+        # surviving replica, instead of waiting out a heartbeat/read timeout
+        # (which causes a thundering-herd reconnection storm on rollout).
         if self._websocket_server:
-            websockets = self._websocket_server.get_websockets()
-            for ws in websockets.values():
-                try:
-                    await ws.close()
-                except GeneratorExit:
-                    pass
+            try:
+                await self._websocket_server.close_all_clients()
+            except Exception as e:
+                logger.warning(f"Error closing websocket clients on teardown: {e}")
+        if self._http_streaming_server:
+            try:
+                await self._http_streaming_server.close_all_streams()
+            except Exception as e:
+                logger.warning(f"Error closing HTTP streams on teardown: {e}")
 
         await self._event_bus.stop()
         # Close Redis client gracefully
