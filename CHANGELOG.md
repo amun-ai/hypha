@@ -1,5 +1,10 @@
 # Hypha Change Log
 
+### 0.21.86
+
+ - Graceful connection draining on server shutdown (F4). On a rollout/redeploy the old pod previously cut long-lived connections abruptly, so clients only detected the dead pod via their heartbeat/read timeout (10–20 s) and all reconnected in the same window — a thundering-herd reconnection storm. `RedisStore.teardown()` now proactively drains both transports: WebSocket clients receive an explicit `1001 GOING_AWAY` close frame, and HTTP-streaming `/rpc` clients receive the `None` stream-close sentinel (clean EOF) so they reconnect immediately. Previously only WebSockets were closed (with a bare code 1000); the HTTP-streaming transport had no graceful drain at all.
+ - Bump bundled `hypha-rpc` to 0.21.42 (from 0.21.38). Includes the getService/`wm` proxy retarget to the new `manager_id` after reconnection (avoids a spurious 400 on getService following a server restart) and an event-loop initialization fix.
+
 ### 0.21.85
 
  - Fix `/zip-files/` perf cliff on very large ZIP64 archives (236 GB / 3.6M entries observed at 28–55 s per request, even on cache hits). The Redis cache stored the raw central-directory bytes but `zipfile.ZipFile()` re-parsed all 3.6M CDH entries on every request (~20–30 s). Adds an in-process `{filename: ZipInfo}` memo keyed on `(bucket, key, content_length)` so sequential requests on the same replica share a single parse; subsequent requests now resolve in milliseconds. Bumps the Redis CD-bytes cache TTL from 60 s → 1 h (committed artifacts are immutable). Drops the eager full-CD validation parse in `fetch_zip_tail` that doubled the cost on cache misses.
