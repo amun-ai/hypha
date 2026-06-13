@@ -3365,6 +3365,14 @@ async function _connectToServerHTTP(config) {
   if (_getService.__schema__) {
     wm.getService.__schema__ = _getService.__schema__;
   }
+  // Share the underlying RemoteFunction's encoded object so the
+  // manager_refreshed retarget loop (which iterates wm[key].__rpc_object__)
+  // can update getService's _rtarget after reconnection. Without this the
+  // wrapper hides the original method and getService keeps a stale
+  // "*/<old_manager_id>" target, causing a 400 on the next call.
+  if (_getService.__rpc_object__) {
+    wm.getService.__rpc_object__ = _getService.__rpc_object__;
+  }
 
   async function serve() {
     await new Promise(() => {}); // Wait forever
@@ -4333,10 +4341,21 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
 
   _create_message(key, heartbeat, overwrite, context) {
     if (heartbeat) {
-      if (!this._object_store[key]) {
+      const session = this._object_store[key];
+      if (!session) {
         throw new Error(`session does not exist anymore: ${key}`);
       }
-      this._object_store[key]["timer"].reset();
+      // Sessions created without a promise/timeout (e.g. _get_session_store
+      // calls where timer && reject && _method_timeout was false) have no
+      // timer. A chunked message still arrives with heartbeat=true because
+      // the sender sets it based on whether session_id is truthy (rpc.js
+      // ~L2358), not on whether the receiver's session owns a timer. Without
+      // this guard, every chunk of such a session throws "Cannot read
+      // properties of undefined (reading 'reset')", which cascades and
+      // silently breaks the RPC message pipeline for the client.
+      if (session.timer && typeof session.timer.reset === "function") {
+        session.timer.reset();
+      }
     }
 
     if (!this._object_store["message_cache"]) {
@@ -4385,10 +4404,21 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
 
   _append_message(key, data, heartbeat, context) {
     if (heartbeat) {
-      if (!this._object_store[key]) {
+      const session = this._object_store[key];
+      if (!session) {
         throw new Error(`session does not exist anymore: ${key}`);
       }
-      this._object_store[key]["timer"].reset();
+      // Sessions created without a promise/timeout (e.g. _get_session_store
+      // calls where timer && reject && _method_timeout was false) have no
+      // timer. A chunked message still arrives with heartbeat=true because
+      // the sender sets it based on whether session_id is truthy (rpc.js
+      // ~L2358), not on whether the receiver's session owns a timer. Without
+      // this guard, every chunk of such a session throws "Cannot read
+      // properties of undefined (reading 'reset')", which cascades and
+      // silently breaks the RPC message pipeline for the client.
+      if (session.timer && typeof session.timer.reset === "function") {
+        session.timer.reset();
+      }
     }
     const cache = this._object_store["message_cache"];
     if (!cache[key]) {
@@ -4400,10 +4430,21 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
 
   _set_message(key, index, data, heartbeat, context) {
     if (heartbeat) {
-      if (!this._object_store[key]) {
+      const session = this._object_store[key];
+      if (!session) {
         throw new Error(`session does not exist anymore: ${key}`);
       }
-      this._object_store[key]["timer"].reset();
+      // Sessions created without a promise/timeout (e.g. _get_session_store
+      // calls where timer && reject && _method_timeout was false) have no
+      // timer. A chunked message still arrives with heartbeat=true because
+      // the sender sets it based on whether session_id is truthy (rpc.js
+      // ~L2358), not on whether the receiver's session owns a timer. Without
+      // this guard, every chunk of such a session throws "Cannot read
+      // properties of undefined (reading 'reset')", which cascades and
+      // silently breaks the RPC message pipeline for the client.
+      if (session.timer && typeof session.timer.reset === "function") {
+        session.timer.reset();
+      }
     }
     const cache = this._object_store["message_cache"];
     if (!cache[key]) {
@@ -4423,10 +4464,21 @@ class RPC extends _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.MessageEmitter {
 
   _process_message(key, heartbeat, context) {
     if (heartbeat) {
-      if (!this._object_store[key]) {
+      const session = this._object_store[key];
+      if (!session) {
         throw new Error(`session does not exist anymore: ${key}`);
       }
-      this._object_store[key]["timer"].reset();
+      // Sessions created without a promise/timeout (e.g. _get_session_store
+      // calls where timer && reject && _method_timeout was false) have no
+      // timer. A chunked message still arrives with heartbeat=true because
+      // the sender sets it based on whether session_id is truthy (rpc.js
+      // ~L2358), not on whether the receiver's session owns a timer. Without
+      // this guard, every chunk of such a session throws "Cannot read
+      // properties of undefined (reading 'reset')", which cascades and
+      // silently breaks the RPC message pipeline for the client.
+      if (session.timer && typeof session.timer.reset === "function") {
+        session.timer.reset();
+      }
     }
     const cache = this._object_store["message_cache"];
     (0,_utils_index_js__WEBPACK_IMPORTED_MODULE_0__.assert)(!!context, "Context is required");
@@ -11476,6 +11528,13 @@ async function connectToServer(config) {
       description,
       parameters,
     });
+    // webrtcGetService routes through _wm.getService (the original
+    // RemoteFunction captured in the shallow copy). Share its encoded object
+    // so the manager_refreshed retarget loop updates the manager target it
+    // uses after reconnection, instead of leaving a stale "*/<old_manager_id>".
+    if (_wm.getService && _wm.getService.__rpc_object__) {
+      wm.getService.__rpc_object__ = _wm.getService.__rpc_object__;
+    }
 
     wm.getRTCService = (0,_utils_schema_js__WEBPACK_IMPORTED_MODULE_3__.schemaFunction)(_webrtc_client_js__WEBPACK_IMPORTED_MODULE_4__.getRTCService.bind(null, wm), {
       name: "getRTCService",
@@ -11504,6 +11563,12 @@ async function connectToServer(config) {
       return svc;
     };
     wm.getService.__schema__ = _getService.__schema__;
+    // Share the underlying RemoteFunction's encoded object so the
+    // manager_refreshed retarget loop can update getService's _rtarget after
+    // reconnection (otherwise the wrapper retains a stale manager target).
+    if (_getService.__rpc_object__) {
+      wm.getService.__rpc_object__ = _getService.__rpc_object__;
+    }
   }
 
   async function registerProbes(probes) {
