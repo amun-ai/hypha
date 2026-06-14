@@ -822,12 +822,36 @@ class RedisStore:
         finally:
             await rpc.disconnect()
 
+    async def _maybe_reset_redis(self, reset_redis: bool):
+        """Flush shared Redis only when explicitly requested AND no other hypha
+        server is already registered.
+
+        F6/P0: ``--reset-redis`` / ``HYPHA_RESET_REDIS=true`` flushes the entire
+        shared Redis. In a multi-replica deployment a restarting replica must
+        NEVER wipe the cluster's state. ``list_servers()`` derives live servers
+        from their public built-in service keys; this server has not registered
+        yet at init time, so any result is a peer — if peers exist, we skip the
+        flush. (For multi-replica deployments set ``HYPHA_RESET_REDIS=false``.)
+        """
+        if not reset_redis:
+            return
+        existing_servers = await self.list_servers()
+        if existing_servers:
+            logger.warning(
+                "reset_redis requested, but %d server(s) are already registered (%s) — "
+                "skipping flush to protect the running cluster. Set HYPHA_RESET_REDIS=false "
+                "for multi-replica deployments.",
+                len(existing_servers),
+                existing_servers,
+            )
+            return
+        logger.warning("RESETTING ALL REDIS DATA!!!")
+        await self._redis.flushall()
+
     async def init(self, reset_redis, startup_functions=None):
         """Setup the store."""
         self.loop = asyncio.get_running_loop()
-        if reset_redis:
-            logger.warning("RESETTING ALL REDIS DATA!!!")
-            await self._redis.flushall()
+        await self._maybe_reset_redis(reset_redis)
         await self._event_bus.init()
         self._tracker = ActivityTracker(check_interval=self._activity_check_interval)
         self._tracker_task = asyncio.create_task(self._tracker.monitor_entities())
