@@ -29,6 +29,7 @@ from hypha.core import (
 )
 from hypha.core.auth import extract_token_from_scope
 from hypha.core.activity import ActivityTracker
+from hypha.core.leader import LeaderLease
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
@@ -358,6 +359,7 @@ class RedisStore:
 
         self._tracker = None
         self._tracker_task = None
+        self._leader_lease = None
         # self._house_keeping_task = None
 
         self._shared_anonymous_user = None
@@ -377,6 +379,16 @@ class RedisStore:
     def set_http_streaming_server(self, http_streaming_server):
         """Set the HTTP streaming RPC server (used for graceful drain)."""
         self._http_streaming_server = http_streaming_server
+
+    def is_leader(self) -> bool:
+        """Whether this server instance currently holds control-plane leadership.
+
+        Only the leader runs control-plane singletons (autoscaling monitor,
+        workspace activity cleanup) in a multi-replica deployment. Defaults to
+        True when no lease is active (single replica / before ``init()`` / tests),
+        so those singletons run normally in a single-instance deployment.
+        """
+        return self._leader_lease.is_leader() if self._leader_lease else True
 
 
     @schema_method
@@ -821,6 +833,13 @@ class RedisStore:
         self._tracker_task = asyncio.create_task(self._tracker.monitor_entities())
         RedisRPCConnection.set_activity_tracker(self._tracker)
         self._tracker.register_entity_removed_callback(self._remove_tracker_entity)
+
+        # Leader election (F6): in a multi-replica deployment only the leader runs
+        # control-plane singletons (autoscaling monitor, workspace activity
+        # cleanup). With fakeredis / a single replica this instance is always the
+        # sole leader, so single-instance behavior is unchanged.
+        self._leader_lease = LeaderLease(self._redis, self._server_id)
+        await self._leader_lease.start()
 
         await self.setup_root_user()
         # Set the root token for authentication if provided
@@ -1437,6 +1456,12 @@ class RedisStore:
         #         await self._house_keeping_task
         #     except asyncio.CancelledError:
         #         print("Housekeeping task successfully exited.")
+
+        if self._leader_lease:
+            try:
+                await self._leader_lease.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping leader lease: {e}")
 
         if self._tracker_task:
             self._tracker_task.cancel()

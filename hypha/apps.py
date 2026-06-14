@@ -267,6 +267,13 @@ class AutoscalingManager:
     ):
         """Check current load and scale instances if needed."""
         try:
+            # F6: every replica runs the autoscaling monitor loop, but only the
+            # leader may actually scale — otherwise N replicas would
+            # independently (and redundantly) scale the same app, since the
+            # per-instance _scaling_locks are NOT cross-replica locks.
+            if not self.app_controller.store.is_leader():
+                return
+
             # Get current instances for this app
             current_instances = await self._get_app_instances(app_id)
             current_count = len(current_instances)
