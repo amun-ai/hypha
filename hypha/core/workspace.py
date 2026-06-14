@@ -261,6 +261,19 @@ class WorkspaceActivityManager:
             workspace_id: The workspace ID to potentially clean up
         """
         try:
+            # F6 (P3): in a multi-replica deployment several replicas' activity
+            # trackers can fire this callback for the SAME workspace (e.g. during
+            # failover or non-sticky routing). A short per-workspace NX lock makes
+            # exactly one replica perform the cleanup; the rest no-op. A
+            # per-workspace lock (rather than a global leader-gate) is required
+            # here: a persistent workspace is registered for cleanup on whichever
+            # replica unloaded it (see _unload_workspace) — under sticky affinity
+            # that is NOT necessarily the leader, so leader-gating would leak
+            # workspaces that no leader tracks. The lock has no such gap.
+            lock_key = f"ws-cleanup-lock:{workspace_id}"
+            if not await self._redis.set(lock_key, b"1", nx=True, px=30000):
+                return  # another replica is cleaning this workspace up
+
             # Double-check workspace still exists and has no active clients
             if await self._redis.hexists("workspaces", workspace_id):
                 client_keys = await self._workspace_manager._list_client_keys(workspace_id)
@@ -272,12 +285,16 @@ class WorkspaceActivityManager:
                     # Workspace has active clients, reset activity timer
                     logger.debug(f"Workspace {workspace_id} still has active clients, resetting timer")
                     await self.reset_activity(workspace_id)
+                    await self._redis.delete(lock_key)
                     return  # Don't unregister, keep tracking
-            
+
             # Always clean up registration to prevent memory leak
             if workspace_id in self._registrations:
                 del self._registrations[workspace_id]
-            
+
+            # Release the lock; on an exception path it auto-expires via its TTL.
+            await self._redis.delete(lock_key)
+
         except Exception as e:
             logger.error(f"Error cleaning up inactive workspace {workspace_id}: {e}")
 
