@@ -9466,6 +9466,10 @@ async def test_artifact_vector_collection(
             "server_url": SERVER_URL,
             "token": test_user_token_9,
             "workspace": "my-vector-test-workspace",
+            # Embedding generation in add_vectors can exceed the default ~10s RPC
+            # method timeout under CI CPU load (esp. sentence-transformer cold
+            # start), causing a flaky TimeoutError. Give it generous headroom.
+            "method_timeout": 60,
         }
     ) as api:
         # Wait for workspace to be ready before proceeding
