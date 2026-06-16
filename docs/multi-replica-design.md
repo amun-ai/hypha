@@ -73,7 +73,7 @@ registry. See §5.
 | P1b | **Local-client fast-path misroutes on replica migration.** Targeted messages to a client in a replica's in-memory `_local_clients` set skip Redis. If a client moves to another replica, the *old* replica still has it locally and delivers to a dead socket instead of publishing to Redis for the new owner. (Sticky affinity makes this moot — see §5.) | **MED** (HIGH without affinity) | `core/__init__.py` ~1505–1514; `_local_clients` ~1210 | Per-instance registry, not Redis-backed with TTL |
 | P1c | **Manager affinity.** Each replica runs `manager-{server_id}`; clients cache a `manager_id` and route manager RPC to it. Reconnect to a different replica → calls target the old manager. (hypha-rpc 0.21.41/F1 retargets `wm`/getService to the new `manager_id` on reconnect, mitigating client-side; sticky affinity removes it entirely.) | **MED** | `store.py` 241–242; `websocket.py` ~504 / `http_rpc.py` ~360 (manager_id in connection_info) | Per-instance manager + client-side pinning |
 | P2 | **Autoscaling runs N times.** Each replica runs its own `AutoscalingManager` monitor loop per app, guarded only by a **local** `asyncio.Lock`. N replicas independently decide to scale the same app every 10 s → over-scaling / thrashing. Cooldown timers are per-instance. | **HIGH** | `apps.py` `AutoscalingManager` ~206–263, `_monitor_app_load` ~248–263, `_check_and_scale`, `_last_scale_time`/`_scaling_locks` ~206–212 | No distributed lock / single owner |
-| P3 | **Workspace activity-cleanup race.** Each replica runs a `WorkspaceActivityManager`; N trackers may concurrently unload/delete the same inactive workspace. HDEL is idempotent, but the **unload callbacks** (S3 / artifact cleanup) can race. | **MED** | `workspace.py` `WorkspaceActivityManager` ~139–296, `_cleanup_inactive_workspace` ~256–282 (plain `hexists`→`hdel`, no WATCH/revision) | No leader / no transactional guard |
+| P3 | **Workspace activity-cleanup race.** Each replica runs a `WorkspaceActivityManager`; N trackers may concurrently clean up the same inactive workspace. HDEL is idempotent, but redundant cleanup is wasteful and any heavier unload could race. **Fixed** via a per-workspace `SET NX PX` lock (NOT leader-gate — see §3.1). | **MED** | `workspace.py` `_cleanup_inactive_workspace` | Resolved: transactional per-workspace guard |
 | P4 | **App inactivity-stop fires N times.** Each replica registers its own inactivity tracker per session; multiple replicas may each call `_stop_after_inactive` → stop the app repeatedly. | **MED** | `apps.py` ~2635–2657 | Per-instance tracker; no Redis recheck |
 | P5 | **Worker sessions orphaned on instance death.** Workers hold session state **in-memory**; Redis keeps only metadata. If the instance that launched a worker dies, its sessions are unrecoverable by peers (`worker.stop` raises `SessionNotFound`). | **MED** | `apps.py` worker cache ~587–588; `workers/browser.py` `_sessions` ~88–89, stop ~467 | No lease/heartbeat; stateful workers |
 | P6 | **Per-instance quotas & rate limits.** Per-user / per-workspace connection limits and the WS token-bucket rate limiter are in-memory per replica → effective limits become ≈ ×N; a re-routed client gets a fresh bucket. | **LOW** | `websocket.py` semaphore ~87, rate limiter ~43–63/528–540; `resource_limits.py` counters ~38–172 | Not aggregated across replicas |
@@ -83,14 +83,25 @@ registry. See §5.
 
 ### 3.1 One primitive solves most of the control-plane gaps: a Redis leader lease
 
-P1, P2, P3, and (a future) worker health monitor are all **"exactly-one-runner"**
+P1, P2, and (a future) worker health monitor are **"exactly-one-runner"**
 problems. Introduce a small **distributed leader lease** (Redis `SET key val NX PX=ttl`
 renewed on an interval; value = `server_id`) and gate the singleton work behind
 "am I the leader?":
 
-- **Leader-only loops:** autoscaling monitor (P2), workspace activity cleanup
-  (P3), housekeeping (currently commented out in `store.py`), and any future
-  worker health monitor.
+- **Leader-only loops:** autoscaling monitor (P2), housekeeping (currently
+  commented out in `store.py`), and any future worker health monitor.
+
+> **P3 is NOT leader-gated — implemented with a per-workspace lock instead.**
+> A persistent workspace is registered for activity-cleanup on whichever replica
+> *unloaded* it (`_unload_workspace` → `register_for_cleanup`); under Phase-1
+> sticky affinity that is the replica owning the workspace, which is **not**
+> necessarily the leader. Leader-gating the cleanup would therefore leak any
+> workspace whose owning replica is not the leader. The race (several replicas
+> cleaning the same workspace during failover / non-sticky windows) is instead
+> resolved by a short per-workspace `SET NX PX` lock around
+> `_cleanup_inactive_workspace`: exactly one replica cleans up, whoever fires
+> first, with no leak. (Implemented: `hypha/core/workspace.py`,
+> tests `tests/test_workspace_cleanup_lock.py`.)
 - **Followers** still serve all client traffic, RPC, and service registration —
   they just don't run the singleton background controllers.
 - On leader loss/crash the lease expires (PX TTL) and another replica acquires
