@@ -533,6 +533,22 @@ class ServerAppController:
                 logger.error(f"Error in worker health monitoring: {e}")
                 await asyncio.sleep(60)  # Wait 1 minute before retrying
 
+    @staticmethod
+    async def _acquire_stop_lock(redis, full_client_id: str, ttl_ms: int = 30000) -> bool:
+        """Acquire a short per-session lock so that, in a multi-replica
+        deployment, exactly one replica stops an inactive app (F6/P4).
+
+        Returns True if this replica won the lock and should perform the stop.
+        The lock auto-expires via its TTL; stopping an already-stopped app is a
+        benign no-op (the caller re-checks the session exists), so the lock only
+        needs to cover the brief stop window.
+        """
+        return bool(
+            await redis.set(
+                f"app-stop-lock:{full_client_id}", b"1", nx=True, px=ttl_ms
+            )
+        )
+
     async def _get_session_from_redis(self, full_client_id: str) -> Optional[dict]:
         """Get session data from Redis."""
         try:
@@ -2647,6 +2663,14 @@ class ServerAppController:
             ):
 
                 async def _stop_after_inactive():
+                    # F6 (P4): every replica that registered this session's
+                    # inactivity tracker can fire this callback for the same
+                    # app. A short per-session lock ensures exactly one replica
+                    # performs the stop, instead of several racing on _stop.
+                    if not await self._acquire_stop_lock(
+                        self.store.get_redis(), full_client_id
+                    ):
+                        return  # another replica is stopping this app
                     session_data = await self._get_session_from_redis(full_client_id)
                     if session_data:
                         await self._stop(
