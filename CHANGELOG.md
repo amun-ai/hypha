@@ -1,5 +1,15 @@
 # Hypha Change Log
 
+### 0.21.87
+
+ - Multi-replica safety — control-plane hardening (F6 Phase 1). Hypha's data plane (Redis event-bus routing, service discovery, reconnection tokens) was already horizontally scalable; this release makes the **control plane** safe to run with N≥2 `hypha-server` replicas sharing one Redis:
+   - **Leader election** (`hypha/core/leader.py`): a best-effort Redis lease (`SET NX PX` + `WATCH`/`MULTI` renew) elects a single leader; `RedisStore.is_leader()` defaults to `True` for single-replica so behavior is unchanged.
+   - **Autoscaling** is leader-gated — only the leader scales an app, preventing N replicas from independently over-scaling.
+   - **Workspace activity-cleanup** and **app inactivity-stop** use short per-resource Redis locks so exactly one replica acts (a per-resource lock rather than a leader-gate, which would leak resources owned by a non-leader replica under sticky affinity).
+   - **Reset guard**: `--reset-redis` / `HYPHA_RESET_REDIS=true` no longer flushes shared Redis if other servers are already registered — a restarting replica cannot wipe a live cluster.
+ - Proven with real multi-replica integration tests (two live servers + one real Redis): leader election, reset-guard, and cross-replica RPC. (`tests/test_multi_replica_integration.py`.)
+ - CI: fixed the `test.yml` Release job failing on every `main` push (conda env missing `pip`); hardened a flaky vector-collection test (embedding generation exceeding the default RPC timeout under CI load).
+
 ### 0.21.86
 
  - Graceful connection draining on server shutdown (F4). On a rollout/redeploy the old pod previously cut long-lived connections abruptly, so clients only detected the dead pod via their heartbeat/read timeout (10–20 s) and all reconnected in the same window — a thundering-herd reconnection storm. `RedisStore.teardown()` now proactively drains both transports: WebSocket clients receive an explicit `1001 GOING_AWAY` close frame, and HTTP-streaming `/rpc` clients receive the `None` stream-close sentinel (clean EOF) so they reconnect immediately. Previously only WebSockets were closed (with a bare code 1000); the HTTP-streaming transport had no graceful drain at all.
