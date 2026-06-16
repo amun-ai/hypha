@@ -9466,10 +9466,13 @@ async def test_artifact_vector_collection(
             "server_url": SERVER_URL,
             "token": test_user_token_9,
             "workspace": "my-vector-test-workspace",
-            # Embedding generation in add_vectors can exceed the default ~10s RPC
-            # method timeout under CI CPU load (esp. sentence-transformer cold
-            # start), causing a flaky TimeoutError. Give it generous headroom.
-            "method_timeout": 60,
+            # The text-embedding add_vectors below uses fastembed
+            # (BAAI/bge-small-en-v1.5), which downloads a ~130MB ONNX model on
+            # first use on each fresh CI runner. That one-time download can
+            # exceed a 60s RPC method timeout under CI network/CPU load, causing
+            # a flaky TimeoutError. Use a generous timeout that comfortably
+            # covers the cold-start model download.
+            "method_timeout": 180,
         }
     ) as api:
         # Wait for workspace to be ready before proceeding
