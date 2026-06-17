@@ -194,3 +194,81 @@ async def test_cross_pod_repin_no_false_reject(
     await provider_b.disconnect()
     await caller.disconnect()
     await admin.disconnect()
+
+
+async def test_n2_mid_rpc_disconnect_churn_stays_healthy(
+    fastapi_server_redis_1, fastapi_server_redis_2, test_user_token
+):
+    """Simulate the N>=2 incident pattern end-to-end: clients connect, start
+    in-flight RPCs, then disconnect MID-CALL (repeatedly), while stable cross-pod
+    traffic continues. The cluster must stay healthy — the reject-storm (incident
+    #2) must not disrupt stable clients, and fresh clients must reconnect and call
+    cleanly afterward. This is the 'kill a client mid-RPC' acceptance case that
+    neither the re-pin test nor a graceful pod-delete covers.
+    """
+    server_a = SERVER_URL_REDIS_1
+    server_b = fastapi_server_redis_2
+
+    admin = await connect_to_server(
+        {"client_id": "churn-admin", "server_url": server_a, "token": test_user_token}
+    )
+    await admin.create_workspace(
+        {"name": "churn-ws", "persistent": True, "owners": ["user1@imjoy.io"]},
+        overwrite=True,
+    )
+    token = await admin.generate_token({"workspace": "churn-ws"})
+
+    # Provider with a slow method on pod A (so calls are genuinely in-flight when
+    # a churner disconnects, and the provider holds the churner's reject callback
+    # on the same pod the churner hashes to).
+    async def slow(x):
+        await asyncio.sleep(0.5)
+        return x * 2
+
+    provider = await connect_to_server(
+        {"client_id": "provider", "server_url": server_a, "workspace": "churn-ws",
+         "token": token, "method_timeout": 30}
+    )
+    await provider.register_service(
+        {"id": "svc",
+         "config": {"visibility": "public", "require_context": False},
+         "slow": slow}
+    )
+
+    # Stable caller on pod B (cross-pod) — must succeed before, during, and after.
+    stable = await connect_to_server(
+        {"client_id": "stable", "server_url": server_b, "workspace": "churn-ws",
+         "token": token, "method_timeout": 30}
+    )
+    ssvc = await stable.get_service("provider:svc")
+    assert await ssvc.slow(21) == 42
+
+    # Churn: clients on pod A start an in-flight call, then disconnect mid-RPC.
+    for i in range(10):
+        churner = await connect_to_server(
+            {"client_id": f"churner-{i}", "server_url": server_a,
+             "workspace": "churn-ws", "token": token, "method_timeout": 30}
+        )
+        csvc = await churner.get_service("provider:svc")
+        fut = asyncio.ensure_future(csvc.slow(i))  # in-flight (0.5s); not awaited
+        await asyncio.sleep(0.05)  # let the call dispatch before we cut the client
+        await churner.disconnect()  # disconnect MID-RPC -> server rejects pending
+        fut.cancel()
+
+    # The stable cross-pod caller must keep working through/after the churn — i.e.
+    # the reject-storm fallout did not disrupt the cluster.
+    for _ in range(5):
+        assert await ssvc.slow(5) == 10
+
+    # And a fresh client reconnects and calls cleanly (no reconnect-loop fallout).
+    fresh = await connect_to_server(
+        {"client_id": "fresh", "server_url": server_a, "workspace": "churn-ws",
+         "token": token, "method_timeout": 30}
+    )
+    fsvc = await fresh.get_service("provider:svc")
+    assert await fsvc.slow(8) == 16
+
+    await fresh.disconnect()
+    await stable.disconnect()
+    await provider.disconnect()
+    await admin.disconnect()
