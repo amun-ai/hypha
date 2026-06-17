@@ -360,6 +360,8 @@ class RedisStore:
         self._tracker = None
         self._tracker_task = None
         self._leader_lease = None
+        self._singleton_ensure_task = None
+        self._singleton_ensure_stop = False
         # self._house_keeping_task = None
 
         self._shared_anonymous_user = None
@@ -979,26 +981,16 @@ class RedisStore:
 
         if startup_functions:
             await self._run_startup_functions(startup_functions)
-        
-        # check if the login service is registered after startup functions
-        # this allows startup functions to register custom login services
-        try:
-            # Use native mode to prefer locally connected hypha-login service
-            await api.get_service_info("public/hypha-login", {"mode": "native:random"})
-            logger.info("Login service already registered (likely from startup function)")
-        except RemoteException:
-            logger.info("No custom login service found, registering default login service")
-            await api.register_service(create_login_service(self))
-        
-        # check if the queue service is registered
-        try:
-            await api.get_service_info("public/queue")
-        except RemoteException:
-            logger.warning("Queue service is not registered, registering it now")
-            # Import dynamically to avoid circular import
-            from hypha.queue import create_queue_service
-            await api.register_service(create_queue_service(self))
-        
+
+        # Register the public singleton services (login, queue) if absent.
+        await self._ensure_public_singletons(api)
+
+        # Issue #3 (multi-replica): if the pod that owns a public singleton
+        # (login/queue) dies, no survivor re-claims it and e.g. /hypha-login
+        # starts 404ing. A leader-gated periodic check re-registers any missing
+        # public singleton so a surviving replica takes over.
+        self._singleton_ensure_task = asyncio.create_task(self._singleton_ensure_loop())
+
         self._ready = True
         await self.get_event_bus().emit_local("startup")
         servers = await self.list_servers()
@@ -1006,6 +998,49 @@ class RedisStore:
 
         logger.info("Server initialized with server id: %s", self._server_id)
         logger.info("Currently connected hypha servers: %s", servers)
+
+    async def _ensure_public_singletons(self, api):
+        """Register the public singleton services (login, queue) if missing.
+
+        Safe to call repeatedly: each service is registered only when absent
+        (checked against the cluster-wide service registry). Used both at startup
+        and by the leader-gated re-registration loop (Issue #3).
+        """
+        try:
+            # native mode prefers a locally-connected hypha-login service
+            await api.get_service_info("public/hypha-login", {"mode": "native:random"})
+        except RemoteException:
+            logger.info("hypha-login service missing — registering default login service")
+            # overwrite=True so a survivor re-claims it even if a stale local
+            # registration lingers while the cluster registry lost the entry.
+            await api.register_service(create_login_service(self), {"overwrite": True})
+        try:
+            await api.get_service_info("public/queue")
+        except RemoteException:
+            logger.warning("queue service missing — registering it now")
+            from hypha.queue import create_queue_service  # avoid circular import
+            await api.register_service(create_queue_service(self), {"overwrite": True})
+
+    async def _singleton_ensure_loop(self):
+        """Leader-gated periodic re-registration of public singletons (Issue #3).
+
+        In a multi-replica deployment, if the pod owning login/queue dies, no
+        survivor re-claims it (registration only happened at boot-if-absent), so
+        the service 404s. The leader periodically re-registers any missing public
+        singleton, so a surviving replica takes over after owner death.
+        """
+        interval = int(os.environ.get("HYPHA_SINGLETON_ENSURE_INTERVAL", "30"))
+        while not self._singleton_ensure_stop:
+            try:
+                await asyncio.sleep(interval)
+                if not self._ready or not self.is_leader():
+                    continue
+                api = await self.get_public_api()
+                await self._ensure_public_singletons(api)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning("singleton-ensure loop error: %s", e)
 
     async def _remove_tracker_entity(self, entity_id, entity_type):
         """Remove a client."""
@@ -1480,6 +1515,17 @@ class RedisStore:
         #         await self._house_keeping_task
         #     except asyncio.CancelledError:
         #         print("Housekeeping task successfully exited.")
+
+        self._singleton_ensure_stop = True
+        if self._singleton_ensure_task:
+            self._singleton_ensure_task.cancel()
+            try:
+                await self._singleton_ensure_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.warning(f"singleton-ensure task error on teardown: {e}")
+            self._singleton_ensure_task = None
 
         if self._leader_lease:
             try:
