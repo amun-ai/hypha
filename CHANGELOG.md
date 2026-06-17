@@ -1,5 +1,9 @@
 # Hypha Change Log
 
+### 0.21.88
+
+ - Fix multi-replica cross-pod RPC false-reject (F6). With hypha-server at N≥2, the dead-peer check (`RedisRPCConnection.emit_message`, "Target peer is not connected") rejected RPCs to a peer that had re-pinned to a sibling pod: the `_recently_disconnected` cache is per-pod/in-memory (120s TTL), so a client moving pods (rollout / HPA / restart / `client_id`-hash re-pin) left the old pod wrongly rejecting it for the full TTL — dropping live RPCs. Now, on (re)connect, a pod broadcasts `client-reconnected` and every pod clears that client from its `_recently_disconnected` cache (`RedisEventBus.notify_client_connected`), wired into both the WebSocket and HTTP-streaming connect paths. Collapses the false-reject window from 120s to sub-second with no per-message cost; the dead-peer fast-fail for genuinely-gone peers is unchanged. This was the gap that forced the first N≥2 rollout back to N=1; multi-replica is safe again with this release. Tests: `tests/test_cross_pod_reconnect.py`, `tests/test_multi_replica_integration.py::test_cross_pod_repin_no_false_reject`.
+
 ### 0.21.87
 
  - Multi-replica safety — control-plane hardening (F6 Phase 1). Hypha's data plane (Redis event-bus routing, service discovery, reconnection tokens) was already horizontally scalable; this release makes the **control plane** safe to run with N≥2 `hypha-server` replicas sharing one Redis:
