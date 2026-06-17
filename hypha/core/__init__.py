@@ -871,7 +871,7 @@ class RedisRPCConnection:
 
         packed_message = msgpack.packb(message) + data[pos:]
 
-        # Dead-peer detection: reject messages to recently-disconnected clients
+        # Dead-peer detection: handle messages to recently-disconnected clients.
         # Only uses the local recently-disconnected cache (fast, no Redis lookup).
         # This catches the common case: client was on THIS server and disconnected.
         if target_id and "*" not in target_id and "/" in target_id:
@@ -881,9 +881,23 @@ class RedisRPCConnection:
             ) and self._event_bus.is_recently_disconnected(
                 workspace_part, client_part
             ):
-                raise Exception(
-                    f"Target peer {target_id} is not connected"
-                )
+                # Fast-fail ONLY primary calls awaiting a response — they carry a
+                # "session" (set when with_promise; see hypha_rpc rpc.py). Raising
+                # lets the caller's await reject immediately instead of timing out.
+                #
+                # Fire-and-forget traffic (results / rejects / callback
+                # invocations — no "session") to a now-gone peer must be a SILENT
+                # no-op. Otherwise, when a client with in-flight RPCs disconnects,
+                # the server cleans up its pending promises by routing reject/
+                # result callbacks back to the (gone) client; each would raise
+                # "Target peer is not connected", producing a reject-STORM that
+                # at N>=2 churns the client into a reconnect loop. (F6 incident #2,
+                # 2026-06-17; distinct from the migration fix in #969.)
+                if message.get("session"):
+                    raise Exception(
+                        f"Target peer {target_id} is not connected"
+                    )
+                return  # undeliverable fire-and-forget message — drop silently
 
         # Use Redis event bus routing (local handlers are attached there)
         await self._event_bus.emit(f"{target_id}:msg", packed_message)
