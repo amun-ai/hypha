@@ -25,6 +25,40 @@ _os_alt_seps: List[str] = list(
     sep for sep in [os.path.sep, os.path.altsep] if sep is not None and sep != "/"
 )
 
+_logger = logging.getLogger("hypha-utils")
+
+
+def load_fastembed_model(model_name: str, retries: int = 4, base_delay: float = 3.0, **kwargs):
+    """Load a fastembed ``TextEmbedding``, retrying transient model-source
+    download failures.
+
+    fastembed fetches the ONNX model from HuggingFace / its CDN on first use;
+    that download is occasionally slow or temporarily unavailable
+    ("Could not load model ... from any source"). A transient blip should not
+    hard-fail a server (or a CI run): retry with linear backoff, and re-raise
+    the last error if every attempt fails so a genuine outage still surfaces.
+
+    NOTE: synchronous (fastembed's loader is sync). Call sites in async code
+    should run this in an executor so the retry/backoff does not block the loop.
+    """
+    from fastembed import TextEmbedding
+
+    last_error = None
+    for attempt in range(retries):
+        try:
+            return TextEmbedding(model_name=model_name, **kwargs)
+        except Exception as e:  # noqa: BLE001 - retry any load/download failure
+            last_error = e
+            if attempt < retries - 1:
+                delay = base_delay * (attempt + 1)
+                _logger.warning(
+                    "fastembed model load failed (attempt %s/%s) for %s: %s; "
+                    "retrying in %.0fs",
+                    attempt + 1, retries, model_name, e, delay,
+                )
+                time.sleep(delay)
+    raise last_error
+
 
 def random_id(readable=True):
     """Generate a random ID."""

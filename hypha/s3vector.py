@@ -926,9 +926,10 @@ class S3VectorSearchEngine:
                 else:
                     model_name = embedding_model
                 
-                self.model = TextEmbedding(
-                    model_name=model_name,
-                    cache_dir=cache_dir
+                from hypha.utils import load_fastembed_model
+
+                self.model = load_fastembed_model(
+                    model_name, cache_dir=cache_dir
                 )
                 # Get embedding dimension by encoding a test text
                 test_embedding = list(self.model.embed(["test"]))[0]
@@ -1675,9 +1676,10 @@ class S3VectorSearchEngine:
         else:
             model_name = model_to_use
         
-        temp_model = TextEmbedding(
-            model_name=model_name,
-            cache_dir=self.cache_dir
+        from hypha.utils import load_fastembed_model
+
+        temp_model = load_fastembed_model(
+            model_name, cache_dir=self.cache_dir
         )
         embeddings = list(temp_model.embed(texts))
         return [np.array(emb, dtype=np.float32) for emb in embeddings]

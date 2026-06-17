@@ -2,6 +2,7 @@
 
 ### 0.21.89
 
+ - Resilient embedding-model load: `load_fastembed_model` retries the fastembed model download (`BAAI/bge-small-en-v1.5`) on transient HuggingFace/CDN failures ("Could not load model … from any source") with linear backoff, instead of hard-failing a server startup (or a CI run) on a momentary blip. Applied to all vector backends (pgvector, s3vector, vectors).
  - Fix the multi-replica reject-storm (F6, second N≥2 facet). When a client with in-flight RPCs disconnects, the server cleans up its pending promises by routing reject/result callbacks back to the now-gone client; each hit the dead-peer check and raised "Target peer is not connected" — a storm (~100/2min on the busy pod) that churned the client into a reconnect loop at N≥2. The dead-peer check now fast-fails ONLY primary calls awaiting a response (which carry a `session`); fire-and-forget results/rejects/callbacks to a gone peer are dropped silently. With the cross-pod migration fix in 0.21.88 (#969), hypha-server is safe at N≥2. Tests: `tests/test_dead_peer_reject_storm.py`; the two-server suite now also simulates mid-RPC-disconnect churn (`tests/test_multi_replica_integration.py`).
 
 ### 0.21.88

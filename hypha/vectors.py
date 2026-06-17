@@ -372,11 +372,11 @@ class VectorSearchEngine:
         if not embedding_model:
             raise ValueError("Embedding model is not configured.")
         if embedding_model.startswith("fastembed:"):
-            from fastembed import TextEmbedding
+            from hypha.utils import load_fastembed_model
 
             model_name = embedding_model.split(":")[1]
-            embedding_model = TextEmbedding(
-                model_name=model_name, cache_dir=self._cache_dir
+            embedding_model = load_fastembed_model(
+                model_name, cache_dir=self._cache_dir
             )
         loop = asyncio.get_event_loop()
         embeddings = list(

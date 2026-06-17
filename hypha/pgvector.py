@@ -1060,12 +1060,14 @@ class PgVectorSearchEngine:
         else:
             raise ValueError(f"Unsupported embedding model: {embedding_model}")
         
-        from fastembed import TextEmbedding
-        
-        model = TextEmbedding(
-            model_name=model_name, cache_dir=self._cache_dir
-        )
+        from hypha.utils import load_fastembed_model
+
         loop = asyncio.get_event_loop()
+        # Load with retry (transient HF/CDN flakiness) in an executor so the
+        # retry/backoff never blocks the event loop.
+        model = await loop.run_in_executor(
+            None, lambda: load_fastembed_model(model_name, cache_dir=self._cache_dir)
+        )
         embeddings = list(
             await loop.run_in_executor(None, model.embed, texts)
         )
