@@ -137,6 +137,14 @@ class HTTPStreamingRPCServer:
 
         conn.on_message(send_to_queue)
 
+        # F6 (multi-replica): announce this client to sibling pods so they clear
+        # any stale recently-disconnected cache entry and don't false-reject
+        # messages to it after a re-pin to this pod.
+        try:
+            await event_bus.notify_client_connected(workspace, client_id)
+        except Exception as e:
+            logger.debug(f"notify_client_connected failed for {connection_key}: {e}")
+
         return conn, queue
 
     async def _remove_connection(self, workspace: str, client_id: str, conn: RedisRPCConnection):

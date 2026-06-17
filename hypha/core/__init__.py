@@ -1213,6 +1213,14 @@ class RedisEventBus:
         # Track recently-disconnected clients for fast dead-peer detection
         self._recently_disconnected = {}  # {client_key: disconnect_timestamp}
         self._disconnected_ttl = 120  # seconds to remember disconnected clients
+        # F6 (multi-replica correctness): when a client (re)connects to ANY pod,
+        # that pod broadcasts so every other pod clears it from its per-pod
+        # recently-disconnected cache. Without this, a client that re-pins to a
+        # sibling pod (rollout / HPA scale / restart) stays wrongly cached as
+        # "disconnected" on the old pod for up to _disconnected_ttl, and the
+        # dead-peer check (RedisRPCConnection) false-rejects messages to a peer
+        # that is actually alive elsewhere ("Target peer is not connected").
+        self.on("client-reconnected", self._on_client_reconnected_event)
         # Ensure latency gauge exists in /metrics even if not updated elsewhere
         try:
             RedisEventBus._pubsub_latency.set(0)
@@ -1344,6 +1352,33 @@ class RedisEventBus:
             del self._recently_disconnected[client_key]
             return False
         return True
+
+    def _on_client_reconnected_event(self, client_key):
+        """Cross-pod 'client-reconnected' broadcast handler: drop the client from
+        this pod's recently-disconnected cache so we stop false-rejecting
+        messages to a peer that has re-pinned to a sibling pod (F6/N>=2)."""
+        if isinstance(client_key, bytes):
+            client_key = client_key.decode("utf-8")
+        self._recently_disconnected.pop(client_key, None)
+
+    async def notify_client_connected(self, workspace: str, client_id: str):
+        """Announce that a client (re)connected to this pod so sibling pods clear
+        it from their recently-disconnected caches (multi-replica correctness).
+
+        Best-effort: a failure here only means a sibling may briefly keep a stale
+        cache entry; it does not affect the connection itself.
+        """
+        client_key = f"{workspace}/{client_id}"
+        # Clear locally too (no-op if absent / already cleared on register).
+        self._recently_disconnected.pop(client_key, None)
+        try:
+            result = self.emit("client-reconnected", client_key)
+            if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+                await result
+        except Exception as e:
+            logger.debug(
+                "Failed to broadcast client-reconnected for %s: %s", client_key, e
+            )
 
     async def cleanup_orphaned_patterns(self):
         """Clean up orphaned patterns that may have accumulated."""

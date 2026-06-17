@@ -482,6 +482,30 @@ land on the surviving replica).
   timeout-based disconnect detection. Tracked as F4; see amun-ai/hypha (svamp
   reliability audit).
 
+### Multi-Replica: Per-Pod Caches Must Be Invalidated Across Pods (F6)
+
+Any **per-pod in-memory cache keyed by client/peer identity** becomes a
+correctness hazard at N≥2 if it is not invalidated when that client moves pods.
+
+- **Incident (F6, 2026-06-17):** the dead-peer fast-reject in
+  `RedisRPCConnection.emit_message` ("Target peer is not connected") used the
+  per-pod `_recently_disconnected` cache (`core/__init__.py`, 120s TTL, populated
+  on WS disconnect). Correct at N=1; at N≥2 a client that re-pins to a **sibling**
+  pod (rollout / HPA / restart / `upstream-hash-by client_id` re-pin) stays cached
+  as "disconnected" on the **old** pod for the full TTL, so it false-rejects RPCs
+  to a peer that is actually alive elsewhere → dropped RPCs, client disconnects.
+- **Fix:** on (re)connect, the receiving pod broadcasts `client-reconnected`; every
+  pod clears that client from its `_recently_disconnected`
+  (`RedisEventBus.notify_client_connected` / `_on_client_reconnected_event`), wired
+  into **both** the WebSocket and HTTP-streaming connect paths. O(1) per connect —
+  do **not** fix this with a per-message Redis scan (that re-introduces the
+  `redis.keys`/scan-in-hot-path anti-pattern).
+- **Key Lesson:** when validating multi-replica, **test client MIGRATION across
+  pods** (disconnect from A, reconnect to B, then message it via A) — not just
+  stable cross-pod RPC. Sticky/`client_id`-hash affinity does NOT prevent re-pins
+  on topology changes. Tracked as F6; tests in `test_cross_pod_reconnect.py` and
+  `test_multi_replica_integration.py::test_cross_pod_repin_no_false_reject`.
+
 **Critical Pattern (V10-V14)**: When an ID contains a workspace prefix (e.g., `workspace/client_id`), always validate permission on the embedded workspace, not just `context["ws"]`.
 
 ```python

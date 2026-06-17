@@ -130,3 +130,67 @@ async def test_cross_replica_service_call(
     await provider.disconnect()
     await caller.disconnect()
     await api.disconnect()
+
+
+async def test_cross_pod_repin_no_false_reject(
+    fastapi_server_redis_1, fastapi_server_redis_2, test_user_token
+):
+    """A peer that re-pins from pod A to pod B must NOT be false-rejected by pod
+    A's stale recently-disconnected cache.
+
+    Regression for the N>=2 prod incident (2026-06-17): pod A kept the migrated
+    client in `_recently_disconnected` (120s TTL) and rejected messages to it
+    with "Target peer is not connected", even though it was alive on pod B. The
+    fix broadcasts on (re)connect so pod A clears the stale entry.
+    """
+    server_a = SERVER_URL_REDIS_1
+    server_b = fastapi_server_redis_2
+
+    admin = await connect_to_server(
+        {"client_id": "repin-admin", "server_url": server_a, "token": test_user_token}
+    )
+    await admin.create_workspace(
+        {"name": "repin-ws", "persistent": True, "owners": ["user1@imjoy.io"]},
+        overwrite=True,
+    )
+    token = await admin.generate_token({"workspace": "repin-ws"})
+
+    # Caller stays on pod A for the whole test.
+    caller = await connect_to_server(
+        {"client_id": "caller", "server_url": server_a, "workspace": "repin-ws",
+         "token": token, "method_timeout": 30}
+    )
+    # Provider 'migrant' starts on pod A and registers a service.
+    provider_a = await connect_to_server(
+        {"client_id": "migrant", "server_url": server_a, "workspace": "repin-ws",
+         "token": token, "method_timeout": 30}
+    )
+    await provider_a.register_service(
+        {"id": "svc", "echo": lambda x: x + 1}, {"overwrite": True}
+    )
+    svc = await caller.get_service("migrant:svc")
+    assert await svc.echo(1) == 2  # works while migrant is on pod A
+
+    # migrant disconnects from pod A -> pod A tracks it as recently-disconnected.
+    await provider_a.disconnect()
+    await asyncio.sleep(2)
+
+    # migrant RE-PINS to pod B with the SAME client_id and re-registers — exactly
+    # the topology-change re-pin that the nginx client_id hash ring does.
+    provider_b = await connect_to_server(
+        {"client_id": "migrant", "server_url": server_b, "workspace": "repin-ws",
+         "token": token, "method_timeout": 30}
+    )
+    await provider_b.register_service(
+        {"id": "svc", "echo": lambda x: x + 1}, {"overwrite": True}
+    )
+    await asyncio.sleep(1)  # let the reconnect broadcast + re-registration settle
+
+    # Caller on pod A calls migrant's service. Within the 120s TTL window, the old
+    # behavior would false-reject ("not connected"); with the fix it reaches pod B.
+    svc2 = await caller.get_service("migrant:svc")
+    assert await svc2.echo(10) == 11
+
+    await provider_b.disconnect()
+    await caller.disconnect()
+    await admin.disconnect()

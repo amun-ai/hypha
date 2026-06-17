@@ -481,6 +481,11 @@ class WebsocketServer:
             _connections_established.inc()  # Monotonic counter, never decrements
             event_bus.on_local(f"unload:{workspace}", force_disconnect)
 
+            # F6 (multi-replica): announce this client to sibling pods so they
+            # clear any stale recently-disconnected cache entry — otherwise, after
+            # a re-pin to this pod, the old pod would false-reject messages to it.
+            await event_bus.notify_client_connected(workspace, client_id)
+
             async def send_bytes(data):
                 try:
                     # Handle both bytes and dict data
