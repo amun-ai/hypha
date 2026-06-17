@@ -642,8 +642,13 @@ def redis_server():
 @pytest_asyncio.fixture(name="fastapi_server", scope="session")
 def fastapi_server_fixture(minio_server, postgres_server):
     """Start server as test fixture and tear down after test."""
-    # Generate a strong root token for testing
-    ROOT_TOKEN = secrets.token_urlsafe(32)
+    # Generate a strong root token for testing. Use >=64 chars so it always
+    # passes the server's root-token complexity check: that check only rejects
+    # tokens <64 chars that happen to contain a simple substring (e.g. 'abc',
+    # '123'), so a shorter random token (token_urlsafe(32) ~= 43 chars) trips it
+    # intermittently and flakily fails server startup. token_urlsafe(64) ~= 86
+    # chars, comfortably over the 64-char exemption.
+    ROOT_TOKEN = secrets.token_urlsafe(64)
     os.environ["HYPHA_ROOT_TOKEN"] = ROOT_TOKEN  # Store for tests to use
     
     with subprocess.Popen(
