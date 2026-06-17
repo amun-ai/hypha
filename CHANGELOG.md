@@ -1,5 +1,10 @@
 # Hypha Change Log
 
+### 0.21.91
+
+ - Bump the `hypha-rpc` dependency to 0.21.43, which carries the client-side fix for the multi-replica reject-storm (F6, third N≥2 facet): `RemoteFunction.__call__` now drops an in-flight resolve/reject (and settles the pending future) when the connection has already closed, instead of calling the nulled `_emit_message` and raising `TypeError: 'NoneType' object is not callable` — the real driver of the prod reconnect-loop that the server-side 0.21.89 drop alone did not fully address.
+ - Re-register public singleton services (`hypha-login`, `queue`) when the owning replica dies (F6, Issue #3). Singletons were registered only at boot-if-absent, so at N≥2 the loss of the owning pod left e.g. `/public/services/hypha-login/start` returning 404 with no survivor re-claiming it. `RedisStore._ensure_public_singletons` re-registers any missing singleton (with `overwrite=True`), and a leader-gated `_singleton_ensure_loop` runs it periodically. Tests: `tests/test_singleton_reregistration.py`; an empirical two-server reject-storm repro harness is added in `tests/test_n2_reject_storm_repro.py`.
+
 ### 0.21.90
 
  - Fix a frontend crash on the Applications page (`TypeError: Cannot read properties of null (reading 'startsWith')`). `server-apps.list_apps` returned the stored manifest verbatim and trusted it to carry an `id`; apps created directly via the artifact manager (bypassing `apps.install`, where the manifest id is persisted) — or installed before that id was persisted — had `manifest.id == None`, so `app.id.startsWith('public/')` threw. `list_apps` now derives `id` from the authoritative artifact alias (matching the value `start`/`uninstall`/`edit_app` expect) instead of trusting the manifest blob. Test: `tests/test_server_apps.py::test_list_apps_heals_null_manifest_id`.
