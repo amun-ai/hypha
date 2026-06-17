@@ -1,5 +1,9 @@
 # Hypha Change Log
 
+### 0.21.89
+
+ - Fix the multi-replica reject-storm (F6, second N≥2 facet). When a client with in-flight RPCs disconnects, the server cleans up its pending promises by routing reject/result callbacks back to the now-gone client; each hit the dead-peer check and raised "Target peer is not connected" — a storm (~100/2min on the busy pod) that churned the client into a reconnect loop at N≥2. The dead-peer check now fast-fails ONLY primary calls awaiting a response (which carry a `session`); fire-and-forget results/rejects/callbacks to a gone peer are dropped silently. With the cross-pod migration fix in 0.21.88 (#969), hypha-server is safe at N≥2. Tests: `tests/test_dead_peer_reject_storm.py`; the two-server suite now also simulates mid-RPC-disconnect churn (`tests/test_multi_replica_integration.py`).
+
 ### 0.21.88
 
  - Fix multi-replica cross-pod RPC false-reject (F6). With hypha-server at N≥2, the dead-peer check (`RedisRPCConnection.emit_message`, "Target peer is not connected") rejected RPCs to a peer that had re-pinned to a sibling pod: the `_recently_disconnected` cache is per-pod/in-memory (120s TTL), so a client moving pods (rollout / HPA / restart / `client_id`-hash re-pin) left the old pod wrongly rejecting it for the full TTL — dropping live RPCs. Now, on (re)connect, a pod broadcasts `client-reconnected` and every pod clears that client from its `_recently_disconnected` cache (`RedisEventBus.notify_client_connected`), wired into both the WebSocket and HTTP-streaming connect paths. Collapses the false-reject window from 120s to sub-second with no per-message cost; the dead-peer fast-fail for genuinely-gone peers is unchanged. This was the gap that forced the first N≥2 rollout back to N=1; multi-replica is safe again with this release. Tests: `tests/test_cross_pod_reconnect.py`, `tests/test_multi_replica_integration.py::test_cross_pod_repin_no_false_reject`.
