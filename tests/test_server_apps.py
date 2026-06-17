@@ -104,6 +104,84 @@ async def test_apps_and_lazy_worker_discovery(
     await api.disconnect()
 
 
+async def test_list_apps_heals_null_manifest_id(
+    minio_server, fastapi_server, test_user_token
+):
+    """Regression: list_apps must never return an app with a null id.
+
+    An application artifact created directly via the artifact manager (bypassing
+    apps.install, which is where the manifest id gets persisted) ends up with
+    manifest.id == None. list_apps used to return that manifest verbatim, so the
+    frontend crashed on `app.id.startsWith('public/')`
+    (TypeError: Cannot read properties of null (reading 'startsWith')).
+
+    list_apps must derive the id from the authoritative artifact alias.
+    """
+    api = await connect_to_server(
+        {"name": "test client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    controller = await api.get_service("public/server-apps")
+    artifact_manager = await api.get_service("public/artifact-manager")
+    ws = api.config.workspace
+
+    # Ensure the workspace applications collection exists.
+    try:
+        collection = await artifact_manager.read("applications")
+        collection_id = collection["id"]
+    except Exception:
+        collection = await artifact_manager.create(
+            type="collection",
+            alias="applications",
+            manifest={
+                "name": "Applications",
+                "description": f"A collection of applications for workspace {ws}",
+                "collection": [],
+            },
+            overwrite=True,
+        )
+        collection_id = collection["id"]
+
+    # Create an application artifact directly, with a manifest that has NO id key.
+    # This reproduces the exact corrupted/legacy state observed in production.
+    bad_manifest = {
+        "name": "Legacy App Without Id",
+        "type": "window",
+        "version": "0.1.0",
+        "entry_point": "index.html",
+        # intentionally no "id" key -> ApplicationManifest defaults it to None
+    }
+    app_artifact = await artifact_manager.create(
+        type="application",
+        parent_id=collection_id,
+        alias="legacy-null-id-app",
+        manifest=bad_manifest,
+        overwrite=True,
+        version="stage",
+    )
+    await artifact_manager.commit(app_artifact["id"])
+
+    # Sanity check: the stored manifest id is indeed None (reproduces the crash).
+    raw = await artifact_manager.read(app_artifact["id"])
+    assert (
+        raw["manifest"].get("id") is None
+    ), "Test setup invalid: manifest id should be None to reproduce the bug"
+
+    # list_apps must heal it: no app may have a null/empty id.
+    apps = await controller.list_apps()
+    null_id_apps = [a for a in apps if not a.get("id")]
+    assert not null_id_apps, f"list_apps returned apps with null id: {null_id_apps}"
+
+    target = find_item(apps, "name", "Legacy App Without Id")
+    assert target is not None, "The directly-created app should be listed"
+    assert (
+        target["id"] == "legacy-null-id-app"
+    ), f"Expected id to be derived from alias, got {target['id']!r}"
+
+    # Cleanup
+    await artifact_manager.delete(app_artifact["id"])
+    await api.disconnect()
+
+
 async def test_lazy_loading_with_get_service(
     minio_server, fastapi_server, test_user_token
 ):

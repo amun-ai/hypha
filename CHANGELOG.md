@@ -1,5 +1,9 @@
 # Hypha Change Log
 
+### 0.21.90
+
+ - Fix a frontend crash on the Applications page (`TypeError: Cannot read properties of null (reading 'startsWith')`). `server-apps.list_apps` returned the stored manifest verbatim and trusted it to carry an `id`; apps created directly via the artifact manager (bypassing `apps.install`, where the manifest id is persisted) — or installed before that id was persisted — had `manifest.id == None`, so `app.id.startsWith('public/')` threw. `list_apps` now derives `id` from the authoritative artifact alias (matching the value `start`/`uninstall`/`edit_app` expect) instead of trusting the manifest blob. Test: `tests/test_server_apps.py::test_list_apps_heals_null_manifest_id`.
+
 ### 0.21.89
 
  - Resilient embedding-model load: `load_fastembed_model` retries the fastembed model download (`BAAI/bge-small-en-v1.5`) on transient HuggingFace/CDN failures ("Could not load model … from any source") with linear backoff, instead of hard-failing a server startup (or a CI run) on a momentary blip. Applied to all vector backends (pgvector, s3vector, vectors).

@@ -3013,7 +3013,18 @@ class ServerAppController:
             apps = await self.artifact_manager.list(
                 f"{ws}/applications", filters={"type": "application"}, context=context
             )
-            return [app["manifest"] for app in apps]
+            result = []
+            for app in apps:
+                manifest = dict(app.get("manifest") or {})
+                # The artifact record is the authoritative source for the app id; the
+                # manifest's embedded copy may be null or missing (e.g. apps created
+                # directly via the artifact manager, or installed before the id was
+                # persisted into the manifest). Always derive it from the artifact alias
+                # so clients always receive a stable, non-null id (matching the value
+                # expected by start/uninstall/edit_app).
+                manifest["id"] = app.get("alias") or (app.get("id") or "").split("/")[-1]
+                result.append(manifest)
+            return result
         except KeyError:
             return []
         except Exception as exp:
