@@ -93,6 +93,14 @@ RUN useradd -u 8877 hypha && \
     chown -R hypha:hypha /.cache && \
     chown -R hypha:hypha /opt/venv
 
+# glibc malloc tuning: cap per-thread (secondary) arenas and lower the main
+# arena's trim threshold so freed memory is returned to the OS more readily.
+# This halves the churn from git's whole-pack buffering; combined with the
+# explicit malloc_trim(0) after each git request (hypha/git/http.py) it keeps
+# RSS from ratcheting to OOM under repeated/concurrent large clones/pushes.
+ENV MALLOC_ARENA_MAX=2
+ENV MALLOC_TRIM_THRESHOLD_=131072
+
 # Switch to non-root user
 USER hypha
 

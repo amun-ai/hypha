@@ -40,6 +40,32 @@ from hypha.git.repo import S3GitRepo
 logger = logging.getLogger(__name__)
 
 
+def _malloc_trim():
+    """Return freed heap memory to the OS (glibc only; no-op elsewhere).
+
+    Git clone/push buffers whole packs (request body, the generated pack
+    BytesIO, the joined response) — hundreds of MB per op. Python frees those
+    promptly, but glibc retains the freed memory in per-thread (secondary)
+    arenas and does NOT auto-return it; only an explicit malloc_trim(0) does.
+    Under repeated/concurrent large git ops this retention ratchets RSS up to
+    OOM (measured on prod: malloc_trim reclaimed ~1-1.6GB). We call this after
+    each git request (see cleanup_repo) to release the pack memory immediately.
+    On non-glibc platforms (macOS dev, musl) malloc_trim is unavailable -> no-op.
+    """
+    import platform
+
+    if platform.system() != "Linux":
+        return
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL("libc.so.6", use_errno=False)
+        if hasattr(libc, "malloc_trim"):
+            libc.malloc_trim(0)
+    except (OSError, AttributeError) as e:  # pragma: no cover - platform dependent
+        logger.debug(f"malloc_trim unavailable: {e}")
+
+
 async def cleanup_repo(repo):
     """Clean up resources associated with a Git repository.
 
@@ -47,6 +73,26 @@ async def cleanup_repo(repo):
     when getting the repo from artifact_integration.
     """
     try:
+        # Release the loaded pack/index buffers immediately rather than waiting
+        # for GC. Each git request builds a fresh per-request object store whose
+        # S3Pack._ensure_loaded() reads the entire .pack and .idx into resident
+        # bytes (_pack_data/_index_data) — multi-hundred-MB for a large repo.
+        # Under concurrent git load these per-request spikes overlap and ratchet
+        # RSS up to OOM if freeing is left to GC. object_store.close() clears the
+        # _pack_cache and drops those buffers now.
+        if getattr(repo, '_object_store', None) is not None:
+            try:
+                repo._object_store.close()
+                logger.debug("Git repo: object store closed (pack buffers released)")
+            except Exception as e:
+                logger.warning(f"Error closing object store: {e}")
+
+        # Return the freed pack memory to the OS now. close() frees the bytes in
+        # Python, but glibc holds them in secondary (per-thread) arenas and won't
+        # auto-return them — only an explicit malloc_trim(0) does. Without this,
+        # repeated/concurrent large git ops ratchet RSS up to OOM. glibc-only.
+        _malloc_trim()
+
         # Close S3 client if it was stored on the repo
         if hasattr(repo, '_s3_client_context') and repo._s3_client_context:
             try:
