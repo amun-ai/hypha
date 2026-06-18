@@ -248,12 +248,20 @@ class S3GitObjectStore(BucketBasedObjectStore):
         return new_packs
 
     async def _upload_pack_async(
-        self, basename: str, pack_data: bytes, index_data: bytes
+        self, basename: str, pack_source, index_data: bytes
     ):
         """Upload pack and index files to S3 using async aiohttp-based client.
 
         Uses aiohttp with AWS Signature V4 signing, which works reliably
         with MinIO unlike aiobotocore's put_object.
+
+        Args:
+            basename: Pack basename (without extension).
+            pack_source: Either raw pack bytes OR a seekable binary file. When a
+                file is given it is streamed to S3 (hash computed by reading it
+                in chunks) so a large pack is never held as one resident bytes
+                object during upload.
+            index_data: Serialized .idx bytes (small, kept in memory).
         """
         if not self._s3_config:
             raise RuntimeError(
@@ -268,7 +276,18 @@ class S3GitObjectStore(BucketBasedObjectStore):
         async_client = create_async_s3_client(self._s3_config)
         try:
             logger.debug(f"Uploading pack file: {pack_key}")
-            await async_client.put_object(self._bucket, pack_key, pack_data)
+            if isinstance(pack_source, (bytes, bytearray)):
+                await async_client.put_object(
+                    self._bucket, pack_key, bytes(pack_source)
+                )
+            else:
+                # Seekable file: stream it (compute size via seek to end).
+                pack_source.seek(0, io.SEEK_END)
+                size = pack_source.tell()
+                pack_source.seek(0)
+                await async_client.put_object_from_file(
+                    self._bucket, pack_key, pack_source, size
+                )
             logger.debug(f"Uploading index file: {idx_key}")
             await async_client.put_object(self._bucket, idx_key, index_data)
             logger.info(f"Uploaded pack {basename} to S3")
@@ -326,8 +345,8 @@ class S3GitObjectStore(BucketBasedObjectStore):
         raise KeyError(sha)
 
     def _parse_pack_sync(
-        self, pack_data: bytes, resolve_ext_ref=None
-    ) -> tuple[list, bytes, bytes]:
+        self, pack_file: BinaryIO, resolve_ext_ref=None
+    ) -> tuple[list, bytes, bytes, BinaryIO]:
         """Synchronous pack parsing that handles thin packs.
 
         Thin packs contain delta objects whose base objects are not in the pack.
@@ -338,17 +357,25 @@ class S3GitObjectStore(BucketBasedObjectStore):
         approach: use PackIndexer to find external refs, then extend_pack to
         append them.
 
+        Memory: operates on a SEEKABLE FILE (e.g. SpooledTemporaryFile) rather
+        than a bytes buffer, so a large incoming pack spills to disk past
+        PACK_SPOOL_FILE_MAX_SIZE instead of being held resident. PackData,
+        PackIndexer.for_pack_data, and extend_pack all work on seekable files.
+
         Args:
-            pack_data: Raw pack file bytes
+            pack_file: Seekable binary file positioned at the start of the pack
+                data (e.g. a SpooledTemporaryFile). Will be read and, for thin
+                packs, extended in place.
             resolve_ext_ref: Optional function to resolve external references
                 for thin packs. Signature: (sha_bytes) -> (type_num, data)
 
         Returns:
-            Tuple of (entries, checksum, pack_data_bytes) where pack_data_bytes
-            is the (possibly fattened) pack file content and checksum/entries
-            reflect the final state.
+            Tuple of (entries, checksum, index_data, final_pack_file) where
+            final_pack_file is the seekable file holding the (possibly fattened)
+            pack content positioned at 0, and checksum/entries reflect the final
+            state. index_data is the serialized .idx bytes (small).
         """
-        pack_file = io.BytesIO(pack_data)
+        pack_file.seek(0)
         p = PackData("incoming.pack", file=pack_file, object_format=self.object_format)
 
         # Use PackIndexer.for_pack_data to iterate entries and discover
@@ -358,12 +385,15 @@ class S3GitObjectStore(BucketBasedObjectStore):
         ext_refs = set(indexer.ext_refs())
 
         if not entries and not ext_refs:
+            p._file = None
             return [], None, None, None
 
         if ext_refs and resolve_ext_ref:
             # Thin pack detected: fatten it by appending external base objects.
             # This makes the pack self-contained so it can be stored and read
             # without needing external ref resolution at read time.
+            # extend_pack appends the bases directly to the seekable file and
+            # rewrites the trailing checksum in place.
             logger.info(
                 f"Thin pack detected with {len(ext_refs)} external refs, fattening"
             )
@@ -375,10 +405,8 @@ class S3GitObjectStore(BucketBasedObjectStore):
                 object_format=self.object_format,
             )
             entries.extend(extra_entries)
-
-            # Read back the fattened pack data
-            pack_file.seek(0)
-            fattened_pack_data = pack_file.read()
+            # The (possibly fattened) pack now lives in pack_file.
+            final_pack_file = pack_file
         elif ext_refs:
             # External refs but no resolver - cannot store this thin pack
             raise KeyError(
@@ -387,75 +415,105 @@ class S3GitObjectStore(BucketBasedObjectStore):
             )
         else:
             # Normal pack, no external refs
-            fattened_pack_data = pack_data
+            final_pack_file = pack_file
             checksum = p.get_stored_checksum()
 
-        # Sort entries and generate index
+        # Sort entries and generate index (index is small, keep in memory)
         entries.sort()
         idx_file = io.BytesIO()
         write_pack_index(idx_file, entries, checksum, version=self.pack_index_version)
         idx_file.seek(0)
         index_data = idx_file.read()
 
-        return entries, checksum, index_data, fattened_pack_data
+        # Detach PackData from the shared file so its close()/__del__ does NOT
+        # close the file we are returning to the caller for upload.
+        p._file = None
+
+        final_pack_file.seek(0)
+        return entries, checksum, index_data, final_pack_file
 
     async def add_pack_async(
-        self, pack_data: bytes
+        self, pack_source
     ) -> tuple[str, bytes]:
         """Add a pack to the object store.
 
         Args:
-            pack_data: Raw pack file data
+            pack_source: Either raw pack bytes OR a seekable binary file
+                (e.g. a SpooledTemporaryFile holding the pushed pack). Passing a
+                file avoids buffering a large pack as one resident bytes object;
+                it spills to disk past PACK_SPOOL_FILE_MAX_SIZE.
 
         Returns:
             Tuple of (basename, checksum)
         """
-        logger.debug(f"add_pack_async: parsing pack data ({len(pack_data)} bytes)")
+        # Normalize input to a seekable file so parsing/fattening operates on a
+        # spillable file rather than resident bytes.
+        own_pack_file = False
+        if isinstance(pack_source, (bytes, bytearray)):
+            logger.debug(
+                f"add_pack_async: parsing pack data ({len(pack_source)} bytes)"
+            )
+            pack_file = tempfile.SpooledTemporaryFile(
+                max_size=PACK_SPOOL_FILE_MAX_SIZE, prefix="incoming-"
+            )
+            pack_file.write(pack_source)
+            pack_file.seek(0)
+            own_pack_file = True
+        else:
+            pack_file = pack_source
+            pack_file.seek(0)
+            logger.debug("add_pack_async: parsing pack data from file")
 
-        # Pre-load all existing packs so _resolve_ext_ref can resolve delta
-        # bases in thin packs (packs containing deltas referencing external objects)
-        for pack in self._pack_cache.values():
-            await pack._ensure_loaded()
+        try:
+            # Pre-load all existing packs so _resolve_ext_ref can resolve delta
+            # bases in thin packs (deltas referencing external objects)
+            for pack in self._pack_cache.values():
+                await pack._ensure_loaded()
 
-        # Run synchronous pack parsing in thread pool to avoid blocking event loop
-        # (dulwich pack parsing is CPU-bound, not I/O-bound)
-        entries, checksum, index_data, final_pack_data = await asyncio.to_thread(
-            self._parse_pack_sync, pack_data, self._resolve_ext_ref
-        )
-        logger.debug(f"add_pack_async: got {len(entries)} entries")
+            # Run synchronous pack parsing in thread pool to avoid blocking event
+            # loop (dulwich pack parsing is CPU-bound, not I/O-bound)
+            entries, checksum, index_data, final_pack_file = await asyncio.to_thread(
+                self._parse_pack_sync, pack_file, self._resolve_ext_ref
+            )
+            logger.debug(f"add_pack_async: got {len(entries)} entries")
 
-        if not entries:
-            logger.warning("Empty pack, not storing")
-            return None, None
+            if not entries:
+                logger.warning("Empty pack, not storing")
+                return None, None
 
-        # Generate basename from SHA of all entries
-        basename = "pack-" + iter_sha1(entry[0] for entry in entries).decode("ascii")
-        logger.debug(f"add_pack_async: basename = {basename}")
+            # Generate basename from SHA of all entries
+            basename = "pack-" + iter_sha1(
+                entry[0] for entry in entries
+            ).decode("ascii")
+            logger.debug(f"add_pack_async: basename = {basename}")
 
-        # Check if pack already exists
-        if basename in self._pack_cache:
-            logger.debug("add_pack_async: pack already exists in cache")
-            existing = self._pack_cache[basename]
-            await existing._ensure_loaded()
-            return basename, existing.get_stored_checksum()
+            # Check if pack already exists
+            if basename in self._pack_cache:
+                logger.debug("add_pack_async: pack already exists in cache")
+                existing = self._pack_cache[basename]
+                await existing._ensure_loaded()
+                return basename, existing.get_stored_checksum()
 
-        # Upload to S3 using async client (use final_pack_data which may be
-        # fattened if the original was a thin pack)
-        logger.debug("add_pack_async: uploading to S3")
-        await self._upload_pack_async(basename, final_pack_data, index_data)
-        logger.debug("add_pack_async: upload complete")
+            # Upload to S3 using async client (stream final_pack_file which may be
+            # fattened if the original was a thin pack)
+            logger.debug("add_pack_async: uploading to S3")
+            await self._upload_pack_async(basename, final_pack_file, index_data)
+            logger.debug("add_pack_async: upload complete")
 
-        # Add to cache
-        pack = S3Pack(
-            basename,
-            self._s3_client_factory,
-            self._bucket,
-            self._pack_dir,
-            self.object_format,
-        )
-        self._pack_cache[basename] = pack
+            # Add to cache
+            pack = S3Pack(
+                basename,
+                self._s3_client_factory,
+                self._bucket,
+                self._pack_dir,
+                self.object_format,
+            )
+            self._pack_cache[basename] = pack
 
-        return basename, checksum
+            return basename, checksum
+        finally:
+            if own_pack_file:
+                pack_file.close()
 
     async def add_objects_async(
         self,
@@ -489,9 +547,7 @@ class S3GitObjectStore(BucketBasedObjectStore):
         )
 
         pack_file.seek(0)
-        pack_data = pack_file.read()
-
-        basename, checksum = await self.add_pack_async(pack_data)
+        basename, checksum = await self.add_pack_async(pack_file)
         return basename
 
     # =========================================================================

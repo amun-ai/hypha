@@ -9,18 +9,23 @@ Protocol Reference:
 """
 
 import asyncio
-import base64
 import io
+import os
+import base64
 import logging
+import tempfile
 from typing import AsyncIterator, Callable, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Header, Query, Request
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 
 from dulwich.objects import DEFAULT_OBJECT_FORMAT, ObjectID, ShaFile
+from dulwich.object_store import PACK_SPOOL_FILE_MAX_SIZE
 from dulwich.pack import (
     Pack,
     PackData,
+    UnpackedObject,
+    write_pack_data,
     write_pack_objects,
 )
 from dulwich.protocol import (
@@ -38,6 +43,60 @@ from dulwich.protocol import (
 from hypha.git.repo import S3GitRepo
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Concurrency cap for memory-heavy pack operations
+# ---------------------------------------------------------------------------
+# Pack generation (clone/fetch) and pack parsing/fattening (push) are the
+# memory-heavy git operations. Without a cap, N concurrent large clones each
+# spike memory independently and can OOM the server. We bound how many pack
+# ops run at once with a lazily-created module-level semaphore (lazy so the
+# loop binding the semaphore is the running event loop, not import-time).
+HYPHA_GIT_MAX_CONCURRENT_PACK_OPS = int(
+    os.environ.get("HYPHA_GIT_MAX_CONCURRENT_PACK_OPS", "4")
+)
+HYPHA_GIT_PACK_ACQUIRE_TIMEOUT = float(
+    os.environ.get("HYPHA_GIT_PACK_ACQUIRE_TIMEOUT", "30")
+)
+# Below this estimated total object size, the upload-pack response is buffered
+# (with Content-Length) for compatibility with libgit2/wasm-git/CORS proxies
+# that mishandle chunked transfer encoding. Above it, the pack is streamed.
+HYPHA_GIT_STREAM_THRESHOLD = int(
+    os.environ.get("HYPHA_GIT_STREAM_THRESHOLD", str(8 * 1024 * 1024))
+)
+
+_pack_op_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _get_pack_op_semaphore() -> asyncio.Semaphore:
+    """Lazily create the module-level pack-op semaphore.
+
+    Created on first use so it binds to the running event loop rather than at
+    import time (which may run before any loop exists, or under a different
+    loop in tests).
+    """
+    global _pack_op_semaphore
+    if _pack_op_semaphore is None:
+        _pack_op_semaphore = asyncio.Semaphore(HYPHA_GIT_MAX_CONCURRENT_PACK_OPS)
+    return _pack_op_semaphore
+
+
+async def _acquire_pack_slot() -> asyncio.Semaphore:
+    """Acquire a pack-op slot, raising 503 on timeout.
+
+    Returns the semaphore so the caller can release it in a finally block.
+    """
+    sem = _get_pack_op_semaphore()
+    try:
+        await asyncio.wait_for(sem.acquire(), timeout=HYPHA_GIT_PACK_ACQUIRE_TIMEOUT)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=503,
+            detail="Git server busy",
+            headers={"Retry-After": "5"},
+        )
+    return sem
 
 
 def _malloc_trim():
@@ -655,6 +714,243 @@ class GitHTTPHandler:
         pack_buffer.seek(0)
         return pack_buffer.read()
 
+    async def compute_common_haves(self, have_shas: list[bytes]) -> list[bytes]:
+        """Return the subset of have_shas the server actually has (ACK list)."""
+        common = []
+        for sha in have_shas:
+            if await self.repo.has_object_async(sha):
+                common.append(sha)
+        return common
+
+    async def buffered_upload_pack_response(
+        self,
+        shas: list[bytes],
+        common: list[bytes],
+        capabilities: set,
+    ) -> bytes:
+        """Build the full upload-pack response in memory (small repos).
+
+        Used below the streaming threshold for client compatibility
+        (libgit2/wasm-git/CORS proxies that mishandle chunked encoding). The
+        pack is still generated with the lazy record iterator, but collected
+        into a single buffer so Content-Length can be set.
+        """
+        parts: list[bytes] = []
+        async for chunk in self.stream_upload_pack_response(shas, common, capabilities):
+            parts.append(chunk)
+        return b"".join(parts)
+
+    async def empty_upload_pack_response(self, capabilities: set) -> bytes:
+        """Build a NAK + empty-pack response (no wants resolvable)."""
+        parts = [pkt_line(b"NAK\n")]
+        use_side_band = (
+            b"side-band-64k" in capabilities or b"side-band" in capabilities
+        )
+        empty = self._create_empty_pack()
+        if use_side_band:
+            parts.append(pkt_line(bytes([SIDE_BAND_CHANNEL_DATA]) + empty))
+            parts.append(pkt_flush())
+        else:
+            parts.append(empty)
+        return b"".join(parts)
+
+    def _parse_upload_pack_request(
+        self, body: bytes
+    ) -> tuple[list[bytes], list[bytes], set]:
+        """Parse an upload-pack request body into wants, haves, capabilities.
+
+        Returns:
+            (want_shas, have_shas, capabilities)
+        """
+        want_shas: list[bytes] = []
+        have_shas: list[bytes] = []
+        capabilities: set = set()
+
+        offset = 0
+        while offset < len(body):
+            if offset + 4 > len(body):
+                break
+            try:
+                length = int(body[offset : offset + 4], 16)
+            except ValueError:
+                break
+            if length == 0:
+                offset += 4
+                continue
+            elif length < 4:
+                break
+
+            data = body[offset + 4 : offset + length]
+            offset += length
+            line = data.rstrip(b"\n")
+
+            if line.startswith(b"want "):
+                parts = line.split(b" ", 2)
+                sha = parts[1]
+                if len(parts) > 2:
+                    capabilities.update(parts[2].split(b" "))
+                want_shas.append(sha)
+            elif line.startswith(b"have "):
+                have_shas.append(line.split(b" ", 1)[1])
+            elif line == b"done":
+                break
+
+        return want_shas, have_shas, capabilities
+
+    async def resolve_pack_shas(
+        self, want_shas: list[bytes], have_shas: list[bytes]
+    ) -> list[bytes]:
+        """Resolve the ordered set of object SHAs to include in the pack.
+
+        Walks reachability from wants (excluding haves), then pre-loads all
+        packs so the subsequent (synchronous) pack generation can read each
+        object from the in-memory S3Pack without further async I/O.
+        """
+        objects_to_send: set = set()
+        for sha in want_shas:
+            await self._collect_reachable_objects(
+                sha, objects_to_send, set(have_shas)
+            )
+        # Pre-load packs once so the sync record iterator can pull objects.
+        await self.repo.ensure_packs_loaded()
+        return list(objects_to_send)
+
+    def estimate_pack_size(self, shas: list[bytes]) -> int:
+        """Estimate total uncompressed object size for the given SHAs.
+
+        Uses the pre-loaded in-memory packs (call resolve_pack_shas first).
+        This is an upper-bound estimate of the response size; the actual
+        compressed pack is smaller. Used only to choose buffered vs streamed.
+        """
+        store = self.repo._object_store
+        total = 0
+        for sha in shas:
+            try:
+                _type_num, data = store.get_raw(sha)
+                total += len(data)
+            except KeyError:
+                continue
+        return total
+
+    def iter_pack_records(self, shas: list[bytes]):
+        """Lazily yield UnpackedObject records, one object live at a time.
+
+        Pulls each object's raw bytes from the pre-loaded in-memory packs as the
+        consumer requests it, so the whole object_list is never materialized.
+        Must be run after resolve_pack_shas (packs loaded). Synchronous — run
+        inside a thread.
+        """
+        store = self.repo._object_store
+        for sha in shas:
+            try:
+                type_num, data = store.get_raw(sha)
+            except KeyError:
+                logger.warning(f"Object {sha!r} not found during pack gen")
+                continue
+            # decomp_chunks holds the raw (uncompressed) object content; the
+            # pack writer compresses it. sha must be the 20-byte binary digest.
+            if len(sha) == 40:
+                bin_sha = bytes.fromhex(sha.decode("ascii"))
+            else:
+                bin_sha = sha
+            yield UnpackedObject(
+                type_num,
+                decomp_chunks=[data] if not isinstance(data, list) else data,
+                sha=bin_sha,
+            )
+
+    async def stream_upload_pack_response(
+        self,
+        shas: list[bytes],
+        common: list[bytes],
+        capabilities: set,
+    ) -> AsyncIterator[bytes]:
+        """Stream an upload-pack response, generating the pack incrementally.
+
+        The pack-generation loop runs in a worker thread (dulwich is sync and
+        CPU-bound). It pushes side-band-wrapped pkt-line chunks into an
+        asyncio.Queue; this async generator drains the queue and yields chunks
+        to the StreamingResponse. Only ~1 object is decompressed at a time via
+        the lazy iter_pack_records iterator, so peak memory stays bounded.
+        """
+        # Leading ACK/NAK lines (small) come first.
+        if b"multi_ack" in capabilities and common:
+            for sha in common:
+                yield pkt_line(b"ACK " + sha + b" continue\n")
+        yield pkt_line(b"NAK\n")
+
+        use_side_band = (
+            b"side-band-64k" in capabilities or b"side-band" in capabilities
+        )
+        # Max side-band payload: 65520 - 4 (len prefix) - 1 (channel) = 65515.
+        chunk_size = 65515 if b"side-band-64k" in capabilities else 999
+
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue(maxsize=8)
+        _SENTINEL = object()
+
+        def _wrap(chunk: bytes) -> bytes:
+            if use_side_band:
+                return pkt_line(bytes([SIDE_BAND_CHANNEL_DATA]) + chunk)
+            return chunk
+
+        def _produce():
+            """Sync producer: write pack chunks, side-band-wrap, enqueue."""
+            buf = bytearray()
+
+            def sink(data: bytes):
+                # Accumulate then emit fixed-size side-band frames so each
+                # pkt-line stays within the 65520 byte limit.
+                buf.extend(data)
+                while len(buf) >= chunk_size:
+                    frame = bytes(buf[:chunk_size])
+                    del buf[:chunk_size]
+                    asyncio.run_coroutine_threadsafe(
+                        queue.put(_wrap(frame)), loop
+                    ).result()
+
+            try:
+                write_pack_data(
+                    sink,
+                    self.iter_pack_records(shas),
+                    DEFAULT_OBJECT_FORMAT,
+                    num_records=len(shas),
+                )
+                # Flush remaining buffered bytes.
+                if buf:
+                    asyncio.run_coroutine_threadsafe(
+                        queue.put(_wrap(bytes(buf))), loop
+                    ).result()
+                asyncio.run_coroutine_threadsafe(
+                    queue.put(_SENTINEL), loop
+                ).result()
+            except Exception as exc:  # noqa: BLE001 - propagate to consumer
+                asyncio.run_coroutine_threadsafe(
+                    queue.put(("__error__", exc)), loop
+                ).result()
+
+        producer = loop.run_in_executor(None, _produce)
+        try:
+            while True:
+                item = await queue.get()
+                if item is _SENTINEL:
+                    break
+                if isinstance(item, tuple) and item and item[0] == "__error__":
+                    exc = item[1]
+                    logger.error(f"Streaming pack generation failed: {exc}")
+                    if use_side_band:
+                        yield pkt_line(
+                            bytes([SIDE_BAND_CHANNEL_FATAL])
+                            + f"error: {exc}".encode()
+                        )
+                    break
+                yield item
+        finally:
+            await producer
+
+        if use_side_band:
+            yield pkt_flush()
+
     async def _collect_reachable_objects(
         self,
         sha: bytes,
@@ -703,6 +999,116 @@ class GitHTTPHandler:
         data = buffer.read()
         checksum = hashlib.sha1(data).digest()
         return data + checksum
+
+    def _build_receive_status_report(
+        self, unpack_status: str, results: dict, capabilities: set
+    ) -> bytes:
+        """Build the (tiny) receive-pack status report, buffered.
+
+        Returns the full report bytes (pkt-lines, optionally side-band-wrapped).
+        """
+        use_side_band = (
+            b"side-band-64k" in capabilities or b"report-status" in capabilities
+        )
+        out: list[bytes] = []
+        if b"report-status" in capabilities:
+            if use_side_band:
+                status_lines = [pkt_line(f"unpack {unpack_status}\n".encode())]
+                for ref_name, error in results.items():
+                    if error:
+                        status = f"ng {ref_name.decode()} {error}\n"
+                    else:
+                        status = f"ok {ref_name.decode()}\n"
+                    status_lines.append(pkt_line(status.encode()))
+                status_lines.append(pkt_flush())
+                for line in status_lines:
+                    out.append(pkt_line(bytes([SIDE_BAND_CHANNEL_DATA]) + line))
+                out.append(pkt_flush())
+            else:
+                out.append(pkt_line(f"unpack {unpack_status}\n".encode()))
+                for ref_name, error in results.items():
+                    if error:
+                        out.append(pkt_line(f"ng {ref_name.decode()} {error}\n".encode()))
+                    else:
+                        out.append(pkt_line(f"ok {ref_name.decode()}\n".encode()))
+                out.append(pkt_flush())
+        else:
+            out.append(pkt_flush())
+        return b"".join(out)
+
+    async def handle_receive_pack_streaming(self, request: Request) -> bytes:
+        """Handle git-receive-pack by spilling the pack to a temp file.
+
+        Streams the request body into a SpooledTemporaryFile (spilling to disk
+        past PACK_SPOOL_FILE_MAX_SIZE) while parsing the leading pkt-line
+        ref-update commands, then parses/stores the pack from the file. This
+        avoids holding the whole pushed pack as one resident bytes object.
+
+        The status report is tiny, so it is returned buffered (bytes).
+        """
+        if self.read_only:
+            return pkt_line(b"unpack ng permission denied\n") + pkt_flush()
+
+        reader = StreamingPktLineReader(request)
+        ref_updates: dict = {}
+        capabilities: set = set()
+        first_line = True
+
+        # Parse ref-update commands (pkt-lines before PACK).
+        while True:
+            data, is_flush = await reader.read_pkt_line()
+            if is_flush:
+                continue
+            if data is None:
+                # PACK signature or end of stream.
+                break
+            line = data.rstrip(b"\n")
+            if not line:
+                continue
+            if first_line and b"\0" in line:
+                line, caps_str = line.split(b"\0", 1)
+                capabilities.update(c for c in caps_str.split(b" ") if c)
+                first_line = False
+            parts = line.split(b" ", 2)
+            if len(parts) >= 3:
+                old_sha, new_sha, ref_name = parts
+                ref_updates[ref_name] = (old_sha, new_sha)
+
+        # Spill remaining (pack) data to a seekable spool file.
+        pack_file = tempfile.SpooledTemporaryFile(
+            max_size=PACK_SPOOL_FILE_MAX_SIZE, prefix="incoming-push-"
+        )
+        total = 0
+        async for chunk in reader.read_remaining_stream():
+            pack_file.write(chunk)
+            total += len(chunk)
+        pack_file.seek(0)
+
+        logger.info(
+            f"Receive pack (streamed): {len(ref_updates)} refs, {total} bytes pack"
+        )
+
+        has_pack = total >= 4  # at least a PACK signature
+        try:
+            if has_pack:
+                results = await self.repo.receive_pack_from_file_async(
+                    pack_file, ref_updates
+                )
+            else:
+                results = await self.repo.receive_pack_from_file_async(
+                    None, ref_updates
+                )
+            unpack_status = "ok"
+        except Exception as e:
+            logger.error(f"Pack processing failed: {e}", exc_info=True)
+            unpack_status = f"ng {e}"
+            results = {ref: str(e) for ref in ref_updates}
+        finally:
+            pack_file.close()
+
+        return self._build_receive_status_report(
+            unpack_status, results, capabilities
+        )
 
     async def handle_receive_pack_from_bytes(self, body: bytes) -> AsyncIterator[bytes]:
         """Handle git-receive-pack requests (push) from pre-read body.
@@ -1172,33 +1578,88 @@ def create_git_router(
 
         handler = GitHTTPHandler(repo)
 
-        # Read the entire request body before processing
-        logger.info("git_upload_pack: reading request body")
-        body = await request.body()
-        logger.info(f"git_upload_pack: received {len(body)} bytes")
+        response_headers = {
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Expires": "Fri, 01 Jan 1980 00:00:00 GMT",
+        }
+        media_type = "application/x-git-upload-pack-result"
 
-        # Collect the full response body instead of streaming.
-        # The pack data is already generated fully in memory by _generate_pack(),
-        # so buffering the response allows us to set Content-Length and avoid
-        # HTTP chunked transfer encoding. This improves compatibility with
-        # libgit2/wasm-git clients and CORS proxies.
+        # Acquire a pack-op slot (bounds concurrent memory-heavy clones).
+        sem = await _acquire_pack_slot()
+
+        # From here on, on ANY failure before we hand off to a StreamingResponse
+        # we must release the slot and clean up the repo ourselves. Once we
+        # return a StreamingResponse, its generator owns release/cleanup.
+        slot_handed_off = False
         try:
-            body_parts = []
-            async for chunk in handler.handle_upload_pack_from_bytes(body):
-                body_parts.append(chunk)
-            response_body = b"".join(body_parts)
-        finally:
-            await cleanup_repo(repo)
+            logger.info("git_upload_pack: reading request body")
+            body = await request.body()
+            logger.info(f"git_upload_pack: received {len(body)} bytes")
 
-        return Response(
-            content=response_body,
-            media_type="application/x-git-upload-pack-result",
-            headers={
-                "Cache-Control": "no-cache",
-                "Pragma": "no-cache",
-                "Expires": "Fri, 01 Jan 1980 00:00:00 GMT",
-            },
-        )
+            want_shas, have_shas, capabilities = handler._parse_upload_pack_request(
+                body
+            )
+
+            if not want_shas:
+                # No wants: NAK + empty pack, buffered (tiny).
+                response_body = await handler.empty_upload_pack_response(capabilities)
+                return Response(
+                    content=response_body,
+                    media_type=media_type,
+                    headers=response_headers,
+                )
+
+            common = await handler.compute_common_haves(have_shas)
+            shas = await handler.resolve_pack_shas(want_shas, have_shas)
+
+            if not shas:
+                response_body = await handler.empty_upload_pack_response(capabilities)
+                return Response(
+                    content=response_body,
+                    media_type=media_type,
+                    headers=response_headers,
+                )
+
+            est_size = handler.estimate_pack_size(shas)
+            logger.info(
+                f"git_upload_pack: {len(shas)} objects, est ~{est_size} bytes, "
+                f"threshold={HYPHA_GIT_STREAM_THRESHOLD}"
+            )
+
+            if est_size <= HYPHA_GIT_STREAM_THRESHOLD:
+                # Buffered path: small/browser-compatible response w/ Content-Length.
+                response_body = await handler.buffered_upload_pack_response(
+                    shas, common, capabilities
+                )
+                return Response(
+                    content=response_body,
+                    media_type=media_type,
+                    headers=response_headers,
+                )
+
+            # Streaming path: hand off the slot + repo to the generator.
+            async def _stream():
+                try:
+                    async for chunk in handler.stream_upload_pack_response(
+                        shas, common, capabilities
+                    ):
+                        yield chunk
+                finally:
+                    await cleanup_repo(repo)
+                    sem.release()
+
+            slot_handed_off = True
+            return StreamingResponse(
+                _stream(),
+                media_type=media_type,
+                headers=response_headers,
+            )
+        finally:
+            if not slot_handed_off:
+                # Buffered paths and errors: clean up here.
+                await cleanup_repo(repo)
+                sem.release()
 
     @router.post("/{workspace}/git/{alias}/git-receive-pack")
     async def git_receive_pack(
@@ -1228,21 +1689,19 @@ def create_git_router(
 
         handler = GitHTTPHandler(repo)
 
-        # Read the entire request body before processing
-        logger.info("git_receive_pack: reading request body")
-        body = await request.body()
-        logger.info(f"git_receive_pack: received {len(body)} bytes")
-
-        # Collect the full response body instead of streaming.
-        # Buffering allows us to set Content-Length and avoid HTTP chunked
-        # transfer encoding, improving compatibility with various git clients.
+        # Acquire a pack-op slot (bounds concurrent memory-heavy pushes).
+        sem = await _acquire_pack_slot()
         try:
-            body_parts = []
-            async for chunk in handler.handle_receive_pack_from_bytes(body):
-                body_parts.append(chunk)
-            response_body = b"".join(body_parts)
+            # Stream the request body into a spool file (spills to disk past
+            # PACK_SPOOL_FILE_MAX_SIZE) while parsing ref-update commands, then
+            # parse/store the pack from the file. The status report is tiny and
+            # returned buffered. Reading request.stream() here is safe because we
+            # return a buffered Response (no StreamingResponse generator).
+            logger.info("git_receive_pack: streaming request body to spool file")
+            response_body = await handler.handle_receive_pack_streaming(request)
         finally:
             await cleanup_repo(repo)
+            sem.release()
 
         return Response(
             content=response_body,
