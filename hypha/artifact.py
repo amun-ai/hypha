@@ -2375,10 +2375,18 @@ class ArtifactController:
                                 return True
 
         # 2. Check specific user permission (by ID or email)
-        if user_info.id in permissions:
-            if operation in self._expand_permission(permissions[user_info.id]):
-                return True
-        
+        # A token generated via generate_token has a random ephemeral `id` but
+        # carries the human/parent id in `parent`; artifact `_permissions` are
+        # keyed on the stable human id. Match the effective (parent) id too,
+        # otherwise a generated/child token (e.g. used as a git password) is
+        # denied access the user plainly has on their own artifact. See
+        # UserInfo.get_effective_user_id().
+        candidate_ids = {user_info.id, user_info.get_effective_user_id()}
+        for candidate in candidate_ids:
+            if candidate and candidate in permissions:
+                if operation in self._expand_permission(permissions[candidate]):
+                    return True
+
         # Also check by email if available
         if hasattr(user_info, 'email') and user_info.email:
             if user_info.email in permissions:

@@ -1,5 +1,12 @@
 # Hypha Change Log
 
+### 0.21.92
+
+ - Branched from the stable 0.21.86 (pre-F6) to ship two targeted git-permission fixes without the multi-replica changes.
+ - Fix git push being denied for a user who *does* have access on the artifact (the "Josh" under-grant). Artifact `_permissions` are keyed on the stable human user id, but a token minted via `generate_token()` (the realistic git credential) has a random ephemeral id with the human id in `parent`. `_check_permissions` matched only `user_info.id`, so the generated/child token failed to match the permission key and was denied. It now also matches the effective/parent id (`UserInfo.get_effective_user_id()`), so a generated/child token correctly inherits the human's artifact permissions. `hypha/artifact.py::_check_permissions`.
+ - Stop masking git permission denials as 404. `get_repo_callback` (and the LFS callback) caught `PermissionError` and re-raised it as `KeyError`, so the HTTP layer returned a misleading 404 "repository not found" for a genuine permission denial. `PermissionError` now propagates and the route returns 403. `hypha/git/artifact_integration.py`.
+ - Tests: `tests/test_git_permission.py` — a generated/child token can push to an artifact whose `_permissions` grant its parent, and a genuine denial returns 403 (not 404).
+
 ### 0.21.86
 
  - Graceful connection draining on server shutdown (F4). On a rollout/redeploy the old pod previously cut long-lived connections abruptly, so clients only detected the dead pod via their heartbeat/read timeout (10–20 s) and all reconnected in the same window — a thundering-herd reconnection storm. `RedisStore.teardown()` now proactively drains both transports: WebSocket clients receive an explicit `1001 GOING_AWAY` close frame, and HTTP-streaming `/rpc` clients receive the `None` stream-close sentinel (clean EOF) so they reconnect immediately. Previously only WebSockets were closed (with a bare code 1000); the HTTP-streaming transport had no graceful drain at all.
