@@ -360,6 +360,7 @@ class RedisStore:
         self._tracker = None
         self._tracker_task = None
         self._leader_lease = None
+        self._malloc_trim_task = None
         # self._house_keeping_task = None
 
         self._shared_anonymous_user = None
@@ -537,6 +538,44 @@ class RedisStore:
                         logger.exception(f"Error in housekeeping {workspace.id}: {e}")
         except Exception as exp:
             logger.error(f"Failed to run housekeeping task, error: {exp}")
+
+    async def _periodic_malloc_trim(self):
+        """Periodically return glibc-retained free memory to the OS.
+
+        glibc keeps memory freed on worker threads in per-thread arenas and does
+        not auto-return it, so RSS plateaus well above the live working set. An
+        explicit malloc_trim(0) returns it. Interval via HYPHA_MALLOC_TRIM_INTERVAL
+        (seconds, default 60). No-op on non-glibc platforms (macOS/musl).
+        """
+        import platform
+
+        if platform.system() != "Linux":
+            return
+        try:
+            import ctypes
+
+            libc = ctypes.CDLL("libc.so.6", use_errno=False)
+            if not hasattr(libc, "malloc_trim"):
+                return
+        except (OSError, AttributeError) as e:
+            logger.debug(f"malloc_trim unavailable, skipping periodic trim: {e}")
+            return
+
+        try:
+            interval = float(os.environ.get("HYPHA_MALLOC_TRIM_INTERVAL", "60"))
+        except ValueError:
+            interval = 60.0
+        if interval <= 0:
+            return
+        logger.info(f"Periodic malloc_trim enabled (every {interval:.0f}s)")
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                libc.malloc_trim(0)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(f"Periodic malloc_trim error: {e}")
 
     async def upgrade(self):
         """Upgrade the store."""
@@ -1003,6 +1042,16 @@ class RedisStore:
         await self.get_event_bus().emit_local("startup")
         servers = await self.list_servers()
         # self._house_keeping_task = asyncio.create_task(self.housekeeping())
+
+        # Periodically return freed heap memory to the OS (glibc only). The
+        # server frees lots of short-lived buffers on worker threads (request
+        # handling, RPC, artifact ops); glibc keeps that freed memory in
+        # per-thread arenas and never auto-returns it, so RSS plateaus far above
+        # the live working set (measured on prod: malloc_trim reclaimed ~1.3GB
+        # of a 2.1GB RSS, gc freed 0). The per-request malloc_trim in the git
+        # path only covers git ops; this loop bounds the steady-state plateau
+        # for all traffic. No-op on non-glibc platforms.
+        self._malloc_trim_task = asyncio.create_task(self._periodic_malloc_trim())
 
         logger.info("Server initialized with server id: %s", self._server_id)
         logger.info("Currently connected hypha servers: %s", servers)
@@ -1486,6 +1535,13 @@ class RedisStore:
                 await self._leader_lease.stop()
             except Exception as e:
                 logger.warning(f"Error stopping leader lease: {e}")
+
+        if self._malloc_trim_task:
+            self._malloc_trim_task.cancel()
+            try:
+                await self._malloc_trim_task
+            except asyncio.CancelledError:
+                pass
 
         if self._tracker_task:
             self._tracker_task.cancel()
