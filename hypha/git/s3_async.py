@@ -326,8 +326,23 @@ class AsyncS3Client:
 
         fileobj.seek(0)
         session = await self._get_session()
-        # aiohttp streams a file-like object as the body, reading it lazily.
-        async with session.put(url, data=fileobj, headers=headers) as response:
+
+        # Stream the file as an async chunk generator rather than passing the
+        # file object directly: aiohttp only accepts io.IOBase instances as a
+        # file body, and a SpooledTemporaryFile that has NOT exceeded its
+        # in-memory threshold (small packs) is not an io.IOBase subclass, so
+        # aiohttp rejects it ("Only io.IOBase, multidict and (name, file) pairs
+        # allowed"). An async generator is accepted for both in-memory and
+        # rolled-to-disk spools and still streams (Content-Length is set in
+        # headers, so this is not chunked transfer encoding).
+        async def _stream_body():
+            while True:
+                chunk = fileobj.read(1024 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+
+        async with session.put(url, data=_stream_body(), headers=headers) as response:
             if response.status >= 400:
                 text = await response.text()
                 raise Exception(f"S3 PUT failed: {response.status} - {text}")
