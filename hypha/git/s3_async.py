@@ -144,6 +144,71 @@ def _create_authorization_header(
     return headers, url
 
 
+def _create_authorization_header_with_hash(
+    method: str,
+    endpoint_url: str,
+    bucket: str,
+    key: str,
+    payload_hash: str,
+    content_length: int,
+    access_key: str,
+    secret_key: str,
+    region: str = "us-east-1",
+) -> tuple[dict[str, str], str]:
+    """Create AWS Signature V4 authorization header from a precomputed hash.
+
+    Like ``_create_authorization_header`` but takes an already-computed payload
+    hash and explicit content length, so the caller can hash a large body by
+    streaming it from disk rather than holding it in memory.
+    """
+    host = urlparse(endpoint_url).netloc
+
+    encoded_key = _uri_encode(key, encode_slash=False)
+    url = f"{endpoint_url}/{bucket}/{encoded_key}"
+
+    t = datetime.now(timezone.utc)
+    amz_date = t.strftime("%Y%m%dT%H%M%SZ")
+    date_stamp = t.strftime("%Y%m%d")
+
+    canonical_uri = f"/{bucket}/{encoded_key}"
+    canonical_querystring = ""
+    canonical_headers = (
+        f"host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n"
+    )
+    signed_headers = "host;x-amz-content-sha256;x-amz-date"
+    canonical_request = (
+        f"{method}\n{canonical_uri}\n{canonical_querystring}\n"
+        f"{canonical_headers}\n{signed_headers}\n{payload_hash}"
+    )
+
+    algorithm = "AWS4-HMAC-SHA256"
+    credential_scope = f"{date_stamp}/{region}/s3/aws4_request"
+    string_to_sign = (
+        f"{algorithm}\n{amz_date}\n{credential_scope}\n"
+        f"{hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()}"
+    )
+
+    signing_key = _get_signature_key(secret_key, date_stamp, region, "s3")
+    signature = hmac.new(
+        signing_key, string_to_sign.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+    authorization = (
+        f"{algorithm} Credential={access_key}/{credential_scope}, "
+        f"SignedHeaders={signed_headers}, Signature={signature}"
+    )
+
+    headers = {
+        "Authorization": authorization,
+        "x-amz-date": amz_date,
+        "x-amz-content-sha256": payload_hash,
+        "Content-Type": "application/octet-stream",
+        "Content-Length": str(content_length),
+    }
+
+    return headers, url
+
+
 class AsyncS3Client:
     """Async S3 client using aiohttp with AWS Signature V4.
 
@@ -212,6 +277,61 @@ class AsyncS3Client:
                 text = await response.text()
                 raise Exception(f"S3 PUT failed: {response.status} - {text}")
             logger.debug(f"PUT {key} succeeded with status {response.status}")
+            return {"HTTPStatusCode": response.status}
+
+    async def put_object_from_file(
+        self, bucket: str, key: str, fileobj, size: int
+    ) -> dict:
+        """Upload an object to S3 by streaming from a seekable file.
+
+        Computes the AWS SigV4 payload hash by reading the file in chunks
+        (so the whole body is never required as one bytes object), then streams
+        the file as the request body. This keeps a large pack from being held
+        resident as a single bytes buffer during upload.
+
+        Args:
+            bucket: S3 bucket name
+            key: Object key
+            fileobj: Seekable binary file positioned arbitrarily; will be
+                rewound to 0 before hashing and before sending.
+            size: Total number of bytes in the file (Content-Length).
+
+        Returns:
+            Response metadata dict
+
+        Raises:
+            Exception: If upload fails
+        """
+        # Compute payload hash by streaming over the file (no full-body bytes).
+        fileobj.seek(0)
+        hasher = hashlib.sha256()
+        while True:
+            chunk = fileobj.read(1024 * 1024)
+            if not chunk:
+                break
+            hasher.update(chunk)
+        payload_hash = hasher.hexdigest()
+
+        headers, url = _create_authorization_header_with_hash(
+            "PUT",
+            self._endpoint_url,
+            bucket,
+            key,
+            payload_hash,
+            size,
+            self._access_key,
+            self._secret_key,
+            self._region,
+        )
+
+        fileobj.seek(0)
+        session = await self._get_session()
+        # aiohttp streams a file-like object as the body, reading it lazily.
+        async with session.put(url, data=fileobj, headers=headers) as response:
+            if response.status >= 400:
+                text = await response.text()
+                raise Exception(f"S3 PUT failed: {response.status} - {text}")
+            logger.debug(f"PUT {key} (streamed) succeeded with status {response.status}")
             return {"HTTPStatusCode": response.status}
 
     async def delete_object(self, bucket: str, key: str) -> dict:

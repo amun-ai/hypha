@@ -310,6 +310,61 @@ class S3GitRepo(BaseRepo):
 
         return results
 
+    async def receive_pack_from_file_async(
+        self,
+        pack_file,
+        ref_updates: dict[bytes, tuple[bytes, bytes]],
+    ) -> dict[bytes, Optional[str]]:
+        """Process an incoming pack from a push, reading the pack from a file.
+
+        Like receive_pack_async but takes a seekable binary file (e.g. a
+        SpooledTemporaryFile) instead of bytes, so a large pushed pack is never
+        held resident as one bytes object.
+
+        Args:
+            pack_file: Seekable binary file holding the pack, or None if the
+                push contains no pack (e.g. a ref delete / ff to existing).
+            ref_updates: Dict mapping ref names to (old_sha, new_sha) tuples.
+
+        Returns:
+            Dict mapping ref names to error messages (None if successful).
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        results: dict = {}
+
+        if pack_file is not None:
+            try:
+                basename, checksum = await self._object_store.add_pack_async(pack_file)
+                logger.info(f"Added pack {basename}")
+            except Exception as e:
+                logger.error(f"Failed to add pack: {e}")
+                for ref_name in ref_updates:
+                    results[ref_name] = f"failed to process pack: {e}"
+                return results
+
+        for ref_name, (old_sha, new_sha) in ref_updates.items():
+            try:
+                if new_sha == b"0" * 40:
+                    success = await self._refs.delete_ref_async(
+                        ref_name,
+                        old_sha if old_sha != b"0" * 40 else None,
+                    )
+                    results[ref_name] = None if success else "reference update rejected"
+                else:
+                    success = await self._refs.set_ref_async(
+                        ref_name,
+                        new_sha,
+                        old_sha if old_sha != b"0" * 40 else None,
+                    )
+                    results[ref_name] = None if success else "reference update rejected"
+            except Exception as e:
+                logger.error(f"Failed to update ref {ref_name}: {e}")
+                results[ref_name] = str(e)
+
+        return results
+
     async def get_object_async(self, sha: ObjectID):
         """Get a Git object by SHA.
 
