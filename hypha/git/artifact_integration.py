@@ -136,8 +136,19 @@ class GitArtifactManager:
                             "read" if not write else "commit",
                             session,
                         )
+                    except PermissionError:
+                        # Surface permission denials as-is so the HTTP layer can
+                        # return 403 (the git client then prompts/retries with
+                        # credentials). Do NOT mask as KeyError — that produced a
+                        # misleading 404 "repository not found" for users who were
+                        # merely lacking permission.
+                        logger.warning(f"Git repo permission denied: {artifact_id}")
+                        raise
+                    except KeyError:
+                        logger.warning(f"Git repo not found: {artifact_id}")
+                        raise
                     except Exception as e:
-                        logger.error(f"Git repo error: artifact not found or permission denied: {artifact_id}, error: {e}")
+                        logger.error(f"Git repo unexpected error for {artifact_id}: {e}")
                         raise KeyError(f"Artifact not found: {artifact_id}") from e
 
                     config = artifact.config or {}
@@ -195,8 +206,16 @@ class GitArtifactManager:
                             "read" if not write else "commit",
                             session,
                         )
+                    except PermissionError:
+                        # Surface permission denials as-is (HTTP 403) instead of
+                        # masking as KeyError → a misleading 404.
+                        logger.warning(f"Git LFS permission denied: {artifact_id}")
+                        raise
+                    except KeyError:
+                        logger.warning(f"Git LFS not found: {artifact_id}")
+                        raise
                     except Exception as e:
-                        logger.error(f"Git LFS handler error: artifact not found or permission denied: {artifact_id}, error: {e}")
+                        logger.error(f"Git LFS handler unexpected error for {artifact_id}: {e}")
                         raise KeyError(f"Artifact not found: {artifact_id}") from e
 
                     config = artifact.config or {}
