@@ -24,6 +24,7 @@ import uuid
 import asyncio
 import hashlib
 import time
+import platform
 
 import pytest
 
@@ -316,6 +317,18 @@ def _proc_tree_rss(pid):
     return total
 
 
+@pytest.mark.skipif(
+    platform.system() != "Linux",
+    reason=(
+        "RSS-peak assertion is only meaningful on glibc/Linux. malloc_trim "
+        "(both the per-request trim and the periodic loop) is a no-op off "
+        "Linux, so on macOS/musl freed pack memory is not returned and RSS "
+        "ratchets — the single-clone delta becomes allocator noise rather than "
+        "a real signal. The correctness of streaming/disk-spill is covered by "
+        "the fsck roundtrip tests on all platforms; this memory guard runs in "
+        "CI (Linux) and prod, where the measurement is valid."
+    ),
+)
 async def test_git_clone_memory_peak(
     minio_server, fastapi_server, test_user_token
 ):
