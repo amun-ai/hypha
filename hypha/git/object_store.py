@@ -12,10 +12,14 @@ Uses fully async S3 operations:
 import asyncio
 import io
 import logging
+import os
 import tempfile
+import threading
 from collections.abc import AsyncIterator, Iterator
 from typing import BinaryIO, Callable, Optional
 
+import boto3
+from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
 from dulwich.object_store import (
@@ -38,6 +42,193 @@ from hypha.git.s3_async import create_async_s3_client
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Tunables (env-overridable) for the range-reading pack loader.
+# ---------------------------------------------------------------------------
+
+# Packs at or below this size are loaded whole (one S3 GET into RAM) instead of
+# range-read. For tiny packs the whole-load is simpler and the few-MB resident
+# cost is negligible; range reads only matter for large packs where O(packsize)
+# resident memory is the problem. Default 8 MiB.
+HYPHA_GIT_PACK_WHOLE_LOAD_MAX = int(
+    os.environ.get("HYPHA_GIT_PACK_WHOLE_LOAD_MAX", str(8 * 1024 * 1024))
+)
+
+# Size of each S3 Range GET issued by the range reader. dulwich reads objects
+# sequentially (header + zlib stream) from a seek position, so a moderate chunk
+# amortizes request overhead while keeping resident memory bounded. The reader
+# keeps at most one chunk resident at a time, so peak per-pack data memory is
+# ~= chunk size (plus the small .idx), INDEPENDENT of pack size. Default 4 MiB.
+HYPHA_GIT_PACK_RANGE_CHUNK = int(
+    os.environ.get("HYPHA_GIT_PACK_RANGE_CHUNK", str(4 * 1024 * 1024))
+)
+
+
+def _build_sync_s3_client(s3_config: dict):
+    """Build a synchronous botocore S3 client from an s3_config dict.
+
+    The range reader is driven by dulwich's *synchronous* pack code (run inside
+    a worker thread via asyncio.to_thread), so it needs a blocking S3 client
+    rather than the async aiobotocore factory used elsewhere.
+
+    Args:
+        s3_config: dict with endpoint_url, access_key_id, secret_access_key and
+            optionally region_name (matches what ArtifactController._get_s3_config
+            produces).
+
+    Returns:
+        A boto3 S3 client. Caller is responsible for closing it.
+    """
+    return boto3.client(
+        "s3",
+        endpoint_url=s3_config.get("endpoint_url"),
+        aws_access_key_id=s3_config.get("access_key_id"),
+        aws_secret_access_key=s3_config.get("secret_access_key"),
+        region_name=s3_config.get("region_name", "us-east-1"),
+        config=BotoConfig(
+            signature_version="s3v4",
+            s3={"addressing_style": "path"},
+            retries={"max_attempts": 3, "mode": "standard"},
+        ),
+    )
+
+
+class _S3RangeReader:
+    """Seekable, read-only file-like backed by S3 Range GETs.
+
+    Implements just enough of the binary file protocol (``read``/``seek``/
+    ``tell``) for dulwich's ``PackData`` to resolve objects: dulwich seeks to an
+    object's offset (looked up from the in-memory .idx) and reads the object's
+    header + zlib stream sequentially via ``read(n)``. Delta resolution
+    (ofs-delta / ref-delta) seeks to the base object's offset and reads again.
+
+    Memory: at most ONE chunk (``chunk_size`` bytes, default 4 MiB) is resident
+    at a time, regardless of pack size. Sequential ``read`` calls that span a
+    chunk boundary fetch the next chunk and drop the previous one, so peak
+    resident pack-data memory is O(chunk_size), NOT O(packsize). This is the
+    core of the bounded-memory fix.
+
+    Thread-safety: dulwich pack parsing for a single clone runs in one worker
+    thread, but to be safe against any concurrent access through a shared pack
+    object, all positional state mutations are guarded by a lock.
+    """
+
+    def __init__(
+        self,
+        s3_client,
+        bucket: str,
+        key: str,
+        size: int,
+        chunk_size: int = HYPHA_GIT_PACK_RANGE_CHUNK,
+    ):
+        self._s3 = s3_client
+        self._bucket = bucket
+        self._key = key
+        self._size = size
+        self._chunk_size = max(chunk_size, 64 * 1024)
+        self._pos = 0
+        # Currently buffered chunk: bytes for [_buf_start, _buf_start+len(_buf))
+        self._buf = b""
+        self._buf_start = 0
+        self._lock = threading.Lock()
+        self.closed = False
+
+    # -- file protocol -----------------------------------------------------
+    def seekable(self) -> bool:
+        return True
+
+    def readable(self) -> bool:
+        return True
+
+    def writable(self) -> bool:
+        return False
+
+    def tell(self) -> int:
+        with self._lock:
+            return self._pos
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        with self._lock:
+            if whence == io.SEEK_SET:
+                self._pos = offset
+            elif whence == io.SEEK_CUR:
+                self._pos += offset
+            elif whence == io.SEEK_END:
+                self._pos = self._size + offset
+            else:
+                raise ValueError(f"invalid whence: {whence}")
+            if self._pos < 0:
+                raise ValueError("negative seek position")
+            return self._pos
+
+    def _fetch_chunk(self, start: int) -> None:
+        """Fetch the chunk containing absolute offset ``start`` from S3.
+
+        Replaces the single resident buffer (previous chunk is dropped).
+        """
+        if start >= self._size:
+            self._buf = b""
+            self._buf_start = start
+            return
+        end = min(start + self._chunk_size, self._size) - 1  # inclusive
+        resp = self._s3.get_object(
+            Bucket=self._bucket,
+            Key=self._key,
+            Range=f"bytes={start}-{end}",
+        )
+        body = resp["Body"]
+        try:
+            data = body.read()
+        finally:
+            body.close()
+        self._buf = data
+        self._buf_start = start
+
+    def read(self, n: int = -1) -> bytes:
+        with self._lock:
+            if n is None or n < 0:
+                # Read to EOF (dulwich does not rely on this for object
+                # resolution, but support it for completeness/checksum reads).
+                return self._read_to_end_locked()
+            if n == 0:
+                return b""
+            remaining = n
+            out = bytearray()
+            while remaining > 0 and self._pos < self._size:
+                buf_end = self._buf_start + len(self._buf)
+                if not (self._buf_start <= self._pos < buf_end):
+                    self._fetch_chunk(self._pos)
+                    if not self._buf:
+                        break
+                    buf_end = self._buf_start + len(self._buf)
+                local = self._pos - self._buf_start
+                take = min(remaining, len(self._buf) - local)
+                out += self._buf[local : local + take]
+                self._pos += take
+                remaining -= take
+            return bytes(out)
+
+    def _read_to_end_locked(self) -> bytes:
+        out = bytearray()
+        while self._pos < self._size:
+            buf_end = self._buf_start + len(self._buf)
+            if not (self._buf_start <= self._pos < buf_end):
+                self._fetch_chunk(self._pos)
+                if not self._buf:
+                    break
+                buf_end = self._buf_start + len(self._buf)
+            local = self._pos - self._buf_start
+            chunk = self._buf[local:]
+            out += chunk
+            self._pos += len(chunk)
+        return bytes(out)
+
+    def close(self) -> None:
+        with self._lock:
+            self._buf = b""
+            self.closed = True
+
+
 class S3Pack:
     """A Git pack stored in S3.
 
@@ -51,46 +242,94 @@ class S3Pack:
         bucket: str,
         pack_dir: str,
         object_format=None,
+        s3_config: Optional[dict] = None,
     ):
         self._basename = basename
         self._s3_client_factory = s3_client_factory
         self._bucket = bucket
         self._pack_dir = pack_dir
         self._object_format = object_format
+        self._s3_config = s3_config
         self._pack: Optional[Pack] = None
         self._pack_data: Optional[bytes] = None
         self._index_data: Optional[bytes] = None
+        # Sync boto3 client + range reader, used only for large (range-read)
+        # packs. Held so they can be closed in close().
+        self._sync_s3_client = None
+        self._range_reader: Optional[_S3RangeReader] = None
 
     @property
     def name(self) -> str:
         return self._basename
 
     async def _ensure_loaded(self):
-        """Ensure pack and index are loaded from S3."""
+        """Ensure pack and index are loaded from S3.
+
+        The .idx (small: SHA -> offset, ~28 B/object) is always loaded fully
+        into RAM — it is needed for every object lookup. The .pack is the large
+        part; how it is loaded depends on its size:
+
+        * Small packs (<= HYPHA_GIT_PACK_WHOLE_LOAD_MAX): downloaded whole into
+          a BytesIO, as before. Cheap and simple for tiny repos.
+        * Large packs: wrapped in a ``_S3RangeReader`` that does on-demand S3
+          Range GETs. dulwich's PackData seeks to each object's offset (from the
+          idx) and reads only that object's bytes, so peak resident pack-data
+          memory is bounded by the range chunk size, NOT the pack size. This is
+          the O(1)-memory root fix for clone/fetch.
+        """
         if self._pack is not None:
             return
 
-        # Load pack and index data using fresh client context
         pack_key = f"{self._pack_dir}/{self._basename}.pack"
         idx_key = f"{self._pack_dir}/{self._basename}.idx"
 
+        # Always load the (small) index; get the pack size via HEAD so we can
+        # decide whole-load vs range-read without downloading the pack.
         async with self._s3_client_factory() as s3_client:
-            pack_response, idx_response = await asyncio.gather(
-                s3_client.get_object(Bucket=self._bucket, Key=pack_key),
+            idx_response, pack_head = await asyncio.gather(
                 s3_client.get_object(Bucket=self._bucket, Key=idx_key),
+                s3_client.head_object(Bucket=self._bucket, Key=pack_key),
             )
-
-            self._pack_data = await pack_response["Body"].read()
             self._index_data = await idx_response["Body"].read()
+            pack_size = pack_head["ContentLength"]
 
-        # Create in-memory pack
-        pack_file = io.BytesIO(self._pack_data)
+            if pack_size <= HYPHA_GIT_PACK_WHOLE_LOAD_MAX or not self._s3_config:
+                # Small pack (or no sync-capable config): load whole.
+                pack_response = await s3_client.get_object(
+                    Bucket=self._bucket, Key=pack_key
+                )
+                self._pack_data = await pack_response["Body"].read()
+
         idx_file = io.BytesIO(self._index_data)
-
-        pack_data = PackData(self._basename + ".pack", file=pack_file, object_format=self._object_format)
         pack_index = load_pack_index_file(
             self._basename + ".idx", idx_file, self._object_format
         )
+
+        if self._pack_data is not None:
+            # Whole-loaded small pack.
+            pack_file = io.BytesIO(self._pack_data)
+            pack_data = PackData(
+                self._basename + ".pack",
+                file=pack_file,
+                object_format=self._object_format,
+            )
+        else:
+            # Large pack: range-read on demand. PackData only needs a seekable
+            # read(n)/seek()/tell() file; _S3RangeReader provides that with a
+            # bounded resident buffer.
+            self._sync_s3_client = _build_sync_s3_client(self._s3_config)
+            self._range_reader = _S3RangeReader(
+                self._sync_s3_client,
+                self._bucket,
+                pack_key,
+                pack_size,
+            )
+            pack_data = PackData(
+                self._basename + ".pack",
+                file=self._range_reader,
+                size=pack_size,
+                object_format=self._object_format,
+            )
 
         self._pack = Pack.from_objects(pack_data, pack_index)
 
@@ -123,12 +362,18 @@ class S3Pack:
         return self._pack.get_stored_checksum()
 
     def close(self):
-        """Close the pack."""
+        """Close the pack and release any range-read S3 client."""
         if self._pack is not None:
             self._pack.close()
             self._pack = None
         self._pack_data = None
         self._index_data = None
+        if self._range_reader is not None:
+            self._range_reader.close()
+            self._range_reader = None
+        if self._sync_s3_client is not None:
+            self._sync_s3_client.close()
+            self._sync_s3_client = None
 
 
 class S3GitObjectStore(BucketBasedObjectStore):
@@ -235,6 +480,7 @@ class S3GitObjectStore(BucketBasedObjectStore):
                     self._bucket,
                     self._pack_dir,
                     self.object_format,
+                    s3_config=self._s3_config,
                 )
                 self._pack_cache[name] = pack
                 new_packs.append(pack)
@@ -507,6 +753,7 @@ class S3GitObjectStore(BucketBasedObjectStore):
                 self._bucket,
                 self._pack_dir,
                 self.object_format,
+                s3_config=self._s3_config,
             )
             self._pack_cache[basename] = pack
 
