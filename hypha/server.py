@@ -133,8 +133,28 @@ def start_builtin_services(
         from hypha.apps import ServerAppController
         from hypha.workers import BrowserWorker
 
-        browser_worker = BrowserWorker(in_docker=args.in_docker)
-        store.register_public_service(browser_worker.get_worker_service())
+        # The in-process browser worker spawns headless Chromium as children of
+        # this server process. On a memory-limited pod that is the dominant OOM
+        # risk (each session ~300-500MB), and a reconnection storm that respawns
+        # browser apps can crash-loop the API server. Set
+        # HYPHA_DISABLE_INPROCESS_BROWSER_WORKER=true to keep the server-apps
+        # control plane here but run NO browsers in-process — browser apps then
+        # route to a dedicated browser-worker pod (python -m hypha.workers.browser
+        # registered with public visibility), keeping Chromium memory off the API
+        # pod. Worker selection can otherwise route to EITHER worker, so disabling
+        # the in-process one is required for a clean dedicated-worker cutover.
+        _disable_inproc_browser = os.environ.get(
+            "HYPHA_DISABLE_INPROCESS_BROWSER_WORKER", ""
+        ).lower() in ("1", "true", "yes")
+        if _disable_inproc_browser:
+            logger.info(
+                "In-process browser worker DISABLED "
+                "(HYPHA_DISABLE_INPROCESS_BROWSER_WORKER) — browser apps must "
+                "route to a dedicated browser-worker pod"
+            )
+        else:
+            browser_worker = BrowserWorker(in_docker=args.in_docker)
+            store.register_public_service(browser_worker.get_worker_service())
         ServerAppController(
             store,
             port=args.port,
