@@ -12,6 +12,35 @@ from . import WS_SERVER_URL, SERVER_URL
 pytestmark = pytest.mark.asyncio
 
 
+def test_worker_main_sets_visibility_in_config_not_toplevel():
+    """Regression (#978): a worker __main__ must apply the --visibility / HYPHA_VISIBILITY
+    override at config-level (``service_config["config"]["visibility"]``), NOT at the top
+    level (``service_config["visibility"]``).
+
+    register_service only reads ``config.visibility``; a top-level key is silently ignored,
+    so the worker keeps its base default ``config.visibility="protected"`` (base.py). A
+    dedicated browser-worker pod then registers as *protected* and its ``compile()`` is
+    un-invokable cross-workspace by the ``public`` server-apps controller
+    ("workspace mismatch: ws-user-root != public"). browser.py had exactly this typo while
+    k8s/conda/terminal did not; this guards against any worker reintroducing it.
+    """
+    import pathlib
+    import re
+
+    workers_dir = pathlib.Path(__file__).parent.parent / "hypha" / "workers"
+    # buggy: assigns service_config["visibility"] (top-level) without the ["config"] segment
+    bad_pattern = re.compile(r'service_config\["visibility"\]\s*=')
+    offenders = []
+    for fname in ["browser.py", "k8s.py", "conda.py", "terminal.py"]:
+        src = (workers_dir / fname).read_text(encoding="utf-8")
+        if bad_pattern.search(src):
+            offenders.append(fname)
+    assert not offenders, (
+        "Worker __main__ sets visibility at the top level (ignored by register_service) — "
+        'must be service_config["config"]["visibility"]: ' + ", ".join(offenders)
+    )
+
+
 async def test_worker_api_imports():
     """Test that worker API classes can be imported."""
     try:
