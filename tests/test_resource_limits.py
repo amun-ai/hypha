@@ -291,3 +291,66 @@ class TestResourceUsage:
             asyncio.get_event_loop().run_until_complete(
                 rl.block_user("user1")
             )
+
+
+# ── Blocklist enforcement on the request boundary ──────────────────────
+
+
+class _FakeRedis:
+    """Minimal async Redis stub for blocklist tests."""
+
+    def __init__(self, blocked=None):
+        self._b = blocked or {}
+
+    async def exists(self, key):
+        return 1 if key in self._b else 0
+
+    async def get(self, key):
+        return self._b.get(key)
+
+
+class TestCheckBlocked:
+    """check_blocked is enforced on EVERY request (WS connect AND every HTTP/MCP
+    request via store.login_optional), so block_user/block_ip stop a blocked principal
+    from hammering stateless HTTP /rpc + /mcp endpoints — not just WebSocket connect."""
+
+    @pytest.mark.asyncio
+    async def test_blocked_user_returns_reason(self):
+        uid = "google-oauth2|117932459319487424837"
+        rl = ResourceLimitsManager(redis=_FakeRedis({f"blocked:user:{uid}": b"abuse"}))
+        reason = await rl.check_blocked(uid, "1.2.3.4")
+        assert reason is not None and "blocked" in reason.lower()
+
+    @pytest.mark.asyncio
+    async def test_blocked_ip_returns_reason(self):
+        rl = ResourceLimitsManager(redis=_FakeRedis({"blocked:ip:9.9.9.9": b"bad"}))
+        reason = await rl.check_blocked("some-user", "9.9.9.9")
+        assert reason is not None and "IP is blocked" in reason
+
+    @pytest.mark.asyncio
+    async def test_not_blocked_returns_none(self):
+        rl = ResourceLimitsManager(redis=_FakeRedis({}))
+        assert await rl.check_blocked("some-user", "1.2.3.4") is None
+
+    @pytest.mark.asyncio
+    async def test_fail_open_on_redis_error(self):
+        class _Boom:
+            async def exists(self, key):
+                raise RuntimeError("redis down")
+
+        rl = ResourceLimitsManager(redis=_Boom())
+        # Must fail OPEN — a Redis blip must not lock everyone out.
+        assert await rl.check_blocked("some-user", "1.2.3.4") is None
+
+    @pytest.mark.asyncio
+    async def test_no_redis_returns_none(self):
+        rl = ResourceLimitsManager(redis=None)
+        assert await rl.check_blocked("some-user", "1.2.3.4") is None
+
+    @pytest.mark.asyncio
+    async def test_check_connection_allowed_still_enforces_block(self):
+        # Refactor guard: WebSocket connect path still rejects blocked users.
+        uid = "google-oauth2|117932459319487424837"
+        rl = ResourceLimitsManager(redis=_FakeRedis({f"blocked:user:{uid}": b"abuse"}))
+        result = await rl.check_connection_allowed(uid, "1.2.3.4", "ws1")
+        assert result is not None and "blocked" in result.lower()

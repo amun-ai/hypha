@@ -1226,6 +1226,29 @@ class RedisStore:
             if user_info.scope.current_workspace is None:
                 user_info.scope.current_workspace = user_info.get_workspace()
             logger.info(f"login_optional: parsed user_info: id={user_info.id}, is_anonymous={user_info.is_anonymous}")
+            # Enforce the user/IP blocklist on HTTP + MCP requests too. block_user/
+            # block_ip otherwise only took effect on WebSocket connect
+            # (WebsocketServer.check_connection_allowed), so a blocked principal could
+            # keep hammering stateless HTTP /rpc + /mcp endpoints (the exact vector of
+            # an abusive MCP client). Reject blocked principals at the auth boundary.
+            rl = self.get_resource_limits()
+            if rl is not None:
+                ip = None
+                try:
+                    if request is not None and request.scope:
+                        hdrs = dict(request.scope.get("headers") or [])
+                        xff = hdrs.get(b"x-forwarded-for")
+                        if xff:
+                            ip = xff.decode().split(",")[0].strip()
+                        elif request.scope.get("client"):
+                            ip = request.scope["client"][0]
+                except Exception:
+                    ip = None
+                reason = await rl.check_blocked(user_info.id, ip)
+                if reason:
+                    from fastapi import HTTPException
+
+                    raise HTTPException(status_code=403, detail=reason)
             return user_info
         # No token provided - use anonymous user
         self._http_anonymous_user = UserInfo(

@@ -230,9 +230,22 @@ class HyphaMCPAdapter:
         # The endpoint path will be relative to the SSE endpoint itself
         self.sse_transport = SseServerTransport("/messages/")
         
-        # Track if session manager is running
-        self._session_manager_context = None
-        
+        # Lifecycle for the StreamableHTTPSessionManager. Its run() owns an internal
+        # anyio task group and is designed to be entered EXACTLY ONCE per instance
+        # (it is the app "lifespan" in the official pattern). This adapter is cached
+        # and shared across all requests for a service (see MCPRoutingMiddleware
+        # .mcp_app_cache), so entering run() per request — as the old handle_request
+        # did — repeatedly created task groups on the same shared manager. Under load
+        # (e.g. an MCP client looping at ~15 req/s) that accumulated unbounded
+        # per-request state → memory growth → OOM. We now start run() lazily ONCE and
+        # hold it open in a dedicated background task for the adapter's lifetime; every
+        # request dispatches via session_manager.handle_request into that single
+        # running manager.
+        self._mgr_lock = asyncio.Lock()
+        self._mgr_ready = asyncio.Event()
+        self._mgr_stop = asyncio.Event()
+        self._mgr_task = None
+
         # Track SSE connections for proper cleanup
         self._sse_contexts = {}
     
@@ -1039,18 +1052,74 @@ class HyphaMCPAdapter:
                 ]
             )
     
-    async def handle_request(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Handle incoming HTTP request using the session manager."""
-        # In stateless mode, each request is handled independently
-        # The session manager will create its own context internally for each request
+    async def _run_session_manager(self) -> None:
+        """Hold the StreamableHTTPSessionManager.run() context open for this adapter's
+        lifetime — entered exactly once. All requests dispatch into this single running
+        manager via session_manager.handle_request(). Stays alive until shutdown()."""
         try:
             async with self.session_manager.run():
-                await self.session_manager.handle_request(scope, receive, send)
-        except anyio.ClosedResourceError:
-            # This can happen if the client disconnects early - ignore
-            pass
-        except Exception as e:
+                self._mgr_ready.set()
+                await self._mgr_stop.wait()
+        except Exception as e:  # noqa: BLE001 - surface to a future restart
+            logger.error(f"MCP session manager runner exited unexpectedly: {e}")
             raise
+        finally:
+            # Allow a subsequent request to restart the manager if it stopped.
+            self._mgr_ready.clear()
+
+    async def _ensure_session_manager_running(self) -> None:
+        """Start the session manager exactly once (lazily), guarded against concurrent
+        first requests. If a prior runner died, restart it."""
+        if self._mgr_ready.is_set():
+            return
+        async with self._mgr_lock:
+            if self._mgr_ready.is_set():
+                return
+            if self._mgr_task is None or self._mgr_task.done():
+                self._mgr_stop.clear()
+                self._mgr_ready.clear()
+                self._mgr_task = asyncio.ensure_future(self._run_session_manager())
+            # Wait until the manager is ready OR the runner fails during startup.
+            ready = asyncio.ensure_future(self._mgr_ready.wait())
+            try:
+                await asyncio.wait(
+                    {ready, self._mgr_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                if not ready.done():
+                    ready.cancel()
+            if not self._mgr_ready.is_set():
+                # Runner failed before becoming ready — surface its error.
+                exc = (
+                    self._mgr_task.exception()
+                    if self._mgr_task and self._mgr_task.done()
+                    else None
+                )
+                raise exc or RuntimeError("MCP session manager failed to start")
+
+    async def shutdown(self) -> None:
+        """Stop the background session-manager runner (called on adapter cleanup)."""
+        self._mgr_stop.set()
+        task = self._mgr_task
+        if task is not None and not task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
+                task.cancel()
+
+    async def handle_request(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Handle an incoming HTTP request via the SINGLE running session manager.
+
+        run() is entered ONCE (lazily) and held open by a background task — never per
+        request. Re-entering run() per request on this cached/shared adapter previously
+        leaked task groups under load → OOM. See _run_session_manager."""
+        await self._ensure_session_manager_running()
+        try:
+            await self.session_manager.handle_request(scope, receive, send)
+        except anyio.ClosedResourceError:
+            # The client disconnected early - ignore.
+            pass
     
     async def handle_sse_request(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Handle incoming SSE request."""
@@ -1274,14 +1343,26 @@ class MCPRoutingMiddleware:
         if cache_key in self.mcp_app_cache:
             logger.debug(f"Cleaning up cached MCP app for {cache_key}")
             cache_entry = self.mcp_app_cache[cache_key]
-            
+
+            # Stop the adapter's background session-manager runner so its run()
+            # task group is torn down (otherwise it would leak past eviction).
+            mcp_app = (
+                cache_entry["app"] if isinstance(cache_entry, dict) else cache_entry
+            )
+            adapter = getattr(mcp_app, "adapter", None)
+            if adapter is not None and hasattr(adapter, "shutdown"):
+                try:
+                    await adapter.shutdown()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"Error shutting down MCP session manager: {e}")
+
             # If it's a dict with an API connection (SSE case), clean it up
             if isinstance(cache_entry, dict) and "api" in cache_entry:
                 try:
                     await cache_entry["api"].__aexit__(None, None, None)
                 except Exception as e:
                     logger.warning(f"Error cleaning up API connection: {e}")
-            
+
             del self.mcp_app_cache[cache_key]
     
     def _get_authorization_header(self, scope):
