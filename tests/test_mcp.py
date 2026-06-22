@@ -40,10 +40,15 @@ class _FakeRunCtx:
 
 
 class _FakeSessionManager:
-    def __init__(self):
+    """Stands in for StreamableHTTPSessionManager; records run enter/exit + handled."""
+
+    instances = []
+
+    def __init__(self, **kwargs):
         self.run_entries = 0
         self.run_exits = 0
         self.handled = 0
+        _FakeSessionManager.instances.append(self)
 
     def run(self):
         return _FakeRunCtx(self)
@@ -52,43 +57,50 @@ class _FakeSessionManager:
         self.handled += 1
 
 
-async def test_mcp_session_manager_run_entered_once():
-    """Regression: HyphaMCPAdapter must enter StreamableHTTPSessionManager.run() EXACTLY
-    ONCE across many (incl. concurrent) requests — never per-request.
+async def test_mcp_handle_request_per_request_manager_enters_and_exits(monkeypatch):
+    """Regression: handle_request must use a FRESH session manager per request and
+    ENTER+EXIT its run() each time, so the SDK's stateless session task is reaped.
 
-    The adapter is cached and shared across all requests for a service, and run() owns
-    an internal anyio task group designed to be entered once per instance. The old
-    handle_request entered run() per request, so under an MCP request flood (a client
-    looping at ~15 req/s was observed in prod) task groups accumulated unbounded →
-    memory growth → OOM. This guards the single-run lifecycle. See hypha/mcp.py.
+    The SDK's StreamableHTTPSessionManager (stateless) spawns a run_stateless_server
+    task into its run() task group per request, and that task is ONLY reaped when the
+    task group is cancelled — i.e. when run() EXITS (streamable_http_manager.py). Two
+    broken approaches both OOM'd: a per-request ADAPTER (leaked the whole adapter stack
+    1:1/req) and a held-open run-once run() (never reaped the per-request stateless
+    tasks → +1 ServerSession/req, proven on dev: 2600 reqs → +2600 ServerSession). The
+    correct model: cache the adapter (heavy parts) but use a fresh, lightweight session
+    manager per request whose run() is entered AND exited, tearing down the task group
+    and reaping the session. This guards that lifecycle. See hypha/mcp.py.
     """
+    import hypha.mcp as mcp_mod
     from hypha.mcp import HyphaMCPAdapter
 
-    # Build only the lifecycle state, bypassing the heavy __init__ (service/redis/etc.).
+    _FakeSessionManager.instances = []
+    monkeypatch.setattr(mcp_mod, "StreamableHTTPSessionManager", _FakeSessionManager)
+
+    # Build only what handle_request touches, bypassing the heavy __init__.
     adapter = HyphaMCPAdapter.__new__(HyphaMCPAdapter)
-    adapter.session_manager = _FakeSessionManager()
-    adapter._mgr_lock = asyncio.Lock()
-    adapter._mgr_ready = asyncio.Event()
-    adapter._mgr_stop = asyncio.Event()
-    adapter._mgr_task = None
+    adapter.server = object()
+    adapter.event_store = object()
 
     async def one_request():
         await adapter.handle_request({}, None, None)
 
-    # Flood: 25 concurrent first-requests (race the lazy start) + 25 sequential.
+    # 25 concurrent + 25 sequential requests.
     await asyncio.gather(*[one_request() for _ in range(25)])
     for _ in range(25):
         await one_request()
 
-    assert adapter.session_manager.run_entries == 1, (
-        f"run() entered {adapter.session_manager.run_entries}x; must be exactly once"
+    mgrs = _FakeSessionManager.instances
+    assert len(mgrs) == 50, f"expected a fresh manager per request, got {len(mgrs)}"
+    # Each per-request manager entered AND exited run() exactly once → task group torn
+    # down → stateless session task reaped (no ServerSession accumulation).
+    assert all(m.run_entries == 1 and m.run_exits == 1 for m in mgrs), (
+        "each request's run() must be entered AND exited exactly once"
     )
-    assert adapter.session_manager.handled == 50
+    assert all(m.handled == 1 for m in mgrs)
 
-    # shutdown() must cleanly stop the single background runner.
+    # shutdown() is now a no-op (no persistent runner to stop).
     await adapter.shutdown()
-    assert adapter.session_manager.run_exits == 1
-    assert not adapter._mgr_ready.is_set()
 
 
 class _FakeApi:

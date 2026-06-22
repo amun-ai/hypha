@@ -217,34 +217,26 @@ class HyphaMCPAdapter:
         else:
             raise ValueError("Redis client is required for MCP event store")
         
-        # Create session manager - use stateless mode for simplicity
-        # In stateless mode, each request is independent and doesn't require session tracking
-        self.session_manager = StreamableHTTPSessionManager(
-            app=self.server,
-            event_store=self.event_store,
-            stateless=True,
-            json_response=True  # Enable JSON responses for better compatibility
-        )
-        
+        # NOTE on the StreamableHTTPSessionManager lifecycle (hard-won):
+        # The SDK's stateless manager spawns a run_stateless_server task into its run()
+        # task group PER REQUEST, and that task is only reaped when the task group is
+        # cancelled — i.e. when run() EXITS (streamable_http_manager.py). It also forbids
+        # calling run() more than once per instance. Two failed approaches:
+        #   - per-request ADAPTER (old _handle_mcp_request): leaked the whole adapter
+        #     stack 1:1/request (its bg run() task pinned forever) → OOM.
+        #   - run-once held-open run() on a cached adapter (0.21.98): fixed the adapter
+        #     churn but the held-open task group NEVER reaped the per-request stateless
+        #     session tasks → +1 ServerSession/request → OOM.
+        # Correct approach: cache the ADAPTER (service proxy + MCP server handlers +
+        # event store + kept-alive interface — done in MCPRoutingMiddleware), and in
+        # handle_request create a fresh, LIGHTWEIGHT session manager per request whose
+        # run() is entered AND EXITED per request, so its task group is torn down and
+        # the stateless ServerSession task is reaped. No per-request adapter, no held
+        # task group → neither leak. See handle_request below.
+
         # Create SSE transport for SSE endpoint support
         # The endpoint path will be relative to the SSE endpoint itself
         self.sse_transport = SseServerTransport("/messages/")
-        
-        # Lifecycle for the StreamableHTTPSessionManager. Its run() owns an internal
-        # anyio task group and is designed to be entered EXACTLY ONCE per instance
-        # (it is the app "lifespan" in the official pattern). This adapter is cached
-        # and shared across all requests for a service (see MCPRoutingMiddleware
-        # .mcp_app_cache), so entering run() per request — as the old handle_request
-        # did — repeatedly created task groups on the same shared manager. Under load
-        # (e.g. an MCP client looping at ~15 req/s) that accumulated unbounded
-        # per-request state → memory growth → OOM. We now start run() lazily ONCE and
-        # hold it open in a dedicated background task for the adapter's lifetime; every
-        # request dispatches via session_manager.handle_request into that single
-        # running manager.
-        self._mgr_lock = asyncio.Lock()
-        self._mgr_ready = asyncio.Event()
-        self._mgr_stop = asyncio.Event()
-        self._mgr_task = None
 
         # Track SSE connections for proper cleanup
         self._sse_contexts = {}
@@ -1052,71 +1044,35 @@ class HyphaMCPAdapter:
                 ]
             )
     
-    async def _run_session_manager(self) -> None:
-        """Hold the StreamableHTTPSessionManager.run() context open for this adapter's
-        lifetime — entered exactly once. All requests dispatch into this single running
-        manager via session_manager.handle_request(). Stays alive until shutdown()."""
-        try:
-            async with self.session_manager.run():
-                self._mgr_ready.set()
-                await self._mgr_stop.wait()
-        except Exception as e:  # noqa: BLE001 - surface to a future restart
-            logger.error(f"MCP session manager runner exited unexpectedly: {e}")
-            raise
-        finally:
-            # Allow a subsequent request to restart the manager if it stopped.
-            self._mgr_ready.clear()
-
-    async def _ensure_session_manager_running(self) -> None:
-        """Start the session manager exactly once (lazily), guarded against concurrent
-        first requests. If a prior runner died, restart it."""
-        if self._mgr_ready.is_set():
-            return
-        async with self._mgr_lock:
-            if self._mgr_ready.is_set():
-                return
-            if self._mgr_task is None or self._mgr_task.done():
-                self._mgr_stop.clear()
-                self._mgr_ready.clear()
-                self._mgr_task = asyncio.ensure_future(self._run_session_manager())
-            # Wait until the manager is ready OR the runner fails during startup.
-            ready = asyncio.ensure_future(self._mgr_ready.wait())
-            try:
-                await asyncio.wait(
-                    {ready, self._mgr_task},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-            finally:
-                if not ready.done():
-                    ready.cancel()
-            if not self._mgr_ready.is_set():
-                # Runner failed before becoming ready — surface its error.
-                exc = (
-                    self._mgr_task.exception()
-                    if self._mgr_task and self._mgr_task.done()
-                    else None
-                )
-                raise exc or RuntimeError("MCP session manager failed to start")
-
     async def shutdown(self) -> None:
-        """Stop the background session-manager runner (called on adapter cleanup)."""
-        self._mgr_stop.set()
-        task = self._mgr_task
-        if task is not None and not task.done():
-            try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
-                task.cancel()
+        """Adapter cleanup hook (called on cache eviction in _cleanup_mcp_app).
+
+        No persistent session-manager runner exists anymore — each request uses its own
+        short-lived session manager (see handle_request) — so there is nothing to stop
+        here. Kept as a stable hook for the eviction path / future use."""
+        return None
 
     async def handle_request(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Handle an incoming HTTP request via the SINGLE running session manager.
+        """Handle one MCP JSON-RPC request with a PER-REQUEST session manager.
 
-        run() is entered ONCE (lazily) and held open by a background task — never per
-        request. Re-entering run() per request on this cached/shared adapter previously
-        leaked task groups under load → OOM. See _run_session_manager."""
-        await self._ensure_session_manager_running()
+        Why per-request (not a held-open singleton): the SDK's stateless manager spawns
+        a session task into its run() task group per request and only reaps it when that
+        task group is cancelled — i.e. when run() EXITS. Holding run() open (the 0.21.98
+        run-once approach) never reaps those tasks → +1 ServerSession per request → OOM.
+        Entering AND exiting run() per request tears the task group down and reaps the
+        stateless ServerSession. The session manager itself is lightweight (a transport +
+        task group); all heavy/stateful parts — the service proxy, MCP server handlers,
+        event store, and workspace interface — are reused from this cached adapter, so
+        there is no per-request adapter churn. See the lifecycle note in __init__."""
+        session_manager = StreamableHTTPSessionManager(
+            app=self.server,
+            event_store=self.event_store,
+            stateless=True,
+            json_response=True,  # JSON responses for better compatibility
+        )
         try:
-            await self.session_manager.handle_request(scope, receive, send)
+            async with session_manager.run():
+                await session_manager.handle_request(scope, receive, send)
         except anyio.ClosedResourceError:
             # The client disconnected early - ignore.
             pass
