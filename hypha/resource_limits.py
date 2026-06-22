@@ -76,6 +76,36 @@ class ResourceLimitsManager:
 
     # ── Connection limits ──────────────────────────────────────────────
 
+    async def check_blocked(
+        self, user_id: str = None, ip: str = None
+    ) -> Optional[str]:
+        """Return a reason string if the user or IP is blocklisted, else None.
+
+        Enforced on EVERY request boundary — WebSocket connect AND every HTTP/MCP
+        request (via store.login_optional) — so a blocked principal cannot keep
+        hammering stateless HTTP `/rpc` + `/mcp` endpoints. (Previously the blocklist
+        was only consulted in check_connection_allowed, i.e. WebSocket connect, so
+        block_user/block_ip had no effect on the HTTP/MCP vector.) Fails OPEN if Redis
+        is unavailable — never lock everyone out on a Redis blip.
+        """
+        if self._redis is None:
+            return None
+        try:
+            if user_id and await self._redis.exists(f"blocked:user:{user_id}"):
+                reason = await self._redis.get(f"blocked:user:{user_id}")
+                if isinstance(reason, bytes):
+                    reason = reason.decode("utf-8", errors="replace")
+                return f"User is blocked: {reason or 'no reason given'}"
+            if ip and await self._redis.exists(f"blocked:ip:{ip}"):
+                reason = await self._redis.get(f"blocked:ip:{ip}")
+                if isinstance(reason, bytes):
+                    reason = reason.decode("utf-8", errors="replace")
+                return f"IP is blocked: {reason or 'no reason given'}"
+        except Exception as e:
+            logger.warning("Failed to check blocklist: %s", e)
+            # Fail open — don't block users if Redis is down
+        return None
+
     async def check_connection_allowed(
         self, user_id: str, ip: str, workspace: str
     ) -> Optional[str]:
@@ -84,22 +114,9 @@ class ResourceLimitsManager:
         Returns None if allowed, or an error message string if rejected.
         """
         # Check blocklists (Redis, cross-instance)
-        if self._redis is not None:
-            try:
-                if await self._redis.exists(f"blocked:user:{user_id}"):
-                    reason = await self._redis.get(f"blocked:user:{user_id}")
-                    if isinstance(reason, bytes):
-                        reason = reason.decode("utf-8", errors="replace")
-                    return f"User is blocked: {reason or 'no reason given'}"
-
-                if await self._redis.exists(f"blocked:ip:{ip}"):
-                    reason = await self._redis.get(f"blocked:ip:{ip}")
-                    if isinstance(reason, bytes):
-                        reason = reason.decode("utf-8", errors="replace")
-                    return f"IP is blocked: {reason or 'no reason given'}"
-            except Exception as e:
-                logger.warning("Failed to check blocklist: %s", e)
-                # Fail open — don't block users if Redis is down
+        blocked = await self.check_blocked(user_id, ip)
+        if blocked:
+            return blocked
 
         # Check per-user connection limit
         user_count = self._connections_per_user.get(user_id, 0)
