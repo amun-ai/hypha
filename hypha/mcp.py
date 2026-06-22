@@ -1201,6 +1201,10 @@ class MCPRoutingMiddleware:
         
         # Cache MCP apps by full service ID to maintain SSE sessions
         self.mcp_app_cache = {}
+        # Serialize cache-miss creation so concurrent first requests for the same
+        # service do not each build (and then orphan) an adapter. An orphaned adapter
+        # keeps its run() background task alive forever, leaking the whole MCP stack.
+        self._cache_lock = asyncio.Lock()
         # Track active SSE connections for cleanup
         self.active_sse_connections = {}
         
@@ -1239,104 +1243,94 @@ class MCPRoutingMiddleware:
     
     async def _get_or_create_mcp_app(self, service_id: str, workspace: str, user_info, mode=None, is_sse=False):
         """Get cached MCP app or create new one.
-        
+
+        The adapter is cached per service and REUSED across requests — its run() task
+        group is held open exactly once (see HyphaMCPAdapter._run_session_manager).
+        BOTH the SSE and JSON-RPC POST paths share this cache. Building an adapter per
+        request (as the POST path used to) leaks the whole MCP stack — adapter +
+        StreamableHTTPSessionManager + RedisEventStore + ServerSession — because each
+        per-request adapter starts a run() background task that is never shut down
+        (shutdown() only runs on cache eviction). That caused linear RSS growth → OOM.
+
         Args:
             service_id: Service identifier
             workspace: Workspace name
             user_info: User information
             mode: Optional mode parameter
-            is_sse: If True, keeps workspace interface alive for SSE sessions
+            is_sse: Retained for call-site compatibility; the workspace interface is now
+                kept alive for both SSE and POST so the cached adapter's proxy stays valid.
         """
         cache_key = f"{workspace}/{service_id}"
-        
-        if cache_key in self.mcp_app_cache:
+
+        cached = self.mcp_app_cache.get(cache_key)
+        if cached is not None:
             logger.debug(f"Using cached MCP app for {cache_key}")
-            cache_entry = self.mcp_app_cache[cache_key]
-            return cache_entry["app"] if isinstance(cache_entry, dict) else cache_entry
-        
-        logger.debug(f"Creating new MCP app for {cache_key}")
-        
-        if is_sse:
-            # For SSE, keep workspace interface alive
-            # Use target workspace from URL so anonymous users can access public services
-            api = await self.store.get_workspace_interface(
-                user_info, workspace
-            ).__aenter__()
-            
-            try:
-                # Build full service ID with proper handling of @app_id and wildcard
-                # Extract @app_id suffix if present
-                app_id_suffix = ""
-                service_id_without_app = service_id
-                if "@" in service_id:
-                    parts = service_id.rsplit("@", 1)
-                    service_id_without_app = parts[0]
-                    app_id_suffix = f"@{parts[1]}"
+            return cached["app"] if isinstance(cached, dict) else cached
 
-                if "/" in service_id_without_app:
-                    full_service_id = service_id_without_app + app_id_suffix
-                elif ":" in service_id_without_app:
-                    full_service_id = f"{workspace}/{service_id_without_app}{app_id_suffix}"
-                else:
-                    # Use wildcard for client ID
-                    full_service_id = f"{workspace}/*:{service_id_without_app}{app_id_suffix}"
+        # Serialize creation and re-check under the lock so only ONE adapter is built per
+        # service even under concurrent first requests (a raced extra adapter would
+        # orphan its run() task and leak).
+        async with self._cache_lock:
+            cached = self.mcp_app_cache.get(cache_key)
+            if cached is not None:
+                logger.debug(f"Using cached MCP app for {cache_key}")
+                return cached["app"] if isinstance(cached, dict) else cached
+            logger.debug(f"Creating new MCP app for {cache_key}")
+            return await self._create_mcp_app(
+                cache_key, service_id, workspace, user_info, mode
+            )
 
-                service_info = await api.get_service_info(full_service_id, {"mode": mode})
-                service = await api.get_service(full_service_id)
-                
-                if not is_mcp_compatible_service(service):
-                    await api.__aexit__(None, None, None)
-                    raise ValueError(f"Service {service_id} is not MCP compatible")
-                
-                mcp_app = await create_mcp_app_from_service(
-                    service, service_info, self.store.get_redis()
-                )
-                
-                # Cache the app AND the API connection for SSE
-                self.mcp_app_cache[cache_key] = {
-                    "app": mcp_app,
-                    "api": api  # Keep the API connection alive for SSE
-                }
-                return mcp_app
-            except Exception:
-                await api.__aexit__(None, None, None)
-                raise
-        else:
-            # For non-SSE, use normal context manager
-            # Use target workspace from URL so anonymous users can access public services
-            async with self.store.get_workspace_interface(
-                user_info, workspace
-            ) as api:
-                # Build full service ID with proper handling of @app_id and wildcard
-                # Extract @app_id suffix if present
-                app_id_suffix = ""
-                service_id_without_app = service_id
-                if "@" in service_id:
-                    parts = service_id.rsplit("@", 1)
-                    service_id_without_app = parts[0]
-                    app_id_suffix = f"@{parts[1]}"
+    async def _create_mcp_app(self, cache_key, service_id, workspace, user_info, mode):
+        """Build, cache, and return an MCP app for a service. Called under _cache_lock.
 
-                if "/" in service_id_without_app:
-                    full_service_id = service_id_without_app + app_id_suffix
-                elif ":" in service_id_without_app:
-                    full_service_id = f"{workspace}/{service_id_without_app}{app_id_suffix}"
-                else:
-                    # Use wildcard for client ID
-                    full_service_id = f"{workspace}/*:{service_id_without_app}{app_id_suffix}"
+        The workspace interface is kept ALIVE (stored in the cache entry, closed only on
+        eviction in _cleanup_mcp_app) so the cached adapter's `service` proxy stays valid
+        across requests. Shared by both the SSE and POST paths — one adapter per service.
+        """
+        # Hold the context manager itself — __aenter__() returns the workspace manager
+        # (a Munch with no __aexit__), so cleanup must call __aexit__ on the CM, not the
+        # returned interface. The CM is stored in the cache entry and closed on eviction.
+        cm = self.store.get_workspace_interface(user_info, workspace)
+        api = await cm.__aenter__()
+        try:
+            # Build full service ID with proper handling of @app_id and wildcard
+            app_id_suffix = ""
+            service_id_without_app = service_id
+            if "@" in service_id:
+                parts = service_id.rsplit("@", 1)
+                service_id_without_app = parts[0]
+                app_id_suffix = f"@{parts[1]}"
 
-                service_info = await api.get_service_info(full_service_id, {"mode": mode, "read_app_manifest": True})
-                service = await api.get_service(full_service_id)
-                
-                if not is_mcp_compatible_service(service):
-                    raise ValueError(f"Service {service_id} is not MCP compatible")
-                
-                mcp_app = await create_mcp_app_from_service(
-                    service, service_info, self.store.get_redis()
-                )
-                
-                # Cache only the MCP app for non-SSE
-                self.mcp_app_cache[cache_key] = mcp_app
-                return mcp_app
+            if "/" in service_id_without_app:
+                full_service_id = service_id_without_app + app_id_suffix
+            elif ":" in service_id_without_app:
+                full_service_id = f"{workspace}/{service_id_without_app}{app_id_suffix}"
+            else:
+                # Use wildcard for client ID
+                full_service_id = f"{workspace}/*:{service_id_without_app}{app_id_suffix}"
+
+            service_info = await api.get_service_info(
+                full_service_id, {"mode": mode, "read_app_manifest": True}
+            )
+            service = await api.get_service(full_service_id)
+
+            if not is_mcp_compatible_service(service):
+                raise ValueError(f"Service {service_id} is not MCP compatible")
+
+            mcp_app = await create_mcp_app_from_service(
+                service, service_info, self.store.get_redis()
+            )
+
+            # Cache the app AND the live interface context manager. The adapter (and its
+            # run() task group) is reused across requests and torn down only on eviction
+            # (_cleanup_mcp_app shuts the adapter down and closes this interface).
+            self.mcp_app_cache[cache_key] = {"app": mcp_app, "api": cm}
+            return mcp_app
+        except BaseException:
+            # On any failure (incl. cancellation) close the interface we just opened so
+            # it is not leaked; the error propagates to the caller for HTTP mapping.
+            await cm.__aexit__(None, None, None)
+            raise
     
     async def _cleanup_mcp_app(self, cache_key: str):
         """Clean up cached MCP app."""
@@ -1738,74 +1732,33 @@ class MCPRoutingMiddleware:
             # Login and get user info
             user_info = await self.store.login_optional(request)
             
-            # Create new MCP app for each request
-            # Use target workspace from URL so anonymous users can access public services
-            # Permission checks are enforced by get_service_info() based on service visibility
-            async with self.store.get_workspace_interface(
-                user_info, workspace
-            ) as api:
-                try:
-                    # Build the full service ID based on what's provided
-                    # Service IDs can be in several formats:
-                    # 1. Simple service name: "my-service" or "my-service@app-id"
-                    # 2. Client-qualified: "client-id:service-name" or "client-id:service-name@app-id"
-                    # 3. Workspace-qualified: "workspace/service-name" or "workspace/client-id:service-name"
-
-                    # Extract @app_id suffix if present
-                    app_id_suffix = ""
-                    service_id_without_app = service_id
-                    if "@" in service_id:
-                        parts = service_id.rsplit("@", 1)
-                        service_id_without_app = parts[0]
-                        app_id_suffix = f"@{parts[1]}"
-
-                    if "/" in service_id_without_app:
-                        # Already has workspace prefix, use as-is
-                        full_service_id = service_id_without_app + app_id_suffix
-                    elif ":" in service_id_without_app:
-                        # Has client ID but no workspace, prepend workspace
-                        full_service_id = f"{workspace}/{service_id_without_app}{app_id_suffix}"
-                    else:
-                        # Simple service name without client ID, use wildcard *:
-                        # This allows matching services regardless of client ID
-                        full_service_id = f"{workspace}/*:{service_id_without_app}{app_id_suffix}"
-
-                    service_info = await api.get_service_info(
-                        full_service_id, {"mode": _mode, "read_app_manifest": True}
+            # Reuse a SINGLE cached adapter per service (see _get_or_create_mcp_app).
+            # Building one per request previously leaked the whole MCP stack (adapter +
+            # session manager + event store + ServerSession), 1:1 per request → OOM.
+            # Permission is enforced by get_service_info() during creation based on
+            # service visibility — the same authorization model as the SSE path.
+            try:
+                mcp_app = await self._get_or_create_mcp_app(
+                    service_id, workspace, user_info, mode=_mode
+                )
+            except (KeyError, Exception) as e:
+                logger.error(f"MCP Middleware: Service lookup failed: {e}")
+                if "Service not found" in str(e) or "Permission denied" in str(e):
+                    await self._send_error_response(
+                        send, 404, f"Service {service_id} not found or not accessible"
                     )
-                    logger.debug(
-                        f"MCP Middleware: Found service '{service_id}' of type '{service_info.type}'"
-                    )
-                except (KeyError, Exception) as e:
-                    logger.error(f"MCP Middleware: Service lookup failed: {e}")
-                    if "Service not found" in str(e) or "Permission denied" in str(e):
-                        await self._send_error_response(
-                            send, 404, f"Service {service_id} not found or not accessible"
-                        )
-                        return
-                    else:
-                        raise
-                
-                # No longer require explicit type="mcp" - any service can be exposed as MCP
-                # Services with type="mcp" get special handling, others are auto-wrapped
-                
-                service = await api.get_service(full_service_id)
-                
-                # Check if it's MCP compatible
-                if not is_mcp_compatible_service(service):
+                    return
+                elif "not MCP compatible" in str(e):
                     await self._send_error_response(
                         send, 400, f"Service {service_id} is not MCP compatible"
                     )
                     return
-                
-                # Create MCP app with the service
-                mcp_app = await create_mcp_app_from_service(
-                    service, service_info, self.store.get_redis()
-                )
-                
-                # Handle the request with the MCP app
-                await mcp_app(scope, receive, send)
-        
+                else:
+                    raise
+
+            # Handle the request with the (cached) MCP app
+            await mcp_app(scope, receive, send)
+
         except Exception as exp:
             logger.exception(f"Error in MCP service: {exp}")
             await self._send_error_response(send, 500, f"Internal Server Error: {exp}")

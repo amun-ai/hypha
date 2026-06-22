@@ -91,6 +91,92 @@ async def test_mcp_session_manager_run_entered_once():
     assert not adapter._mgr_ready.is_set()
 
 
+class _FakeApi:
+    """Stand-in workspace interface for MCPRoutingMiddleware cache tests."""
+
+    def __init__(self):
+        self.aenter_count = 0
+        self.aexit_count = 0
+
+    async def get_service_info(self, full_service_id, opts=None):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(id=full_service_id, type="mcp")
+
+    async def get_service(self, full_service_id):
+        return {"id": full_service_id, "call_tool": lambda **k: None}
+
+
+class _FakeApiCtx:
+    """Stand-in for store.get_workspace_interface(...); tracks aenter/aexit on the api."""
+
+    def __init__(self, api):
+        self.api = api
+
+    async def __aenter__(self):
+        self.api.aenter_count += 1
+        return self.api
+
+    async def __aexit__(self, *exc):
+        self.api.aexit_count += 1
+        return False
+
+
+class _FakeStore:
+    def __init__(self):
+        self.api = _FakeApi()
+
+    def get_workspace_interface(self, user_info, workspace):
+        return _FakeApiCtx(self.api)
+
+    def get_redis(self):
+        return object()
+
+
+async def test_mcp_middleware_caches_adapter_per_service(monkeypatch):
+    """Regression: the JSON-RPC POST path must REUSE one cached adapter per service.
+
+    Previously _handle_mcp_request built a new HyphaMCPAdapter per request; each started a
+    run() background task that was never shut down (shutdown() only runs on cache
+    eviction), so the whole MCP stack — adapter + StreamableHTTPSessionManager +
+    RedisEventStore + ServerSession — leaked 1:1 per request → linear RSS growth → OOM
+    (proven on dev: 400 requests → +400 of each object). _get_or_create_mcp_app must build
+    the adapter ONCE per service, even under concurrent first requests, and keep the
+    workspace interface ALIVE so the cached adapter's proxy stays valid. See hypha/mcp.py.
+    """
+    import hypha.mcp as mcp_mod
+    from hypha.mcp import MCPRoutingMiddleware
+
+    create_calls = {"n": 0}
+
+    async def fake_create(service, service_info, redis):
+        create_calls["n"] += 1
+        return object()  # opaque cached app
+
+    monkeypatch.setattr(mcp_mod, "create_mcp_app_from_service", fake_create)
+    monkeypatch.setattr(mcp_mod, "is_mcp_compatible_service", lambda s: True)
+
+    store = _FakeStore()
+    mw = MCPRoutingMiddleware(app=None, store=store)
+
+    async def one():
+        return await mw._get_or_create_mcp_app("svc", "ws-1", user_info=None, mode=None)
+
+    # 25 concurrent first-requests (race the lazy creation/lock) + 25 sequential.
+    apps = list(await asyncio.gather(*[one() for _ in range(25)]))
+    for _ in range(25):
+        apps.append(await one())
+
+    assert create_calls["n"] == 1, (
+        f"adapter built {create_calls['n']}x; must be exactly once per service"
+    )
+    assert len(mw.mcp_app_cache) == 1
+    assert all(a is apps[0] for a in apps), "all requests must get the SAME cached app"
+    # Interface opened once and kept ALIVE (never closed) so the cached proxy stays valid.
+    assert store.api.aenter_count == 1
+    assert store.api.aexit_count == 0
+
+
 async def test_mcp_service_registration(fastapi_server, test_user_token):
     """Test basic MCP service registration with type=mcp."""
     api = await connect_to_server(
