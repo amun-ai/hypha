@@ -12094,3 +12094,114 @@ async def test_wildcard_artifact_scoped_token(
     await artifact_manager.delete(artifact_id=dataset3_2.id)
     await artifact_manager.delete(artifact_id=collection.id)
     await api.disconnect()
+
+
+async def test_collection_contributor_write_inheritance(
+    minio_server, fastapi_server, test_user_token, test_user_token_2
+):
+    """A non-member contributor can WRITE a child artifact when the parent COLLECTION
+    grants the write (e.g. ``"@": [..,"edit","commit","put_file"]``) — with their OWN
+    token, no per-artifact grant and no workspace-owner token. ADMIN ops (delete) do
+    NOT inherit via collection membership.
+
+    Regression for the ri-scale git-push contributor symptom: write operations must
+    fall back to the parent collection's permissions, mirroring reads. Before the fix
+    only read-like ops fell back, so a contributor whose grant came solely from the
+    collection was denied writes and forced to use a workspace-owner token. See
+    ``hypha/artifact.py::_get_artifact_with_permission``.
+    """
+    # user_1 owns the collection AND the child, so the child's own permissions are just
+    # {user_1: "*"} — user_2 is neither the creator nor explicitly granted on the child.
+    api1 = await connect_to_server(
+        {"name": "u1", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    am1 = await api1.get_service("public/artifact-manager")
+
+    collection = await am1.create(
+        type="collection",
+        manifest={"name": "Contributor Collection"},
+        config={
+            "permissions": {
+                # authenticated users get a contributor WRITE surface via the collection
+                "@": [
+                    "read",
+                    "list",
+                    "get_file",
+                    "list_files",
+                    "edit",
+                    "commit",
+                    "put_file",
+                ],
+            }
+        },
+    )
+    child = await am1.create(
+        parent_id=collection.id,
+        manifest={"name": "contributor-child"},
+        version="stage",
+    )
+    await am1.commit(artifact_id=child.id)
+
+    # user_2: a DIFFERENT authenticated user, NOT a member of user_1's workspace,
+    # NOT the creator, NOT in the child's own permissions.
+    api2 = await connect_to_server(
+        {"name": "u2", "server_url": SERVER_URL, "token": test_user_token_2}
+    )
+    am2 = await api2.get_service("public/artifact-manager")
+
+    # WRITE via the collection's "@" grant: edit(stage) -> put_file -> commit all succeed.
+    await am2.edit(artifact_id=child.id, version="stage")
+    put_url = await am2.put_file(artifact_id=child.id, file_path="weights.txt")
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.put(put_url, data="contributor upload")
+        assert response.status_code == 200
+    await am2.commit(artifact_id=child.id)
+
+    files = await am2.list_files(artifact_id=child.id)
+    assert any(f["name"] == "weights.txt" for f in files)
+
+    # ADMIN ops do NOT inherit via collection membership: user_2 cannot delete the child.
+    with pytest.raises(Exception, match=r".*permission.*delete.*"):
+        await am2.delete(artifact_id=child.id)
+
+    # owner cleanup
+    await am1.delete(artifact_id=child.id)
+    await am1.delete(artifact_id=collection.id)
+    await api1.disconnect()
+    await api2.disconnect()
+
+
+async def test_collection_read_only_denies_contributor_writes(
+    minio_server, fastapi_server, test_user_token, test_user_token_2
+):
+    """A read-only collection (``"@": "r"``) must STILL deny non-member writes — the
+    write fallback grants only the operations the collection EXPLICITLY lists. Guards
+    against the contributor-write fix over-broadening collection-read into
+    collection-write."""
+    api1 = await connect_to_server(
+        {"name": "u1", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    am1 = await api1.get_service("public/artifact-manager")
+    collection = await am1.create(
+        type="collection",
+        manifest={"name": "Read-only Collection"},
+        config={"permissions": {"@": "r"}},
+    )
+    child = await am1.create(
+        parent_id=collection.id, manifest={"name": "ro-child"}, version="stage"
+    )
+    await am1.commit(artifact_id=child.id)
+
+    api2 = await connect_to_server(
+        {"name": "u2", "server_url": SERVER_URL, "token": test_user_token_2}
+    )
+    am2 = await api2.get_service("public/artifact-manager")
+    # read works (collection grants read); write must be denied (no write op listed).
+    await am2.read(artifact_id=child.id)
+    with pytest.raises(Exception, match=r".*permission.*"):
+        await am2.edit(artifact_id=child.id, version="stage")
+
+    await am1.delete(artifact_id=child.id)
+    await am1.delete(artifact_id=collection.id)
+    await api1.disconnect()
+    await api2.disconnect()

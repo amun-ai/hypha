@@ -2535,11 +2535,31 @@ class ArtifactController:
         if artifact_permissions:
             for perm in artifact_permissions:
                 if not await self._check_permissions(artifact, user_info, perm):
-                    # Try parent as fallback for read operations
-                    if perm in ["read", "list", "get_file", "list_files", "get_vector", "list_vectors", "search_vectors"]:
-                        if parent_artifact and await self._check_permissions(parent_artifact, user_info, perm):
-                            continue  # Permission granted through parent
-                    
+                    # Fall back to the PARENT COLLECTION's permissions for the same
+                    # operation. A child artifact inherits its collection's grants, so
+                    # a collection configured for contributors (e.g. "@": ["commit",
+                    # "put_file", "edit", ...]) lets those users write its children with
+                    # their OWN token — no per-artifact grant and no workspace-owner
+                    # token needed. This mirrors the read fallback and extends it to
+                    # writes (read/read_write tier). The parent's permission LIST is the
+                    # explicit control surface: a collection granting only "@": "r" still
+                    # denies writes (no write op is listed). ADMIN-level operations
+                    # (delete/publish/get_secret/reset_stats) deliberately do NOT inherit
+                    # via collection membership — they still require the artifact's own
+                    # grant or workspace admin. Previously only read-like ops fell back,
+                    # so collection write grants were silently ignored for commit/
+                    # put_file/edit, forcing a workspace-owner token (the ri-scale
+                    # contributor symptom).
+                    # NOTE: UserPermission is a str-Enum (read="r", read_write="rw",
+                    # admin="a") whose ordering is lexicographic, so a numeric "<="
+                    # comparison is unsafe — exclude admin explicitly instead.
+                    perm_level = operation_map.get(perm, UserPermission.read_write)
+                    if perm_level != UserPermission.admin:
+                        if parent_artifact and await self._check_permissions(
+                            parent_artifact, user_info, perm
+                        ):
+                            continue  # Permission granted through the parent collection
+
                     # Check workspace-level permission as final fallback
                     # Workspace owners always have highest permission
                     if not user_info.check_permission(artifact.workspace, operation_map.get(perm, UserPermission.read_write)):
