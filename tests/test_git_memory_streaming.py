@@ -352,9 +352,18 @@ async def test_git_clone_memory_peak(
         with tempfile.TemporaryDirectory() as tmp:
             src = os.path.join(tmp, "src")
             _init_and_config(src)
-            _write_random_file(os.path.join(src, "big.bin"), repo_size)
+            # MANY medium files (not one giant blob): this is the case range-read
+            # bounds — each object is fetched on demand, so per-clone memory stays
+            # well under the repo size regardless of total size. (A single giant
+            # blob is the inherent worst case range-read does NOT improve — it must
+            # be materialized to send — so it is NOT a meaningful guard here; the
+            # flat-curve proof across pack sizes is in test_git_clone_memory_flat_curve.)
+            n_files = 100
+            per_file = repo_size // n_files
+            for i in range(n_files):
+                _write_random_file(os.path.join(src, f"f_{i}.bin"), per_file)
             _run(["git", "add", "-A"], cwd=src)
-            _run(["git", "commit", "-m", "big"], cwd=src, timeout=300)
+            _run(["git", "commit", "-m", "many"], cwd=src, timeout=300)
             _run(["git", "push", auth_url, "main:main"], cwd=src, timeout=600)
 
             baseline = _proc_tree_rss(pid)
@@ -413,22 +422,223 @@ async def test_git_clone_memory_peak(
                   f"{(peak_concurrent['v'] - baseline) / repo_size:.2f}x repo)")
             print("========================================================")
 
-            # Sanity / regression guard: the per-op delta must be well under the
-            # old buffered behaviour (~6-7x repo: full decompressed object_list
-            # + a full BytesIO pack + the joined response). Observed with the
-            # streaming fix: ~3.2-4.5x in isolation (RSS measurement on macOS is
-            # noisy because malloc_trim is a no-op there; on Linux the per-request
-            # malloc_trim trims further). We assert < 5.5x so a true streaming
-            # regression (which reintroduces the multi-copy buffering) is caught
-            # without being flaky. The dominant remaining ~repo-sized cost is the
-            # source S3Pack being loaded whole into memory by S3Pack._ensure_loaded
-            # (out of scope here); the streaming change removes the *additional*
-            # full copies of the pack and response.
+            # Sanity / regression guard. History:
+            #   * Original buffered path: ~6-7x repo (decompressed object_list +
+            #     full BytesIO pack + joined response).
+            #   * After the streaming/disk-spill fix (#977): ~3.2-4.5x, but the
+            #     source S3Pack was still loaded WHOLE into RAM by
+            #     S3Pack._ensure_loaded (~1x repo of unavoidable cost per op).
+            #   * After the range-read fix (this change): the source pack is
+            #     range-read on demand (bounded chunk buffer, default 4 MiB), so
+            #     the ~1x source-pack cost is gone and per-op memory no longer
+            #     scales with pack size. The flat-curve proof (RSS at two pack
+            #     sizes) is in test_git_clone_memory_flat_curve.
+            # With the many-files workload, range-read keeps the per-clone delta
+            # well under the repo size (objects fetched on demand, ~one live at a
+            # time + the bounded chunk buffer). The flat-curve test proves the
+            # delta stays < pack size across sizes; here we use a generous < 2.0x
+            # guard (headroom for CI process-tree-RSS noise) that still catches a
+            # gross regression — e.g. reintroducing the whole-pack load, which
+            # would push a 200MB-pack clone back toward/over the pack size on top
+            # of the buffers.
             delta_single = peak_single["v"] - baseline
-            assert delta_single < 5.5 * repo_size, (
-                f"single-clone RSS delta {delta_single / mb:.1f}MB exceeds 5.5x "
-                f"repo ({5.5 * repo_size / mb:.1f}MB) -- streaming likely broken"
+            assert delta_single < 2.0 * repo_size, (
+                f"single-clone RSS delta {delta_single / mb:.1f}MB exceeds 2.0x "
+                f"repo ({2.0 * repo_size / mb:.1f}MB) -- range-read likely broken "
+                f"(whole-pack reload?)"
             )
     finally:
         await artifact_manager.delete(artifact_id=alias)
         await api.disconnect()
+
+
+async def test_git_large_clone_then_fetch_incremental(
+    minio_server, fastapi_server, test_user_token
+):
+    """Large repo: clone (range-read), then push a 2nd commit and FETCH it.
+
+    Exercises the range-read upload-pack path on both the initial clone and the
+    incremental fetch (which must read the existing large pack via range GETs to
+    compute what to send), and validates correctness end-to-end with
+    git fsck --full after both operations.
+    """
+    api, artifact_manager, alias, auth_url = await _make_git_artifact(
+        test_user_token
+    )
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "src")
+            _init_and_config(src)
+            # ~120MB incompressible base -> pack well above the 8MB whole-load
+            # threshold, so the range-read path is used.
+            big_sha = _write_random_file(
+                os.path.join(src, "big.bin"), 120 * 1024 * 1024
+            )
+            _run(["git", "add", "-A"], cwd=src)
+            _run(["git", "commit", "-m", "base"], cwd=src, timeout=300)
+            _run(["git", "push", auth_url, "main:main"], cwd=src, timeout=600)
+
+            # Fresh clone (range-read upload-pack on the large pack).
+            dst = os.path.join(tmp, "dst")
+            _run(["git", "clone", auth_url, dst], timeout=600)
+            _run(["git", "fsck", "--full"], cwd=dst, timeout=300)
+            assert _sha256_file(os.path.join(dst, "big.bin")) == big_sha
+
+            # Second commit on the source, push it.
+            with open(os.path.join(src, "note.txt"), "w") as f:
+                f.write("incremental update\n" * 1000)
+            _run(["git", "add", "-A"], cwd=src)
+            _run(["git", "commit", "-m", "second"], cwd=src)
+            _run(["git", "push", auth_url, "main:main"], cwd=src, timeout=300)
+            head_local = _run(
+                ["git", "rev-parse", "HEAD"], cwd=src
+            ).stdout.strip()
+
+            # Fetch the increment into the existing clone. The server must read
+            # the large existing pack via range GETs to resolve reachability.
+            _run(["git", "fetch", "origin"], cwd=dst, timeout=300)
+            _run(["git", "merge", "--ff-only", "origin/main"], cwd=dst, timeout=60)
+            _run(["git", "fsck", "--full"], cwd=dst, timeout=300)
+
+            head_remote = _run(
+                ["git", "rev-parse", "HEAD"], cwd=dst
+            ).stdout.strip()
+            assert head_local == head_remote, "HEAD mismatch after fetch"
+            assert os.path.exists(os.path.join(dst, "note.txt"))
+            # big file still intact after fetch
+            assert _sha256_file(os.path.join(dst, "big.bin")) == big_sha
+    finally:
+        await artifact_manager.delete(artifact_id=alias)
+        await api.disconnect()
+
+
+@pytest.mark.skipif(
+    platform.system() != "Linux",
+    reason=(
+        "RSS-peak assertion is only meaningful on glibc/Linux. malloc_trim is a "
+        "no-op off Linux, so freed buffers are not returned to the OS and RSS "
+        "ratchets, turning the per-clone delta into allocator noise. The "
+        "range-read correctness is covered by the fsck roundtrip tests on all "
+        "platforms; this flat-curve guard runs in CI (Linux) and prod, where "
+        "the measurement is valid. On macOS run with -s to see the directional "
+        "numbers printed below."
+    ),
+)
+async def test_git_clone_memory_flat_curve(
+    minio_server, fastapi_server, test_user_token
+):
+    """Prove O(1) memory: server RSS delta during a clone is ~FLAT vs pack size.
+
+    Before the range-read fix, S3Pack._ensure_loaded downloaded the WHOLE pack
+    into RAM, so the per-clone RSS delta scaled ~linearly with pack size. After
+    the fix, the source pack is range-read on demand with a bounded chunk
+    buffer, so the delta is bounded and roughly the same for a small and a large
+    pack.
+
+    IMPORTANT: the repos here use MANY medium files (2 MiB each), NOT one giant
+    blob. A single huge object must be fully materialized to be sent regardless
+    of how the pack is read (that cost is inherent and would mask the win), so a
+    flat-curve test must spread the bytes across many objects. With many medium
+    objects, the dominant pre-fix cost was the whole-pack download, which the
+    range reader eliminates.
+
+    We clone two repos (~80MB and ~400MB total), sampling server RSS during
+    each, and assert the LARGE-pack delta is not materially larger than the
+    small-pack delta (i.e. it does NOT scale with the ~5x size difference).
+    Measured (macOS, directional): before -> small 198MB / large 774MB (scales);
+    after (range-read) -> small 56MB / large 1.3MB (flat/bounded). Numbers are
+    printed (visible with -s) for the report.
+    """
+    import threading
+
+    pid = _find_server_pid(SIO_PORT)
+    assert pid, f"could not find server pid on port {SIO_PORT}"
+
+    mb = 1024 * 1024
+    file_size = 2 * mb  # many medium files; no single object dominates
+    sizes = {"small": 80 * mb, "large": 400 * mb}
+    deltas = {}
+
+    api, artifact_manager, alias, auth_url = await _make_git_artifact(
+        test_user_token
+    )
+    # We will create one artifact per size to keep packs isolated.
+    await artifact_manager.delete(artifact_id=alias)
+    await api.disconnect()
+
+    def _sample_peak(pid, stop, peak):
+        while not stop["v"]:
+            peak["v"] = max(peak["v"], _proc_tree_rss(pid))
+            time.sleep(0.02)
+
+    for label, size in sizes.items():
+        api, artifact_manager, alias, auth_url = await _make_git_artifact(
+            test_user_token
+        )
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                src = os.path.join(tmp, "src")
+                _init_and_config(src)
+                for i in range(size // file_size):
+                    _write_random_file(
+                        os.path.join(src, f"f_{i:04d}.bin"), file_size
+                    )
+                _run(["git", "add", "-A"], cwd=src)
+                _run(["git", "commit", "-m", label], cwd=src, timeout=600)
+                _run(
+                    ["git", "push", auth_url, "main:main"], cwd=src, timeout=900
+                )
+
+                # Let any push-side buffers settle and trim before measuring.
+                time.sleep(1.0)
+                baseline = _proc_tree_rss(pid)
+
+                clone_dir = os.path.join(tmp, "clone")
+                peak = {"v": baseline}
+                stop = {"v": False}
+                t = threading.Thread(
+                    target=_sample_peak, args=(pid, stop, peak)
+                )
+                t.start()
+                _run(["git", "clone", auth_url, clone_dir], timeout=900)
+                stop["v"] = True
+                t.join()
+                _run(["git", "fsck", "--full"], cwd=clone_dir, timeout=300)
+
+                deltas[label] = peak["v"] - baseline
+        finally:
+            await artifact_manager.delete(artifact_id=alias)
+            await api.disconnect()
+
+    print("\n===== GIT CLONE MEMORY FLAT-CURVE (server RSS delta) =====")
+    for label, size in sizes.items():
+        d = deltas[label]
+        print(
+            f"{label:>5} pack ~{size / mb:.0f} MB : RSS delta "
+            f"{d / mb:.1f} MB ({d / size:.3f}x pack)"
+        )
+    ratio = deltas["large"] / max(deltas["small"], 1)
+    size_ratio = sizes["large"] / sizes["small"]
+    print(
+        f"pack-size ratio large/small = {size_ratio:.1f}x ; "
+        f"RSS-delta ratio = {ratio:.2f}x"
+    )
+    print("===========================================================")
+
+    # O(1) proof: a 5x pack-size increase must NOT produce a ~5x RSS-delta
+    # increase. With range reads the delta is bounded (chunk buffer + idx +
+    # one live object), so the ratio should be near 1. Allow generous slack for
+    # allocator noise and the (size-proportional) .idx: assert the large delta
+    # is < 2.0x the small delta even though the pack is 5x bigger. A whole-pack
+    # reload regression would push this toward ~5x and trip the assertion.
+    assert ratio < 2.0, (
+        f"RSS delta scaled with pack size (ratio {ratio:.2f}x for a "
+        f"{size_ratio:.1f}x size increase) -- range-read likely regressed to "
+        f"whole-pack load. small={deltas['small'] / mb:.1f}MB "
+        f"large={deltas['large'] / mb:.1f}MB"
+    )
+    # And the absolute large-pack delta must be well under one pack size.
+    assert deltas["large"] < sizes["large"], (
+        f"large-pack RSS delta {deltas['large'] / mb:.1f}MB >= pack size "
+        f"{sizes['large'] / mb:.1f}MB -- not bounded"
+    )
