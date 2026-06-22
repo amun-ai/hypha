@@ -1,5 +1,10 @@
 # Hypha Change Log
 
+### 0.21.97
+
+ - Fix dedicated browser-worker routing (unblocks taking headless-Chromium memory off the API pod). `hypha/workers/browser.py`'s `__main__` set the `--visibility`/`HYPHA_VISIBILITY` override at the **top level** of the service config (`service_config["visibility"]`) instead of inside `config` (`service_config["config"]["visibility"]`), which is where `register_service` reads it. The override was silently dropped, so a dedicated browser-worker pod always registered with the base default `config.visibility="protected"` and its `compile()` was un-invokable cross-workspace by the `public` server-apps controller ("Permission denied … workspace mismatch: ws-user-root != public") — blocking the dedicated-worker cutover. browser.py now matches the k8s/conda/terminal workers (which already nest it correctly). Regression guard: `tests/test_worker.py::test_worker_main_sets_visibility_in_config_not_toplevel`.
+ - Consolidates the git smart-HTTP memory work that shipped in the 0.21.95/0.21.96 images: streaming clone + disk-spill push + per-op concurrency cap (#977), and range-read S3 pack for O(1) clone/fetch memory independent of pack size (#979).
+
 ### 0.21.90
 
  - Fix a frontend crash on the Applications page (`TypeError: Cannot read properties of null (reading 'startsWith')`). `server-apps.list_apps` returned the stored manifest verbatim and trusted it to carry an `id`; apps created directly via the artifact manager (bypassing `apps.install`, where the manifest id is persisted) — or installed before that id was persisted — had `manifest.id == None`, so `app.id.startsWith('public/')` threw. `list_apps` now derives `id` from the authoritative artifact alias (matching the value `start`/`uninstall`/`edit_app` expect) instead of trusting the manifest blob. Test: `tests/test_server_apps.py::test_list_apps_heals_null_manifest_id`.

@@ -1487,7 +1487,14 @@ Examples:
             service_config = worker.get_worker_service()
             if args.service_id:
                 service_config["id"] = args.service_id
-            service_config["visibility"] = args.visibility
+            # NOTE: visibility must be set INSIDE config (matching k8s/conda/terminal
+            # workers). A top-level service_config["visibility"] is ignored by
+            # register_service, so the worker would silently keep its default
+            # config.visibility="protected" — which makes a dedicated browser-worker
+            # pod's compile() un-invokable by the "public" server-apps controller
+            # (cross-workspace protected-method denial). HYPHA_VISIBILITY=public must
+            # land on config.visibility for the dedicated-worker cutover to route.
+            service_config["config"]["visibility"] = args.visibility
 
             # Register the service
             await server.rpc.register_service(service_config)
