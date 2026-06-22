@@ -17,6 +17,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 logger = logging.getLogger("resource-limits")
 
 
+def _utcnow() -> datetime:
+    """Naive UTC timestamp. Postgres stores `timestamp without time zone` (hypha's
+    convention, matching event_logs/artifacts), so all blocklist datetimes are naive
+    UTC — mixing tz-aware and naive values raises on asyncpg/Postgres (SQLite is
+    lenient, which is why this only shows up against Postgres)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 class BlockEntry(SQLModel, table=True):
     """Durable (Postgres) record of a blocked user or IP.
 
@@ -34,9 +42,7 @@ class BlockEntry(SQLModel, table=True):
     reason: str = ""
     # None = permanent; otherwise the block is inactive once now() > expires_at.
     expires_at: Optional[datetime] = Field(default=None, index=True)
-    created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    created_at: datetime = Field(default_factory=_utcnow)
 
 
 class TokenBucket:
@@ -271,7 +277,7 @@ class ResourceLimitsManager:
     def _ttl_to_expiry(duration: int):
         """duration seconds → (ttl_seconds, expires_at). 0 → 30 days (legacy)."""
         ttl = duration if duration and duration > 0 else 30 * 86400
-        return ttl, datetime.now(timezone.utc) + timedelta(seconds=ttl)
+        return ttl, _utcnow() + timedelta(seconds=ttl)
 
     async def init_blocklist_db(self):
         """Create the blocklist table if it does not exist (idempotent)."""
@@ -352,14 +358,12 @@ class ResourceLimitsManager:
         else Redis). ttl_seconds = -1 means a permanent block."""
         result = {"users": [], "ips": []}
         if self._sql_engine is not None:
-            now = datetime.now(timezone.utc)
+            now = _utcnow()
             async with AsyncSession(self._sql_engine) as session:
                 rows = (await session.execute(select(BlockEntry))).scalars().all()
             for r in rows:
                 exp = r.expires_at
                 if exp is not None:
-                    if exp.tzinfo is None:  # older naive rows → treat as UTC
-                        exp = exp.replace(tzinfo=timezone.utc)
                     if exp <= now:
                         continue  # expired — not active
                     ttl = int((exp - now).total_seconds())
@@ -400,7 +404,7 @@ class ResourceLimitsManager:
         HYPHA_RESET_REDIS=true) and prunes expired rows. No-op without both stores."""
         if self._sql_engine is None or self._redis is None:
             return
-        now = datetime.now(timezone.utc)
+        now = _utcnow()
         async with AsyncSession(self._sql_engine) as session:
             await session.execute(
                 sql_delete(BlockEntry).where(
@@ -413,8 +417,6 @@ class ResourceLimitsManager:
         restored = 0
         for r in rows:
             exp = r.expires_at
-            if exp is not None and exp.tzinfo is None:
-                exp = exp.replace(tzinfo=timezone.utc)
             ttl = int((exp - now).total_seconds()) if exp is not None else 30 * 86400
             if ttl <= 0:
                 continue

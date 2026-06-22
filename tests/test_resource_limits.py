@@ -437,17 +437,18 @@ class TestDurableBlocklist:
 
     @pytest.mark.asyncio
     async def test_expired_block_inactive_and_pruned(self, engine):
-        from datetime import datetime, timezone, timedelta
+        from datetime import timedelta
         from sqlalchemy.ext.asyncio import AsyncSession
         from sqlmodel import select
-        from hypha.resource_limits import BlockEntry
+        from hypha.resource_limits import BlockEntry, _utcnow
 
         redis = _RichFakeRedis()
         rl = ResourceLimitsManager(redis=redis, sql_engine=engine)
         await rl.init_blocklist_db()
         async with AsyncSession(engine) as s:
+            # naive UTC, matching the Postgres `timestamp without time zone` column
             s.add(BlockEntry(kind="user", key="stale", reason="r",
-                             expires_at=datetime.now(timezone.utc) - timedelta(hours=1)))
+                             expires_at=_utcnow() - timedelta(hours=1)))
             await s.commit()
         # expired → not listed as active
         assert all(u["id"] != "stale" for u in (await rl.list_blocked())["users"])
