@@ -40,10 +40,15 @@ class _FakeRunCtx:
 
 
 class _FakeSessionManager:
-    def __init__(self):
+    """Stands in for StreamableHTTPSessionManager; records run enter/exit + handled."""
+
+    instances = []
+
+    def __init__(self, **kwargs):
         self.run_entries = 0
         self.run_exits = 0
         self.handled = 0
+        _FakeSessionManager.instances.append(self)
 
     def run(self):
         return _FakeRunCtx(self)
@@ -52,43 +57,136 @@ class _FakeSessionManager:
         self.handled += 1
 
 
-async def test_mcp_session_manager_run_entered_once():
-    """Regression: HyphaMCPAdapter must enter StreamableHTTPSessionManager.run() EXACTLY
-    ONCE across many (incl. concurrent) requests — never per-request.
+async def test_mcp_handle_request_per_request_manager_enters_and_exits(monkeypatch):
+    """Regression: handle_request must use a FRESH session manager per request and
+    ENTER+EXIT its run() each time, so the SDK's stateless session task is reaped.
 
-    The adapter is cached and shared across all requests for a service, and run() owns
-    an internal anyio task group designed to be entered once per instance. The old
-    handle_request entered run() per request, so under an MCP request flood (a client
-    looping at ~15 req/s was observed in prod) task groups accumulated unbounded →
-    memory growth → OOM. This guards the single-run lifecycle. See hypha/mcp.py.
+    The SDK's StreamableHTTPSessionManager (stateless) spawns a run_stateless_server
+    task into its run() task group per request, and that task is ONLY reaped when the
+    task group is cancelled — i.e. when run() EXITS (streamable_http_manager.py). Two
+    broken approaches both OOM'd: a per-request ADAPTER (leaked the whole adapter stack
+    1:1/req) and a held-open run-once run() (never reaped the per-request stateless
+    tasks → +1 ServerSession/req, proven on dev: 2600 reqs → +2600 ServerSession). The
+    correct model: cache the adapter (heavy parts) but use a fresh, lightweight session
+    manager per request whose run() is entered AND exited, tearing down the task group
+    and reaping the session. This guards that lifecycle. See hypha/mcp.py.
     """
+    import hypha.mcp as mcp_mod
     from hypha.mcp import HyphaMCPAdapter
 
-    # Build only the lifecycle state, bypassing the heavy __init__ (service/redis/etc.).
+    _FakeSessionManager.instances = []
+    monkeypatch.setattr(mcp_mod, "StreamableHTTPSessionManager", _FakeSessionManager)
+
+    # Build only what handle_request touches, bypassing the heavy __init__.
     adapter = HyphaMCPAdapter.__new__(HyphaMCPAdapter)
-    adapter.session_manager = _FakeSessionManager()
-    adapter._mgr_lock = asyncio.Lock()
-    adapter._mgr_ready = asyncio.Event()
-    adapter._mgr_stop = asyncio.Event()
-    adapter._mgr_task = None
+    adapter.server = object()
+    adapter.event_store = object()
 
     async def one_request():
         await adapter.handle_request({}, None, None)
 
-    # Flood: 25 concurrent first-requests (race the lazy start) + 25 sequential.
+    # 25 concurrent + 25 sequential requests.
     await asyncio.gather(*[one_request() for _ in range(25)])
     for _ in range(25):
         await one_request()
 
-    assert adapter.session_manager.run_entries == 1, (
-        f"run() entered {adapter.session_manager.run_entries}x; must be exactly once"
+    mgrs = _FakeSessionManager.instances
+    assert len(mgrs) == 50, f"expected a fresh manager per request, got {len(mgrs)}"
+    # Each per-request manager entered AND exited run() exactly once → task group torn
+    # down → stateless session task reaped (no ServerSession accumulation).
+    assert all(m.run_entries == 1 and m.run_exits == 1 for m in mgrs), (
+        "each request's run() must be entered AND exited exactly once"
     )
-    assert adapter.session_manager.handled == 50
+    assert all(m.handled == 1 for m in mgrs)
 
-    # shutdown() must cleanly stop the single background runner.
+    # shutdown() is now a no-op (no persistent runner to stop).
     await adapter.shutdown()
-    assert adapter.session_manager.run_exits == 1
-    assert not adapter._mgr_ready.is_set()
+
+
+class _FakeApi:
+    """Stand-in workspace interface for MCPRoutingMiddleware cache tests."""
+
+    def __init__(self):
+        self.aenter_count = 0
+        self.aexit_count = 0
+
+    async def get_service_info(self, full_service_id, opts=None):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(id=full_service_id, type="mcp")
+
+    async def get_service(self, full_service_id):
+        return {"id": full_service_id, "call_tool": lambda **k: None}
+
+
+class _FakeApiCtx:
+    """Stand-in for store.get_workspace_interface(...); tracks aenter/aexit on the api."""
+
+    def __init__(self, api):
+        self.api = api
+
+    async def __aenter__(self):
+        self.api.aenter_count += 1
+        return self.api
+
+    async def __aexit__(self, *exc):
+        self.api.aexit_count += 1
+        return False
+
+
+class _FakeStore:
+    def __init__(self):
+        self.api = _FakeApi()
+
+    def get_workspace_interface(self, user_info, workspace):
+        return _FakeApiCtx(self.api)
+
+    def get_redis(self):
+        return object()
+
+
+async def test_mcp_middleware_caches_adapter_per_service(monkeypatch):
+    """Regression: the JSON-RPC POST path must REUSE one cached adapter per service.
+
+    Previously _handle_mcp_request built a new HyphaMCPAdapter per request; each started a
+    run() background task that was never shut down (shutdown() only runs on cache
+    eviction), so the whole MCP stack — adapter + StreamableHTTPSessionManager +
+    RedisEventStore + ServerSession — leaked 1:1 per request → linear RSS growth → OOM
+    (proven on dev: 400 requests → +400 of each object). _get_or_create_mcp_app must build
+    the adapter ONCE per service, even under concurrent first requests, and keep the
+    workspace interface ALIVE so the cached adapter's proxy stays valid. See hypha/mcp.py.
+    """
+    import hypha.mcp as mcp_mod
+    from hypha.mcp import MCPRoutingMiddleware
+
+    create_calls = {"n": 0}
+
+    async def fake_create(service, service_info, redis):
+        create_calls["n"] += 1
+        return object()  # opaque cached app
+
+    monkeypatch.setattr(mcp_mod, "create_mcp_app_from_service", fake_create)
+    monkeypatch.setattr(mcp_mod, "is_mcp_compatible_service", lambda s: True)
+
+    store = _FakeStore()
+    mw = MCPRoutingMiddleware(app=None, store=store)
+
+    async def one():
+        return await mw._get_or_create_mcp_app("svc", "ws-1", user_info=None, mode=None)
+
+    # 25 concurrent first-requests (race the lazy creation/lock) + 25 sequential.
+    apps = list(await asyncio.gather(*[one() for _ in range(25)]))
+    for _ in range(25):
+        apps.append(await one())
+
+    assert create_calls["n"] == 1, (
+        f"adapter built {create_calls['n']}x; must be exactly once per service"
+    )
+    assert len(mw.mcp_app_cache) == 1
+    assert all(a is apps[0] for a in apps), "all requests must get the SAME cached app"
+    # Interface opened once and kept ALIVE (never closed) so the cached proxy stays valid.
+    assert store.api.aenter_count == 1
+    assert store.api.aexit_count == 0
 
 
 async def test_mcp_service_registration(fastapi_server, test_user_token):
