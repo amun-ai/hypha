@@ -352,9 +352,18 @@ async def test_git_clone_memory_peak(
         with tempfile.TemporaryDirectory() as tmp:
             src = os.path.join(tmp, "src")
             _init_and_config(src)
-            _write_random_file(os.path.join(src, "big.bin"), repo_size)
+            # MANY medium files (not one giant blob): this is the case range-read
+            # bounds — each object is fetched on demand, so per-clone memory stays
+            # well under the repo size regardless of total size. (A single giant
+            # blob is the inherent worst case range-read does NOT improve — it must
+            # be materialized to send — so it is NOT a meaningful guard here; the
+            # flat-curve proof across pack sizes is in test_git_clone_memory_flat_curve.)
+            n_files = 100
+            per_file = repo_size // n_files
+            for i in range(n_files):
+                _write_random_file(os.path.join(src, f"f_{i}.bin"), per_file)
             _run(["git", "add", "-A"], cwd=src)
-            _run(["git", "commit", "-m", "big"], cwd=src, timeout=300)
+            _run(["git", "commit", "-m", "many"], cwd=src, timeout=300)
             _run(["git", "push", auth_url, "main:main"], cwd=src, timeout=600)
 
             baseline = _proc_tree_rss(pid)
@@ -424,20 +433,19 @@ async def test_git_clone_memory_peak(
             #     the ~1x source-pack cost is gone and per-op memory no longer
             #     scales with pack size. The flat-curve proof (RSS at two pack
             #     sizes) is in test_git_clone_memory_flat_curve.
-            # IMPORTANT: this test uses a SINGLE ~200MB blob, which is the
-            # inherent worst case range-read does NOT improve — a single giant
-            # object must be fully materialized to be sent, regardless of how the
-            # pack is read. So the per-op peak here is still ~blob-size x a few
-            # (materialize + pack-gen + side-band), NOT bounded. The O(1)
-            # range-read win for the common MANY-OBJECTS case is proven by
-            # test_git_clone_memory_flat_curve (RSS flat across pack sizes). We
-            # keep a generous < 5.5x guard here only to catch a gross regression
-            # (e.g. reintroduced multi-copy buffering) without flaking on the
-            # single-blob materialization cost + allocator noise.
+            # With the many-files workload, range-read keeps the per-clone delta
+            # well under the repo size (objects fetched on demand, ~one live at a
+            # time + the bounded chunk buffer). The flat-curve test proves the
+            # delta stays < pack size across sizes; here we use a generous < 2.0x
+            # guard (headroom for CI process-tree-RSS noise) that still catches a
+            # gross regression — e.g. reintroducing the whole-pack load, which
+            # would push a 200MB-pack clone back toward/over the pack size on top
+            # of the buffers.
             delta_single = peak_single["v"] - baseline
-            assert delta_single < 5.5 * repo_size, (
-                f"single-clone RSS delta {delta_single / mb:.1f}MB exceeds 5.5x "
-                f"repo ({5.5 * repo_size / mb:.1f}MB) -- gross memory regression"
+            assert delta_single < 2.0 * repo_size, (
+                f"single-clone RSS delta {delta_single / mb:.1f}MB exceeds 2.0x "
+                f"repo ({2.0 * repo_size / mb:.1f}MB) -- range-read likely broken "
+                f"(whole-pack reload?)"
             )
     finally:
         await artifact_manager.delete(artifact_id=alias)
