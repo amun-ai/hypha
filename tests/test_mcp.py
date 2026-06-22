@@ -24,6 +24,73 @@ import requests
 pytestmark = pytest.mark.asyncio
 
 
+class _FakeRunCtx:
+    """Async context manager standing in for StreamableHTTPSessionManager.run()."""
+
+    def __init__(self, mgr):
+        self.mgr = mgr
+
+    async def __aenter__(self):
+        self.mgr.run_entries += 1
+        return self
+
+    async def __aexit__(self, *exc):
+        self.mgr.run_exits += 1
+        return False
+
+
+class _FakeSessionManager:
+    def __init__(self):
+        self.run_entries = 0
+        self.run_exits = 0
+        self.handled = 0
+
+    def run(self):
+        return _FakeRunCtx(self)
+
+    async def handle_request(self, scope, receive, send):
+        self.handled += 1
+
+
+async def test_mcp_session_manager_run_entered_once():
+    """Regression: HyphaMCPAdapter must enter StreamableHTTPSessionManager.run() EXACTLY
+    ONCE across many (incl. concurrent) requests — never per-request.
+
+    The adapter is cached and shared across all requests for a service, and run() owns
+    an internal anyio task group designed to be entered once per instance. The old
+    handle_request entered run() per request, so under an MCP request flood (a client
+    looping at ~15 req/s was observed in prod) task groups accumulated unbounded →
+    memory growth → OOM. This guards the single-run lifecycle. See hypha/mcp.py.
+    """
+    from hypha.mcp import HyphaMCPAdapter
+
+    # Build only the lifecycle state, bypassing the heavy __init__ (service/redis/etc.).
+    adapter = HyphaMCPAdapter.__new__(HyphaMCPAdapter)
+    adapter.session_manager = _FakeSessionManager()
+    adapter._mgr_lock = asyncio.Lock()
+    adapter._mgr_ready = asyncio.Event()
+    adapter._mgr_stop = asyncio.Event()
+    adapter._mgr_task = None
+
+    async def one_request():
+        await adapter.handle_request({}, None, None)
+
+    # Flood: 25 concurrent first-requests (race the lazy start) + 25 sequential.
+    await asyncio.gather(*[one_request() for _ in range(25)])
+    for _ in range(25):
+        await one_request()
+
+    assert adapter.session_manager.run_entries == 1, (
+        f"run() entered {adapter.session_manager.run_entries}x; must be exactly once"
+    )
+    assert adapter.session_manager.handled == 50
+
+    # shutdown() must cleanly stop the single background runner.
+    await adapter.shutdown()
+    assert adapter.session_manager.run_exits == 1
+    assert not adapter._mgr_ready.is_set()
+
+
 async def test_mcp_service_registration(fastapi_server, test_user_token):
     """Test basic MCP service registration with type=mcp."""
     api = await connect_to_server(
