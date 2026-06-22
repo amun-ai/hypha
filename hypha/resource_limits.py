@@ -7,9 +7,42 @@ plus admin-controlled blocklists to protect server stability.
 import logging
 import os
 import time
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
+from sqlmodel import SQLModel, Field, select
+from sqlalchemy import delete as sql_delete
+from sqlalchemy.ext.asyncio import AsyncSession
+
 logger = logging.getLogger("resource-limits")
+
+
+def _utcnow() -> datetime:
+    """Naive UTC timestamp. Postgres stores `timestamp without time zone` (hypha's
+    convention, matching event_logs/artifacts), so all blocklist datetimes are naive
+    UTC — mixing tz-aware and naive values raises on asyncpg/Postgres (SQLite is
+    lenient, which is why this only shows up against Postgres)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+class BlockEntry(SQLModel, table=True):
+    """Durable (Postgres) record of a blocked user or IP.
+
+    This is the SOURCE OF TRUTH for the blocklist; Redis is only a fast cache that
+    is repopulated from this table on startup (see
+    ResourceLimitsManager.sync_blocklist_to_redis). That makes blocks survive a Redis
+    reset/flush/data-loss (e.g. HYPHA_RESET_REDIS=true, or a Redis restart without
+    persistence) — not just pod restarts.
+    """
+
+    __tablename__ = "blocklist"
+
+    kind: str = Field(primary_key=True)  # "user" | "ip"
+    key: str = Field(primary_key=True)  # the user_id or IP address
+    reason: str = ""
+    # None = permanent; otherwise the block is inactive once now() > expires_at.
+    expires_at: Optional[datetime] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=_utcnow)
 
 
 class TokenBucket:
@@ -42,8 +75,12 @@ class ResourceLimitsManager:
     Redis-backed blocklists (cross-instance) for admin blocking.
     """
 
-    def __init__(self, redis=None):
+    def __init__(self, redis=None, sql_engine=None):
         self._redis = redis
+        # Durable blocklist store (Postgres). When present, it is the source of
+        # truth; Redis is a cache. When absent (e.g. tests/dev with no DB), the
+        # blocklist degrades to Redis-only (its prior behavior).
+        self._sql_engine = sql_engine
 
         # Limits from environment (with sensible defaults)
         self.max_connections_per_user = int(
@@ -236,45 +273,110 @@ class ResourceLimitsManager:
 
     # ── Admin blocking ─────────────────────────────────────────────────
 
+    @staticmethod
+    def _ttl_to_expiry(duration: int):
+        """duration seconds → (ttl_seconds, expires_at). 0 → 30 days (legacy)."""
+        ttl = duration if duration and duration > 0 else 30 * 86400
+        return ttl, _utcnow() + timedelta(seconds=ttl)
+
+    async def init_blocklist_db(self):
+        """Create the blocklist table if it does not exist (idempotent)."""
+        if self._sql_engine is None:
+            return
+        async with self._sql_engine.begin() as conn:
+            await conn.run_sync(BlockEntry.metadata.create_all)
+
+    async def _sql_put_block(self, kind, key, reason, expires_at):
+        async with AsyncSession(self._sql_engine) as session:
+            await session.execute(
+                sql_delete(BlockEntry).where(
+                    BlockEntry.kind == kind, BlockEntry.key == key
+                )
+            )
+            session.add(
+                BlockEntry(
+                    kind=kind, key=key, reason=reason or "blocked",
+                    expires_at=expires_at,
+                )
+            )
+            await session.commit()
+
+    async def _sql_remove_block(self, kind, key):
+        async with AsyncSession(self._sql_engine) as session:
+            await session.execute(
+                sql_delete(BlockEntry).where(
+                    BlockEntry.kind == kind, BlockEntry.key == key
+                )
+            )
+            await session.commit()
+
+    async def _set_redis_block(self, kind, key, reason, ttl):
+        if self._redis is not None:
+            await self._redis.set(f"blocked:{kind}:{key}", reason or "blocked", ex=ttl)
+
+    async def _del_redis_block(self, kind, key):
+        if self._redis is not None:
+            await self._redis.delete(f"blocked:{kind}:{key}")
+
     async def block_user(self, user_id: str, duration: int = 3600, reason: str = ""):
-        """Block a user. Duration in seconds (0 = 30 days)."""
-        if self._redis is None:
-            raise RuntimeError("Redis not available for blocklist operations")
-        ttl = duration if duration > 0 else 30 * 86400
-        await self._redis.set(
-            f"blocked:user:{user_id}", reason or "blocked", ex=ttl
-        )
+        """Block a user. Duration in seconds (0 = 30 days). Durable (Postgres) +
+        Redis cache."""
+        if self._sql_engine is None and self._redis is None:
+            raise RuntimeError("No durable store or Redis available for blocklist")
+        ttl, expires_at = self._ttl_to_expiry(duration)
+        if self._sql_engine is not None:
+            await self._sql_put_block("user", user_id, reason, expires_at)
+        await self._set_redis_block("user", user_id, reason, ttl)
         logger.info("Blocked user %s for %ds: %s", user_id, ttl, reason)
 
     async def unblock_user(self, user_id: str):
-        """Unblock a user."""
-        if self._redis is None:
-            raise RuntimeError("Redis not available for blocklist operations")
-        await self._redis.delete(f"blocked:user:{user_id}")
+        """Unblock a user (durable store + Redis cache)."""
+        if self._sql_engine is not None:
+            await self._sql_remove_block("user", user_id)
+        await self._del_redis_block("user", user_id)
         logger.info("Unblocked user %s", user_id)
 
     async def block_ip(self, ip: str, duration: int = 3600, reason: str = ""):
-        """Block an IP address. Duration in seconds (0 = 30 days)."""
-        if self._redis is None:
-            raise RuntimeError("Redis not available for blocklist operations")
-        ttl = duration if duration > 0 else 30 * 86400
-        await self._redis.set(f"blocked:ip:{ip}", reason or "blocked", ex=ttl)
+        """Block an IP address. Duration in seconds (0 = 30 days). Durable + cache."""
+        if self._sql_engine is None and self._redis is None:
+            raise RuntimeError("No durable store or Redis available for blocklist")
+        ttl, expires_at = self._ttl_to_expiry(duration)
+        if self._sql_engine is not None:
+            await self._sql_put_block("ip", ip, reason, expires_at)
+        await self._set_redis_block("ip", ip, reason, ttl)
         logger.info("Blocked IP %s for %ds: %s", ip, ttl, reason)
 
     async def unblock_ip(self, ip: str):
-        """Unblock an IP address."""
-        if self._redis is None:
-            raise RuntimeError("Redis not available for blocklist operations")
-        await self._redis.delete(f"blocked:ip:{ip}")
+        """Unblock an IP address (durable store + Redis cache)."""
+        if self._sql_engine is not None:
+            await self._sql_remove_block("ip", ip)
+        await self._del_redis_block("ip", ip)
         logger.info("Unblocked IP %s", ip)
 
     async def list_blocked(self) -> dict:
-        """List all currently blocked users and IPs."""
+        """List currently-blocked users and IPs (from the durable store if present,
+        else Redis). ttl_seconds = -1 means a permanent block."""
         result = {"users": [], "ips": []}
+        if self._sql_engine is not None:
+            now = _utcnow()
+            async with AsyncSession(self._sql_engine) as session:
+                rows = (await session.execute(select(BlockEntry))).scalars().all()
+            for r in rows:
+                exp = r.expires_at
+                if exp is not None:
+                    if exp <= now:
+                        continue  # expired — not active
+                    ttl = int((exp - now).total_seconds())
+                else:
+                    ttl = -1  # permanent
+                bucket = "users" if r.kind == "user" else "ips"
+                result[bucket].append(
+                    {"id": r.key, "reason": r.reason, "ttl_seconds": ttl}
+                )
+            return result
+        # No durable store — scan Redis (legacy behavior).
         if self._redis is None:
             return result
-
-        # Scan for blocked:user:* and blocked:ip:*
         for prefix, key in [("blocked:user:", "users"), ("blocked:ip:", "ips")]:
             cursor = 0
             while True:
@@ -295,6 +397,37 @@ class ResourceLimitsManager:
                 if cursor == 0:
                     break
         return result
+
+    async def sync_blocklist_to_redis(self):
+        """Repopulate the Redis cache from the Postgres source of truth (call on
+        startup). Makes blocks survive a Redis reset/flush/data-loss (e.g.
+        HYPHA_RESET_REDIS=true) and prunes expired rows. No-op without both stores."""
+        if self._sql_engine is None or self._redis is None:
+            return
+        now = _utcnow()
+        async with AsyncSession(self._sql_engine) as session:
+            await session.execute(
+                sql_delete(BlockEntry).where(
+                    BlockEntry.expires_at.is_not(None),
+                    BlockEntry.expires_at <= now,
+                )
+            )
+            await session.commit()
+            rows = (await session.execute(select(BlockEntry))).scalars().all()
+        restored = 0
+        for r in rows:
+            exp = r.expires_at
+            ttl = int((exp - now).total_seconds()) if exp is not None else 30 * 86400
+            if ttl <= 0:
+                continue
+            await self._redis.set(
+                f"blocked:{r.kind}:{r.key}", r.reason or "blocked", ex=ttl
+            )
+            restored += 1
+        if restored:
+            logger.info(
+                "Repopulated %d blocklist entries from Postgres into Redis", restored
+            )
 
     # ── Connection reconciliation ─────────────────────────────────────
 
