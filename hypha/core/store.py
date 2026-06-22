@@ -355,7 +355,9 @@ class RedisStore:
         self._root_user = None
         self._root_token = root_token
         self._event_bus = RedisEventBus(self._redis)
-        self._resource_limits = ResourceLimitsManager(redis=self._redis)
+        self._resource_limits = ResourceLimitsManager(
+            redis=self._redis, sql_engine=self._sql_engine
+        )
 
         self._tracker = None
         self._tracker_task = None
@@ -891,6 +893,12 @@ class RedisStore:
         """Setup the store."""
         self.loop = asyncio.get_running_loop()
         await self._maybe_reset_redis(reset_redis)
+        # Durable blocklist (Postgres source of truth): ensure the table exists, then
+        # repopulate the Redis cache from it. Runs AFTER _maybe_reset_redis so a flush
+        # (HYPHA_RESET_REDIS=true) does NOT lose admin blocks — they are restored from
+        # Postgres here, surviving Redis reset/data-loss, not just pod restarts.
+        await self._resource_limits.init_blocklist_db()
+        await self._resource_limits.sync_blocklist_to_redis()
         await self._event_bus.init()
         self._tracker = ActivityTracker(check_interval=self._activity_check_interval)
         self._tracker_task = asyncio.create_task(self._tracker.monitor_entities())

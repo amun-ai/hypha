@@ -284,9 +284,11 @@ class TestResourceUsage:
         assert usage["services_per_client"]["ws1/c1"] == 2
         assert "max_connections_per_user" in usage["limits"]
 
-    def test_no_redis_blocklist_operations_raise(self):
-        rl = ResourceLimitsManager(redis=None)
-        with pytest.raises(RuntimeError, match="Redis not available"):
+    def test_no_store_blocklist_block_raises(self):
+        # With neither a durable SQL store nor Redis, a BLOCK has nowhere to persist
+        # and must raise (unblock, by contrast, is a graceful no-op).
+        rl = ResourceLimitsManager(redis=None, sql_engine=None)
+        with pytest.raises(RuntimeError, match="No durable store or Redis"):
             import asyncio
             asyncio.get_event_loop().run_until_complete(
                 rl.block_user("user1")
@@ -354,3 +356,103 @@ class TestCheckBlocked:
         rl = ResourceLimitsManager(redis=_FakeRedis({f"blocked:user:{uid}": b"abuse"}))
         result = await rl.check_connection_allowed(uid, "1.2.3.4", "ws1")
         assert result is not None and "blocked" in result.lower()
+
+
+class _RichFakeRedis:
+    """Fake async Redis supporting the blocklist cache ops."""
+
+    def __init__(self):
+        self.store = {}
+
+    async def set(self, k, v, ex=None):
+        self.store[k] = v
+
+    async def get(self, k):
+        return self.store.get(k)
+
+    async def delete(self, k):
+        self.store.pop(k, None)
+
+    async def exists(self, k):
+        return 1 if k in self.store else 0
+
+    async def ttl(self, k):
+        return -1
+
+    async def scan(self, cursor=0, match=None, count=100):
+        import fnmatch
+        keys = [k for k in self.store if match is None or fnmatch.fnmatch(k, match)]
+        return 0, keys
+
+
+class TestDurableBlocklist:
+    """Postgres (SQLite here) is the durable source of truth; Redis is a cache
+    repopulated from SQL on startup — so admin blocks survive a Redis reset/flush
+    (HYPHA_RESET_REDIS=true) / data-loss, not just pod restarts. (0.21.99)"""
+
+    @pytest_asyncio.fixture
+    async def engine(self):
+        import tempfile
+        import os as _os
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        fd, path = tempfile.mkstemp(suffix=".db")
+        _os.close(fd)
+        eng = create_async_engine(f"sqlite+aiosqlite:///{path}")
+        yield eng
+        await eng.dispose()
+        _os.unlink(path)
+
+    @pytest.mark.asyncio
+    async def test_block_survives_redis_flush(self, engine):
+        redis = _RichFakeRedis()
+        rl = ResourceLimitsManager(redis=redis, sql_engine=engine)
+        await rl.init_blocklist_db()
+
+        uid = "google-oauth2|117932459319487424837"
+        await rl.block_user(uid, duration=3600, reason="abuse")
+        # active via the durable list + the Redis cache
+        bl = await rl.list_blocked()
+        assert any(u["id"] == uid for u in bl["users"])
+        assert await rl.check_blocked(uid) is not None
+
+        # Simulate a Redis FLUSH (what HYPHA_RESET_REDIS=true does on restart).
+        redis.store.clear()
+        assert await rl.check_blocked(uid) is None  # cache gone…
+        # …but the durable SQL record still has it, and boot repopulation restores it.
+        bl = await rl.list_blocked()
+        assert any(u["id"] == uid for u in bl["users"])
+        await rl.sync_blocklist_to_redis()
+        assert await rl.check_blocked(uid) is not None  # back in the cache
+
+    @pytest.mark.asyncio
+    async def test_unblock_clears_sql_and_redis(self, engine):
+        redis = _RichFakeRedis()
+        rl = ResourceLimitsManager(redis=redis, sql_engine=engine)
+        await rl.init_blocklist_db()
+        await rl.block_ip("9.9.9.9", reason="x")
+        await rl.unblock_ip("9.9.9.9")
+        assert (await rl.list_blocked())["ips"] == []
+        assert await rl.check_blocked(None, "9.9.9.9") is None
+
+    @pytest.mark.asyncio
+    async def test_expired_block_inactive_and_pruned(self, engine):
+        from datetime import datetime, timezone, timedelta
+        from sqlalchemy.ext.asyncio import AsyncSession
+        from sqlmodel import select
+        from hypha.resource_limits import BlockEntry
+
+        redis = _RichFakeRedis()
+        rl = ResourceLimitsManager(redis=redis, sql_engine=engine)
+        await rl.init_blocklist_db()
+        async with AsyncSession(engine) as s:
+            s.add(BlockEntry(kind="user", key="stale", reason="r",
+                             expires_at=datetime.now(timezone.utc) - timedelta(hours=1)))
+            await s.commit()
+        # expired → not listed as active
+        assert all(u["id"] != "stale" for u in (await rl.list_blocked())["users"])
+        # sync prunes it from SQL
+        await rl.sync_blocklist_to_redis()
+        async with AsyncSession(engine) as s:
+            rows = (await s.execute(select(BlockEntry))).scalars().all()
+        assert all(r.key != "stale" for r in rows)
