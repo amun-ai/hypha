@@ -1,5 +1,9 @@
 # Hypha Change Log
 
+### 0.21.101
+
+ - Fix Git LFS **download** failing anonymously on public git-storage artifacts. `git clone` of a public repo fetched the git pack fine but the LFS smudge failed — `batch response: Repository or object not found` — and a direct POST to `…/<alias>.git/info/lfs/objects/batch` returned `404 {"detail":"Repository not found"}` for anonymous requests, while the smart-HTTP git protocol (`info/refs`) and the REST file endpoint served the same object anonymously. Root cause: `hypha/git/lfs.py::create_lfs_router.lfs_auth` returned **`None`** for unauthenticated requests, whereas the smart-HTTP git route's `git_optional_auth` falls back to `login_optional` (yielding an **anonymous `UserInfo`**). With `user_info=None`, `get_lfs_handler_callback` → `_get_artifact_with_permission(None, …)` could not resolve even a `"*": "r"` public repo → 404. git-lfs discovers the LFS endpoint as `auth=none` and POSTs the batch anonymously, so the smudge always failed for anonymous clones. Fix: `lfs_auth` now falls back to `login_optional` for the anonymous / no-token / bad-token cases (mirroring `git_optional_auth`), so public LFS objects download anonymously while private ones still get a clean 401/403. Upload-side LFS and authenticated download were unaffected. Test: `tests/test_git.py::test_git_lfs_batch_anonymous_public_repo` (public repo + anonymous batch → 200; fails as 404 without the fix).
+
 ### 0.21.100
 
  - Fix the MCP-driven server OOM completely — **two** distinct per-request leaks on the JSON-RPC POST path, both proven (and the fix verified) on dev with gc **object counts** (RSS is masked by warm-allocator reuse and misled the initial triage). Validation: 2600 mixed requests → all four object families bounded at ~1/service (vs +1/request before).

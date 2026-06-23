@@ -494,7 +494,14 @@ def create_lfs_router(
         logger.debug(f"LFS auth request: method={request.method}, path={request.url.path}")
 
         if not authorization:
-            return None
+            # Anonymous request — fall back to the optional login dependency so we get an
+            # anonymous UserInfo (NOT None). Public LFS objects must be downloadable
+            # anonymously, exactly like the smart-HTTP git routes (git_optional_auth also
+            # falls back to login_optional here). Returning None made
+            # _get_artifact_with_permission unable to resolve even PUBLIC repos → 404
+            # "Repository not found" on `git clone` LFS smudge (git-lfs discovers the
+            # endpoint as auth=none and POSTs the batch request anonymously).
+            return await login_optional_dep(request)
 
         provided_username, token = extract_credentials_from_basic_auth(authorization)
 
@@ -511,7 +518,8 @@ def create_lfs_router(
             )
 
         if not token:
-            return None
+            # Basic auth header with no token (e.g. 'git:') — treat as anonymous.
+            return await login_optional_dep(request)
 
         if parse_user_token:
             try:
@@ -520,10 +528,12 @@ def create_lfs_router(
                     user_info.scope.current_workspace = user_info.get_workspace()
                 return user_info
             except Exception as e:
+                # Bad/expired token — fall back to anonymous (public reads still work,
+                # private ones get a clean 403), matching the git route's leniency.
                 logger.warning(f"LFS auth failed: {e}")
-                return None
+                return await login_optional_dep(request)
 
-        return None
+        return await login_optional_dep(request)
 
     async def lfs_auth_required(
         request: Request,
@@ -581,9 +591,12 @@ def create_lfs_router(
             f"operation={batch_request.operation}, objects={len(batch_request.objects)}"
         )
 
-        # Check authentication for uploads
+        # Check authentication for uploads. lfs_auth now returns an ANONYMOUS UserInfo
+        # (not None) for unauthenticated requests, so an upload must be rejected with 401
+        # for both None and anonymous users — otherwise the anon user would fall through
+        # to a 403 (permission denied) and git-lfs would not retry with credentials.
         write_required = batch_request.operation == "upload"
-        if write_required and not user_info:
+        if write_required and (not user_info or getattr(user_info, "is_anonymous", False)):
             raise HTTPException(
                 status_code=401,
                 detail="Authentication required for upload",

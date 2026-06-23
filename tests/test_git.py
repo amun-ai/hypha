@@ -613,6 +613,79 @@ async def test_git_clone_public_without_auth(
     await api.disconnect()
 
 
+async def test_git_lfs_batch_anonymous_public_repo(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Regression: the Git LFS Batch API must resolve PUBLIC repos ANONYMOUSLY.
+
+    git-lfs discovers the LFS endpoint as auth=none and POSTs the batch request
+    anonymously during `git clone` smudge. `lfs_auth` returned None for anonymous
+    requests (instead of falling back to login_optional like the smart-HTTP git route's
+    git_optional_auth does), so get_lfs_handler_callback got user_info=None and could not
+    resolve even a PUBLIC repo → HTTP 404 "Repository not found" → the LFS smudge failed
+    ("batch response: Repository or object not found") even though the smart-HTTP git
+    protocol and the REST file endpoint both served the same repo anonymously. The fix
+    makes lfs_auth fall back to login_optional (anonymous UserInfo) for anon/no-token.
+    See hypha/git/lfs.py::create_lfs_router.lfs_auth.
+    """
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-lfs-anon-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # PUBLIC git artifact ("*": "r"), same as the anonymous-clone test.
+    artifact_alias = f"lfs-anon-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Public LFS Repo"},
+        config={"storage": "git", "permissions": {"*": "r"}},
+    )
+    workspace = api.config.workspace
+
+    # POST the LFS batch endpoint exactly like git-lfs does: with the `.git` suffix and a
+    # download operation. Use a dummy oid — the bug is REPO resolution (404 "Repository
+    # not found"), which happens before object lookup, so the object need not exist.
+    batch_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}.git/info/lfs/objects/batch"
+    batch_body = {
+        "operation": "download",
+        "transfers": ["basic"],
+        "objects": [{"oid": "0" * 64, "size": 0}],
+    }
+    headers = {
+        "Content-Type": "application/vnd.git-lfs+json",
+        "Accept": "application/vnd.git-lfs+json",
+    }
+    session = get_http_session()  # ignore ~/.netrc so the request is truly anonymous
+
+    # ANONYMOUS — the regression. Before the fix this was 404 "Repository not found".
+    resp = session.post(batch_url, json=batch_body, headers=headers, timeout=10)
+    assert resp.status_code == 200, (
+        f"Anonymous LFS batch on a PUBLIC repo must resolve, got {resp.status_code}: "
+        f"{resp.text}. lfs_auth must fall back to login_optional for anonymous requests."
+    )
+    assert "Repository not found" not in resp.text
+    body = resp.json()
+    assert "objects" in body, f"expected a valid LFS batch response, got {body}"
+
+    # AUTHENTICATED — the path that already worked; guard it stays working.
+    resp_auth = session.post(
+        batch_url, json=batch_body, headers=headers, auth=("git", test_user_token), timeout=10
+    )
+    assert resp_auth.status_code == 200, (
+        f"Authenticated LFS batch should resolve, got {resp_auth.status_code}: {resp_auth.text}"
+    )
+
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
+
+
 # Git LFS tests
 
 
