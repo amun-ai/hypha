@@ -705,6 +705,89 @@ async def test_git_lfs_batch_anonymous_public_repo(
     await api.disconnect()
 
 
+async def test_git_shallow_clone_depth(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Regression: shallow clone (`git clone --depth=N`).
+
+    The smart-HTTP upload-pack parsed the client's `deepen` request but ignored it — it
+    sent `NAK` where the client expected the shallow/unshallow section → `fatal: expected
+    shallow/unshallow, got NAK; the remote end hung up unexpectedly`. The server now
+    emits `shallow <sha>` boundary lines + a depth-bounded pack. Verifies --depth=1 and
+    --depth=2 return the right number of commits AND that a full clone still gets the
+    entire history (the full-clone path must be untouched). See hypha/git/http.py.
+    """
+    import subprocess
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-shallow-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+    artifact_manager = await api.get_service("public/artifact-manager")
+    artifact_alias = f"git-shallow-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Shallow Clone Test"},
+        config={"storage": "git"},
+    )
+    workspace = api.config.workspace
+    port = SIO_PORT
+    auth_url = f"http://git:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+
+        def run(args, cwd):
+            return subprocess.run(
+                args, cwd=cwd, env=env, capture_output=True, text=True, timeout=60
+            )
+
+        def count(cwd):
+            return run(["git", "rev-list", "--count", "HEAD"], cwd).stdout.strip()
+
+        # Build a 3-commit history and push it (authenticated).
+        repo = os.path.join(tmpdir, "src")
+        os.makedirs(repo, exist_ok=True)
+        assert run(["git", "init", "-b", "main"], repo).returncode == 0
+        run(["git", "config", "user.email", "t@example.com"], repo)
+        run(["git", "config", "user.name", "Test User"], repo)
+        for i in range(3):
+            with open(os.path.join(repo, "file.txt"), "w") as f:
+                f.write(f"v{i}\n")
+            run(["git", "add", "file.txt"], repo)
+            assert run(["git", "commit", "-m", f"commit {i}"], repo).returncode == 0
+        push = run(["git", "push", auth_url, "main:main"], repo)
+        assert push.returncode == 0, f"push failed: {push.stdout}\n{push.stderr}"
+
+        # --depth=1 → exactly 1 commit, latest content present (the regression).
+        d1 = os.path.join(tmpdir, "d1")
+        c1 = run(["git", "clone", "--depth=1", auth_url, d1], tmpdir)
+        assert c1.returncode == 0, f"shallow clone --depth=1 failed: {c1.stdout}\n{c1.stderr}"
+        assert count(d1) == "1", f"--depth=1 should yield 1 commit, got {count(d1)}"
+        with open(os.path.join(d1, "file.txt")) as f:
+            assert f.read() == "v2\n", "shallow clone must contain the latest content"
+
+        # --depth=2 → exactly 2 commits.
+        d2 = os.path.join(tmpdir, "d2")
+        c2 = run(["git", "clone", "--depth=2", auth_url, d2], tmpdir)
+        assert c2.returncode == 0, f"shallow clone --depth=2 failed: {c2.stdout}\n{c2.stderr}"
+        assert count(d2) == "2", f"--depth=2 should yield 2 commits, got {count(d2)}"
+
+        # Full clone must be UNAFFECTED — all 3 commits.
+        full = os.path.join(tmpdir, "full")
+        cf = run(["git", "clone", auth_url, full], tmpdir)
+        assert cf.returncode == 0, f"full clone failed: {cf.stdout}\n{cf.stderr}"
+        assert count(full) == "3", f"full clone should yield 3 commits, got {count(full)}"
+
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
+
+
 # Git LFS tests
 
 

@@ -727,6 +727,7 @@ class GitHTTPHandler:
         shas: list[bytes],
         common: list[bytes],
         capabilities: set,
+        shallow_shas: list[bytes] = None,
     ) -> bytes:
         """Build the full upload-pack response in memory (small repos).
 
@@ -736,7 +737,9 @@ class GitHTTPHandler:
         into a single buffer so Content-Length can be set.
         """
         parts: list[bytes] = []
-        async for chunk in self.stream_upload_pack_response(shas, common, capabilities):
+        async for chunk in self.stream_upload_pack_response(
+            shas, common, capabilities, shallow_shas=shallow_shas
+        ):
             parts.append(chunk)
         return b"".join(parts)
 
@@ -756,15 +759,22 @@ class GitHTTPHandler:
 
     def _parse_upload_pack_request(
         self, body: bytes
-    ) -> tuple[list[bytes], list[bytes], set]:
-        """Parse an upload-pack request body into wants, haves, capabilities.
+    ) -> tuple[list[bytes], list[bytes], set, "int | None", list[bytes]]:
+        """Parse an upload-pack request body into wants, haves, capabilities, and the
+        shallow-clone parameters.
 
         Returns:
-            (want_shas, have_shas, capabilities)
+            (want_shas, have_shas, capabilities, depth, client_shallows)
+            - depth: the ``deepen <N>`` value for a shallow clone, or None for a full
+              clone. (deepen-since/deepen-not are not supported and are ignored.)
+            - client_shallows: ``shallow <sha>`` lines the client already has.
         """
         want_shas: list[bytes] = []
         have_shas: list[bytes] = []
         capabilities: set = set()
+        depth: "int | None" = None
+        client_shallows: list[bytes] = []
+        has_done = False
 
         offset = 0
         while offset < len(body):
@@ -792,10 +802,20 @@ class GitHTTPHandler:
                 want_shas.append(sha)
             elif line.startswith(b"have "):
                 have_shas.append(line.split(b" ", 1)[1])
+            elif line.startswith(b"shallow "):
+                client_shallows.append(line.split(b" ", 1)[1])
+            elif line.startswith(b"deepen "):
+                try:
+                    parsed = int(line.split(b" ", 1)[1])
+                    # depth must be >= 1 to be meaningful
+                    depth = parsed if parsed >= 1 else None
+                except (ValueError, IndexError):
+                    depth = None
             elif line == b"done":
+                has_done = True
                 break
 
-        return want_shas, have_shas, capabilities
+        return want_shas, have_shas, capabilities, depth, client_shallows, has_done
 
     async def resolve_pack_shas(
         self, want_shas: list[bytes], have_shas: list[bytes]
@@ -814,6 +834,93 @@ class GitHTTPHandler:
         # Pre-load packs once so the sync record iterator can pull objects.
         await self.repo.ensure_packs_loaded()
         return list(objects_to_send)
+
+    async def resolve_pack_shas_shallow(
+        self, want_shas: list[bytes], depth: int
+    ) -> tuple[list[bytes], list[bytes]]:
+        """Depth-bounded reachability for a shallow clone (``git clone --depth=N``).
+
+        Walks at most ``depth`` commits back from each want (the want commit itself is
+        depth 1), collecting each included commit's full tree + blobs but NOT commit
+        parents beyond the depth limit. Commits whose parents are cut off by the limit
+        become the SHALLOW BOUNDARY — the client is told ``shallow <sha>`` for each so it
+        records a shallow repository. A breadth-first walk guarantees each commit is
+        processed at its minimum depth, so boundary detection is correct across branches.
+
+        Returns (object_shas, shallow_boundary_shas).
+
+        Only invoked when the client sends ``deepen`` — resolve_pack_shas (full clone) is
+        left completely untouched.
+        """
+        from collections import deque
+        from dulwich.objects import Commit, Tag
+
+        objects: set = set()
+        shallow_boundary: set = set()
+        seen_commits: set = set()
+        queue: deque = deque()
+
+        # Peel each want (it may be an annotated tag) down to a commit; include the tag
+        # objects themselves in the pack.
+        for want in want_shas:
+            cur = want
+            try:
+                obj = await self.repo.get_object_async(cur)
+            except KeyError:
+                continue
+            while isinstance(obj, Tag):
+                objects.add(cur)
+                cur = obj.object[1]
+                try:
+                    obj = await self.repo.get_object_async(cur)
+                except KeyError:
+                    obj = None
+                    break
+            if isinstance(obj, Commit):
+                queue.append((cur, 1))
+
+        while queue:
+            sha, d = queue.popleft()
+            if sha in seen_commits:
+                continue
+            seen_commits.add(sha)
+            try:
+                commit = await self.repo.get_object_async(sha)
+            except KeyError:
+                continue
+            if not isinstance(commit, Commit):
+                continue
+            objects.add(sha)
+            # Full tree (subtrees + blobs) at this commit — reuse the tree-only walk
+            # (a tree has no parents, so this never traverses commit history).
+            await self._collect_reachable_objects(commit.tree, objects, set())
+            if d >= depth:
+                if commit.parents:
+                    shallow_boundary.add(sha)  # parents cut off → boundary
+            else:
+                for parent_sha in commit.parents:
+                    if parent_sha not in seen_commits:
+                        queue.append((parent_sha, d + 1))
+
+        await self.repo.ensure_packs_loaded()
+        return list(objects), list(shallow_boundary)
+
+    def shallow_update_section(
+        self, shallow_shas: list[bytes], unshallow_shas: list[bytes] = None
+    ) -> bytes:
+        """Build the shallow-update section: ``shallow``/``unshallow`` pkt-lines + flush.
+
+        Sent on its own as the response to the stateless-RPC shallow NEGOTIATION round
+        (wants+deepen without ``done``), and also prepended to the pack response on the
+        round that carries ``done`` (handled in stream_upload_pack_response).
+        """
+        parts: list[bytes] = []
+        for sha in shallow_shas or []:
+            parts.append(pkt_line(b"shallow " + sha + b"\n"))
+        for sha in unshallow_shas or []:
+            parts.append(pkt_line(b"unshallow " + sha + b"\n"))
+        parts.append(pkt_flush())
+        return b"".join(parts)
 
     def estimate_pack_size(self, shas: list[bytes]) -> int:
         """Estimate total uncompressed object size for the given SHAs.
@@ -864,6 +971,7 @@ class GitHTTPHandler:
         shas: list[bytes],
         common: list[bytes],
         capabilities: set,
+        shallow_shas: list[bytes] = None,
     ) -> AsyncIterator[bytes]:
         """Stream an upload-pack response, generating the pack incrementally.
 
@@ -873,6 +981,15 @@ class GitHTTPHandler:
         to the StreamingResponse. Only ~1 object is decompressed at a time via
         the lazy iter_pack_records iterator, so peak memory stays bounded.
         """
+        # Shallow-clone section (only when the client requested --depth): the server
+        # MUST send the shallow/unshallow lines + a flush BEFORE the ACK/NAK, else the
+        # client errors with "expected shallow/unshallow, got NAK". Empty/None for a
+        # full clone, so this is a no-op on the normal path.
+        if shallow_shas:
+            for sha in shallow_shas:
+                yield pkt_line(b"shallow " + sha + b"\n")
+            yield pkt_flush()
+
         # Leading ACK/NAK lines (small) come first.
         if b"multi_ack" in capabilities and common:
             for sha in common:
@@ -1597,9 +1714,14 @@ def create_git_router(
             body = await request.body()
             logger.info(f"git_upload_pack: received {len(body)} bytes")
 
-            want_shas, have_shas, capabilities = handler._parse_upload_pack_request(
-                body
-            )
+            (
+                want_shas,
+                have_shas,
+                capabilities,
+                depth,
+                _client_shallows,
+                has_done,
+            ) = handler._parse_upload_pack_request(body)
 
             if not want_shas:
                 # No wants: NAK + empty pack, buffered (tiny).
@@ -1611,7 +1733,27 @@ def create_git_router(
                 )
 
             common = await handler.compute_common_haves(have_shas)
-            shas = await handler.resolve_pack_shas(want_shas, have_shas)
+            shallow_shas: list = []
+            if depth is not None:
+                # Shallow clone (git clone --depth=N): depth-bounded object set + the
+                # shallow boundary the client must be told about. Full-clone path below
+                # is unchanged.
+                shas, shallow_shas = await handler.resolve_pack_shas_shallow(
+                    want_shas, depth
+                )
+                if not has_done:
+                    # Stateless-RPC shallow NEGOTIATION round: the client sent
+                    # wants+deepen WITHOUT `done` and expects ONLY the shallow-update
+                    # (shallow/unshallow lines + flush) — no acks, no pack. Sending the
+                    # pack here leaves a stray NAK that corrupts the next round's read
+                    # ("expected shallow list"). The client then re-sends with `done`.
+                    return Response(
+                        content=handler.shallow_update_section(shallow_shas),
+                        media_type=media_type,
+                        headers=response_headers,
+                    )
+            else:
+                shas = await handler.resolve_pack_shas(want_shas, have_shas)
 
             if not shas:
                 response_body = await handler.empty_upload_pack_response(capabilities)
@@ -1630,7 +1772,7 @@ def create_git_router(
             if est_size <= HYPHA_GIT_STREAM_THRESHOLD:
                 # Buffered path: small/browser-compatible response w/ Content-Length.
                 response_body = await handler.buffered_upload_pack_response(
-                    shas, common, capabilities
+                    shas, common, capabilities, shallow_shas=shallow_shas
                 )
                 return Response(
                     content=response_body,
@@ -1642,7 +1784,7 @@ def create_git_router(
             async def _stream():
                 try:
                     async for chunk in handler.stream_upload_pack_response(
-                        shas, common, capabilities
+                        shas, common, capabilities, shallow_shas=shallow_shas
                     ):
                         yield chunk
                 finally:

@@ -163,6 +163,54 @@ async def test_sqlite_create_and_search_artifacts(
     await api.disconnect()
 
 
+async def test_artifact_alias_length_validation(
+    minio_server, fastapi_server_sqlite, test_user_token
+):
+    """Regression (#987): artifact alias length must be bounded.
+
+    A 104-char alias was accepted (HTTP 200), flowing into URLs, breadcrumb UIs and
+    S3/file-system paths derived from it (slug-injection surface). The create handler now
+    rejects aliases longer than MAX_ARTIFACT_ALIAS_LENGTH (64) with a clear error, while
+    accepting normal-length aliases. See hypha/artifact.py.
+    """
+    api = await connect_to_server(
+        {
+            "name": "alias length test client",
+            "server_url": SERVER_URL_SQLITE,
+            "token": test_user_token,
+        }
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # The exact reported abuse — a 104-char alias — must be REJECTED.
+    with pytest.raises(RemoteException, match="too long|maximum"):
+        await artifact_manager.create(
+            alias="a" * 104, manifest={"name": "too long"}, type="dataset"
+        )
+
+    # A normal-length alias is accepted.
+    ok = await artifact_manager.create(
+        alias="normal-length-model-alias", manifest={"name": "ok"}, type="dataset"
+    )
+    assert ok["alias"] == "normal-length-model-alias"
+    await artifact_manager.delete(artifact_id=ok["id"])
+
+    # Boundary: exactly 64 chars is accepted, 65 is rejected.
+    a64 = "b" * 64
+    ok64 = await artifact_manager.create(
+        alias=a64, manifest={"name": "64"}, type="dataset"
+    )
+    assert ok64["alias"] == a64
+    await artifact_manager.delete(artifact_id=ok64["id"])
+
+    with pytest.raises(RemoteException, match="too long|maximum"):
+        await artifact_manager.create(
+            alias="c" * 65, manifest={"name": "65"}, type="dataset"
+        )
+
+    await api.disconnect()
+
+
 async def test_serve_artifact_endpoint(minio_server, fastapi_server, test_user_token):
     """Test the artifact serving endpoint."""
     api = await connect_to_server(
