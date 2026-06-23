@@ -69,7 +69,9 @@ jobs:
             playwright-
       - name: Install conda dependencies
         run: |
-          conda install -c conda-forge conda-pack numpy ipykernel pip python=${{ matrix.python-version }}
+          conda install -c conda-forge conda-pack numpy ipykernel pip git-lfs python=${{ matrix.python-version }}
+          git lfs install --skip-repo
+          git lfs version
           conda list
         shell: bash -l {0}
       - name: Install dependencies

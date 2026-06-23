@@ -21,6 +21,25 @@ from . import SERVER_URL, WS_SERVER_URL, SIO_PORT
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture(autouse=True)
+def _disable_git_credential_helper(monkeypatch):
+    """Disable any git credential helper (e.g. the macOS keychain) for every git/git-lfs
+    subprocess in this module.
+
+    git/git-lfs operations here authenticate via credentials embedded in the remote URL.
+    A configured credential helper (macOS osxkeychain in particular) intercepts the
+    git-lfs upload/download auth flow and, in a non-interactive context, blocks until the
+    subprocess timeout — making the LFS push/pull tests hang. Injecting an empty
+    credential.helper via GIT_CONFIG_* (which applies to all inherited subprocesses, even
+    those that pass their own env) forces git to use only the URL creds and never prompt.
+    No-op on CI (Linux) where no keychain helper exists.
+    """
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "credential.helper")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "")
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+
+
 def get_http_session():
     """Create an HTTP session that ignores ~/.netrc credentials.
 
@@ -892,6 +911,116 @@ async def test_git_lfs_push_and_pull(
             f"Cloned file hash mismatch: expected {large_file_hash}, got {cloned_hash}"
 
     # Cleanup: delete the artifact
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
+
+
+async def test_git_lfs_anonymous_clone_downloads_lfs_file(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+    check_git_lfs_installed,
+):
+    """End-to-end: push an LFS file (authenticated), then clone the PUBLIC repo
+    ANONYMOUSLY and verify the LFS object downloads with NO error.
+
+    This is the exact reported bug: `git clone` of a public git-storage artifact
+    fetched the git pack but the LFS smudge failed ("batch response: Repository or
+    object not found") because the LFS batch endpoint 404'd for anonymous requests.
+    Covers BOTH sides — git+LFS UPLOAD (push) and anonymous DOWNLOAD (clone smudge) —
+    and asserts the retrieved bytes match (proving the object, not the pointer, was
+    fetched). See hypha/git/lfs.py::create_lfs_router.lfs_auth.
+    """
+    import subprocess
+    import hashlib
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-lfs-anon-e2e-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    artifact_alias = f"lfs-anon-e2e-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Public LFS E2E"},
+        config={"storage": "git", "permissions": {"*": "r"}},  # PUBLIC read
+    )
+    workspace = api.config.workspace
+    port = SIO_PORT
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Hermetic HOME so `git lfs install` (global filters) doesn't touch the real
+        # ~/.gitconfig, and the anonymous clone's smudge still picks up the filter.
+        home = os.path.join(tmpdir, "home")
+        os.makedirs(home, exist_ok=True)
+        # Hermetic git env: temp HOME (isolated global config), ignore system config,
+        # and disable any credential helper so git-lfs uses ONLY the creds embedded in
+        # the URL and never blocks on an interactive prompt or the macOS keychain.
+        env = {
+            **os.environ,
+            "HOME": home,
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GCM_INTERACTIVE": "never",
+        }
+
+        def run(args, cwd=None, timeout=120):
+            if args and args[0] == "git":
+                args = ["git", "-c", "credential.helper="] + args[1:]
+            return subprocess.run(
+                args, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout
+            )
+
+        assert run(["git", "lfs", "install"]).returncode == 0, "git lfs install failed"
+
+        auth_url = f"http://git:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
+        anon_url = f"http://127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
+
+        # --- UPLOAD: build a repo, track *.bin via LFS, commit, push (authenticated) ---
+        repo = os.path.join(tmpdir, "src")
+        os.makedirs(repo, exist_ok=True)
+        assert run(["git", "init", "-b", "main"], cwd=repo).returncode == 0
+        run(["git", "config", "user.email", "t@example.com"], cwd=repo)
+        run(["git", "config", "user.name", "Test User"], cwd=repo)
+        assert run(["git", "lfs", "track", "*.bin"], cwd=repo).returncode == 0
+
+        size = 2 * 1024 * 1024  # 2 MB
+        content = os.urandom(size)
+        digest = hashlib.sha256(content).hexdigest()
+        with open(os.path.join(repo, "large.bin"), "wb") as f:
+            f.write(content)
+
+        assert run(["git", "add", ".gitattributes", "large.bin"], cwd=repo).returncode == 0
+        assert run(["git", "commit", "-m", "add lfs file"], cwd=repo).returncode == 0
+
+        push = run(["git", "push", auth_url, "main:main"], cwd=repo)
+        assert push.returncode == 0, f"git+LFS push (upload) failed: {push.stdout}\n{push.stderr}"
+
+        # --- DOWNLOAD: clone ANONYMOUSLY → git-lfs smudge fetches the object ---
+        dest = os.path.join(tmpdir, "clone")
+        clone = run(["git", "clone", anon_url, dest])
+        assert clone.returncode == 0, (
+            f"Anonymous clone + LFS smudge (download) failed: {clone.stdout}\n{clone.stderr}"
+        )
+        combined = (clone.stdout + clone.stderr).lower()
+        for marker in ("repository or object not found", "batch response", "error downloading"):
+            assert marker not in combined, f"LFS download error in clone output: {clone.stdout}\n{clone.stderr}"
+
+        # --- VERIFY: the actual object content was downloaded (not the LFS pointer) ---
+        got_path = os.path.join(dest, "large.bin")
+        assert os.path.exists(got_path), f"clone missing large.bin: {os.listdir(dest)}"
+        assert os.path.getsize(got_path) == size, (
+            f"downloaded size {os.path.getsize(got_path)} != {size} (smudge likely left a pointer)"
+        )
+        with open(got_path, "rb") as f:
+            assert hashlib.sha256(f.read()).hexdigest() == digest, (
+                "downloaded LFS content hash mismatch — the object was not fetched"
+            )
+
     await artifact_manager.delete(artifact_id=artifact_alias)
     await api.disconnect()
 
