@@ -21,6 +21,25 @@ from . import SERVER_URL, WS_SERVER_URL, SIO_PORT
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture(autouse=True)
+def _disable_git_credential_helper(monkeypatch):
+    """Disable any git credential helper (e.g. the macOS keychain) for every git/git-lfs
+    subprocess in this module.
+
+    git/git-lfs operations here authenticate via credentials embedded in the remote URL.
+    A configured credential helper (macOS osxkeychain in particular) intercepts the
+    git-lfs upload/download auth flow and, in a non-interactive context, blocks until the
+    subprocess timeout — making the LFS push/pull tests hang. Injecting an empty
+    credential.helper via GIT_CONFIG_* (which applies to all inherited subprocesses, even
+    those that pass their own env) forces git to use only the URL creds and never prompt.
+    No-op on CI (Linux) where no keychain helper exists.
+    """
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "credential.helper")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "")
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+
+
 def get_http_session():
     """Create an HTTP session that ignores ~/.netrc credentials.
 
@@ -613,6 +632,79 @@ async def test_git_clone_public_without_auth(
     await api.disconnect()
 
 
+async def test_git_lfs_batch_anonymous_public_repo(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Regression: the Git LFS Batch API must resolve PUBLIC repos ANONYMOUSLY.
+
+    git-lfs discovers the LFS endpoint as auth=none and POSTs the batch request
+    anonymously during `git clone` smudge. `lfs_auth` returned None for anonymous
+    requests (instead of falling back to login_optional like the smart-HTTP git route's
+    git_optional_auth does), so get_lfs_handler_callback got user_info=None and could not
+    resolve even a PUBLIC repo → HTTP 404 "Repository not found" → the LFS smudge failed
+    ("batch response: Repository or object not found") even though the smart-HTTP git
+    protocol and the REST file endpoint both served the same repo anonymously. The fix
+    makes lfs_auth fall back to login_optional (anonymous UserInfo) for anon/no-token.
+    See hypha/git/lfs.py::create_lfs_router.lfs_auth.
+    """
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-lfs-anon-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # PUBLIC git artifact ("*": "r"), same as the anonymous-clone test.
+    artifact_alias = f"lfs-anon-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Public LFS Repo"},
+        config={"storage": "git", "permissions": {"*": "r"}},
+    )
+    workspace = api.config.workspace
+
+    # POST the LFS batch endpoint exactly like git-lfs does: with the `.git` suffix and a
+    # download operation. Use a dummy oid — the bug is REPO resolution (404 "Repository
+    # not found"), which happens before object lookup, so the object need not exist.
+    batch_url = f"{SERVER_URL}/{workspace}/git/{artifact_alias}.git/info/lfs/objects/batch"
+    batch_body = {
+        "operation": "download",
+        "transfers": ["basic"],
+        "objects": [{"oid": "0" * 64, "size": 0}],
+    }
+    headers = {
+        "Content-Type": "application/vnd.git-lfs+json",
+        "Accept": "application/vnd.git-lfs+json",
+    }
+    session = get_http_session()  # ignore ~/.netrc so the request is truly anonymous
+
+    # ANONYMOUS — the regression. Before the fix this was 404 "Repository not found".
+    resp = session.post(batch_url, json=batch_body, headers=headers, timeout=10)
+    assert resp.status_code == 200, (
+        f"Anonymous LFS batch on a PUBLIC repo must resolve, got {resp.status_code}: "
+        f"{resp.text}. lfs_auth must fall back to login_optional for anonymous requests."
+    )
+    assert "Repository not found" not in resp.text
+    body = resp.json()
+    assert "objects" in body, f"expected a valid LFS batch response, got {body}"
+
+    # AUTHENTICATED — the path that already worked; guard it stays working.
+    resp_auth = session.post(
+        batch_url, json=batch_body, headers=headers, auth=("git", test_user_token), timeout=10
+    )
+    assert resp_auth.status_code == 200, (
+        f"Authenticated LFS batch should resolve, got {resp_auth.status_code}: {resp_auth.text}"
+    )
+
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
+
+
 # Git LFS tests
 
 
@@ -819,6 +911,116 @@ async def test_git_lfs_push_and_pull(
             f"Cloned file hash mismatch: expected {large_file_hash}, got {cloned_hash}"
 
     # Cleanup: delete the artifact
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
+
+
+async def test_git_lfs_anonymous_clone_downloads_lfs_file(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+    check_git_lfs_installed,
+):
+    """End-to-end: push an LFS file (authenticated), then clone the PUBLIC repo
+    ANONYMOUSLY and verify the LFS object downloads with NO error.
+
+    This is the exact reported bug: `git clone` of a public git-storage artifact
+    fetched the git pack but the LFS smudge failed ("batch response: Repository or
+    object not found") because the LFS batch endpoint 404'd for anonymous requests.
+    Covers BOTH sides — git+LFS UPLOAD (push) and anonymous DOWNLOAD (clone smudge) —
+    and asserts the retrieved bytes match (proving the object, not the pointer, was
+    fetched). See hypha/git/lfs.py::create_lfs_router.lfs_auth.
+    """
+    import subprocess
+    import hashlib
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-lfs-anon-e2e-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    artifact_alias = f"lfs-anon-e2e-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Public LFS E2E"},
+        config={"storage": "git", "permissions": {"*": "r"}},  # PUBLIC read
+    )
+    workspace = api.config.workspace
+    port = SIO_PORT
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Hermetic HOME so `git lfs install` (global filters) doesn't touch the real
+        # ~/.gitconfig, and the anonymous clone's smudge still picks up the filter.
+        home = os.path.join(tmpdir, "home")
+        os.makedirs(home, exist_ok=True)
+        # Hermetic git env: temp HOME (isolated global config), ignore system config,
+        # and disable any credential helper so git-lfs uses ONLY the creds embedded in
+        # the URL and never blocks on an interactive prompt or the macOS keychain.
+        env = {
+            **os.environ,
+            "HOME": home,
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GCM_INTERACTIVE": "never",
+        }
+
+        def run(args, cwd=None, timeout=120):
+            if args and args[0] == "git":
+                args = ["git", "-c", "credential.helper="] + args[1:]
+            return subprocess.run(
+                args, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout
+            )
+
+        assert run(["git", "lfs", "install"]).returncode == 0, "git lfs install failed"
+
+        auth_url = f"http://git:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
+        anon_url = f"http://127.0.0.1:{port}/{workspace}/git/{artifact_alias}"
+
+        # --- UPLOAD: build a repo, track *.bin via LFS, commit, push (authenticated) ---
+        repo = os.path.join(tmpdir, "src")
+        os.makedirs(repo, exist_ok=True)
+        assert run(["git", "init", "-b", "main"], cwd=repo).returncode == 0
+        run(["git", "config", "user.email", "t@example.com"], cwd=repo)
+        run(["git", "config", "user.name", "Test User"], cwd=repo)
+        assert run(["git", "lfs", "track", "*.bin"], cwd=repo).returncode == 0
+
+        size = 2 * 1024 * 1024  # 2 MB
+        content = os.urandom(size)
+        digest = hashlib.sha256(content).hexdigest()
+        with open(os.path.join(repo, "large.bin"), "wb") as f:
+            f.write(content)
+
+        assert run(["git", "add", ".gitattributes", "large.bin"], cwd=repo).returncode == 0
+        assert run(["git", "commit", "-m", "add lfs file"], cwd=repo).returncode == 0
+
+        push = run(["git", "push", auth_url, "main:main"], cwd=repo)
+        assert push.returncode == 0, f"git+LFS push (upload) failed: {push.stdout}\n{push.stderr}"
+
+        # --- DOWNLOAD: clone ANONYMOUSLY → git-lfs smudge fetches the object ---
+        dest = os.path.join(tmpdir, "clone")
+        clone = run(["git", "clone", anon_url, dest])
+        assert clone.returncode == 0, (
+            f"Anonymous clone + LFS smudge (download) failed: {clone.stdout}\n{clone.stderr}"
+        )
+        combined = (clone.stdout + clone.stderr).lower()
+        for marker in ("repository or object not found", "batch response", "error downloading"):
+            assert marker not in combined, f"LFS download error in clone output: {clone.stdout}\n{clone.stderr}"
+
+        # --- VERIFY: the actual object content was downloaded (not the LFS pointer) ---
+        got_path = os.path.join(dest, "large.bin")
+        assert os.path.exists(got_path), f"clone missing large.bin: {os.listdir(dest)}"
+        assert os.path.getsize(got_path) == size, (
+            f"downloaded size {os.path.getsize(got_path)} != {size} (smudge likely left a pointer)"
+        )
+        with open(got_path, "rb") as f:
+            assert hashlib.sha256(f.read()).hexdigest() == digest, (
+                "downloaded LFS content hash mismatch — the object was not fetched"
+            )
+
     await artifact_manager.delete(artifact_id=artifact_alias)
     await api.disconnect()
 
