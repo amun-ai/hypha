@@ -84,6 +84,10 @@ logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("artifact")
 logger.setLevel(LOGLEVEL)
 
+# Maximum length of a user-provided artifact alias. An unbounded alias propagates into
+# URLs, breadcrumb UIs and S3/file-system paths; cap it to a sane slug length.
+MAX_ARTIFACT_ALIAS_LENGTH = 64
+
 
 class PartETag(BaseModel):
     part_number: int
@@ -5025,6 +5029,16 @@ class ArtifactController:
         if alias and alias in ("-", "~", "_"):
             raise ValueError(
                 f"Alias '{alias}' is reserved and cannot be used. Please choose a different alias."
+            )
+
+        # Validate alias length. An unbounded alias flows into URLs, breadcrumb UIs and
+        # S3/file-system paths derived from it (slug-injection surface). Bound the
+        # user-provided alias; `{uuid}`/`{timestamp}` template placeholders are short so
+        # normal templated aliases are unaffected (the placeholders expand server-side).
+        if alias and len(alias) > MAX_ARTIFACT_ALIAS_LENGTH:
+            raise ValueError(
+                f"Alias is too long ({len(alias)} characters); the maximum is "
+                f"{MAX_ARTIFACT_ALIAS_LENGTH}. Please choose a shorter alias."
             )
 
         created_at = int(time.time())
