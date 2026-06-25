@@ -778,6 +778,15 @@ async def test_git_shallow_clone_depth(
         assert c2.returncode == 0, f"shallow clone --depth=2 failed: {c2.stdout}\n{c2.stderr}"
         assert count(d2) == "2", f"--depth=2 should yield 2 commits, got {count(d2)}"
 
+        # --depth >= history: an EMPTY shallow boundary. Must still succeed (all 3
+        # commits) — the server must emit an empty shallow-update, not omit it.
+        d10 = os.path.join(tmpdir, "d10")
+        c10 = run(["git", "clone", "--depth=10", auth_url, d10], tmpdir)
+        assert c10.returncode == 0, (
+            f"--depth=10 (> history) must succeed, got: {c10.stdout}\n{c10.stderr}"
+        )
+        assert count(d10) == "3", f"--depth=10 should yield all 3 commits, got {count(d10)}"
+
         # Full clone must be UNAFFECTED — all 3 commits.
         full = os.path.join(tmpdir, "full")
         cf = run(["git", "clone", auth_url, full], tmpdir)
@@ -785,6 +794,49 @@ async def test_git_shallow_clone_depth(
         assert count(full) == "3", f"full clone should yield 3 commits, got {count(full)}"
 
     await artifact_manager.delete(artifact_id=artifact_alias)
+
+    # SINGLE-COMMIT repo + --depth=1 — the exact case that regressed in 0.21.102
+    # ("expected shallow list"): HEAD has no parents, so the shallow boundary is empty.
+    # The clone must still succeed (1 commit).
+    single_alias = f"git-shallow1-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=single_alias,
+        manifest={"name": "Single Commit Shallow Test"},
+        config={"storage": "git"},
+    )
+    single_url = (
+        f"http://git:{test_user_token}@127.0.0.1:{port}/{workspace}/git/{single_alias}"
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+
+        def run1(args, cwd):
+            return subprocess.run(
+                args, cwd=cwd, env=env, capture_output=True, text=True, timeout=60
+            )
+
+        repo = os.path.join(tmpdir, "src")
+        os.makedirs(repo, exist_ok=True)
+        assert run1(["git", "init", "-b", "main"], repo).returncode == 0
+        run1(["git", "config", "user.email", "t@example.com"], repo)
+        run1(["git", "config", "user.name", "Test User"], repo)
+        with open(os.path.join(repo, "only.txt"), "w") as f:
+            f.write("one\n")
+        run1(["git", "add", "only.txt"], repo)
+        assert run1(["git", "commit", "-m", "only commit"], repo).returncode == 0
+        push = run1(["git", "push", single_url, "main:main"], repo)
+        assert push.returncode == 0, f"single-commit push failed: {push.stderr}"
+
+        d1 = os.path.join(tmpdir, "d1")
+        c1 = run1(["git", "clone", "--depth=1", single_url, d1], tmpdir)
+        assert c1.returncode == 0, (
+            f"--depth=1 on a single-commit repo must succeed (empty shallow boundary), "
+            f"got: {c1.stdout}\n{c1.stderr}"
+        )
+        n = run1(["git", "rev-list", "--count", "HEAD"], d1).stdout.strip()
+        assert n == "1", f"single-commit --depth=1 should yield 1 commit, got {n}"
+
+    await artifact_manager.delete(artifact_id=single_alias)
     await api.disconnect()
 
 
