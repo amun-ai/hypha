@@ -981,11 +981,12 @@ class GitHTTPHandler:
         to the StreamingResponse. Only ~1 object is decompressed at a time via
         the lazy iter_pack_records iterator, so peak memory stays bounded.
         """
-        # Shallow-clone section (only when the client requested --depth): the server
-        # MUST send the shallow/unshallow lines + a flush BEFORE the ACK/NAK, else the
-        # client errors with "expected shallow/unshallow, got NAK". Empty/None for a
-        # full clone, so this is a no-op on the normal path.
-        if shallow_shas:
+        # Shallow-clone section: when the client requested --depth (shallow_shas is a
+        # list, even empty), the server MUST send the shallow/unshallow lines + a flush
+        # BEFORE the ACK/NAK — an EMPTY section (just the flush) is still required when
+        # there is no boundary (single-commit repo, depth >= history), otherwise the
+        # client errors "expected shallow list". `None` = full clone → no section.
+        if shallow_shas is not None:
             for sha in shallow_shas:
                 yield pkt_line(b"shallow " + sha + b"\n")
             yield pkt_flush()
@@ -1733,7 +1734,12 @@ def create_git_router(
                 )
 
             common = await handler.compute_common_haves(have_shas)
-            shallow_shas: list = []
+            # None = full clone (no shallow section in the response); a list (even empty)
+            # = the client requested `deepen`, so the response MUST carry a shallow-update
+            # section even when there is no boundary (e.g. a single-commit repo, or
+            # depth >= history) — an EMPTY shallow section (just a flush) is required, and
+            # omitting it makes the client error with "expected shallow list".
+            shallow_shas: list = None
             if depth is not None:
                 # Shallow clone (git clone --depth=N): depth-bounded object set + the
                 # shallow boundary the client must be told about. Full-clone path below
