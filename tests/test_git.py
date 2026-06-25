@@ -840,6 +840,92 @@ async def test_git_shallow_clone_depth(
     await api.disconnect()
 
 
+async def test_git_non_git_artifact_actionable_error(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Regression (#990): an artifact WITHOUT config.storage='git' must return an
+    actionable error on the git/LFS endpoints, not a misleading 'Repository not found'.
+
+    Such an artifact is created fine (200), but later `git clone` / LFS calls hit a 404
+    that reads like 'this artifact is missing' rather than the real cause 'this artifact
+    has no git backend'. The endpoints now distinguish the two and tell the user to
+    recreate with config.storage='git'. See hypha/git/http.py::repo_lookup_404_detail.
+    """
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "non-git-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+    artifact_manager = await api.get_service("public/artifact-manager")
+    workspace = api.config.workspace
+    alias = f"nongit-{uuid.uuid4().hex[:8]}"
+    # NOTE: no config.storage='git' — a plain artifact.
+    await artifact_manager.create(
+        alias=alias, manifest={"name": "not a git repo"}, type="dataset"
+    )
+
+    session = get_http_session()
+    # git smart-HTTP info/refs (authenticated, so it doesn't 401 for anon retry).
+    r = session.get(
+        f"{SERVER_URL}/{workspace}/git/{alias}/info/refs?service=git-upload-pack",
+        auth=("git", test_user_token),
+        timeout=10,
+    )
+    assert r.status_code == 404, f"expected 404, got {r.status_code}"
+    assert "Git storage is not enabled" in r.text, (
+        f"expected actionable 'Git storage not enabled' message, got: {r.text}"
+    )
+    assert "config.storage" in r.text
+
+    # LFS batch endpoint — same actionable message.
+    rb = session.post(
+        f"{SERVER_URL}/{workspace}/git/{alias}.git/info/lfs/objects/batch",
+        json={"operation": "download", "objects": [{"oid": "0" * 64, "size": 0}]},
+        headers={"Content-Type": "application/vnd.git-lfs+json"},
+        auth=("git", test_user_token),
+        timeout=10,
+    )
+    assert rb.status_code == 404, f"expected 404, got {rb.status_code}"
+    assert "Git storage is not enabled" in rb.text, (
+        f"expected actionable message on LFS batch, got: {rb.text}"
+    )
+
+    await artifact_manager.delete(artifact_id=alias)
+    await api.disconnect()
+
+
+async def test_lfs_verify_url_base_uses_public_https_scheme():
+    """Regression (#991): the LFS `verify` href must be built on the PUBLIC (https) base,
+    not the internal request URL.
+
+    Behind a TLS-terminating proxy, request.url.scheme is http, so deriving the verify
+    href from request.url produced an http:// URL that only worked via a 301→https
+    redirect (mixed scheme in a documented API). It must reuse public_base_url like the
+    download href does. (Pure-function unit test — no server needed.)
+    """
+    from hypha.git.lfs import build_verify_url_base
+
+    path = "/ws-x/git/myrepo.git/info/lfs/objects/batch"
+    internal = "http://10.0.0.5:9520/ws-x/git/myrepo.git/info/lfs/objects/batch"
+
+    out = build_verify_url_base(path, "https://hypha.aicell.io", internal)
+    assert out == "https://hypha.aicell.io/ws-x/git/myrepo.git/info/lfs/objects/verify"
+    assert out.startswith("https://"), "verify href must use the public https scheme"
+
+    # Trailing slash on the public base is handled.
+    out2 = build_verify_url_base(path, "https://hypha.aicell.io/", internal)
+    assert out2 == "https://hypha.aicell.io/ws-x/git/myrepo.git/info/lfs/objects/verify"
+
+    # Falls back to the request URL only when no public base is configured.
+    out3 = build_verify_url_base(path, "", internal)
+    assert out3 == "http://10.0.0.5:9520/ws-x/git/myrepo.git/info/lfs/objects/verify"
+
+
 # Git LFS tests
 
 

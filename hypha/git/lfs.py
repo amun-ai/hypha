@@ -26,6 +26,26 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
+
+def build_verify_url_base(
+    request_path: str, public_base_url: str, request_url: str
+) -> str:
+    """Build the LFS ``verify`` URL base on the PUBLIC base (the same scheme/host the
+    download href uses), not the internal request URL.
+
+    Behind a TLS-terminating proxy ``request.url.scheme`` is ``http``, so deriving the
+    verify href from ``request.url`` produced an ``http://`` URL that only worked via a
+    301→https redirect — a mixed-scheme smell in a documented API. ``public_base_url`` is
+    the public (https) origin already used for download hrefs; reuse it for consistency.
+    Falls back to ``request_url`` only if no public base is configured (e.g. some tests).
+    """
+    verify_path = request_path.rsplit("/objects/batch", 1)[0] + "/objects/verify"
+    base = (public_base_url or "").rstrip("/")
+    if base:
+        return base + verify_path
+    return request_url.rsplit("/objects/batch", 1)[0] + "/objects/verify"
+
+
 # Git LFS content types
 LFS_CONTENT_TYPE = "application/vnd.git-lfs+json"
 
@@ -612,11 +632,18 @@ def create_lfs_router(
             )
         except PermissionError:
             raise HTTPException(status_code=403, detail="Permission denied")
-        except KeyError:
-            raise HTTPException(status_code=404, detail="Repository not found")
+        except KeyError as e:
+            # Distinguish 'artifact missing' from 'artifact exists but Git storage not
+            # enabled' (recreate with config.storage='git') — see http.py.
+            from hypha.git.http import repo_lookup_404_detail
 
-        # Build verify URL base
-        verify_url_base = str(request.url).rsplit("/objects/batch", 1)[0] + "/objects/verify"
+            raise HTTPException(status_code=404, detail=repo_lookup_404_detail(e))
+
+        # Build the verify URL base on the same PUBLIC (https) base as the download href,
+        # not the internal request.url (http behind a TLS-terminating proxy).
+        verify_url_base = build_verify_url_base(
+            request.url.path, handler.public_base_url, str(request.url)
+        )
 
         # Handle the batch request
         # Pass authorization header so it can be included in verify action

@@ -171,6 +171,25 @@ async def cleanup_repo(repo):
         logger.error(f"Error during repo cleanup: {e}")
 
 
+def repo_lookup_404_detail(error) -> str:
+    """Map a repo/LFS lookup KeyError to a 404 detail, distinguishing 'artifact does not
+    exist' from 'artifact exists but Git storage is not enabled for it'.
+
+    The callbacks (artifact_integration) already raise distinct KeyError messages for the
+    two cases, but the routes collapsed both to a misleading 'Repository not found'. An
+    artifact created without ``config.storage='git'`` then fails `git clone` with what
+    reads like 'this artifact is missing' rather than 'this artifact has no git backend'.
+    (The git CLI shows its own message for a clone 404, but LFS / REST / direct-HTTP
+    callers see this body — which is where the foot-gun is actually debugged.)
+    """
+    if "git storage not enabled" in str(error).lower():
+        return (
+            "Artifact exists but Git storage is not enabled for it. "
+            "Recreate the artifact with config.storage='git'."
+        )
+    return "Repository not found"
+
+
 # Git protocol constants
 UPLOAD_PACK_CAPABILITIES = [
     b"multi_ack",
@@ -1646,7 +1665,7 @@ def create_git_router(
                     detail="Authentication required",
                     headers={"WWW-Authenticate": 'Basic realm="Git Repository"'},
                 )
-            raise HTTPException(status_code=404, detail="Repository not found")
+            raise HTTPException(status_code=404, detail=repo_lookup_404_detail(e))
 
         handler = GitHTTPHandler(repo, read_only=False)  # Already checked write permission if needed
 
