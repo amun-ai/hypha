@@ -5190,13 +5190,19 @@ class ArtifactController:
                     parent_artifact.config["permissions"] if parent_artifact else {}
                 )
                 permissions = config.get("permissions", {}) if config else {}
-                # Attribute ownership to the EFFECTIVE (human) id — parent-or-self — not
-                # the ephemeral sub of a generated/agent token, so a user retains
-                # ownership of artifacts an agent creates on their behalf (same resolution
-                # as the git effective-id fix). Normal logins (no parent) are unchanged.
+                # created_by (below) is attributed to the EFFECTIVE (human) id
+                # (parent-or-self) so a user keeps VISIBILITY of artifacts an agent
+                # creates on their behalf — "My Artifacts" filters by created_by. That is
+                # metadata only and does NOT affect access. The per-artifact permission
+                # keeps the LITERAL creator id on purpose: a config.permissions key is
+                # matched in _check_permissions regardless of workspace, so putting the
+                # human's id there would grant CROSS-WORKSPACE access and break workspace
+                # isolation (test_artifact_manager_workspace_isolation). The human reaches
+                # their own-workspace artifact via the workspace-level permission instead.
+                # Normal logins (no parent) are unaffected either way (effective id == id).
                 effective_user_id = user_info.get_effective_user_id()
                 # Set creator as admin (this should override parent permission for the creator)
-                permissions[effective_user_id] = "*"
+                permissions[user_info.id] = "*"
                 config["permissions"] = permissions
 
                 # Set is_collection flag based on type or parent_id
@@ -5808,8 +5814,7 @@ class ArtifactController:
                         if parent_artifact:
                             parent_permissions = parent_artifact.config.get("permissions", {})
                             permissions = config.get("permissions", {})
-                            # Effective (human) id, not an agent token's sub (see create()).
-                            permissions[user_info.get_effective_user_id()] = "*"
+                            permissions[user_info.id] = "*"
                             permissions.update(parent_permissions)
                             config["permissions"] = permissions
                         artifact.config = config
@@ -6947,11 +6952,10 @@ class ArtifactController:
         new_config.pop("zenodo", None)
         new_config.pop("id_parts", None)
         
-        # Copy permissions but ensure the current user has full access — by EFFECTIVE
-        # (human) id, not an agent token's sub (see create()).
+        # Copy permissions but ensure current user has full access
         if "permissions" not in new_config:
             new_config["permissions"] = {}
-        new_config["permissions"][user_info.get_effective_user_id()] = "*"
+        new_config["permissions"][user_info.id] = "*"
         
         # Copy manifest and optionally remove secrets
         new_manifest = dict(source_artifact.manifest)

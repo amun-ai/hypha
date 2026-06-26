@@ -257,12 +257,12 @@ async def test_artifact_ownership_via_generated_token_uses_effective_id(
     assert info.get("created_by") == human_id, (
         f"created_by should be the human ({human_id}), got {info.get('created_by')}"
     )
-    perms = (info.get("config") or {}).get("permissions") or {}
-    assert perms.get(human_id) == "*", (
-        f"human should hold the owner permission, got permissions={perms}"
-    )
-
-    # The human can now edit AND delete their agent's upload (the whole point).
+    # created_by (attribution) is the fix — "My Artifacts" filters on it. The human is
+    # deliberately NOT added to the per-artifact config.permissions: that key is matched
+    # regardless of workspace, so it would be a cross-workspace grant and break isolation
+    # (test_artifact_manager_workspace_isolation). The human instead reaches the artifact
+    # via workspace-level permission (it's in their own workspace) — proven by being able
+    # to fully manage it:
     await human_am.edit(
         artifact_id=f"{workspace}/{alias}", manifest={"name": "edited by human"}
     )
