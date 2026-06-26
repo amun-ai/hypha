@@ -5190,6 +5190,17 @@ class ArtifactController:
                     parent_artifact.config["permissions"] if parent_artifact else {}
                 )
                 permissions = config.get("permissions", {}) if config else {}
+                # created_by (below) is attributed to the EFFECTIVE (human) id
+                # (parent-or-self) so a user keeps VISIBILITY of artifacts an agent
+                # creates on their behalf — "My Artifacts" filters by created_by. That is
+                # metadata only and does NOT affect access. The per-artifact permission
+                # keeps the LITERAL creator id on purpose: a config.permissions key is
+                # matched in _check_permissions regardless of workspace, so putting the
+                # human's id there would grant CROSS-WORKSPACE access and break workspace
+                # isolation (test_artifact_manager_workspace_isolation). The human reaches
+                # their own-workspace artifact via the workspace-level permission instead.
+                # Normal logins (no parent) are unaffected either way (effective id == id).
+                effective_user_id = user_info.get_effective_user_id()
                 # Set creator as admin (this should override parent permission for the creator)
                 permissions[user_info.id] = "*"
                 config["permissions"] = permissions
@@ -5270,7 +5281,7 @@ class ArtifactController:
                         alias=alias,
                         staging=staging_dict,
                         manifest=manifest,  # Save manifest for listing/searching
-                        created_by=user_info.id,
+                        created_by=effective_user_id,
                         created_at=created_at,
                         last_modified=int(time.time()),
                         config=config,  # Save config for permissions
@@ -5287,7 +5298,7 @@ class ArtifactController:
                         alias=alias,
                         staging=None,
                         manifest=manifest,
-                        created_by=user_info.id,
+                        created_by=effective_user_id,
                         created_at=created_at,
                         last_modified=int(time.time()),
                         config=config,

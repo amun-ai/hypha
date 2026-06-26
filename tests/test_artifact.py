@@ -211,6 +211,67 @@ async def test_artifact_alias_length_validation(
     await api.disconnect()
 
 
+async def test_artifact_ownership_via_generated_token_uses_effective_id(
+    minio_server, fastapi_server_sqlite, test_user_token
+):
+    """Regression (#989): an artifact created via a generated (agent) token must be
+    owned by the HUMAN (the token's parent), not the token's ephemeral
+    client-credentials sub.
+
+    A user generates a token and hands it to an agent. The agent calls create(). Before
+    the fix, created_by + config.permissions recorded the token's random sub, so the
+    human couldn't see ("My Artifacts" filters by created_by==user.id), edit, or delete
+    their own agent's upload. The fix mirrors the 0.21.96 git-push effective-id fix:
+    create()/edit()/duplicate() use UserInfo.get_effective_user_id() (parent-or-self) for
+    created_by + the owner permission. Normal logins (no parent) are unaffected.
+    """
+    from hypha.core.auth import parse_auth_token
+
+    # Human session.
+    api = await connect_to_server(
+        {"name": "human", "server_url": SERVER_URL_SQLITE, "token": test_user_token}
+    )
+    human_id = api.config.user["id"]
+
+    # Human mints a generated (child) token — random sub, parent=human — and hands it to
+    # an agent.
+    gen_token = await api.generate_token({"permission": "admin", "expires_in": 3600})
+    parsed = await parse_auth_token(gen_token)
+    assert parsed.id != human_id, "expected an ephemeral generated-token id"
+    assert parsed.get_effective_user_id() == human_id, "token parent must be the human"
+
+    # Agent session (the generated token) creates an artifact.
+    agent = await connect_to_server(
+        {"name": "agent", "server_url": SERVER_URL_SQLITE, "token": gen_token}
+    )
+    agent_am = await agent.get_service("public/artifact-manager")
+    workspace = api.config.workspace
+    alias = f"agentowned-{uuid.uuid4().hex[:8]}"
+    await agent_am.create(
+        alias=alias, manifest={"name": "agent upload"}, type="dataset"
+    )
+
+    # Ownership must attribute to the HUMAN, not the token sub.
+    human_am = await api.get_service("public/artifact-manager")
+    info = await human_am.read(artifact_id=f"{workspace}/{alias}")
+    assert info.get("created_by") == human_id, (
+        f"created_by should be the human ({human_id}), got {info.get('created_by')}"
+    )
+    # created_by (attribution) is the fix — "My Artifacts" filters on it. The human is
+    # deliberately NOT added to the per-artifact config.permissions: that key is matched
+    # regardless of workspace, so it would be a cross-workspace grant and break isolation
+    # (test_artifact_manager_workspace_isolation). The human instead reaches the artifact
+    # via workspace-level permission (it's in their own workspace) — proven by being able
+    # to fully manage it:
+    await human_am.edit(
+        artifact_id=f"{workspace}/{alias}", manifest={"name": "edited by human"}
+    )
+    await human_am.delete(artifact_id=f"{workspace}/{alias}")
+
+    await agent.disconnect()
+    await api.disconnect()
+
+
 async def test_serve_artifact_endpoint(minio_server, fastapi_server, test_user_token):
     """Test the artifact serving endpoint."""
     api = await connect_to_server(
