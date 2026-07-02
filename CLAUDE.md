@@ -457,6 +457,9 @@ All vulnerabilities documented with tests in `tests/test_security_vulnerabilitie
 | `gc.collect()` in disconnect | Disrupts Python's automatic GC tuning, creates latency spikes | Let Python's GC manage itself |
 | `redis.keys(pattern)` in workspace ops | Blocks entire Redis for duration of scan | Use `redis.scan(cursor, match, count)` cursor-based iteration |
 | Unbounded `asyncio.wait_for()` on Redis ops | Can hang indefinitely if Redis is slow | Always add `timeout=5.0` to Redis operations in cleanup |
+| Creating a resource in a context-manager FACTORY (before `__aenter__`) | If `__aenter__` raises, Python never calls `__aexit__` → the pre-created resource leaks. Prod `/rpc` OOM (0.21.105): `get_workspace_interface()` made the `RedisRPCConnection` in the factory; `__aenter__`'s `get_manager_service()` timed out under load → conn + RPC peer leaked forever | Create lazily inside `__aenter__`, OR clean up in `__aenter__`'s own `except` before re-raising. Share one idempotent `_cleanup()` between `__aenter__`-failure and `__aexit__` |
+| Nulling handler attributes instead of unregistering them | An event-bus/registry closure that captured the object keeps it alive even after you null the object's own attrs and pop it from a registry (the `filtered_handler` closure pinned leaked conns on prod) | Call the real `disconnect()`/`event_bus.off(...)` that removes the closure from the registry AND updates the closed counter |
+| `except Exception` in async `__aexit__`/cleanup | Does NOT catch `CancelledError` (it's `BaseException`), so a cancelled cleanup silently skips the rest | Use `except BaseException:` (or `finally`-with-raise) when the cleanup MUST run on cancellation; but note the realistic trigger is often entry failure, not cancellation |
 
 ### Graceful Shutdown / Connection Draining (Reliability)
 
