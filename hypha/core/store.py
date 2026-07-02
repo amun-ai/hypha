@@ -70,73 +70,76 @@ class WorkspaceInterfaceContextManager:
         self._user_info = user_info
 
     async def __aenter__(self):
-        return await self._get_workspace_manager()
+        # get_workspace_interface() creates the RPC + RedisRPCConnection
+        # synchronously in the factory, BEFORE __aenter__ runs. If entering the
+        # interface fails (e.g. get_manager_service times out under load),
+        # Python does NOT call __aexit__ for a context manager whose __aenter__
+        # raised — so that already-created connection (registry entry +
+        # event-bus handlers + RPC peer) would leak. We therefore clean it up
+        # here on failure. This is the prod HTTP /rpc leak: created_total climbs
+        # while closed_total stays flat when the manager call times out.
+        try:
+            return await self._get_workspace_manager()
+        except BaseException:
+            await self._cleanup()
+            raise
 
     async def __aexit__(self, exc_type, exc, tb):
-        """Zero-leak __aexit__ that guarantees connection cleanup.
-        
-        This implementation ensures that RPC connections are ALWAYS removed from
-        the global connection registry, even if the disconnect() call fails.
-        This prevents memory leaks from HTTP requests that create temporary
-        connections via context managers.
-        
-        The approach:
-        1. Try graceful disconnect first
-        2. Force removal from registry if connection still exists
-        3. Clear all references to break potential circular dependencies
+        await self._cleanup()
+        return None
+
+    async def _cleanup(self):
+        """Zero-leak cleanup that guarantees the RPC connection is closed.
+
+        Shared by __aexit__ (normal exit) and __aenter__ (entry failure). It must
+        be idempotent: it clears self._rpc up front so a second call is a no-op.
+
+        The ONLY method that both unregisters the connection's event-bus handlers
+        (event_bus.off) AND increments closed_total is
+        RedisRPCConnection.disconnect(). rpc.disconnect() cascades to it; if that
+        cascade fails partway, we call the connection's disconnect() directly.
+        Merely nulling handler attributes is NOT enough — the filtered_handler
+        closure captured by the event bus keeps the connection alive.
         """
-        if not hasattr(self, '_rpc') or not self._rpc:
-            return None
-        
-        rpc = self._rpc
-        
-        # Get connection key for forced cleanup if needed
+        rpc = getattr(self, "_rpc", None)
+        if not rpc:
+            return
+        # Idempotent guard: prevent double cleanup and break the CM->rpc ref.
+        self._rpc = None
+
+        from hypha.core import RedisRPCConnection
+
         try:
-            from hypha.core import RedisRPCConnection
             conn_key = f"{rpc._workspace}/{rpc._client_id}"
         except Exception:
             conn_key = None
-        
-        # Try graceful disconnect first
+
+        # Graceful path: RPC.disconnect() -> RedisRPCConnection.disconnect()
+        # (event_bus.off for both handlers + closed_total++ + registry pop).
         try:
             await rpc.disconnect()
         except Exception as e:
-            logger.debug(f"Error during graceful disconnect (will force cleanup): {e}")
-        
-        # CRITICAL: Force removal from registry to guarantee zero leaks
-        # This handles cases where disconnect() doesn't fully clean up
+            logger.debug(
+                f"Error during graceful rpc.disconnect (will force cleanup): {e}"
+            )
+
+        # Fallback: if the connection is still registered, the cascade above did
+        # not complete. Run RedisRPCConnection.disconnect() directly so its
+        # event-bus handlers are unregistered (nulling attributes alone leaves
+        # the filtered_handler closure registered, which pins the connection)
+        # and closed_total is incremented.
         if conn_key:
-            try:
-                from hypha.core import RedisRPCConnection
-                if conn_key in RedisRPCConnection._connections:
-                    # Get the connection and force cleanup
-                    conn = RedisRPCConnection._connections.get(conn_key)
-                    if conn:
-                        # Set stop flag
-                        conn._stop = True
-                        # Clear all handlers to break reference cycles
-                        if hasattr(conn, '_filtered_handler'):
-                            conn._filtered_handler = None
-                        if hasattr(conn, '_handle_message'):
-                            conn._handle_message = None
-                        if hasattr(conn, '_handle_connected'):
-                            conn._handle_connected = None
-                        if hasattr(conn, '_handle_disconnected'):
-                            conn._handle_disconnected = None
-                        if hasattr(conn, '_event_bus'):
-                            conn._event_bus = None
-                    
-                    # Force remove from registry
+            conn = RedisRPCConnection._connections.get(conn_key)
+            if conn is not None:
+                try:
+                    await conn.disconnect()
+                except Exception as e:
+                    logger.warning(
+                        f"Error during forced connection.disconnect for "
+                        f"{conn_key}: {e}"
+                    )
+                    # Last resort: drop from the registry so it cannot accumulate.
                     RedisRPCConnection._connections.pop(conn_key, None)
-                    logger.debug(f"Force removed {conn_key} from connection registry")
-            except Exception as e:
-                logger.warning(f"Error during forced cleanup of {conn_key}: {e}")
-        
-        # Clear reference from context manager
-        self._rpc = None
-        
-        return None
-        # No need for else clause - if _rpc doesn't exist, there's nothing to clean up
 
     def __await__(self):
         return self._get_workspace_manager().__await__()
