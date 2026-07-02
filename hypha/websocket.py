@@ -71,6 +71,7 @@ class WebsocketServer:
         self.store.set_websocket_server(self)
         self._stop = False
         self._websockets = {}  # {conn_key: websocket} — current websocket per client
+        self._ws_tasks = {}  # {conn_key: asyncio.Task} — current receive-loop task per client
         self._ws_generation = {}  # {conn_key: int} — monotonic counter to detect stale cleanups
         # Track last activity per connection (workspace/client_id)
         self._last_seen = {}
@@ -444,6 +445,9 @@ class WebsocketServer:
     ):
         """Establish and manage websocket communication."""
         conn = None
+        # Bind early so the finally block can safely reference it even if setup
+        # raises before the per-connection bookkeeping below.
+        current_task_ref = asyncio.current_task()
 
         async def force_disconnect(_):
             logger.info(
@@ -467,7 +471,34 @@ class WebsocketServer:
         # Bump generation counter so stale cleanups from old connections are skipped
         gen = self._ws_generation.get(conn_key, 0) + 1
         self._ws_generation[conn_key] = gen
+
+        # Actively tear down any superseded connection for this client_id. Bumping
+        # the generation and overwriting _websockets/_last_seen below is NOT enough:
+        # the old connection's coroutine is parked in `await websocket.receive()`
+        # (line ~520) and only exits — running its finally-cleanup (conn.disconnect)
+        # — when that receive returns or the coroutine is cancelled. If the old
+        # socket keeps delivering frames (client keepalive pings every 20s, or a
+        # half-open socket behind a proxy), the per-receive idle timeout never
+        # fires; and once _websockets/_last_seen point at the NEW generation, the
+        # idle sweeper can't see the old one either. The old coroutine — and its
+        # RedisRPCConnection + event-bus handlers + ~50 RPC method-proxy coroutines
+        # — would then leak forever (prod OOM: live RedisRPCConnection >> registry
+        # size). Cancel the old task so its finally runs cleanup now; uvicorn
+        # closes the superseded socket when its handler task ends.
+        old_task = self._ws_tasks.get(conn_key)
         self._websockets[conn_key] = websocket
+        self._ws_tasks[conn_key] = current_task_ref
+        if (
+            old_task is not None
+            and old_task is not current_task_ref
+            and not old_task.done()
+        ):
+            logger.info(
+                "Superseding stale websocket connection for %s (cancelling old generation)",
+                conn_key,
+            )
+            old_task.cancel()
+
         # Tag websocket with its generation for use in handle_disconnection
         websocket._ws_gen = gen
         self._last_seen[conn_key] = time.time()
@@ -629,6 +660,10 @@ class WebsocketServer:
             if is_current:
                 if conn_key in self._websockets:
                     del self._websockets[conn_key]
+                # Clear the task handle only if it is still ours (a newer
+                # generation may have already replaced it).
+                if self._ws_tasks.get(conn_key) is current_task_ref:
+                    self._ws_tasks.pop(conn_key, None)
                 # Clear last seen
                 self._last_seen.pop(conn_key, None)
             else:
