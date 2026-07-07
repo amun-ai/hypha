@@ -40,6 +40,25 @@ _rate_limited_disconnects = Counter(
 )
 
 
+def _is_expected_close_error(exc: BaseException) -> bool:
+    """True if `exc` is a benign ASGI lifecycle race, not a real server error.
+
+    Starlette raises RuntimeError when the receive/send loop touches the transport
+    after the peer's socket already closed:
+      - 'Cannot call "receive" once a disconnect message has been received.'
+      - 'Cannot call "send" once a close message has been sent.'
+    These are expected when a client drops mid-message and should be logged at
+    DEBUG, not ERROR — otherwise they bury genuine errors (~416/24h in prod).
+    """
+    if not isinstance(exc, RuntimeError):
+        return False
+    msg = str(exc)
+    return (
+        'once a disconnect message has been received' in msg
+        or 'once a close message has been sent' in msg
+    )
+
+
 class TokenBucketRateLimiter:
     """Simple token-bucket rate limiter for per-client message throttling."""
 
@@ -296,7 +315,15 @@ class WebsocketServer:
                 )
             except RuntimeError as exp:
                 # this happens when the websocket is closed
-                logger.error(f"RuntimeError in establish_websocket_communication: {str(exp)}")
+                if _is_expected_close_error(exp):
+                    # Benign peer-closed-underneath-us race — cleanup still runs
+                    # below; log at DEBUG so it doesn't mask real errors.
+                    logger.debug(
+                        "WebSocket %s/%s closed underneath handler: %s",
+                        workspace, client_id, str(exp),
+                    )
+                else:
+                    logger.error(f"RuntimeError in establish_websocket_communication: {str(exp)}")
                 reason = f"WebSocket runtime error: {str(exp)}"
                 await self.handle_disconnection(
                     websocket,
@@ -559,6 +586,19 @@ class WebsocketServer:
                     break
                 # Mark activity
                 self._last_seen[conn_key] = time.time()
+                # The peer closed the connection: the ASGI transport delivered a
+                # `websocket.disconnect` message. Break cleanly instead of looping
+                # back into websocket.receive(), which would raise
+                # `RuntimeError: Cannot call "receive" once a disconnect message
+                # has been received.` (~260/24h expected-close noise). The finally
+                # block runs conn.disconnect() cleanup.
+                if data.get("type") == "websocket.disconnect":
+                    logger.debug(
+                        "WebSocket client %s disconnected (code %s)",
+                        conn_key,
+                        data.get("code"),
+                    )
+                    break
                 if "bytes" in data:
                     data = data["bytes"]
                     allowed, remaining = rate_limiter.consume()

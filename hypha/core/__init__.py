@@ -762,6 +762,18 @@ class RedisRPCConnection:
         
         # Broadcast messages: filter by subscription
         async def filtered_handler(message):
+            # Drop the event if this connection has been torn down. disconnect()
+            # nils self._subscriptions AND off()s this handler, but EventBus.emit
+            # snapshots the handler list and creates this coroutine BEFORE
+            # awaiting it (see hypha/utils/__init__.py::EventBus.emit) — so a
+            # redis event already in flight when the client disconnects can still
+            # reach us after teardown. Without this guard the `event_type in
+            # self._subscriptions` check below raises `TypeError: argument of
+            # type 'NoneType' is not iterable` (top prod ERROR, ~640/24h,
+            # correlated 1:1 with client disconnect), and we would forward to a
+            # dead socket. A late event to a gone client is simply dropped.
+            if self._subscriptions is None:
+                return
             # Extract message content to check event type
             message_dict = message
             if isinstance(message, bytes):
