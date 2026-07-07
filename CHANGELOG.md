@@ -1,5 +1,12 @@
 # Hypha Change Log
 
+### 0.21.107
+
+ - **Log hygiene: stop benign WebSocket-lifecycle events from surfacing as ERROR** (they masked genuine errors during triage). Flagged during the 0.21.106 prod rollout.
+   - **Supersede-cancel no longer surfaces as `Exception in ASGI application` (the loudest offender — spiked to ~320/min during a rollout reconnect wave).** This was a direct consequence of the 0.21.105 supersede-orphan fix: cancelling the old generation's receive-loop task raises `asyncio.CancelledError` in its parked `await asyncio.wait_for(websocket.receive(), ...)`, which — being `BaseException` — skipped the `except Exception` and propagated **uncaught** out of the ASGI handler, so uvicorn logged it at ERROR (cleanup still ran via `finally`, so it was purely noise). **Fix** (`hypha/websocket.py`): `establish_websocket_communication` now catches `asyncio.CancelledError`; if a **newer generation exists for this `conn_key`** (`_ws_generation[conn_key] > gen` — the defining signature of a supersede, needing no task marker) it exits cleanly so the cancel never reaches uvicorn, while the `finally` still runs `conn.disconnect()`. A genuine cancel with no newer generation (e.g. event-loop shutdown) is **re-raised** to preserve cancellation semantics.
+   - Downgraded three benign-at-ERROR lines: `disconnect()`'s per-disconnect "Disconnecting, reason: …" (fired at ERROR on **every** disconnect) → INFO; the best-effort `send_bytes` failure (socket closing underneath us) and the `websocket.close()` close-race error → DEBUG.
+   - Tests (`tests/test_websocket_log_hygiene.py`): a supersede-cancel exits cleanly (not a cancelled task, no exception propagated) while cleanup still runs; a genuine cancel (no newer generation) still propagates; `disconnect()` logs at INFO, not ERROR.
+
 ### 0.21.106
 
  - **Harden two caught-but-noisy WebSocket-lifecycle bugs** flagged by the nightly prod review on 0.21.105 (both were already caught — no crash, no leak — but burned CPU + log volume and masked genuine errors).

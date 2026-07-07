@@ -553,7 +553,11 @@ class WebsocketServer:
                         data = data.encode('utf-8')
                     await websocket.send_bytes(data)
                 except Exception as e:
-                    logger.error("Failed to send message via websocket: %s", str(e))
+                    # Best-effort send: a failure here means the socket is closing
+                    # underneath us (expected during reconnect churn / teardown).
+                    # The receive loop + idle timeout determine real liveness and
+                    # reap the connection, so this is DEBUG, not an ERROR.
+                    logger.debug("Failed to send message via websocket: %s", str(e))
 
             conn.on_message(send_bytes)
             reconnection_token = await generate_auth_token(
@@ -680,6 +684,29 @@ class WebsocketServer:
                 await self.disconnect(
                     websocket, "Server is stopping", status.WS_1001_GOING_AWAY
                 )
+        except asyncio.CancelledError:
+            # A superseding connection cancels the old generation's receive-loop
+            # task (the 0.21.105 supersede-orphan fix). That cancel is intentional
+            # and benign: the `finally` below still runs conn.disconnect() cleanup
+            # (orphans stay 0). Swallow it here so the CancelledError does not
+            # propagate out of the ASGI handler and get logged by uvicorn as
+            # "Exception in ASGI application" at ERROR — which spiked to ~320/min
+            # during a rollout's reconnect wave (every client reconnects →
+            # supersede → cancel) and masks real ASGI errors. A supersede is
+            # detectable without any task marker: it bumps the generation, so a
+            # newer generation existing for this conn_key means WE were superseded.
+            # If NO newer generation exists, this is a genuine cancellation (e.g.
+            # event-loop shutdown) and must be re-raised to preserve cancellation
+            # semantics.
+            if self._ws_generation.get(conn_key, 0) > gen:
+                logger.debug(
+                    "WebSocket %s gen %s cancelled by a newer generation (supersede)",
+                    conn_key,
+                    gen,
+                )
+                # swallow — clean exit; the finally block runs cleanup
+            else:
+                raise
         except Exception as e:
             raise e
         finally:
@@ -790,7 +817,11 @@ class WebsocketServer:
 
     async def disconnect(self, websocket, reason, code=status.WS_1000_NORMAL_CLOSURE):
         """Disconnect the websocket connection."""
-        logger.error("Disconnecting, reason: %s, code: %s", reason, code)
+        # A disconnect is a normal lifecycle event (idle timeout, client close,
+        # supersede, server stop) — log at INFO so ERROR stays reserved for real
+        # errors. Previously this fired at ERROR on EVERY disconnect and was the
+        # loudest benign-at-ERROR line, masking genuine errors during triage.
+        logger.info("Disconnecting, reason: %s, code: %s", reason, code)
         if websocket.client_state.name == "CONNECTED":
             await websocket.send_text(json.dumps({"type": "error", "message": reason}))
         try:
@@ -800,7 +831,9 @@ class WebsocketServer:
                 except GeneratorExit:
                     pass  # Suppress GeneratorExit to avoid RuntimeError
         except Exception as e:
-            logger.error(f"Error disconnecting websocket: {str(e)}")
+            # The socket was already closing/gone when we tried to close it — a
+            # benign close race, not a server error.
+            logger.debug(f"Error disconnecting websocket: {str(e)}")
 
     async def is_alive(self):
         """Check if the server is alive."""
