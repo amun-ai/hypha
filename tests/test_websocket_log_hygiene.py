@@ -1,23 +1,33 @@
-"""Log-hygiene regression tests (0.21.107): benign WS lifecycle events must not
-surface as ERROR and mask real errors.
+"""Log-hygiene regression tests (0.21.107): benign WebSocket lifecycle events must
+not surface as ERROR and mask real errors.
 
-Flagged during the 0.21.106 prod rollout (valiant-goat): the loudest benign-at-
-ERROR was a *consequence of the 0.21.105 supersede-orphan fix* — cancelling the
-old generation's task raises `asyncio.CancelledError` in its parked
-`await asyncio.wait_for(websocket.receive(), ...)`, which propagated uncaught out
-of the ASGI handler so uvicorn logged "Exception in ASGI application" at ERROR
-(~320/min during the rollout's reconnect wave). Plus three plain benign-at-ERROR
-log lines (disconnect / send-fail / close-race).
+Flagged by the nightly prod reviews on 0.21.106:
+
+[1] uvicorn logs "Exception in ASGI application" at ERROR (full traceback) whenever
+    a websocket ASGI task ends with `asyncio.CancelledError` — which happens on
+    EVERY normal client disconnect (uvicorn cancels `run_asgi`) and on our own
+    supersede-cancel of a stale generation (~238/24h steady state, ~320/min during
+    a rollout reconnect wave). This is the dominant benign-at-ERROR source and it
+    originates at the uvicorn layer, so it is quieted with a logging filter on the
+    `uvicorn.error` logger — without touching cancellation semantics.
+
+[2] A send-after-close race in the teardown path: `disconnect()` sent a text frame
+    after the peer already closed → `RuntimeError: Cannot call "send" once a close
+    message has been sent`.
+
+Plus three benign-at-ERROR log lines downgraded (disconnect / send-fail / close-race).
 """
 import asyncio
 import logging
-import os
+import sys
 
 import pytest
 
-from hypha.core import RedisRPCConnection, UserInfo
-from hypha.core.auth import create_scope
 from hypha.core.store import RedisStore
+from hypha.websocket import (
+    _CancelledErrorASGIFilter,
+    install_asgi_cancellederror_filter,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -26,41 +36,87 @@ class _FakeState:
     name = "CONNECTED"
 
 
-class _PingingWS:
-    """Keeps delivering client 'ping' frames so the receive loop stays parked
-    (so a supersede-cancel lands in the wait_for(receive))."""
+def _record_with_exc(exc_type, exc):
+    """Build a LogRecord carrying exc_info like uvicorn's 'Exception in ASGI application'."""
+    try:
+        raise exc
+    except exc_type:
+        return logging.LogRecord(
+            "uvicorn.error", logging.ERROR, __file__, 1,
+            "Exception in ASGI application", (), sys.exc_info(),
+        )
+
+
+# ── [1] uvicorn.error CancelledError filter ─────────────────────────────────
+
+
+def test_cancellederror_asgi_filter_drops_only_cancellederror():
+    f = _CancelledErrorASGIFilter()
+
+    # CancelledError terminal → suppressed.
+    rec = _record_with_exc(asyncio.CancelledError, asyncio.CancelledError())
+    assert f.filter(rec) is False
+
+    # A real exception → passes through (real errors must still surface).
+    rec2 = _record_with_exc(ValueError, ValueError("a real bug"))
+    assert f.filter(rec2) is True
+
+    # A record with no exc_info → passes through.
+    rec3 = logging.LogRecord(
+        "uvicorn.error", logging.ERROR, __file__, 1, "some message", (), None
+    )
+    assert f.filter(rec3) is True
+
+
+async def test_filter_installed_on_uvicorn_logger_idempotently():
+    from fastapi import FastAPI
+    from hypha.websocket import WebsocketServer
+
+    uvicorn_logger = logging.getLogger("uvicorn.error")
+    # Clean slate for a deterministic assertion.
+    for flt in [f for f in uvicorn_logger.filters if isinstance(f, _CancelledErrorASGIFilter)]:
+        uvicorn_logger.removeFilter(flt)
+
+    store = RedisStore(None, redis_uri=None)
+    await store.init(reset_redis=True)
+    try:
+        store._app = FastAPI()
+        WebsocketServer(store)  # __init__ installs the filter
+        installed = [
+            f for f in uvicorn_logger.filters
+            if isinstance(f, _CancelledErrorASGIFilter)
+        ]
+        assert len(installed) == 1, "filter must be installed exactly once"
+
+        # Idempotent: installing again does not duplicate it.
+        install_asgi_cancellederror_filter()
+        installed = [
+            f for f in uvicorn_logger.filters
+            if isinstance(f, _CancelledErrorASGIFilter)
+        ]
+        assert len(installed) == 1, "filter install must be idempotent"
+    finally:
+        await store.teardown()
+
+
+# ── [2] send-after-close in disconnect(), + log-level downgrades ────────────
+
+
+class _SendAfterCloseWS:
+    """send_text raises like Starlette after the peer already closed."""
 
     def __init__(self):
         self.client_state = _FakeState()
         self.application_state = _FakeState()
         self.closed = False
 
-    async def receive(self):
-        import json
-
-        await asyncio.sleep(0.05)
-        return {"text": json.dumps({"type": "ping"})}
-
-    async def send_bytes(self, data):
-        pass
-
     async def send_text(self, data):
-        pass
+        raise RuntimeError(
+            'Cannot call "send" once a close message has been sent.'
+        )
 
     async def close(self, code=None, reason=None):
         self.closed = True
-
-
-def _user(ws):
-    return UserInfo(
-        id="loghygiene",
-        is_anonymous=False,
-        email=None,
-        parent=None,
-        roles=[],
-        scope=create_scope(f"{ws}#a", current_workspace=ws),
-        expires_at=None,
-    )
 
 
 async def _make_server(store):
@@ -71,106 +127,33 @@ async def _make_server(store):
     return WebsocketServer(store)
 
 
-async def test_supersede_cancel_does_not_surface_as_error():
-    """The supersede-cancel of an old generation must exit CLEANLY — the task
-    completes (not cancelled, no exception propagated), so it never bubbles up to
-    uvicorn as 'Exception in ASGI application' at ERROR — while cleanup still runs.
-    """
-    os.environ["HYPHA_WS_IDLE_TIMEOUT"] = "600"
+async def test_disconnect_survives_send_after_close():
+    """disconnect() must not raise when the teardown-path send races a close."""
     store = RedisStore(None, redis_uri=None)
     await store.init(reset_redis=True)
     try:
         server = await _make_server(store)
-        ws_name = "ws-user-loghyg"
-        user = _user(ws_name)
-        await store.register_workspace(
-            dict(name=ws_name, description="x", owners=["loghygiene"],
-                 persistent=False, read_only=False),
-            overwrite=True,
-        )
-
-        client_id = "client-reconnecting"
-        ws1 = _PingingWS()
-        t1 = asyncio.create_task(
-            server.establish_websocket_communication(ws1, ws_name, client_id, user)
-        )
-        await asyncio.sleep(0.35)
-        assert not t1.done()
-
-        closed_before = RedisRPCConnection._closed_total_int
-
-        # Supersede: same client_id reconnects → cancels t1.
-        ws2 = _PingingWS()
-        t2 = asyncio.create_task(
-            server.establish_websocket_communication(ws2, ws_name, client_id, user)
-        )
-        await asyncio.sleep(0.5)
-
-        # gen1 must have exited cleanly — NOT as a cancelled task and NOT raising.
-        assert t1.done(), "gen1 must have exited"
-        assert not t1.cancelled(), (
-            "supersede-cancel must be swallowed (clean exit), not surface as a "
-            "cancelled task / uncaught CancelledError → ASGI ERROR"
-        )
-        assert t1.exception() is None, (
-            f"gen1 must exit cleanly, but raised {t1.exception()!r}"
-        )
-        # Cleanup still ran (the whole point of the supersede-cancel).
-        assert RedisRPCConnection._closed_total_int - closed_before >= 1
-
-        t2.cancel()
-        await asyncio.gather(t2, return_exceptions=True)
+        ws = _SendAfterCloseWS()
+        # Must not raise despite send_text raising the close-race RuntimeError.
+        await server.disconnect(ws, "reason", 1000)
+        assert ws.closed, "disconnect() should still close the socket"
     finally:
         await store.teardown()
-        os.environ.pop("HYPHA_WS_IDLE_TIMEOUT", None)
-
-
-async def test_genuine_cancel_still_propagates():
-    """A cancel with NO newer generation (e.g. event-loop shutdown) must still
-    propagate — we only swallow the intentional supersede-cancel."""
-    os.environ["HYPHA_WS_IDLE_TIMEOUT"] = "600"
-    store = RedisStore(None, redis_uri=None)
-    await store.init(reset_redis=True)
-    try:
-        server = await _make_server(store)
-        ws_name = "ws-user-genuine"
-        user = _user(ws_name)
-        await store.register_workspace(
-            dict(name=ws_name, description="x", owners=["loghygiene"],
-                 persistent=False, read_only=False),
-            overwrite=True,
-        )
-
-        ws = _PingingWS()
-        t = asyncio.create_task(
-            server.establish_websocket_communication(ws, ws_name, "solo", user)
-        )
-        await asyncio.sleep(0.35)
-        # No supersede → generation stays at this task's gen. A cancel here is
-        # genuine and must propagate (task ends up cancelled).
-        t.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await t
-        assert t.cancelled()
-    finally:
-        await store.teardown()
-        os.environ.pop("HYPHA_WS_IDLE_TIMEOUT", None)
 
 
 async def test_disconnect_logs_at_info_not_error(caplog):
-    """WebsocketServer.disconnect() logs the lifecycle line at INFO, not ERROR."""
+    """WebsocketServer.disconnect() logs its lifecycle line at INFO, not ERROR."""
     store = RedisStore(None, redis_uri=None)
     await store.init(reset_redis=True)
     try:
         server = await _make_server(store)
-        ws = _PingingWS()
+        ws = _SendAfterCloseWS()
         with caplog.at_level(logging.DEBUG, logger="websocket-server"):
             await server.disconnect(ws, "Client normal close", 1000)
 
         errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
         assert not errors, (
-            f"disconnect() must not log at ERROR: "
-            f"{[r.getMessage() for r in errors]}"
+            f"disconnect() must not log at ERROR: {[r.getMessage() for r in errors]}"
         )
         assert any(
             "Disconnecting, reason" in r.getMessage() and r.levelno == logging.INFO
