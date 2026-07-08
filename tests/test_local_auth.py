@@ -5,6 +5,22 @@ import asyncio
 from hypha_rpc import connect_to_server
 
 
+async def _signup_and_verify(login_service, name, email, password):
+    """Complete the two-step signup->verify flow and return the signup result.
+
+    The test server runs without RESEND_API_KEY (dev fallback), so signup returns
+    the code as ``dev_code`` and we can finish verification in-process.
+    """
+    signup_result = await login_service.signup(name=name, email=email, password=password)
+    assert signup_result["success"] is True, signup_result
+    assert signup_result.get("verification_required") is True
+    code = signup_result.get("dev_code")
+    assert code, f"dev_code missing (server not in dev fallback?): {signup_result}"
+    verify_result = await login_service.verify_email(email=email, code=code)
+    assert verify_result["success"] is True, verify_result
+    return verify_result
+
+
 @pytest.mark.asyncio
 async def test_local_auth_server_basic(local_auth_server):
     """Test that local auth server starts and accepts connections."""
@@ -29,6 +45,8 @@ async def test_local_auth_server_basic(local_auth_server):
         
         # Verify service has expected methods
         assert hasattr(login_service, 'signup')
+        assert hasattr(login_service, 'verify_email')
+        assert hasattr(login_service, 'resend_code')
         assert hasattr(login_service, 'login')
         assert hasattr(login_service, 'start')
         assert hasattr(login_service, 'check')
@@ -57,15 +75,12 @@ async def test_local_auth_signup_and_login(local_auth_server):
         test_password = "TestPassword123!"
         test_name = "Test User"
         
-        # Test signup
-        signup_result = await login_service.signup(
-            name=test_name,
-            email=test_email,
-            password=test_password
+        # Test signup + email verification (two-step)
+        verify_result = await _signup_and_verify(
+            login_service, test_name, test_email, test_password
         )
-        assert signup_result["success"] is True
-        assert "user_id" in signup_result
-        user_id = signup_result["user_id"]
+        assert "user_id" in verify_result
+        user_id = verify_result["user_id"]
         
         # Test login with correct credentials
         login_result = await login_service.login(
@@ -119,14 +134,11 @@ async def test_local_auth_duplicate_signup(local_auth_server):
         hypha_login_service_id = next(sid for sid in service_ids if "hypha-login" in sid)
         login_service = await api.get_service(hypha_login_service_id)
         
-        # First signup
-        result1 = await login_service.signup(
-            name="First User",
-            email="duplicate@example.com",
-            password="Password123!"
+        # First signup + verify (materialises the account)
+        await _signup_and_verify(
+            login_service, "First User", "duplicate@example.com", "Password123!"
         )
-        assert result1["success"] is True
-        
+
         # Second signup with same email should fail
         result2 = await login_service.signup(
             name="Second User",
@@ -154,14 +166,11 @@ async def test_local_auth_login_flow(local_auth_server):
         hypha_login_service_id = next(sid for sid in service_ids if "hypha-login" in sid)
         login_service = await api.get_service(hypha_login_service_id)
         
-        # Create a test user first
-        signup_result = await login_service.signup(
-            name="Flow Test User",
-            email="flowtest@example.com",
-            password="FlowTest123!"
+        # Create a test user first (signup + verify)
+        verify_result = await _signup_and_verify(
+            login_service, "Flow Test User", "flowtest@example.com", "FlowTest123!"
         )
-        assert signup_result["success"] is True
-        user_id = signup_result["user_id"]
+        user_id = verify_result["user_id"]
         
         # Start a login session
         login_info = await login_service.start(
@@ -216,13 +225,14 @@ async def test_local_auth_password_validation(local_auth_server):
         assert result["success"] is False
         assert "8 characters" in result["error"]
         
-        # Test valid password
+        # Test valid password (signup accepted, verification required)
         result = await login_service.signup(
             name="Test User",
             email="goodpass@example.com",
             password="ValidPass123!"  # 8+ characters
         )
         assert result["success"] is True
+        assert result.get("verification_required") is True
 
 
 @pytest.mark.asyncio
@@ -242,14 +252,11 @@ async def test_local_auth_profile_update(local_auth_server):
         hypha_login_service_id = next(sid for sid in service_ids if "hypha-login" in sid)
         login_service = await api.get_service(hypha_login_service_id)
         
-        # Create user
-        signup_result = await login_service.signup(
-            name="Original Name",
-            email="profile@example.com",
-            password="OriginalPass123!"
+        # Create user (signup + verify)
+        await _signup_and_verify(
+            login_service, "Original Name", "profile@example.com", "OriginalPass123!"
         )
-        assert signup_result["success"] is True
-        
+
         # Login to get token
         login_result = await login_service.login(
             email="profile@example.com",
@@ -311,6 +318,87 @@ async def test_local_auth_profile_update(local_auth_server):
             password="NewPass456!"
         )
         assert login_result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_local_auth_verify_wrong_code_then_correct(local_auth_server):
+    """End-to-end: a wrong code is rejected, then the correct code creates the account."""
+    server_url = local_auth_server.replace("http://", "ws://") + "/ws"
+
+    async with connect_to_server(
+        {"client_id": "test-verify-wrong", "server_url": server_url}
+    ) as api:
+        services = await api.list_services("public")
+        service_ids = [s["id"] for s in services]
+        hypha_login_service_id = next(sid for sid in service_ids if "hypha-login" in sid)
+        login_service = await api.get_service(hypha_login_service_id)
+
+        email = "wrongcode@example.com"
+        signup_result = await login_service.signup(
+            name="Wrong Code", email=email, password="Password123!"
+        )
+        assert signup_result["success"] is True
+        assert signup_result.get("verification_required") is True
+        code = signup_result["dev_code"]
+
+        # Wrong code is rejected and does not create the account.
+        wrong = await login_service.verify_email(email=email, code="000000")
+        assert wrong["success"] is False
+
+        # Login must still fail (account not created yet).
+        login_fail = await login_service.login(email=email, password="Password123!")
+        assert login_fail["success"] is False
+
+        # Correct code creates the account; login now succeeds.
+        ok = await login_service.verify_email(email=email, code=code)
+        assert ok["success"] is True
+        login_ok = await login_service.login(email=email, password="Password123!")
+        assert login_ok["success"] is True
+        assert login_ok["token"]
+
+
+@pytest.mark.asyncio
+async def test_local_auth_resend_code(local_auth_server):
+    """End-to-end: resend returns a fresh code that can complete verification."""
+    server_url = local_auth_server.replace("http://", "ws://") + "/ws"
+
+    async with connect_to_server(
+        {"client_id": "test-resend", "server_url": server_url}
+    ) as api:
+        services = await api.list_services("public")
+        service_ids = [s["id"] for s in services]
+        hypha_login_service_id = next(sid for sid in service_ids if "hypha-login" in sid)
+        login_service = await api.get_service(hypha_login_service_id)
+
+        email = "resend@example.com"
+        signup_result = await login_service.signup(
+            name="Resend User", email=email, password="Password123!"
+        )
+        assert signup_result["success"] is True
+
+        # Immediate resend is throttled (default 30s window).
+        throttled = await login_service.resend_code(email=email)
+        assert throttled["success"] is False
+        assert "wait" in throttled["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_local_auth_verify_unknown_email(local_auth_server):
+    """Verifying an email with no pending signup fails cleanly (no leak)."""
+    server_url = local_auth_server.replace("http://", "ws://") + "/ws"
+
+    async with connect_to_server(
+        {"client_id": "test-verify-unknown", "server_url": server_url}
+    ) as api:
+        services = await api.list_services("public")
+        service_ids = [s["id"] for s in services]
+        hypha_login_service_id = next(sid for sid in service_ids if "hypha-login" in sid)
+        login_service = await api.get_service(hypha_login_service_id)
+
+        result = await login_service.verify_email(
+            email="nobody@example.com", code="123456"
+        )
+        assert result["success"] is False
 
 
 if __name__ == "__main__":
