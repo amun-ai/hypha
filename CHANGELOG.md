@@ -1,5 +1,13 @@
 # Hypha Change Log
 
+### 0.21.107
+
+ - **Log hygiene: stop benign WebSocket-lifecycle events from surfacing as ERROR** (they masked genuine errors during triage). Flagged by the nightly prod reviews on 0.21.106.
+   - **uvicorn no longer logs "Exception in ASGI application" for a cancelled websocket task (the dominant offender — ~238/24h steady state, ~320/min during a rollout reconnect wave).** A websocket ASGI task is cancelled on **every** normal client disconnect (uvicorn cancels `run_asgi`) and on our own supersede-cancel of a stale generation (0.21.105); uvicorn logs that `asyncio.CancelledError` as a full ERROR traceback. Cancellation of a websocket handler is never a server error — the traceback is pure noise (cleanup already runs correctly; orphans stay 0). **Fix** (`hypha/websocket.py`): a `logging.Filter` (`_CancelledErrorASGIFilter`) is installed idempotently on the `uvicorn.error` logger and drops records whose terminal `exc_info` is `asyncio.CancelledError`. Any other ASGI exception passes through unchanged, so genuine errors still surface. This quiets the log at the layer uvicorn emits it, **without** touching cancellation/shutdown control flow. (This replaces a narrower draft that swallowed only the supersede-path cancel in `establish_websocket_communication` — the filter also covers the larger normal-disconnect volume that the draft missed.)
+   - **Guarded a send-after-close race in the teardown path.** `disconnect()` sent a text frame after the peer had already closed → `RuntimeError: Cannot call "send" once a close message has been sent`. The send is now wrapped and logged at DEBUG; the close still proceeds.
+   - Downgraded three benign-at-ERROR lines: `disconnect()`'s per-disconnect "Disconnecting, reason: …" (fired at ERROR on **every** disconnect) → INFO; the best-effort `send_bytes` failure (socket closing underneath us) and the `websocket.close()` close-race error → DEBUG.
+   - Tests (`tests/test_websocket_log_hygiene.py`): the filter drops only `CancelledError` terminals (real exceptions and no-exc records pass through); the filter is installed exactly once (idempotent); `disconnect()` survives a send-after-close race and still closes the socket; `disconnect()` logs at INFO, not ERROR.
+
 ### 0.21.106
 
  - **Harden two caught-but-noisy WebSocket-lifecycle bugs** flagged by the nightly prod review on 0.21.105 (both were already caught — no crash, no leak — but burned CPU + log volume and masked genuine errors).

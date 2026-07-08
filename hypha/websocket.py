@@ -40,6 +40,38 @@ _rate_limited_disconnects = Counter(
 )
 
 
+class _CancelledErrorASGIFilter(logging.Filter):
+    """Drop uvicorn's "Exception in ASGI application" ERROR when the terminal
+    exception is asyncio.CancelledError.
+
+    A websocket ASGI task is cancelled on every normal client disconnect (uvicorn
+    cancels ``run_asgi``) and on our own supersede-cancel of a stale generation.
+    uvicorn logs that cancellation as a full ERROR traceback (~238/24h steady
+    state, spiking to ~320/min during a rollout's reconnect wave). Cancellation of
+    a websocket handler is never a server error, so the traceback is pure noise
+    that masks genuine ASGI errors. This filter suppresses ONLY CancelledError
+    terminals — any other ASGI exception passes through unchanged, so real errors
+    still surface. It touches nothing in the control/cancellation path; it only
+    quiets the log.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        exc = record.exc_info[1] if record.exc_info else None
+        if isinstance(exc, asyncio.CancelledError):
+            return False
+        return True
+
+
+def install_asgi_cancellederror_filter() -> None:
+    """Idempotently install the CancelledError filter on the ``uvicorn.error``
+    logger (the logger uvicorn uses for "Exception in ASGI application")."""
+    uvicorn_logger = logging.getLogger("uvicorn.error")
+    if not any(
+        isinstance(f, _CancelledErrorASGIFilter) for f in uvicorn_logger.filters
+    ):
+        uvicorn_logger.addFilter(_CancelledErrorASGIFilter())
+
+
 def _is_expected_close_error(exc: BaseException) -> bool:
     """True if `exc` is a benign ASGI lifecycle race, not a real server error.
 
@@ -88,6 +120,10 @@ class WebsocketServer:
         self.store = store
         app = store._app
         self.store.set_websocket_server(self)
+        # Quiet uvicorn's benign "Exception in ASGI application" CancelledError
+        # tracebacks (normal ws disconnect / supersede-cancel) so ERROR stays
+        # meaningful. Idempotent — safe if multiple servers are constructed.
+        install_asgi_cancellederror_filter()
         self._stop = False
         self._websockets = {}  # {conn_key: websocket} — current websocket per client
         self._ws_tasks = {}  # {conn_key: asyncio.Task} — current receive-loop task per client
@@ -553,7 +589,11 @@ class WebsocketServer:
                         data = data.encode('utf-8')
                     await websocket.send_bytes(data)
                 except Exception as e:
-                    logger.error("Failed to send message via websocket: %s", str(e))
+                    # Best-effort send: a failure here means the socket is closing
+                    # underneath us (expected during reconnect churn / teardown).
+                    # The receive loop + idle timeout determine real liveness and
+                    # reap the connection, so this is DEBUG, not an ERROR.
+                    logger.debug("Failed to send message via websocket: %s", str(e))
 
             conn.on_message(send_bytes)
             reconnection_token = await generate_auth_token(
@@ -790,9 +830,23 @@ class WebsocketServer:
 
     async def disconnect(self, websocket, reason, code=status.WS_1000_NORMAL_CLOSURE):
         """Disconnect the websocket connection."""
-        logger.error("Disconnecting, reason: %s, code: %s", reason, code)
+        # A disconnect is a normal lifecycle event (idle timeout, client close,
+        # supersede, server stop) — log at INFO so ERROR stays reserved for real
+        # errors. Previously this fired at ERROR on EVERY disconnect and was the
+        # loudest benign-at-ERROR line, masking genuine errors during triage.
+        logger.info("Disconnecting, reason: %s, code: %s", reason, code)
         if websocket.client_state.name == "CONNECTED":
-            await websocket.send_text(json.dumps({"type": "error", "message": reason}))
+            try:
+                await websocket.send_text(
+                    json.dumps({"type": "error", "message": reason})
+                )
+            except Exception as e:
+                # Send-after-close race: the socket closed between the state check
+                # and the send (e.g. RuntimeError "Cannot call send once a close
+                # message has been sent"). Benign — proceed to close.
+                logger.debug(
+                    "Could not send disconnect notice (socket already closing): %s", e
+                )
         try:
             if websocket.client_state.name not in ["CLOSED", "CLOSING", "DISCONNECTED"]:
                 try:
@@ -800,7 +854,9 @@ class WebsocketServer:
                 except GeneratorExit:
                     pass  # Suppress GeneratorExit to avoid RuntimeError
         except Exception as e:
-            logger.error(f"Error disconnecting websocket: {str(e)}")
+            # The socket was already closing/gone when we tried to close it — a
+            # benign close race, not a server error.
+            logger.debug(f"Error disconnecting websocket: {str(e)}")
 
     async def is_alive(self):
         """Check if the server is alive."""
