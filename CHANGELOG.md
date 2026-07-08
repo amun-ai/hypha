@@ -1,5 +1,15 @@
 # Hypha Change Log
 
+### 0.21.108
+
+ - **Feature-complete local auth with email verification (Resend).** Local-auth signup is now a real two-step flow: signup stores a *pending* account (name + password hash + salt + a short numeric code) and emails the code; the account artifact is materialized **only after** the code is verified. Previously `email_verified` was hardcoded `True`.
+   - **Verification code**: 6-digit, generated with `secrets.randbelow` (CSPRNG); compared with `secrets.compare_digest` (constant-time). Configurable TTL (`HYPHA_VERIFICATION_CODE_TTL`, default 600s), max attempts with lockout (`HYPHA_VERIFICATION_MAX_ATTEMPTS`, default 5), and resend throttling (`HYPHA_VERIFICATION_RESEND_THROTTLE`, default 30s).
+   - **No state leak**: pending signups live in a bounded, TTL-evicting store (`HYPHA_VERIFICATION_MAX_PENDING`, default 10000) — abandoned/unverified sessions expire and are swept; a concurrent-registration race is guarded at account-creation time.
+   - **Email transport**: `ResendEmailTransport` (Resend HTTP API) when `RESEND_API_KEY` is set; otherwise a `LoggingEmailTransport` dev fallback logs the code so local/dev signup keeps working without a key (documented, non-breaking). `HYPHA_VERIFICATION_FROM_EMAIL` configures the sender.
+   - **New handlers**: `verify_email` (check code → create account) and `resend_code` (throttled), alongside the updated `signup`. Login reflects the real `email_verified` state recorded on the user artifact.
+   - **UI**: signup gains a code-input step with a resend button + countdown.
+   - **Tests** (real, no mocks — the email transport is *injected* as an in-process fake that captures sent messages): `tests/test_local_auth_email_verification.py` (19) covers code generation, success, wrong-code + attempt lockout, TTL expiry, resend throttling, bounded-store eviction/cleanup, the dev fallback, and end-to-end signup→verify→token issuance; `tests/test_local_auth.py` (9) updated for the verification step. All 28 pass.
+
 ### 0.21.107
 
  - **Log hygiene: stop benign WebSocket-lifecycle events from surfacing as ERROR** (they masked genuine errors during triage). Flagged by the nightly prod reviews on 0.21.106.

@@ -129,7 +129,21 @@ async def test_unified_auth_with_templates(tmp_path):
             password="testpass123"
         )
         assert result["success"] is True, f"Signup failed: {result.get('error')}"
-        
+
+        # Signup now creates only a *pending* account; the real account is
+        # materialized after email verification. With no RESEND_API_KEY (as in
+        # CI/dev) the transport is the logging dev-fallback, which returns the
+        # code as `dev_code` so we can complete verification here.
+        assert result.get("verification_required") is True
+        assert "dev_code" in result, "dev fallback should expose the verification code"
+        verify_result = await login_service.verify_email(
+            email="test@example.com",
+            code=result["dev_code"],
+        )
+        assert verify_result["success"] is True, (
+            f"Verify failed: {verify_result.get('error')}"
+        )
+
         # Test the unified login API
         # This simulates what the template JavaScript does
         login_session = await login_service.start(expires_in=3600)
@@ -241,12 +255,24 @@ async def test_login_function_compatibility():
         hypha_login_service_id = next(sid for sid in service_ids if "hypha-login" in sid)
         login_service = await api.get_service(hypha_login_service_id)
         
-        await login_service.signup(
+        signup_result = await login_service.signup(
             name="API Test User",
             email="apitest@example.com",
             password="apipass123"
         )
-    
+        assert signup_result["success"] is True, (
+            f"Signup failed: {signup_result.get('error')}"
+        )
+        # Complete email verification (dev fallback returns dev_code when
+        # RESEND_API_KEY is unset, as in CI) so the account is materialized.
+        verify_result = await login_service.verify_email(
+            email="apitest@example.com",
+            code=signup_result["dev_code"],
+        )
+        assert verify_result["success"] is True, (
+            f"Verify failed: {verify_result.get('error')}"
+        )
+
     # Now test the login() function with a mock callback
     login_completed = False
     received_token = None

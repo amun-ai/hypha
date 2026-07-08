@@ -1,19 +1,322 @@
-"""Local authentication provider for Hypha."""
+"""Local authentication provider for Hypha.
+
+This module implements a self-contained email/password authentication provider
+for Hypha deployments that do not use an external identity provider (Auth0).
+
+Email verification
+------------------
+Signup is a two-step flow:
+
+1. ``signup`` validates the input, checks the email is not already registered,
+   generates a short-lived numeric verification code, stashes the *pending*
+   account (name + password hash + code) in a bounded, TTL-evicting in-memory
+   store, and emails the code via an injectable :class:`EmailTransport`.
+   The account is **not** created until the code is verified.
+2. ``verify_email`` checks the submitted code (with attempt counting, TTL, and
+   max-attempts lockout) and, on success, materialises the real user artifact.
+
+Email transport
+---------------
+The email transport is *injectable* so it can be exercised in tests without a
+real provider (see :class:`CapturingEmailTransport`) and so production can use
+Resend (:class:`ResendEmailTransport`, driven by the ``RESEND_API_KEY`` env var).
+
+Dev fallback
+------------
+If ``RESEND_API_KEY`` is unset, the provider falls back to
+:class:`LoggingEmailTransport`, which logs the code instead of sending it and
+marks itself as a dev fallback. In that mode ONLY, ``signup`` returns the code
+in its response (``dev_code``) so developers can complete the flow locally
+without an email provider. When a real transport is configured the code is
+never returned to the client.
+"""
 
 import hashlib
 import secrets
+import os
 import time
 import asyncio
+import logging
+from typing import Any, Callable, Optional
+
 from hypha.core import UserInfo, UserPermission
 from hypha.core.auth import _parse_token, create_scope
 from hypha.utils import random_id
 import shortuuid
-import logging
 
 logger = logging.getLogger(__name__)
 
 # In-memory storage for login sessions (production should use Redis)
 LOGIN_SESSIONS = {}
+
+# ---------------------------------------------------------------------------
+# Email verification configuration
+# ---------------------------------------------------------------------------
+
+# Length of the numeric verification code.
+VERIFICATION_CODE_LENGTH = 6
+# How long a verification code / pending-signup session is valid, in seconds.
+VERIFICATION_CODE_TTL = int(os.environ.get("HYPHA_VERIFICATION_CODE_TTL", "600"))
+# Maximum number of wrong-code attempts before the pending session is discarded.
+MAX_VERIFICATION_ATTEMPTS = int(os.environ.get("HYPHA_VERIFICATION_MAX_ATTEMPTS", "5"))
+# Minimum seconds between successive "resend code" requests for one email.
+RESEND_THROTTLE_SECONDS = int(os.environ.get("HYPHA_VERIFICATION_RESEND_THROTTLE", "30"))
+# Upper bound on how many pending-verification sessions we keep in memory. This
+# caps the memory used by abandoned signups (each also expires via TTL).
+MAX_PENDING_VERIFICATIONS = int(
+    os.environ.get("HYPHA_VERIFICATION_MAX_PENDING", "10000")
+)
+# From-address used for verification emails.
+VERIFICATION_FROM_EMAIL = os.environ.get(
+    "HYPHA_VERIFICATION_FROM_EMAIL", "Hypha <onboarding@resend.dev>"
+)
+
+
+def generate_verification_code() -> str:
+    """Generate a cryptographically-random numeric verification code."""
+    upper = 10 ** VERIFICATION_CODE_LENGTH
+    return str(secrets.randbelow(upper)).zfill(VERIFICATION_CODE_LENGTH)
+
+
+# ---------------------------------------------------------------------------
+# Email transport abstraction (injectable)
+# ---------------------------------------------------------------------------
+
+
+class EmailTransport:
+    """Interface for sending verification emails.
+
+    Subclasses must implement :meth:`send_verification_email`. The
+    ``is_dev_fallback`` attribute indicates whether this transport actually
+    delivers email (``False``) or is a non-delivering dev stand-in (``True``);
+    in the latter case the signup handler may expose the code to the caller.
+    """
+
+    is_dev_fallback: bool = False
+
+    async def send_verification_email(self, to: str, code: str) -> None:
+        raise NotImplementedError
+
+
+def _verification_email_html(code: str) -> str:
+    return (
+        "<div style=\"font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,"
+        "sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;color:#1f2937\">"
+        "<h1 style=\"font-size:20px;margin:0 0 16px\">Verify your email</h1>"
+        "<p style=\"font-size:14px;line-height:1.6;margin:0 0 24px\">"
+        "Use the following code to finish creating your Hypha account. "
+        "This code expires in "
+        f"{VERIFICATION_CODE_TTL // 60} minutes.</p>"
+        "<div style=\"font-size:32px;font-weight:700;letter-spacing:8px;"
+        "background:#f3f4f6;border-radius:8px;padding:16px;text-align:center;"
+        f"margin:0 0 24px\">{code}</div>"
+        "<p style=\"font-size:12px;color:#6b7280;margin:0\">"
+        "If you did not request this, you can safely ignore this email.</p></div>"
+    )
+
+
+def _verification_email_text(code: str) -> str:
+    return (
+        f"Your Hypha verification code is: {code}\n\n"
+        f"It expires in {VERIFICATION_CODE_TTL // 60} minutes. "
+        "If you did not request this, you can ignore this email."
+    )
+
+
+class ResendEmailTransport(EmailTransport):
+    """Send verification emails through the Resend HTTP API.
+
+    ``http_post`` is injectable for testing (defaults to an ``httpx.AsyncClient``
+    POST). In production it is left unset and a real HTTPS call is made.
+    """
+
+    is_dev_fallback = False
+    API_URL = "https://api.resend.com/emails"
+
+    def __init__(
+        self,
+        api_key: str,
+        from_email: str,
+        http_post: Optional[Callable] = None,
+    ):
+        assert api_key, "Resend API key is required"
+        self.api_key = api_key
+        self.from_email = from_email
+        self._http_post = http_post
+
+    async def _default_post(self, url, json=None, headers=None):
+        import httpx
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            return await client.post(url, json=json, headers=headers)
+
+    async def send_verification_email(self, to: str, code: str) -> None:
+        post = self._http_post or self._default_post
+        payload = {
+            "from": self.from_email,
+            "to": [to],
+            "subject": "Your Hypha verification code",
+            "html": _verification_email_html(code),
+            "text": _verification_email_text(code),
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        response = await post(self.API_URL, json=payload, headers=headers)
+        status = getattr(response, "status_code", 200)
+        if status >= 400:
+            # Surface a sanitized error; do NOT leak the code or API key.
+            body = getattr(response, "text", "")
+            logger.error("Resend email send failed (status %s): %s", status, body)
+            raise RuntimeError(f"Failed to send verification email (status {status})")
+
+
+class LoggingEmailTransport(EmailTransport):
+    """Dev fallback transport: logs the code instead of sending it.
+
+    Used when ``RESEND_API_KEY`` is not configured so that signup remains usable
+    in development. Marked as a dev fallback so the signup handler exposes the
+    code to the caller (never done when a real transport is configured).
+    """
+
+    is_dev_fallback = True
+
+    def __init__(self, from_email: str = VERIFICATION_FROM_EMAIL):
+        self.from_email = from_email
+
+    async def send_verification_email(self, to: str, code: str) -> None:
+        logger.warning(
+            "[local-auth dev] RESEND_API_KEY not set; verification code for %s is %s",
+            to,
+            code,
+        )
+
+
+class CapturingEmailTransport(EmailTransport):
+    """In-process transport that CAPTURES sent emails (for tests).
+
+    This is a REAL object (not a mock): it records every send so tests can assert
+    on the recipient and code without any external service.
+    """
+
+    is_dev_fallback = False
+
+    def __init__(self):
+        self.sent = []
+
+    async def send_verification_email(self, to: str, code: str) -> None:
+        self.sent.append({"to": to, "code": code})
+
+
+def build_email_transport(
+    api_key: Optional[str] = None,
+    from_email: str = VERIFICATION_FROM_EMAIL,
+) -> EmailTransport:
+    """Construct the appropriate transport based on configuration.
+
+    Uses Resend when an API key is available, otherwise the logging dev fallback.
+    """
+    if api_key is None:
+        api_key = os.environ.get("RESEND_API_KEY")
+    if api_key:
+        return ResendEmailTransport(api_key=api_key, from_email=from_email)
+    return LoggingEmailTransport(from_email=from_email)
+
+
+# The process-wide email transport. Lazily built on first use from the
+# environment; overridable via set_email_transport (used by tests to inject a
+# real capturing transport, and could be used by deployments to customise).
+_email_transport: Optional[EmailTransport] = None
+
+
+def get_email_transport() -> EmailTransport:
+    """Return the active email transport, building the default lazily."""
+    global _email_transport
+    if _email_transport is None:
+        _email_transport = build_email_transport()
+    return _email_transport
+
+
+def set_email_transport(transport: EmailTransport) -> None:
+    """Override the active email transport (dependency injection)."""
+    global _email_transport
+    _email_transport = transport
+
+
+def reset_email_transport() -> None:
+    """Reset to the default (env-derived) transport, rebuilt on next use."""
+    global _email_transport
+    _email_transport = None
+
+
+# ---------------------------------------------------------------------------
+# Pending-verification store (bounded, TTL-evicting)
+# ---------------------------------------------------------------------------
+
+
+class PendingVerificationStore:
+    """A bounded, TTL-evicting store for pending email-verification sessions.
+
+    Keyed by (lowercased) email. Each entry holds the verification code, the
+    pending account data (name + password hash + salt), an attempt counter, and
+    timestamps. Expired entries are evicted on read; the store never grows beyond
+    ``max_entries`` (oldest entries are dropped first) so abandoned signups can
+    never leak unbounded memory.
+    """
+
+    def __init__(self, ttl: int, max_entries: int):
+        self.ttl = ttl
+        self.max_entries = max_entries
+        self._entries = {}
+
+    def _is_expired(self, entry: dict) -> bool:
+        return (time.time() - entry["created_at"]) > self.ttl
+
+    def put(self, email: str, data: dict) -> None:
+        now = time.time()
+        entry = dict(data)
+        entry.setdefault("attempts", 0)
+        entry.setdefault("created_at", now)
+        entry.setdefault("last_sent_at", now)
+        self._entries[email] = entry
+        # Enforce the bound: drop oldest entries (by created_at) beyond the cap.
+        while len(self._entries) > self.max_entries:
+            oldest_key = min(
+                self._entries, key=lambda k: self._entries[k]["created_at"]
+            )
+            del self._entries[oldest_key]
+
+    def get(self, email: str):
+        entry = self._entries.get(email)
+        if entry is None:
+            return None
+        if self._is_expired(entry):
+            del self._entries[email]
+            return None
+        return entry
+
+    def delete(self, email: str) -> None:
+        self._entries.pop(email, None)
+
+    def sweep_expired(self) -> int:
+        """Remove all expired entries; return the number removed."""
+        expired = [k for k, e in self._entries.items() if self._is_expired(e)]
+        for k in expired:
+            del self._entries[k]
+        return len(expired)
+
+
+_PENDING_VERIFICATIONS = PendingVerificationStore(
+    ttl=VERIFICATION_CODE_TTL, max_entries=MAX_PENDING_VERIFICATIONS
+)
+
+# Background sweeper handle (started in hypha_startup).
+_sweeper_task = None
+
+
+def _normalize_email(email: str) -> str:
+    return email.strip().lower()
 
 
 def hash_password(password: str, salt: str) -> str:
@@ -391,6 +694,38 @@ async def index_handler(event):
                 </button>
             </div>
 
+            <!-- Email Verification Form -->
+            <div id="verifyForm" class="space-y-4 hidden">
+                <div class="text-center">
+                    <div class="mx-auto w-12 h-12 rounded-full bg-green-100 flex items-center justify-center mb-3">
+                        <i class="fas fa-envelope-open-text text-green-600 text-xl"></i>
+                    </div>
+                    <h2 class="text-lg font-semibold text-gray-800">Check your email</h2>
+                    <p class="text-sm text-gray-600 mt-1">
+                        We sent a 6-digit code to <span id="verifyEmailLabel" class="font-medium text-gray-900"></span>.
+                    </p>
+                </div>
+                <div>
+                    <label for="verifyCode" class="block text-sm font-medium text-gray-700">Verification Code</label>
+                    <input type="text" id="verifyCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6"
+                        class="mt-1 block w-full px-3 py-2 text-center text-2xl tracking-[0.5em] font-mono border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                        placeholder="______">
+                </div>
+                <button onclick="handleVerify()" class="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
+                    Verify &amp; Create Account
+                </button>
+                <div class="flex items-center justify-between text-sm">
+                    <button onclick="handleResend()" id="resendBtn"
+                        class="text-blue-600 hover:text-blue-800 disabled:text-gray-400 disabled:cursor-not-allowed disabled:no-underline">
+                        Resend code
+                    </button>
+                    <span id="resendCountdown" class="text-gray-500"></span>
+                </div>
+                <button onclick="cancelVerify()" class="w-full text-gray-500 text-sm hover:text-gray-700">
+                    ← Use a different email
+                </button>
+            </div>
+
             <!-- Messages -->
             <div id="message" class="mt-4 text-center text-sm"></div>
         </div>
@@ -547,6 +882,10 @@ async def index_handler(event):
             const loginTab = document.getElementById('loginTab');
             const signupTab = document.getElementById('signupTab');
 
+            // Always leave the verification step when switching tabs.
+            const verifyForm = document.getElementById('verifyForm');
+            if (verifyForm) verifyForm.classList.add('hidden');
+
             if (tab === 'login') {
                 loginForm.classList.remove('hidden');
                 signupForm.classList.add('hidden');
@@ -696,10 +1035,109 @@ async def index_handler(event):
 
                 const result = await response.json();
                 if (result.success) {
-                    showMessage('Account created successfully! You can now login.');
-                    setTimeout(() => showTab('login'), 2000);
+                    // A verification code has been emailed. Move to the verify step.
+                    pendingEmail = result.email || email;
+                    document.getElementById('verifyEmailLabel').textContent = pendingEmail;
+                    showVerifyForm();
+                    if (result.dev_code) {
+                        // Dev fallback (no RESEND_API_KEY): prefill the code to ease local testing.
+                        document.getElementById('verifyCode').value = result.dev_code;
+                        showMessage('Dev mode: code auto-filled (RESEND_API_KEY not set).', false);
+                    } else {
+                        showMessage('We emailed you a 6-digit verification code.', false);
+                    }
+                    startResendCountdown(30);
                 } else {
                     showMessage(result.error || 'Signup failed', true);
+                }
+            } catch (error) {
+                showMessage('An error occurred: ' + error.message, true);
+            }
+        }
+
+        // ---- Email verification step ----
+        let pendingEmail = null;
+        let resendTimer = null;
+
+        function showVerifyForm() {
+            document.getElementById('loginForm').classList.add('hidden');
+            document.getElementById('signupForm').classList.add('hidden');
+            document.getElementById('verifyForm').classList.remove('hidden');
+            document.getElementById('verifyCode').focus();
+        }
+
+        function cancelVerify() {
+            if (resendTimer) { clearInterval(resendTimer); resendTimer = null; }
+            pendingEmail = null;
+            document.getElementById('verifyForm').classList.add('hidden');
+            document.getElementById('verifyCode').value = '';
+            showTab('signup');
+            showMessage('', false);
+        }
+
+        function startResendCountdown(seconds) {
+            const btn = document.getElementById('resendBtn');
+            const label = document.getElementById('resendCountdown');
+            btn.disabled = true;
+            let remaining = seconds;
+            label.textContent = `Resend available in ${remaining}s`;
+            if (resendTimer) clearInterval(resendTimer);
+            resendTimer = setInterval(() => {
+                remaining -= 1;
+                if (remaining <= 0) {
+                    clearInterval(resendTimer);
+                    resendTimer = null;
+                    btn.disabled = false;
+                    label.textContent = '';
+                } else {
+                    label.textContent = `Resend available in ${remaining}s`;
+                }
+            }, 1000);
+        }
+
+        async function handleVerify() {
+            const code = document.getElementById('verifyCode').value.trim();
+            if (!pendingEmail) { showMessage('No pending signup. Please sign up again.', true); return; }
+            if (!code || code.length < 6) { showMessage('Please enter the 6-digit code', true); return; }
+
+            try {
+                const response = await fetch('/public/services/hypha-login/verify_email', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ email: pendingEmail, code })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    if (resendTimer) { clearInterval(resendTimer); resendTimer = null; }
+                    document.getElementById('verifyForm').classList.add('hidden');
+                    document.getElementById('verifyCode').value = '';
+                    showMessage('Email verified! Account created. You can now log in.', false);
+                    setTimeout(() => showTab('login'), 1500);
+                } else {
+                    showMessage(result.error || 'Verification failed', true);
+                }
+            } catch (error) {
+                showMessage('An error occurred: ' + error.message, true);
+            }
+        }
+
+        async function handleResend() {
+            if (!pendingEmail) { showMessage('No pending signup. Please sign up again.', true); return; }
+            try {
+                const response = await fetch('/public/services/hypha-login/resend_code', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ email: pendingEmail })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    showMessage('A new code has been sent.', false);
+                    if (result.dev_code) {
+                        document.getElementById('verifyCode').value = result.dev_code;
+                    }
+                    startResendCountdown(30);
+                } else {
+                    showMessage(result.error || 'Could not resend code', true);
                 }
             } catch (error) {
                 showMessage('An error occurred: ' + error.message, true);
@@ -806,83 +1244,246 @@ async def report_login_handler(
     return {"success": True}
 
 
+async def _get_users_collection_id(artifact_manager):
+    """Return the id of the local-auth users collection, creating it if absent."""
+    collection_alias = "ws-user-root/local-auth-users"
+    try:
+        collection = await artifact_manager.read(collection_alias)
+        return collection["id"]
+    except Exception:
+        collection = await artifact_manager.create(
+            workspace="ws-user-root",
+            alias="local-auth-users",
+            type="collection",
+            manifest={
+                "name": "Local Authentication Users",
+                "description": "User accounts for local authentication",
+            },
+            # here we can add {"admin-user-id": "*"} for enable user management
+            config={"permissions": {}},
+        )
+        return collection.id if hasattr(collection, "id") else collection["id"]
+
+
+async def _find_user_by_email(artifact_manager, collection_id, email):
+    """Return the user manifest dict for ``email`` (case-insensitive) or None."""
+    target = _normalize_email(email)
+    all_users = await artifact_manager.list(collection_id)
+    for user in all_users:
+        manifest = user.get("manifest", {})
+        stored = manifest.get("email")
+        if stored and _normalize_email(stored) == target:
+            return user
+    return None
+
+
+async def _create_user_artifact(artifact_manager, collection_id, name, email, password_hash, salt):
+    """Materialise a verified user account and return its user_id."""
+    user_id = random_id(readable=True)
+    user_data = {
+        "id": user_id,
+        "name": name,
+        "email": email,
+        "password_hash": password_hash,
+        "salt": salt,
+        "created_at": time.time(),
+        "email_verified": True,  # only created after email verification succeeds
+        "roles": ["user"],
+        "workspaces": {},  # User workspaces
+    }
+    await artifact_manager.create(
+        parent_id=collection_id,
+        alias=user_id,
+        type="user",
+        manifest=user_data,
+        stage=False,  # Directly commit the user
+    )
+    return user_id
+
+
 async def signup_handler(server, context=None, name: str = None, email: str = None, password: str = None):
-    """Handle user signup."""
+    """Handle user signup (step 1 of 2: send verification code).
+
+    Validates the input, ensures the email is not already registered, then stores
+    a *pending* signup (name + password hash + verification code) and emails the
+    code. The account is created only after ``verify_email_handler`` succeeds.
+
+    Returns a dict with ``verification_required: True`` on success. In the dev
+    fallback (no RESEND_API_KEY), the response additionally contains ``dev_code``.
+    """
     if not all([name, email, password]):
         return {"success": False, "error": "Name, email and password are required"}
-    
+
     if len(password) < 8:
         return {"success": False, "error": "Password must be at least 8 characters"}
-    
+
+    email = _normalize_email(email)
+
     try:
-        # Get the artifact manager to store user data
         artifact_manager = await server.get_service("public/artifact-manager")
         if not artifact_manager:
             return {"success": False, "error": "Artifact manager not available"}
-        
-        # Check if user collection exists, create if not
-        # Store in the root user's workspace (ws-user-root)
-        collection_alias = "ws-user-root/local-auth-users"
-        collection_id = None
-        try:
-            # Try to read the collection first
-            collection = await artifact_manager.read(collection_alias)
-            collection_id = collection["id"]
-        except:
-            # Create the collection if it doesn't exist in root workspace
-            collection = await artifact_manager.create(
-                workspace="ws-user-root",
-                alias="local-auth-users",
-                type="collection",
-                manifest={
-                    "name": "Local Authentication Users",
-                    "description": "User accounts for local authentication",
-                },
-                # here we can add {"admin-user-id": "*"} for enable user managment
-                config={"permissions": {}}
-            )
-            collection_id = collection.id if hasattr(collection, 'id') else collection["id"]
-        
-        # Check if email already exists by listing all users and filtering
-        # Note: artifact manager doesn't support nested key filtering
-        all_users = await artifact_manager.list(collection_id)
-        
-        # Check if email already exists
-        for user in all_users:
-            if user.get("manifest", {}).get("email") == email:
-                return {"success": False, "error": "Email already registered"}
-        
-        # Generate salt and hash password
+
+        collection_id = await _get_users_collection_id(artifact_manager)
+
+        # Reject duplicates BEFORE generating/sending a code.
+        existing = await _find_user_by_email(artifact_manager, collection_id, email)
+        if existing is not None:
+            return {"success": False, "error": "Email already registered"}
+
+        # Generate salt and hash password; store only the hash in the pending entry.
         salt = secrets.token_hex(32)
         password_hash = hash_password(password, salt)
-        
-        # Create user artifact
-        # Generate a readable user ID using random_id
-        user_id = random_id(readable=True)
-        user_data = {
-            "id": user_id,
-            "name": name,
-            "email": email,
-            "password_hash": password_hash,
-            "salt": salt,
-            "created_at": time.time(),
-            "roles": ["user"],
-            "workspaces": {}  # User workspaces
-        }
-        
-        # Store user in artifact manager
-        user_artifact = await artifact_manager.create(
-            parent_id=collection_id,
-            alias=user_id,
-            type="user", 
-            manifest=user_data,
-            stage=False  # Directly commit the user
+        code = generate_verification_code()
+
+        _PENDING_VERIFICATIONS.put(
+            email,
+            {
+                "name": name,
+                "email": email,
+                "password_hash": password_hash,
+                "salt": salt,
+                "code": code,
+                "attempts": 0,
+            },
         )
-        
-        return {"success": True, "user_id": user_id}
+
+        # Send the verification email via the injectable transport.
+        transport = get_email_transport()
+        await transport.send_verification_email(email, code)
+
+        result = {"success": True, "verification_required": True, "email": email}
+        # In the dev fallback ONLY, expose the code so local dev can proceed
+        # without an email provider. Never exposed when a real transport is set.
+        if getattr(transport, "is_dev_fallback", False):
+            result["dev_code"] = code
+        return result
     except Exception as e:
         logger.error(f"Signup error: {str(e)}")
         return {"success": False, "error": f"Signup failed: {str(e)}"}
+
+
+async def verify_email_handler(server, context=None, email: str = None, code: str = None):
+    """Handle email verification (step 2 of 2: create the account).
+
+    Checks the submitted code against the pending signup with attempt counting,
+    TTL expiry, and max-attempts lockout. On success, materialises the real user
+    artifact and clears the pending session.
+    """
+    if not email or not code:
+        return {"success": False, "error": "Email and verification code are required"}
+
+    email = _normalize_email(email)
+    entry = _PENDING_VERIFICATIONS.get(email)
+    if entry is None:
+        # Either never started, already consumed, expired, or evicted.
+        return {
+            "success": False,
+            "error": "No pending verification for this email, or the code has expired. Please sign up again.",
+        }
+
+    # Enforce max attempts (lockout): discard the pending session.
+    if entry["attempts"] >= MAX_VERIFICATION_ATTEMPTS:
+        _PENDING_VERIFICATIONS.delete(email)
+        return {
+            "success": False,
+            "error": "Too many incorrect attempts. Please sign up again.",
+        }
+
+    # Constant-time compare of the code.
+    if not secrets.compare_digest(str(entry["code"]), str(code)):
+        entry["attempts"] += 1
+        remaining = MAX_VERIFICATION_ATTEMPTS - entry["attempts"]
+        if remaining <= 0:
+            _PENDING_VERIFICATIONS.delete(email)
+            return {
+                "success": False,
+                "error": "Too many incorrect attempts. Please sign up again.",
+            }
+        return {
+            "success": False,
+            "error": f"Incorrect code. {remaining} attempt(s) remaining.",
+        }
+
+    # Code is correct — create the account.
+    try:
+        artifact_manager = await server.get_service("public/artifact-manager")
+        if not artifact_manager:
+            return {"success": False, "error": "Artifact manager not available"}
+
+        collection_id = await _get_users_collection_id(artifact_manager)
+
+        # Guard against a race where the email was registered meanwhile.
+        existing = await _find_user_by_email(artifact_manager, collection_id, email)
+        if existing is not None:
+            _PENDING_VERIFICATIONS.delete(email)
+            return {"success": False, "error": "Email already registered"}
+
+        user_id = await _create_user_artifact(
+            artifact_manager,
+            collection_id,
+            entry["name"],
+            entry["email"],
+            entry["password_hash"],
+            entry["salt"],
+        )
+        _PENDING_VERIFICATIONS.delete(email)
+        return {"success": True, "user_id": user_id, "email_verified": True}
+    except Exception as e:
+        logger.error(f"Email verification error: {str(e)}")
+        return {"success": False, "error": f"Verification failed: {str(e)}"}
+
+
+async def resend_code_handler(server, context=None, email: str = None):
+    """Resend a verification code for a pending signup, subject to throttling.
+
+    Generates a fresh code (invalidating the previous one) and re-emails it,
+    provided the throttle window since the last send has elapsed.
+    """
+    if not email:
+        return {"success": False, "error": "Email is required"}
+
+    email = _normalize_email(email)
+    entry = _PENDING_VERIFICATIONS.get(email)
+    if entry is None:
+        return {
+            "success": False,
+            "error": "No pending verification for this email. Please sign up again.",
+        }
+
+    elapsed = time.time() - entry.get("last_sent_at", 0)
+    if elapsed < RESEND_THROTTLE_SECONDS:
+        wait = int(RESEND_THROTTLE_SECONDS - elapsed) + 1
+        return {
+            "success": False,
+            "error": f"Please wait {wait}s before requesting another code.",
+        }
+
+    # Issue a fresh code and reset the attempt counter.
+    code = generate_verification_code()
+    entry["code"] = code
+    entry["attempts"] = 0
+    entry["last_sent_at"] = time.time()
+
+    transport = get_email_transport()
+    await transport.send_verification_email(email, code)
+
+    result = {"success": True, "email": email}
+    if getattr(transport, "is_dev_fallback", False):
+        result["dev_code"] = code
+    return result
+
+
+async def _pending_verification_sweeper(interval: int = 60):
+    """Periodically evict expired pending-verification sessions."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            removed = _PENDING_VERIFICATIONS.sweep_expired()
+            if removed:
+                logger.debug("Swept %s expired pending verification(s)", removed)
+        except Exception as e:  # pragma: no cover - defensive log, never fatal
+            logger.error("Pending-verification sweep error: %s", e)
 
 
 async def login_handler(server, context=None, email: str = None, password: str = None, workspace: str = None, key: str = None):
@@ -901,25 +1502,17 @@ async def login_handler(server, context=None, email: str = None, password: str =
         try:
             collection = await artifact_manager.read(collection_alias)
             collection_id = collection["id"]
-        except:
+        except Exception:
             # Collection doesn't exist yet (no users registered)
             return {"success": False, "error": "No users registered yet. Please sign up first."}
-        
-        # Find user by email
-        all_users = await artifact_manager.list(collection_id)
-        
-        # Find the user with matching email
-        user_artifact_id = None
-        for user in all_users:
-            if user.get("manifest", {}).get("email") == email:
-                user_artifact_id = user["id"]
-                break
-        
-        if not user_artifact_id:
+
+        # Find the user with matching email (case-insensitive)
+        user = await _find_user_by_email(artifact_manager, collection_id, email)
+        if not user:
             return {"success": False, "error": "Invalid email or password"}
-        
+
         # Get the full user artifact
-        user_artifact = await artifact_manager.read(user_artifact_id)
+        user_artifact = await artifact_manager.read(user["id"])
         user_data = user_artifact["manifest"]
         
         # Verify password
@@ -953,7 +1546,11 @@ async def login_handler(server, context=None, email: str = None, password: str =
             LOGIN_SESSIONS[key]["token"] = token
             LOGIN_SESSIONS[key]["user_id"] = user_data["id"]
             LOGIN_SESSIONS[key]["email"] = user_data["email"]
-            LOGIN_SESSIONS[key]["email_verified"] = True  # Local auth emails are always verified
+            # email_verified reflects the REAL verification state recorded at
+            # account creation. Accounts are only created after the emailed code
+            # is verified, so this is normally True; legacy accounts predating
+            # verification default to True for backward compatibility.
+            LOGIN_SESSIONS[key]["email_verified"] = user_data.get("email_verified", True)
             LOGIN_SESSIONS[key]["name"] = user_data.get("name", user_data["email"].split("@")[0])
             LOGIN_SESSIONS[key]["nickname"] = user_data.get("nickname", user_data.get("name", user_data["email"].split("@")[0]))
             LOGIN_SESSIONS[key]["picture"] = user_data.get("picture")  # May be None
@@ -1001,22 +1598,12 @@ async def update_profile_handler(server, context=None, name: str = None, current
             # Collection doesn't exist yet (no users registered)
             return {"success": False, "error": "User not found"}
         
-        # Find user artifact by email
-        all_users = await artifact_manager.list(collection_id)
-        
-        # Find the user with matching email
-        user_artifact_id = None
-        user_id = None
-        for user in all_users:
-            if user.get("manifest", {}).get("email") == user_email:
-                user_artifact_id = user["id"]
-                user_id = user.get("manifest", {}).get("id")
-                break
-        
-        if not user_artifact_id:
+        # Find user artifact by email (case-insensitive)
+        user = await _find_user_by_email(artifact_manager, collection_id, user_email)
+        if not user:
             return {"success": False, "error": "User not found"}
-        
-        user_artifact = await artifact_manager.read(user_artifact_id)
+
+        user_artifact = await artifact_manager.read(user["id"])
         user_data = user_artifact["manifest"]
         
         # Update name if provided
@@ -1100,7 +1687,24 @@ def local_get_token(scope):
 async def hypha_startup(server):
     """Startup function for local authentication."""
     logger.info("Initializing local authentication provider")
-    
+
+    # Initialise the email transport from the environment. Logs which mode is
+    # active so operators know whether real emails will be sent.
+    transport = get_email_transport()
+    if getattr(transport, "is_dev_fallback", False):
+        logger.warning(
+            "Local auth email verification is in DEV FALLBACK mode "
+            "(RESEND_API_KEY not set): verification codes are logged, not emailed, "
+            "and returned in the signup response. Do NOT use this in production."
+        )
+    else:
+        logger.info("Local auth email verification using Resend transport")
+
+    # Start the background sweeper that evicts abandoned pending verifications.
+    global _sweeper_task
+    if _sweeper_task is None or _sweeper_task.done():
+        _sweeper_task = asyncio.ensure_future(_pending_verification_sweeper())
+
     # Register the authentication handlers with additional methods
     await server.register_auth_service(
         parse_token=local_parse_token,
@@ -1115,8 +1719,10 @@ async def hypha_startup(server):
         # Additional handlers for user management - these will be added to the hypha-login service
         # The RPC framework passes context as a parameter
         signup=lambda context=None, **kwargs: signup_handler(server, context, **kwargs),
+        verify_email=lambda context=None, **kwargs: verify_email_handler(server, context, **kwargs),
+        resend_code=lambda context=None, **kwargs: resend_code_handler(server, context, **kwargs),
         login=lambda context=None, **kwargs: login_handler(server, context, **kwargs),
         update_profile=lambda context=None, **kwargs: update_profile_handler(server, context, **kwargs),
     )
-    
+
     logger.info("Local authentication provider initialized")
