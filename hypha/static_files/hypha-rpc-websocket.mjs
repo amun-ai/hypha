@@ -10356,6 +10356,7 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony export */   getRemoteService: () => (/* binding */ getRemoteService),
 /* harmony export */   getRemoteServiceHTTP: () => (/* reexport safe */ _http_client_js__WEBPACK_IMPORTED_MODULE_5__.getRemoteServiceHTTP),
 /* harmony export */   hyphaWebsocketClient: () => (/* binding */ hyphaWebsocketClient),
+/* harmony export */   isLoginCompleteMessage: () => (/* binding */ isLoginCompleteMessage),
 /* harmony export */   loadRequirements: () => (/* reexport safe */ _utils_index_js__WEBPACK_IMPORTED_MODULE_2__.loadRequirements),
 /* harmony export */   login: () => (/* binding */ login),
 /* harmony export */   logout: () => (/* binding */ logout),
@@ -10390,6 +10391,14 @@ __webpack_require__.r(__webpack_exports__);
 
 
 const MAX_RETRY = 1000000;
+
+// When the socket errors/closes during the handshake, wait briefly before
+// rejecting with the generic reason: the server usually sends a descriptive
+// {type:"error"} message (e.g. token/workspace mismatch) just before closing,
+// and on some runtimes (undici's native WebSocket on Node) the close is
+// surfaced BEFORE that message reaches onmessage. This grace lets the real
+// server reason win the race instead of a generic "error during handshake".
+const HANDSHAKE_ERROR_GRACE_MS = 100;
 
 class WebsocketRPCConnection {
   constructor(
@@ -10548,30 +10557,38 @@ class WebsocketRPCConnection {
 
       // Handle WebSocket closing before connection_info is received.
       // Without this, the promise hangs until the outer waitFor timeout (60s).
+      // Defer the generic error/close rejection so a pending server
+      // {type:"error"} message (handled in onmessage below) can settle first
+      // with the actual reason. Without this, an undici close-as-error would
+      // reject with "error during handshake" and hide the server's reason
+      // (e.g. "workspace does not match"). If no descriptive message arrives
+      // within the grace window, the generic rejection fires as a fallback.
+      const rejectAfterGrace = (err) => {
+        if (settled) return;
+        setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            reject(err);
+          }
+        }, HANDSHAKE_ERROR_GRACE_MS);
+      };
+
       const prevOnClose = this._websocket.onclose;
       this._websocket.onclose = (event) => {
-        if (!settled) {
-          settled = true;
-          reject(
-            new Error(
-              `ConnectionAbortedError: WebSocket closed during handshake (code=${event.code}, reason=${event.reason || "unknown"})`,
-            ),
-          );
-        }
+        rejectAfterGrace(
+          new Error(
+            `ConnectionAbortedError: WebSocket closed during handshake (code=${event.code}, reason=${event.reason || "unknown"})`,
+          ),
+        );
         // Delegate to any previously-set onclose handler
         if (prevOnClose) prevOnClose.call(this._websocket, event);
       };
 
       const prevOnError = this._websocket.onerror;
       this._websocket.onerror = (event) => {
-        if (!settled) {
-          settled = true;
-          reject(
-            new Error(
-              `ConnectionAbortedError: WebSocket error during handshake`,
-            ),
-          );
-        }
+        rejectAfterGrace(
+          new Error(`ConnectionAbortedError: WebSocket error during handshake`),
+        );
         if (prevOnError) prevOnError.call(this._websocket, event);
       };
 
@@ -10986,6 +11003,89 @@ function normalizeServerUrl(server_url) {
 }
 
 /**
+ * Validate a window "message" event as a hypha login-complete signal.
+ *
+ * Exported so it can be unit-tested without a browser. The completion message
+ * carries ONLY the public session key (never a token); a valid message merely
+ * decides when to tear down the inline login modal — the token itself is always
+ * fetched over the trusted check() RPC, so a forged message cannot inject one.
+ */
+function isLoginCompleteMessage(event, expectedOrigin, expectedKey) {
+  if (!event || event.origin !== expectedOrigin) return false;
+  const data = event.data;
+  if (!data || typeof data !== "object") return false;
+  return data.type === "hypha-login-complete" && data.key === expectedKey;
+}
+
+/**
+ * Render the login page in an in-page modal iframe (browser only). This is the
+ * no-popup alternative to opening login_url in a popup window. Returns
+ * { teardown } to remove the modal; the close button invokes onCancel.
+ */
+function openLoginModal(loginUrl, { container, onCancel } = {}) {
+  const doc = window.document;
+  const overlay = doc.createElement("div");
+  overlay.setAttribute("data-hypha-login-modal", "");
+  if (!container) {
+    Object.assign(overlay.style, {
+      position: "fixed",
+      inset: "0",
+      zIndex: "2147483647",
+      background: "rgba(0,0,0,0.5)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+    });
+  }
+  const frame = doc.createElement("div");
+  Object.assign(frame.style, {
+    position: "relative",
+    width: "min(480px, 92vw)",
+    height: "min(640px, 90vh)",
+    background: "#fff",
+    borderRadius: "10px",
+    overflow: "hidden",
+    boxShadow: "0 10px 40px rgba(0,0,0,0.3)",
+  });
+  const closeBtn = doc.createElement("button");
+  closeBtn.setAttribute("aria-label", "Close login");
+  closeBtn.textContent = "×";
+  Object.assign(closeBtn.style, {
+    position: "absolute",
+    top: "6px",
+    right: "10px",
+    zIndex: "1",
+    border: "none",
+    background: "transparent",
+    fontSize: "24px",
+    lineHeight: "1",
+    cursor: "pointer",
+    color: "#555",
+  });
+  const iframe = doc.createElement("iframe");
+  iframe.src = loginUrl;
+  iframe.setAttribute("title", "Hypha login");
+  Object.assign(iframe.style, { width: "100%", height: "100%", border: "none" });
+
+  frame.appendChild(closeBtn);
+  frame.appendChild(iframe);
+  overlay.appendChild(frame);
+  (container || doc.body).appendChild(overlay);
+
+  let torn = false;
+  const teardown = () => {
+    if (torn) return;
+    torn = true;
+    if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+  };
+  closeBtn.addEventListener("click", () => {
+    teardown();
+    if (onCancel) onCancel();
+  });
+  return { teardown };
+}
+
+/**
  * Login to the hypha server.
  *
  * Configuration options:
@@ -10995,6 +11095,13 @@ function normalizeServerUrl(server_url) {
  *   expires_in: Token expiration time (optional)
  *   login_timeout: Timeout for login process (default: 60)
  *   login_callback: Callback function for login URL (optional)
+ *   mode: "popup" (default) or "inline". In "inline" mode (browser only, and only
+ *         when no login_callback is given) the login page is rendered in an in-page
+ *         modal iframe instead of a popup window — for host apps that block popups.
+ *         Works with local-auth and custom-auth providers whose login page is
+ *         iframe-embeddable; does NOT apply to Auth0 (keep the popup for it).
+ *   container: optional DOM element to mount the inline login modal into
+ *              (default: a full-screen overlay on document.body)
  *   profile: Whether to return user profile (optional)
  *   additional_headers: Additional HTTP headers (optional)
  *   transport: Transport type - "websocket" (default) or "http"
@@ -11009,6 +11116,7 @@ async function login(config) {
   const profile = config.profile;
   const additional_headers = config.additional_headers;
   const transport = config.transport || "websocket";
+  const mode = config.mode || "popup";
 
   const server = await connectToServer({
     name: "initial login client",
@@ -11025,8 +11133,58 @@ async function login(config) {
     } else {
       context = await svc.start();
     }
+    const canInline =
+      mode === "inline" &&
+      !callback &&
+      typeof window !== "undefined" &&
+      window.document;
+
     if (callback) {
+      if (mode === "inline") {
+        _logger.warn(
+          "login: both login_callback and mode:'inline' were given; using login_callback.",
+        );
+      }
       await callback(context);
+    } else if (canInline) {
+      // No-popup mode: render the login page in an in-page modal iframe and wait
+      // for its 'hypha-login-complete' postMessage. The token is NOT taken from
+      // the message — it is always fetched over the trusted check() RPC (which is
+      // also the real timeout authority and covers a dropped/early message).
+      const origin = new URL(config.server_url).origin;
+      const loginUrl = new URL(context.login_url, config.server_url).href;
+      return await new Promise((resolve, reject) => {
+        let modal = null;
+        let msgListener = null;
+        let done = false;
+        const cleanup = () => {
+          if (msgListener) window.removeEventListener("message", msgListener);
+          if (modal) modal.teardown();
+        };
+        const finish = (fn, arg) => {
+          if (done) return;
+          done = true;
+          cleanup();
+          fn(arg);
+        };
+        const fetchToken = () =>
+          svc
+            .check(context.key, { timeout, profile, _rkwargs: true })
+            .then((r) => finish(resolve, r))
+            .catch((e) => finish(reject, e));
+        msgListener = (event) => {
+          if (!isLoginCompleteMessage(event, origin, context.key)) return;
+          fetchToken();
+        };
+        window.addEventListener("message", msgListener);
+        modal = openLoginModal(loginUrl, {
+          container: config.container,
+          onCancel: () => finish(reject, new Error("Login cancelled by user")),
+        });
+        // Safety net: resolves when the user completes login even if the
+        // postMessage is missed, and enforces the login timeout server-side.
+        fetchToken();
+      });
     } else {
       _logger.log(`Please open your browser and login at ${context.login_url}`);
     }
@@ -11695,6 +11853,7 @@ const hyphaWebsocketClient = {
   schemaFunction: _utils_schema_js__WEBPACK_IMPORTED_MODULE_3__.schemaFunction,
   loadRequirements: _utils_index_js__WEBPACK_IMPORTED_MODULE_2__.loadRequirements,
   login,
+  isLoginCompleteMessage,
   logout,
   connectToServer,
   connectToServerHTTP: _http_client_js__WEBPACK_IMPORTED_MODULE_5__.connectToServerHTTP,
@@ -11851,6 +12010,7 @@ var __webpack_exports__getRTCService = __webpack_exports__.getRTCService;
 var __webpack_exports__getRemoteService = __webpack_exports__.getRemoteService;
 var __webpack_exports__getRemoteServiceHTTP = __webpack_exports__.getRemoteServiceHTTP;
 var __webpack_exports__hyphaWebsocketClient = __webpack_exports__.hyphaWebsocketClient;
+var __webpack_exports__isLoginCompleteMessage = __webpack_exports__.isLoginCompleteMessage;
 var __webpack_exports__loadRequirements = __webpack_exports__.loadRequirements;
 var __webpack_exports__login = __webpack_exports__.login;
 var __webpack_exports__logout = __webpack_exports__.logout;
@@ -11860,6 +12020,6 @@ var __webpack_exports__publicKeyToHex = __webpack_exports__.publicKeyToHex;
 var __webpack_exports__registerRTCService = __webpack_exports__.registerRTCService;
 var __webpack_exports__schemaFunction = __webpack_exports__.schemaFunction;
 var __webpack_exports__setupLocalClient = __webpack_exports__.setupLocalClient;
-export { __webpack_exports__API_VERSION as API_VERSION, __webpack_exports__HTTPStreamingRPCConnection as HTTPStreamingRPCConnection, __webpack_exports__LocalWebSocket as LocalWebSocket, __webpack_exports__RPC as RPC, __webpack_exports__WebsocketRPCConnection as WebsocketRPCConnection, __webpack_exports__connectToServer as connectToServer, __webpack_exports__connectToServerHTTP as connectToServerHTTP, __webpack_exports__decryptPayload as decryptPayload, __webpack_exports__encryptPayload as encryptPayload, __webpack_exports__generateEncryptionKeypair as generateEncryptionKeypair, __webpack_exports__getRTCService as getRTCService, __webpack_exports__getRemoteService as getRemoteService, __webpack_exports__getRemoteServiceHTTP as getRemoteServiceHTTP, __webpack_exports__hyphaWebsocketClient as hyphaWebsocketClient, __webpack_exports__loadRequirements as loadRequirements, __webpack_exports__login as login, __webpack_exports__logout as logout, __webpack_exports__normalizeServerUrlHTTP as normalizeServerUrlHTTP, __webpack_exports__publicKeyFromHex as publicKeyFromHex, __webpack_exports__publicKeyToHex as publicKeyToHex, __webpack_exports__registerRTCService as registerRTCService, __webpack_exports__schemaFunction as schemaFunction, __webpack_exports__setupLocalClient as setupLocalClient };
+export { __webpack_exports__API_VERSION as API_VERSION, __webpack_exports__HTTPStreamingRPCConnection as HTTPStreamingRPCConnection, __webpack_exports__LocalWebSocket as LocalWebSocket, __webpack_exports__RPC as RPC, __webpack_exports__WebsocketRPCConnection as WebsocketRPCConnection, __webpack_exports__connectToServer as connectToServer, __webpack_exports__connectToServerHTTP as connectToServerHTTP, __webpack_exports__decryptPayload as decryptPayload, __webpack_exports__encryptPayload as encryptPayload, __webpack_exports__generateEncryptionKeypair as generateEncryptionKeypair, __webpack_exports__getRTCService as getRTCService, __webpack_exports__getRemoteService as getRemoteService, __webpack_exports__getRemoteServiceHTTP as getRemoteServiceHTTP, __webpack_exports__hyphaWebsocketClient as hyphaWebsocketClient, __webpack_exports__isLoginCompleteMessage as isLoginCompleteMessage, __webpack_exports__loadRequirements as loadRequirements, __webpack_exports__login as login, __webpack_exports__logout as logout, __webpack_exports__normalizeServerUrlHTTP as normalizeServerUrlHTTP, __webpack_exports__publicKeyFromHex as publicKeyFromHex, __webpack_exports__publicKeyToHex as publicKeyToHex, __webpack_exports__registerRTCService as registerRTCService, __webpack_exports__schemaFunction as schemaFunction, __webpack_exports__setupLocalClient as setupLocalClient };
 
 //# sourceMappingURL=hypha-rpc-websocket.mjs.map
