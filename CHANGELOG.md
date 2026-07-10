@@ -1,5 +1,9 @@
 # Hypha Change Log
 
+### 0.21.109
+
+ - **Embedded (iframe) login support for local + custom auth — no popup required.** Many host apps block popup windows, which silently broke login. The local-auth login page now detects when it is rendered inside an **iframe** (`window.parent !== window`) and, on success, `postMessage`s a completion signal (`{ type: "hypha-login-complete", key }`) to the parent window instead of calling `window.close()`. The non-embedded **popup + redirect** paths are unchanged (fully backward compatible), and **Auth0 is untouched** (its page sets `X-Frame-Options` and can't be iframed — it keeps the popup). **Security**: the message carries only the public session `key`, never the token — the client still fetches the token over the trusted `check()` RPC — so it discloses nothing. This is the server half; the `hypha-rpc` client gains a matching `login({ mode: "inline" })` that renders the page in an in-page modal iframe (shipping separately). **Custom-auth providers** opt in with the same one-line rule: on success when embedded, `window.parent.postMessage({ type: "hypha-login-complete", key }, "*")` (no token). `hypha/local_auth.py`; test in `tests/test_local_auth.py::test_local_auth_login_page_supports_embedded_iframe`.
+
 ### 0.21.108
 
  - **Feature-complete local auth with email verification (Resend).** Local-auth signup is now a real two-step flow: signup stores a *pending* account (name + password hash + salt + a short numeric code) and emails the code; the account artifact is materialized **only after** the code is verified. Previously `email_verified` was hardcoded `True`.

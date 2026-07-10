@@ -738,6 +738,20 @@ async def index_handler(event):
         const redirect = urlParams.get('redirect');
         const expires_in = urlParams.get('expires_in');
 
+        // Embedded (iframe) login support: when this page is rendered inside an
+        // iframe (no popup), signal completion to the parent window instead of
+        // calling window.close(). The message carries ONLY the public session
+        // key — never the token (the client still fetches the token over the
+        // trusted check() RPC), so targetOrigin '*' is safe here.
+        const isEmbedded = window.parent && window.parent !== window;
+        function reportLoginComplete() {
+            try {
+                window.parent.postMessage(
+                    { type: 'hypha-login-complete', key: loginKey }, '*'
+                );
+            } catch (e) { /* cross-origin parent may throw; ignore */ }
+        }
+
         // Add Font Awesome for icons
         const fontAwesome = document.createElement('link');
         fontAwesome.rel = 'stylesheet';
@@ -790,8 +804,14 @@ async def index_handler(event):
                                     expires_in: expires_in || 3600
                                 })
                             }).then(() => {
-                                // Handle redirect or close window
-                                if (redirect) {
+                                // Handle embedded (iframe) / redirect / close window
+                                if (isEmbedded) {
+                                    reportLoginComplete();
+                                    const notice = document.createElement('div');
+                                    notice.className = 'mt-4 p-3 bg-green-100 border border-green-400 text-green-700 rounded text-center';
+                                    notice.innerHTML = '<i class="fas fa-check-circle mr-2"></i>Login successful! You may close this window.';
+                                    document.getElementById('loggedInView').appendChild(notice);
+                                } else if (redirect) {
                                     setTimeout(() => {
                                         window.location.href = redirect;
                                     }, 500);
@@ -971,9 +991,15 @@ async def index_handler(event):
                                 expires_in: expires_in || 3600
                             })
                         });
-                        
-                        // Handle redirect or close window
-                        if (redirect) {
+
+                        // Handle embedded (iframe) / redirect / close window
+                        if (isEmbedded) {
+                            reportLoginComplete();
+                            const notice = document.createElement('div');
+                            notice.className = 'mt-4 p-3 bg-green-100 border border-green-400 text-green-700 rounded text-center';
+                            notice.innerHTML = '<i class="fas fa-check-circle mr-2"></i>Login successful! You may close this window.';
+                            document.getElementById('loggedInView').appendChild(notice);
+                        } else if (redirect) {
                             setTimeout(() => {
                                 window.location.href = redirect;
                             }, 500);
