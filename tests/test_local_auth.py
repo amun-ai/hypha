@@ -401,5 +401,29 @@ async def test_local_auth_verify_unknown_email(local_auth_server):
         assert result["success"] is False
 
 
+@pytest.mark.asyncio
+async def test_local_auth_login_page_supports_embedded_iframe(local_auth_server):
+    """The local-auth login page supports embedded (iframe) mode: when it detects
+    it is inside an iframe it postMessages a completion signal to the parent
+    instead of calling window.close() — while keeping the non-embedded popup path
+    (window.close) fully intact (backward compatible)."""
+    import httpx
+
+    url = f"{local_auth_server}/public/apps/hypha-login/?key=test-embed-key"
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(url, timeout=10)
+    assert resp.status_code == 200, resp.status_code
+    html = resp.text
+
+    # Embedded-mode support (the new, additive path).
+    assert "window.parent !== window" in html, "iframe detection missing"
+    assert "reportLoginComplete" in html, "embedded completion helper missing"
+    assert "hypha-login-complete" in html, "postMessage completion signal missing"
+    assert "postMessage" in html
+
+    # The non-embedded popup path must be preserved (backward compatible).
+    assert "window.close(" in html, "popup window.close path must be preserved"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
