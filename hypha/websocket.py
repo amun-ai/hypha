@@ -176,6 +176,17 @@ class WebsocketServer:
                         code=status.WS_1008_POLICY_VIOLATION,
                     )
                     return
+                except WebSocketDisconnect:
+                    # Client went away before sending its auth payload (e.g. code
+                    # 1005 — no close frame). The socket is already gone, so there
+                    # is nothing to close; just return. Without this, the
+                    # WebSocketDisconnect propagated uncaught out of the ASGI app
+                    # and uvicorn logged it as "Exception in ASGI application". A
+                    # client bailing mid-handshake is benign — log at DEBUG.
+                    logger.debug(
+                        "Client disconnected during auth handshake before sending credentials"
+                    )
+                    return
                 # Parse the authentication information, e.g., JSON with token and/or reconnection_token
                 try:
                     auth_data = json.loads(auth_info)
