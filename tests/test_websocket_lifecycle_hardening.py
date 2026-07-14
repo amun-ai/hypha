@@ -215,3 +215,59 @@ async def test_register_client_task_after_teardown_no_error():
         )
     finally:
         await store.teardown()
+
+
+async def test_ws_disconnect_during_auth_handshake_no_error():
+    """A client that opens the websocket and disconnects BEFORE sending its auth
+    payload must not raise out of the ASGI app.
+
+    Repro of a prod race (websocket.py): the endpoint accepts, then awaits the
+    auth text with a 5s wait_for; if the client goes away first (code 1005, no
+    close frame), `websocket.receive_text()` raises `WebSocketDisconnect`, which
+    previously propagated uncaught → uvicorn logged "Exception in ASGI
+    application". The endpoint must catch it and return cleanly.
+    """
+    store = RedisStore(None, redis_uri=None)
+    await store.init(reset_redis=True)
+    try:
+        server = await _make_server(store)  # registers @app.websocket("/ws")
+        app = store._app
+
+        sent = []
+
+        async def send(message):
+            sent.append(message)
+
+        # Drive the ASGI websocket: connect, then disconnect before any auth text.
+        events = [
+            {"type": "websocket.connect"},
+            {"type": "websocket.disconnect", "code": 1005},
+        ]
+
+        async def receive():
+            return events.pop(0) if events else {
+                "type": "websocket.disconnect", "code": 1005,
+            }
+
+        scope = {
+            "type": "websocket",
+            "path": server.path if hasattr(server, "path") else "/ws",
+            "raw_path": b"/ws",
+            "query_string": b"",
+            "headers": [],
+            "subprotocols": [],
+            "client": ("testclient", 12345),
+            "scheme": "ws",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+        }
+
+        # Must NOT raise (pre-fix: WebSocketDisconnect propagates out of the app).
+        await app(scope, receive, send)
+
+        # The endpoint accepted the socket, then returned cleanly on the pre-auth
+        # disconnect (no unhandled exception).
+        assert any(m.get("type") == "websocket.accept" for m in sent), (
+            f"endpoint should have accepted the socket; sent={sent}"
+        )
+    finally:
+        await store.teardown()
