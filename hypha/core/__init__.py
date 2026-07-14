@@ -810,7 +810,18 @@ class RedisRPCConnection:
         # Subscribe to pub/sub events in a background task (psubscribe can be
         # slow under load, so we don't block on it).
         async def register_client():
-            await self._event_bus.subscribe_to_client_events(self._workspace, self._client_id)
+            # Capture the bus locally: disconnect() sets self._event_bus = None at
+            # teardown, and this task can be scheduled just as the connection is
+            # being torn down (reconnect via reconnection_token followed by an
+            # immediate 1001 disconnect). Reading self._event_bus directly at the
+            # await then raised `AttributeError: 'NoneType' has no attribute
+            # subscribe_to_client_events`. If the bus is already gone, there is
+            # nothing to subscribe — return. (Same teardown-race class as the
+            # filtered_handler None guard.)
+            event_bus = self._event_bus
+            if event_bus is None:
+                return
+            await event_bus.subscribe_to_client_events(self._workspace, self._client_id)
             logger.debug(f"Subscribed to events for {self._workspace}/{self._client_id}")
 
         self._registration_task = asyncio.create_task(register_client())
