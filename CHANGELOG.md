@@ -1,5 +1,9 @@
 # Hypha Change Log
 
+### 0.21.111
+
+ - **Fix a WebSocket teardown race: `register_client()` crashed on `self._event_bus` after disconnect** (`hypha/core/__init__.py`). On a reconnect via reconnection-token immediately followed by a 1001 disconnect, the background `register_client()` task (which `RedisRPCConnection.on_message` schedules to `subscribe_to_client_events`) could run just as `disconnect()` set `self._event_bus = None`, raising `AttributeError: 'NoneType' object has no attribute 'subscribe_to_client_events'` (caught, non-fatal, ~2/24h in prod). **Fix:** `register_client()` captures the bus into a local and returns if it is already `None` — the local capture also closes the window where a concurrent `disconnect()` nils `self._event_bus` mid-await. Same teardown-race class as the 0.21.106 `filtered_handler` `None` guard. Test: `tests/test_websocket_lifecycle_hardening.py::test_register_client_task_after_teardown_no_error`.
+
 ### 0.21.110
 
  - **Ship the inline (no-popup) login client: re-pin bundled hypha-rpc to 0.21.46.** Completes the embedded-login feature (server half landed in 0.21.109). Updates `hypha_rpc_version` to **0.21.46** (`hypha/__init__.py`, `setup.py`, `requirements.txt`) and refreshes the bundled `static_files/hypha-rpc-websocket.{js,mjs}` from the CDN, so the served client now provides `login({ mode: "inline" })` — rendering the login page in an in-page modal iframe (validates `origin`+`type`+`key`, gets the token from the trusted `check()` RPC) instead of a popup. Backward compatible; Auth0 unchanged. (hypha-rpc 0.21.46 = 0.21.45's inline-login feature + a release-CI fix: the npm publish job now runs on node 22 / npm@11 after `npm@latest` raised its node floor.)
