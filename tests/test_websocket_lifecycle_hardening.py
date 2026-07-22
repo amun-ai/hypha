@@ -354,15 +354,17 @@ async def test_expired_or_invalid_token_logs_warning_not_error_traceback(caplog)
             "expired/invalid token must not log a traceback (exc_info)"
         )
 
-        # (2) Exactly the expected single WARNING for the auth failure.
+        # (2) Exactly the expected single WARNING for the auth failure. The
+        #     "Authentication error" wording is the pre-existing client-facing
+        #     contract (see test_server::test_root_token_rejection_weak_tokens).
         auth_warnings = [
             r
             for r in ws_records
             if r.levelno == logging.WARNING
-            and "Authentication failed" in r.getMessage()
+            and "Authentication error" in r.getMessage()
         ]
         assert len(auth_warnings) == 1, (
-            f"expected exactly one 'Authentication failed' WARNING, got "
+            f"expected exactly one 'Authentication error' WARNING, got "
             f"{[r.getMessage() for r in auth_warnings]}"
         )
 

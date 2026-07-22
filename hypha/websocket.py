@@ -337,14 +337,16 @@ class WebsocketServer:
                 # not a server error. Auth fails before any client/service state is
                 # created (authenticated is still False), so no cleanup is needed —
                 # emit a single WARNING (no traceback) and close 1008. This keeps
-                # routine token expiry off the exc_info=True catch-all below. #0008
+                # routine token expiry off the exc_info=True catch-all below. The
+                # client-facing reason keeps the pre-existing "Authentication error"
+                # wording so the disconnect message contract is unchanged. #0008
                 logger.warning(
-                    f"Authentication failed for client "
+                    f"Authentication error for client "
                     f"{workspace or '?'}/{client_id or '?'}: {e}"
                 )
                 await self.disconnect(
                     websocket,
-                    reason=f"Authentication failed: {e}",
+                    reason=f"Authentication error: {e}",
                     code=status.WS_1008_POLICY_VIOLATION,
                 )
                 return
