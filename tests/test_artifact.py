@@ -12330,3 +12330,112 @@ async def test_private_children_recipient_scoping(
     await am_owner.delete(artifact_id=collection.id)
     await api_user2.disconnect()
     await api_owner.disconnect()
+
+
+async def test_recipient_can_delete_own_child(
+    minio_server, fastapi_server_sqlite, test_user_token, test_user_token_2
+):
+    """#0010: a private-children collection with ``recipient_can_delete: true``
+    lets a recipient delete (ack/prune) ONLY the children addressed to them.
+
+    Deleting a child of a collection normally requires TWO grants neither the
+    drop-box ``@:lf+`` nor a per-child ``rd+`` ACL provides: ``delete`` on the
+    child (only the ``*``/full alias, or workspace-admin) AND ``detach`` on the
+    parent collection (``rw``/``rw+``/``*``). ``recipient_can_delete`` adds a
+    narrow server-side fast-path: when the parent sets the flag and the child's
+    ``manifest[recipient_field]`` equals the caller's email, the delete is
+    authorized bypassing BOTH gates — but ONLY for the caller's own child.
+
+    Asserts:
+      (1) a recipient deletes their OWN child → OK;
+      (2) that same recipient deleting ANOTHER recipient's child (by id) →
+          BLOCKED (they are not that child's recipient);
+      (3) without the flag, a recipient deleting their own child → BLOCKED
+          (existing behavior is unchanged);
+      (4) recursive/collection delete stays admin-only (a recipient cannot
+          recursive-delete the collection even with the flag).
+    """
+    owner_email = "user-1@test.com"
+    recipient_email = "user-2@test.com"
+
+    api_owner = await connect_to_server(
+        {"name": "owner", "server_url": SERVER_URL_SQLITE, "token": test_user_token}
+    )
+    am_owner = await api_owner.get_service("public/artifact-manager")
+    api_user2 = await connect_to_server(
+        {"name": "user2", "server_url": SERVER_URL_SQLITE, "token": test_user_token_2}
+    )
+    am_user2 = await api_user2.get_service("public/artifact-manager")
+
+    async def _make_child(am, parent_id, name, recipient):
+        child = await am.create(
+            type="dataset",
+            parent_id=parent_id,
+            manifest={"name": name, "recipientEmail": recipient},
+            config={"permissions": {recipient: "r"}},
+            version="stage",
+        )
+        await am.commit(artifact_id=child.id)
+        return child
+
+    # --- Collection WITH recipient_can_delete ---
+    coll = await am_owner.create(
+        type="collection",
+        manifest={"name": "Ackable Inbox"},
+        config={
+            "permissions": {"@": "lf+"},
+            "private_children": True,
+            "recipient_field": "recipientEmail",
+            "recipient_can_delete": True,
+        },
+    )
+    child_for_user2 = await _make_child(am_owner, coll.id, "for-user2", recipient_email)
+    child_for_owner = await _make_child(am_owner, coll.id, "for-owner", owner_email)
+
+    # (2) user-2 CANNOT delete a child addressed to someone else, even with its id.
+    with pytest.raises(Exception, match=r".*[Pp]ermission.*"):
+        await am_user2.delete(artifact_id=child_for_owner.id)
+    # It must still be there.
+    remaining = {c["id"] for c in await am_owner.list(parent_id=coll.id)}
+    assert child_for_owner.id in remaining
+
+    # (4) user-2 CANNOT recursive-delete the collection itself (admin-only).
+    with pytest.raises(Exception, match=r".*[Pp]ermission.*"):
+        await am_user2.delete(artifact_id=coll.id, recursive=True)
+
+    # (1) user-2 CAN delete their OWN child (ack).
+    await am_user2.delete(artifact_id=child_for_user2.id)
+    after = {c["id"] for c in await am_owner.list(parent_id=coll.id)}
+    assert child_for_user2.id not in after, "recipient's own child should be deleted"
+    assert child_for_owner.id in after, "other recipient's child must be untouched"
+
+    # --- Collection WITHOUT the flag: recipient delete is BLOCKED (unchanged) ---
+    coll_noflag = await am_owner.create(
+        type="collection",
+        manifest={"name": "Non-ackable Inbox"},
+        config={
+            "permissions": {"@": "lf+"},
+            "private_children": True,
+            "recipient_field": "recipientEmail",
+            # recipient_can_delete NOT set
+        },
+    )
+    child_noflag = await _make_child(
+        am_owner, coll_noflag.id, "for-user2", recipient_email
+    )
+    # (3) Even though it is addressed to user-2, without the flag the delete is
+    #     blocked (needs child-delete + parent-detach, which @:lf+ withholds).
+    with pytest.raises(Exception, match=r".*[Pp]ermission.*"):
+        await am_user2.delete(artifact_id=child_noflag.id)
+    still_there = {c["id"] for c in await am_owner.list(parent_id=coll_noflag.id)}
+    assert child_noflag.id in still_there
+
+    # Cleanup (owner/admin can always delete).
+    for c in await am_owner.list(parent_id=coll.id):
+        await am_owner.delete(artifact_id=c["id"])
+    await am_owner.delete(artifact_id=coll.id)
+    for c in await am_owner.list(parent_id=coll_noflag.id):
+        await am_owner.delete(artifact_id=c["id"])
+    await am_owner.delete(artifact_id=coll_noflag.id)
+    await api_user2.disconnect()
+    await api_owner.disconnect()

@@ -6580,7 +6580,16 @@ class ArtifactController:
         This method removes an artifact from the database and optionally from S3 storage.
         For collections, can recursively delete all children. Deletion is permanent and
         cannot be undone. Requires delete permission on the artifact.
-        
+
+        Recipient self-delete (private-children collections): if the parent
+        collection sets ``{"recipient_can_delete": true, "recipient_field":
+        "<field>"}``, a recipient may delete (ack/prune) ONLY the children whose
+        ``manifest[recipient_field]`` equals their own email — a narrow
+        server-side exception to the normal requirement of ``delete`` on the
+        child plus ``detach`` on the parent. It applies to single-child deletes
+        only (``version=None``, ``recursive=False``); recursive/collection
+        deletes remain admin-only.
+
         Returns:
             Dictionary with status message confirming deletion
             
@@ -6609,15 +6618,55 @@ class ArtifactController:
 
         try:
             session = await self._get_session()
-            # Get artifact first - check delete permission on the artifact itself
-            artifact, parent_artifact = await self._get_artifact_with_permission(
-                user_info, artifact_id, "delete", session
+
+            # --- Recipient self-delete fast-path (private-children ack/prune) ---
+            # Deleting a child of a collection normally requires BOTH "delete" on
+            # the child (only the "*"/full alias, or workspace-admin) AND "detach"
+            # on the parent collection ("rw"/"rw+"/"*"). A collection configured
+            # with {"recipient_can_delete": true, "recipient_field": "<field>"}
+            # grants a narrow exception: a recipient may delete (ack/prune) ONLY
+            # the children addressed to them, without either broad grant. We first
+            # fetch the artifact WITHOUT a permission gate to evaluate the flag; if
+            # it does not apply, we fall through to the normal (strict) checks so
+            # nothing else changes. #0010
+            recipient_self_delete = False
+            artifact, parent_artifact = await self._get_artifact_with_parent(
+                session, artifact_id
             )
-            
+            if not artifact:
+                raise KeyError(f"Artifact with ID '{artifact_id}' does not exist.")
+            if (
+                parent_artifact
+                and version is None
+                and not recursive
+                and (parent_artifact.config or {}).get("recipient_can_delete")
+            ):
+                recipient_field = (parent_artifact.config or {}).get("recipient_field")
+                caller_email = getattr(user_info, "email", None)
+                if (
+                    recipient_field
+                    and isinstance(recipient_field, str)
+                    and caller_email
+                    and (artifact.manifest or {}).get(recipient_field) == caller_email
+                ):
+                    recipient_self_delete = True
+
+            if not recipient_self_delete:
+                # Normal path: check delete permission on the artifact itself.
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "delete", session
+                )
+
             # If artifact has a parent and is being detached (not fully deleted),
             # check if user has "detach" permission on the parent collection
             # Even artifact creators need detach permission to remove from collection
-            if parent_artifact and version is None and not recursive:
+            # (the recipient self-delete fast-path bypasses this by design).
+            if (
+                parent_artifact
+                and version is None
+                and not recursive
+                and not recipient_self_delete
+            ):
                 # This is a detach operation (removing child from parent collection)
                 # Check detach permission on the parent collection
                 has_detach = await self._check_permissions(parent_artifact, user_info, "detach")
