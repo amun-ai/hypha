@@ -271,3 +271,106 @@ async def test_ws_disconnect_during_auth_handshake_no_error():
         )
     finally:
         await store.teardown()
+
+
+async def test_expired_or_invalid_token_logs_warning_not_error_traceback(caplog):
+    """Issue #0008: a client presenting an expired/invalid token on connect must
+    be logged as a single WARNING (no traceback) and closed 1008 — NOT logged as
+    a full multi-frame ERROR traceback.
+
+    Repro of the prod log-noise path (websocket.py): a bad client token →
+    `auth.valid_token` raises `HTTPException(401)` → `authenticate_user`
+    (pre-fix) re-raised it as a `RuntimeError`, which hit the connection-setup
+    `except Exception` catch-all that logs `exc_info=True` — so every routine
+    token expiry (~30/24h) emitted a full ERROR traceback. An expired/invalid
+    CLIENT token is an EXPECTED outcome (the client should refetch), not a server
+    error. The fix routes it through a dedicated `AuthenticationError` caught
+    before the generic handler.
+
+    An invalid token exercises the identical `except HTTPException` branch as an
+    expired one (both come from `valid_token`), deterministically and without a
+    timing sleep.
+    """
+    import json
+    import logging
+
+    store = RedisStore(None, redis_uri=None)
+    await store.init(reset_redis=True)
+    try:
+        server = await _make_server(store)  # registers @app.websocket("/ws")
+        app = store._app
+
+        sent = []
+
+        async def send(message):
+            sent.append(message)
+
+        # Drive the ASGI websocket: connect, then send an auth payload carrying a
+        # structurally-invalid token (fails JWT validation → HTTPException 401).
+        auth_payload = json.dumps(
+            {
+                "token": "not-a-valid.jwt.token",
+                "client_id": "c-authfail",
+                "workspace": "ws-user-authfail",
+            }
+        )
+        events = [
+            {"type": "websocket.connect"},
+            {"type": "websocket.receive", "text": auth_payload},
+        ]
+
+        async def receive():
+            return events.pop(0) if events else {
+                "type": "websocket.disconnect",
+                "code": 1005,
+            }
+
+        scope = {
+            "type": "websocket",
+            "path": server.path if hasattr(server, "path") else "/ws",
+            "raw_path": b"/ws",
+            "query_string": b"",
+            "headers": [],
+            "subprotocols": [],
+            "client": ("testclient", 12345),
+            "scheme": "ws",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+        }
+
+        with caplog.at_level(logging.DEBUG, logger="websocket-server"):
+            # Must NOT raise out of the app.
+            await app(scope, receive, send)
+
+        ws_records = [r for r in caplog.records if r.name == "websocket-server"]
+
+        # (1) No ERROR (or higher) record, and specifically no exc_info traceback,
+        #     from the auth failure.
+        error_records = [r for r in ws_records if r.levelno >= logging.ERROR]
+        assert not error_records, (
+            "expired/invalid token must not log at ERROR; got: "
+            + "; ".join(f"{r.levelname}:{r.getMessage()}" for r in error_records)
+        )
+        assert not any(r.exc_info for r in ws_records), (
+            "expired/invalid token must not log a traceback (exc_info)"
+        )
+
+        # (2) Exactly the expected single WARNING for the auth failure.
+        auth_warnings = [
+            r
+            for r in ws_records
+            if r.levelno == logging.WARNING
+            and "Authentication failed" in r.getMessage()
+        ]
+        assert len(auth_warnings) == 1, (
+            f"expected exactly one 'Authentication failed' WARNING, got "
+            f"{[r.getMessage() for r in auth_warnings]}"
+        )
+
+        # (3) The socket was closed with 1008 (policy violation).
+        close_frames = [m for m in sent if m.get("type") == "websocket.close"]
+        assert close_frames, f"endpoint should have closed the socket; sent={sent}"
+        assert any(m.get("code") == 1008 for m in close_frames), (
+            f"auth failure must close with 1008; close frames={close_frames}"
+        )
+    finally:
+        await store.teardown()

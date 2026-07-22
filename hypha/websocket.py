@@ -91,6 +91,20 @@ def _is_expected_close_error(exc: BaseException) -> bool:
     )
 
 
+class AuthenticationError(Exception):
+    """A client's credentials were invalid/expired — an EXPECTED client outcome.
+
+    An expired or malformed CLIENT token is not a server fault: the client should
+    refetch and retry. Raised by `authenticate_user` (from the `HTTPException` that
+    token validation produces) so the connection-setup block can catch it BEFORE
+    the generic `except Exception`, log a single WARNING (no traceback), and close
+    the socket with 1008 — instead of letting it hit the `exc_info=True` catch-all,
+    which logged a full multi-frame ERROR traceback for every routine token expiry
+    (~30/24h of pure noise in prod). Genuine setup errors still raise through to the
+    ERROR+traceback path. See issue #0008.
+    """
+
+
 class TokenBucketRateLimiter:
     """Simple token-bucket rate limiter for per-client message throttling."""
 
@@ -318,6 +332,22 @@ class WebsocketServer:
                 if not reconnection_token:
                     # We operate as the root user to remove and add clients
                     await self.check_client(client_id, workspace_info.id, user_info)
+            except AuthenticationError as e:
+                # Expired/invalid client credentials: an EXPECTED client condition,
+                # not a server error. Auth fails before any client/service state is
+                # created (authenticated is still False), so no cleanup is needed —
+                # emit a single WARNING (no traceback) and close 1008. This keeps
+                # routine token expiry off the exc_info=True catch-all below. #0008
+                logger.warning(
+                    f"Authentication failed for client "
+                    f"{workspace or '?'}/{client_id or '?'}: {e}"
+                )
+                await self.disconnect(
+                    websocket,
+                    reason=f"Authentication failed: {e}",
+                    code=status.WS_1008_POLICY_VIOLATION,
+                )
+                return
             except Exception as e:
                 # Log the full exception for debugging
                 logger.error(f"Exception during connection setup: {e}", exc_info=True)
@@ -508,8 +538,13 @@ class WebsocketServer:
                 raise RuntimeError("No authentication information provided")
             return user_info, workspace
         except HTTPException as e:
-            logger.error(f"Authentication error: {e.detail}")
-            raise RuntimeError(f"Authentication error: {e.detail}")
+            # Expired/invalid client token — an EXPECTED client condition, not a
+            # server error. Raise a dedicated type so the caller emits a single
+            # WARNING (no traceback) and closes 1008, instead of this reaching the
+            # exc_info=True setup catch-all (which logged a full ERROR traceback
+            # for every routine token expiry). Do NOT log here — the caller owns
+            # the single log line. See issue #0008.
+            raise AuthenticationError(e.detail) from e
         except Exception as e:
             logger.error(f"Failed to authenticate user: {str(e)}")
             raise RuntimeError(f"Failed to authenticate user: {str(e)}")
