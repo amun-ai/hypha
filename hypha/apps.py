@@ -43,6 +43,20 @@ logger.setLevel(LOGLEVEL)
 
 multihash.CodecReg.register("base58", base58.b58encode, base58.b58decode)
 
+
+class WorkerNotFoundError(Exception):
+    """No server-app worker is available for a requested app type.
+
+    This is an ENVIRONMENTAL condition — the deployment simply has no worker
+    registered that supports the app's type (e.g. a daemon app installed for a
+    custom/external worker type that isn't present in this cluster). It is NOT a
+    sign the app itself is broken. It subclasses ``Exception`` so existing
+    ``except Exception`` handlers keep catching it, but lets callers such as the
+    daemon-app autostart in ``prepare_workspace`` distinguish "worker type
+    unavailable" (log a single clear WARNING, skip) from a genuine start failure
+    (ERROR + traceback) instead of ERROR-spamming on every restart. See #0005.
+    """
+
 logging_emoji = {
     "info": "ℹ️",
     "success": "✅", 
@@ -1649,7 +1663,7 @@ class ServerAppController:
                 app_type, select=True, selection_config=selection_config, current_app_id=app_id, context=context
             )
             if not worker:
-                raise Exception(f"No server app worker found for app type: {app_type}")
+                raise WorkerNotFoundError(f"No server app worker found for app type: {app_type}")
 
         _progress_callback(
             {
@@ -2231,7 +2245,7 @@ class ServerAppController:
                 app_type, select=True, selection_config=selection_config, current_app_id=app_id, context=context
             )
             if not worker:
-                raise Exception(f"No server app worker found for type: {app_type}")
+                raise WorkerNotFoundError(f"No server app worker found for type: {app_type}")
 
         if progress_callback:
             progress_callback(
@@ -2584,7 +2598,7 @@ class ServerAppController:
                     app_type, select=True, selection_config=selection_config, current_app_id=app_id, context=context
                 )
                 if not selected_worker:
-                    raise Exception(f"No server app worker found for app type: {app_type}")
+                    raise WorkerNotFoundError(f"No server app worker found for app type: {app_type}")
             
             # Start the app using the new start_by_type function
             server_url = self.local_base_url or f"http://127.0.0.1:{self.port}"
@@ -3534,7 +3548,20 @@ class ServerAppController:
                     # Prefer the launch context stored with the app (from installation time)
                     launch_context = app.get("startup_context") or context
                     await self.start(app["id"], context=launch_context)
+                except WorkerNotFoundError as exp:
+                    # The deployment has no worker for this app's type — an
+                    # environmental condition, not a broken app. Log a single
+                    # clear WARNING (no traceback) and skip, instead of an
+                    # ERROR on every restart (~11x/restart in prod for demo
+                    # apps installed for an unavailable worker type). See #0005.
+                    logger.warning(
+                        "Skipping daemon app %s: %s (worker type unavailable in "
+                        "this deployment)",
+                        app["id"],
+                        exp,
+                    )
                 except Exception as exp:
+                    # A genuine start failure — keep at ERROR with detail.
                     logger.error(
                         f"Failed to start daemon app: {app['id']}, error: {exp}"
                     )
