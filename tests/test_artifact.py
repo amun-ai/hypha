@@ -12203,3 +12203,130 @@ async def test_wildcard_artifact_scoped_token(
     await artifact_manager.delete(artifact_id=dataset3_2.id)
     await artifact_manager.delete(artifact_id=collection.id)
     await api.disconnect()
+
+
+async def test_private_children_recipient_scoping(
+    minio_server, fastapi_server_sqlite, test_user_token, test_user_token_2
+):
+    """Server-enforced recipient scoping for private-children collections (#0009).
+
+    A collection configured with ``{"private_children": true,
+    "recipient_field": "recipientEmail"}`` becomes a cross-user drop-box / inbox
+    (e.g. backing ``svamp notify``):
+
+      - any writer may create a child addressed to any recipient email;
+      - a *non-admin* caller listing/searching the collection sees ONLY the
+        children whose ``manifest.<recipient_field>`` equals their own email,
+        and CANNOT widen that view with a client-supplied filter on that field;
+      - workspace admins (the collection owner, root) bypass and see all;
+      - direct ``read(child_id)`` is UNCHANGED (existing permission model).
+
+    Privacy here is a *discovery* boundary, analogous to Hypha's "unlisted"
+    visibility: children have unguessable UUID ids and a recipient only ever
+    learns the ids of their own messages (via the scoped list), so they cannot
+    enumerate or reach another recipient's messages. Without the server-side
+    scoping, ``list()`` returns *all* children of a listable collection, leaking
+    the existence + manifest + id of every recipient's message to every other
+    recipient. This test locks in the scoping.
+    """
+    owner_email = "user-1@test.com"
+    recipient_email = "user-2@test.com"
+    other_email = "someone-else@test.com"
+
+    # Owner (user-1) sets up the drop-box in their own workspace.
+    api_owner = await connect_to_server(
+        {"name": "owner", "server_url": SERVER_URL_SQLITE, "token": test_user_token}
+    )
+    am_owner = await api_owner.get_service("public/artifact-manager")
+
+    collection = await am_owner.create(
+        type="collection",
+        manifest={"name": "Inbox", "description": "recipient-scoped drop-box"},
+        config={
+            "private_children": True,
+            "recipient_field": "recipientEmail",
+            # Authenticated users (from any workspace) may list the collection
+            # (scoped to their own children by private_children) and create +
+            # read messages. Privacy is enforced at the *discovery* layer: the
+            # scoped list only ever reveals a caller's own child ids.
+            "permissions": {"@": "rw+"},
+        },
+    )
+
+    async def _make_child(am, name, recipient):
+        # Each child carries a per-child email ACL so a *direct* read stays
+        # private to the addressed recipient; the recipient_field powers the
+        # list/search scoping independently.
+        child = await am.create(
+            type="dataset",
+            parent_id=collection.id,
+            manifest={"name": name, "recipientEmail": recipient},
+            config={"permissions": {recipient: "r"}},
+            version="stage",
+        )
+        await am.commit(artifact_id=child.id)
+        return child
+
+    child_for_owner = await _make_child(am_owner, "for-owner", owner_email)
+    child_for_user2 = await _make_child(am_owner, "for-user2", recipient_email)
+    await _make_child(am_owner, "for-other", other_email)
+
+    # --- Owner (workspace admin) sees ALL children (bypass) ---
+    owner_list = await am_owner.list(parent_id=collection.id)
+    owner_recipients = sorted(
+        item["manifest"]["recipientEmail"] for item in owner_list
+    )
+    assert owner_recipients == sorted(
+        [owner_email, recipient_email, other_email]
+    ), f"owner/admin should see all children, got {owner_recipients}"
+
+    # --- Non-admin recipient (user-2) sees ONLY their own child ---
+    api_user2 = await connect_to_server(
+        {"name": "user2", "server_url": SERVER_URL_SQLITE, "token": test_user_token_2}
+    )
+    am_user2 = await api_user2.get_service("public/artifact-manager")
+
+    user2_list = await am_user2.list(parent_id=collection.id)
+    user2_recipients = [item["manifest"]["recipientEmail"] for item in user2_list]
+    assert user2_recipients == [recipient_email], (
+        f"recipient should see only their own child, got {user2_recipients}"
+    )
+
+    # --- Client CANNOT widen the view via a filter on the recipient field ---
+    spoof_list = await am_user2.list(
+        parent_id=collection.id,
+        filters={"manifest": {"recipientEmail": owner_email}},
+    )
+    spoof_recipients = [item["manifest"]["recipientEmail"] for item in spoof_list]
+    assert spoof_recipients == [recipient_email], (
+        f"client-supplied recipient filter must be ignored, got {spoof_recipients}"
+    )
+
+    # A non-recipient filter is still honored (does not bypass scoping): asking
+    # for the owner's message by name returns nothing for user-2.
+    scoped_and_named = await am_user2.list(
+        parent_id=collection.id,
+        filters={"manifest": {"recipientEmail": owner_email, "name": "for-owner"}},
+    )
+    assert scoped_and_named == [], (
+        f"scoping must still exclude other recipients' children, got {scoped_and_named}"
+    )
+
+    # --- Discovery boundary: the scoped list is the ONLY place a recipient
+    # learns child ids, and it never reveals another recipient's child id.
+    listed_ids = {item["id"] for item in user2_list}
+    assert child_for_user2.id in listed_ids
+    assert child_for_owner.id not in listed_ids, (
+        "a non-recipient's child id must never appear in the scoped list"
+    )
+    # A recipient can directly read the child they discovered (read() itself is
+    # unchanged; the parent grants read, so a held id resolves).
+    got = await am_user2.read(artifact_id=child_for_user2.id)
+    assert got["manifest"]["recipientEmail"] == recipient_email
+
+    # Cleanup (children first, then the collection).
+    for child in await am_owner.list(parent_id=collection.id):
+        await am_owner.delete(artifact_id=child["id"])
+    await am_owner.delete(artifact_id=collection.id)
+    await api_user2.disconnect()
+    await api_owner.disconnect()

@@ -9030,6 +9030,20 @@ class ArtifactController:
                 limit=10
             )
 
+        Recipient scoping (private-children collections):
+            If the parent collection's config sets
+            ``{"private_children": true, "recipient_field": "<manifest field>"}``,
+            this listing is a per-recipient view: a non-admin caller only sees
+            children whose ``manifest.<recipient_field>`` equals their own email,
+            regardless of any client-supplied filter on that field (the filter is
+            ignored, it cannot widen the view, and it is AND-ed even under
+            mode="OR"). Workspace admins (the collection owner, root) bypass and
+            see all children. This powers cross-user "inbox"/drop-box collections
+            where any writer may create a child addressed to any recipient, but
+            recipients can only enumerate their own. Direct ``read(child_id)`` is
+            unchanged — privacy is a discovery boundary (unguessable ids +
+            scoped listing), analogous to "unlisted" visibility.
+
         Raises:
             ValueError: If parent_id is invalid or filters malformed
             PermissionError: If user lacks read permission on parent or workspace
@@ -9098,6 +9112,43 @@ class ArtifactController:
                         ArtifactModel.workspace == context["ws"],
                     )
                 conditions = []
+
+                # --- Server-enforced recipient scoping (private-children) ---
+                # A collection configured with
+                #   {"private_children": true, "recipient_field": "<field>"}
+                # is a cross-user drop-box / inbox: any writer may create a child
+                # addressed to any recipient, but a *non-admin* caller may only
+                # enumerate the children addressed to their own email. We force
+                #   WHERE manifest.<recipient_field> == caller.email
+                # and drop any client-supplied filter on that field so it cannot
+                # be used to widen the view. Workspace admins (the collection
+                # owner, root) bypass and see all children. Direct read(child_id)
+                # is unaffected — it stays governed by each child's own ACL.
+                enforce_recipient_field = None
+                if parent_artifact:
+                    pconfig = parent_artifact.config or {}
+                    if pconfig.get("private_children"):
+                        recipient_field = pconfig.get("recipient_field")
+                        if not recipient_field or not isinstance(
+                            recipient_field, str
+                        ):
+                            raise ValueError(
+                                "Collection has 'private_children' enabled but no "
+                                "valid string 'recipient_field' configured."
+                            )
+                        # Workspace admins (collection owner, root) see all.
+                        is_privileged = user_info.check_permission(
+                            parent_artifact.workspace, UserPermission.admin
+                        )
+                        if not is_privileged:
+                            enforce_recipient_field = recipient_field
+                            # A client cannot widen its view by supplying its own
+                            # filter on the recipient field: strip it here; the
+                            # forced condition below is the single source of truth.
+                            if filters and isinstance(
+                                filters.get("manifest"), dict
+                            ):
+                                filters["manifest"].pop(recipient_field, None)
 
                 # Handle keyword-based search across manifest fields
                 if keywords:
@@ -9214,6 +9265,19 @@ class ArtifactController:
                             else:
                                 raise ValueError(f"Invalid filter key: {key}")
 
+                # Build the forced recipient-scoping condition for
+                # private-children collections (see block above). This is kept
+                # OUT of `conditions` and AND-ed unconditionally further below so
+                # a caller cannot escape it via mode="OR". An empty caller email
+                # (e.g. anonymous) matches no recipient, yielding an empty result
+                # rather than leaking children that have no recipient set.
+                recipient_condition = None
+                if enforce_recipient_field:
+                    recipient_value = user_info.email or "\x00__no_recipient__"
+                    recipient_condition = self._process_manifest_filter(
+                        {enforce_recipient_field: recipient_value}, backend
+                    )
+
                 # Stage filtering logic
                 if stage is not None:  # If stage is explicitly True or False
                     logger.info(f"Adding stage filter condition: stage={stage}")
@@ -9271,6 +9335,13 @@ class ArtifactController:
                         if mode == "OR"
                         else count_query.where(and_(*conditions))
                     )
+
+                # Recipient scoping (private-children) is ALWAYS AND-ed, even
+                # under mode="OR", so it cannot be bypassed by combining it with
+                # a permissive keyword/filter clause.
+                if recipient_condition is not None:
+                    query = query.where(recipient_condition)
+                    count_query = count_query.where(recipient_condition)
 
                 if pagination:
                     # Execute the count query
