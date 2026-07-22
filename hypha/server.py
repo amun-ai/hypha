@@ -224,6 +224,39 @@ def norm_url(base_path, url):
     return base_path.rstrip("/") + url
 
 
+def merge_env_into_args(args, env_args, defaults):
+    """Merge environment-derived args into CLI args, with the CLI taking precedence.
+
+    ``--from-env`` previously overwrote EVERY arg from the environment
+    unconditionally, so an explicitly-provided command-line flag (e.g.
+    ``--startup-functions=...``) was SILENTLY clobbered by the environment
+    default — a first-time-integrator trap that cost a full deploy+debug cycle
+    (custom auth silently not loading). See #0006.
+
+    An env value is applied only when the CLI did NOT explicitly set that arg
+    (its current value still equals the parser default). When the CLI DID set an
+    arg, the CLI value wins; if the env value differs it is dropped. Returns the
+    list of ``(key, env_value, cli_value)`` that were kept-from-CLI so the caller
+    can warn about them.
+
+    Note: like all post-parse argparse merges, this cannot distinguish a CLI arg
+    explicitly passed AT its default from one not passed at all — for the args
+    that matter here (startup_functions, endpoint_url, …) the default is a
+    sentinel (None/[]/False), so the heuristic is exact in practice.
+    """
+    dropped = []
+    for key, value in env_args.__dict__.items():
+        cli_value = getattr(args, key, None)
+        default_value = getattr(defaults, key, None)
+        if cli_value != default_value:
+            # CLI explicitly set this arg (differs from default) — CLI wins.
+            if value != cli_value:
+                dropped.append((key, value, cli_value))
+            continue
+        setattr(args, key, value)
+    return dropped
+
+
 def create_application(args):
     """Create a hypha application."""
     global minio_proc
@@ -231,9 +264,20 @@ def create_application(args):
     if args.from_env:
         logger.info("Loading arguments from environment variables")
         _args = get_args_from_env()
-        # copy the _args to args
-        for key, value in _args.__dict__.items():
-            setattr(args, key, value)
+        # CLI takes precedence over --from-env: only apply an environment value
+        # where the CLI did not explicitly set the arg. Previously this loop
+        # overwrote ALL args unconditionally, silently dropping explicit CLI
+        # flags (#0006).
+        _defaults = get_argparser(add_help=False).parse_args([])
+        _dropped = merge_env_into_args(args, _args, _defaults)
+        for _key, _env_value, _cli_value in _dropped:
+            logger.warning(
+                "--from-env: keeping command-line --%s=%r; the environment value "
+                "%r is IGNORED (the CLI takes precedence over --from-env).",
+                _key.replace("_", "-"),
+                _cli_value,
+                _env_value,
+            )
 
     # Handle Minio server if requested
     minio_proc = None
@@ -311,6 +355,12 @@ def create_application(args):
         if local_auth_startup_function not in args.startup_functions:
             args.startup_functions.append(local_auth_startup_function)
             logger.info("Automatically added Local Authentication provider to startup functions")
+
+    # Log the effective startup functions so a custom auth/startup integrator can
+    # confirm at a glance that their module actually loaded (#0006). Without this,
+    # a silently-dropped --startup-functions (e.g. via --from-env) looked like the
+    # server simply ignoring the provider, with no boot-time signal.
+    logger.info("Effective startup_functions: %s", args.startup_functions)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
