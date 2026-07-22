@@ -12330,3 +12330,116 @@ async def test_private_children_recipient_scoping(
     await am_owner.delete(artifact_id=collection.id)
     await api_user2.disconnect()
     await api_owner.disconnect()
+
+
+async def test_private_children_public_collection_cross_workspace(
+    minio_server, fastapi_server_sqlite, test_user_token, test_user_token_2, root_user_token
+):
+    """A private-children collection hosted in the PUBLIC workspace is a global,
+    universally-addressable cross-user inbox (#0009 rollout, mode (b)).
+
+    This locks in the load-bearing property behind hosting svamp-user-events /
+    svamp-shared-sessions in the public workspace addressed as ``public/<alias>``:
+    a member/agent in ANY workspace can drop a notification child into the public
+    collection for a recipient in ANY other workspace, purely via the parent
+    collection's ``@:lf+`` (list + draft + attach) grant — NOT via workspace
+    membership — and each recipient only ever enumerates their own children.
+
+    Asserts:
+      (1) a NON-admin user in workspace A CREATES a child in the public
+          collection addressed to userB → succeeds (attach gated by parent ACL,
+          not workspace membership);
+      (2) userB (non-admin, workspace B) list() → sees ONLY that child;
+      (3) userA list() → does NOT see the child they wrote for userB (write
+          without read/enumerate under the recipient scoping);
+      (4) a root token list() → sees all (admin bypass on the public workspace).
+
+    In the public workspace the scoping is uniform: no regular user is a
+    public-workspace admin, so NObody accidentally bypasses (unlike a
+    ws-user-<x> home, where the owning user is a workspace admin).
+    """
+    userA_email = "user-1@test.com"
+    userB_email = "user-2@test.com"
+
+    # Root sets up the GLOBAL collection in the public workspace (one-time,
+    # privileged: creating a top-level artifact in the protected public
+    # workspace requires admin on public, which root has via *:admin).
+    api_root = await connect_to_server(
+        {"name": "root", "server_url": SERVER_URL_SQLITE, "token": root_user_token}
+    )
+    am_root = await api_root.get_service("public/artifact-manager")
+
+    collection = await am_root.create(
+        type="collection",
+        alias="test-xws-public-inbox",
+        workspace="public",
+        manifest={"name": "Public Inbox", "description": "global cross-ws drop-box"},
+        config={
+            "permissions": {"@": "lf+"},  # authenticated: list + create child; NO read
+            "private_children": True,
+            "recipient_field": "recipientEmail",
+        },
+        overwrite=True,
+    )
+    assert collection["id"].startswith("public/"), (
+        f"collection must live in the public workspace, got {collection['id']}"
+    )
+
+    # (1) userA (workspace ws-user-user-1) drops a child addressed to userB into
+    #     the PUBLIC collection — authorized by the parent's @:lf+ attach grant,
+    #     though userA is not a member of the public workspace.
+    api_userA = await connect_to_server(
+        {"name": "userA", "server_url": SERVER_URL_SQLITE, "token": test_user_token}
+    )
+    am_userA = await api_userA.get_service("public/artifact-manager")
+
+    child = await am_userA.create(
+        type="dataset",
+        parent_id=collection["id"],
+        manifest={"name": "invite-for-B", "recipientEmail": userB_email},
+        # Per-child ACL so the recipient (and only the recipient) can direct-read.
+        config={"permissions": {userB_email: "r"}},
+        version="stage",
+    )
+    await am_userA.commit(artifact_id=child["id"])
+    # The child physically lives in the public workspace (inherited from parent).
+    assert child["id"].startswith("public/"), (
+        f"child must inherit the public workspace, got {child['id']}"
+    )
+
+    # (2) userB (workspace ws-user-user-2) lists the public collection → sees
+    #     only the child addressed to them.
+    api_userB = await connect_to_server(
+        {"name": "userB", "server_url": SERVER_URL_SQLITE, "token": test_user_token_2}
+    )
+    am_userB = await api_userB.get_service("public/artifact-manager")
+
+    userB_list = await am_userB.list(parent_id=collection["id"])
+    assert [i["manifest"]["recipientEmail"] for i in userB_list] == [userB_email], (
+        f"userB should see only their own child, got {userB_list}"
+    )
+
+    # (3) userA — who WROTE the child for userB — does NOT see it in their own
+    #     scoped list (they addressed it to userB, not themselves).
+    userA_list = await am_userA.list(parent_id=collection["id"])
+    assert userA_list == [], (
+        f"userA must not enumerate a child they addressed to userB, got {userA_list}"
+    )
+    # And userA cannot direct-read it either (parent @:lf+ grants no read; the
+    # child ACL only admits userB) — write-without-read holds on read() too.
+    with pytest.raises(Exception, match=r".*[Pp]ermission.*"):
+        await am_userA.read(artifact_id=child["id"])
+
+    # (4) root (admin on the public workspace) sees ALL children (bypass).
+    root_list = await am_root.list(parent_id=collection["id"])
+    assert [i["manifest"]["recipientEmail"] for i in root_list] == [userB_email], (
+        f"root should see all children, got {root_list}"
+    )
+
+    # Cleanup.
+    for c in await am_root.list(parent_id=collection["id"]):
+        await am_root.delete(artifact_id=c["id"])
+    await am_root.delete(artifact_id=collection["id"])
+    await api_userA.disconnect()
+    await api_userB.disconnect()
+    await api_root.disconnect()
