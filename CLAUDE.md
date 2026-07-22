@@ -347,6 +347,15 @@ interface = {
 2. **`public`** - Accessible by all authenticated users across workspaces
 3. **`unlisted`** - Same as public, accessible for all users, but not discoverable
 
+### Artifact Permission Model — Two Non-Obvious Constraints (learned via #0009)
+
+When designing per-recipient / drop-box collections on the artifact-manager, two properties of `_get_artifact_with_permission` (`hypha/artifact.py`) matter:
+
+1. **`list()`/`search()` returns children by the *parent's* `list` permission, unfiltered by each child's own ACL.** Passing the parent-`list` check means you see *all* children (their manifests + ids), regardless of per-child `permissions`. So a listable collection leaks every child's existence to everyone who can list it — the per-child ACL only gates *direct read*, not enumeration.
+2. **`read(child_id)` requires `read` on the *parent* collection (a hard requirement), and when the parent grants read, the parent acts as a *fallback* that overrides a stricter child ACL.** Net: **child-read ≈ parent-read** — you cannot make a child readable to *only* its recipient while other children of the same collection stay readable to others via the parent. Per-child read cannot be *tighter* than the parent.
+
+Consequence: true per-recipient privacy can't be expressed by config + per-child ACLs alone. The **`private_children`** collection mode (`{"private_children": true, "recipient_field": "<field>"}`) solves the *enumeration* half server-side: non-admin `list()`/`search()` is forced to `manifest.<recipient_field> == caller.email` (client filter on that field ignored; AND-ed even under `mode="OR"`; workspace-admin/owner/root bypass). Privacy is then a **discovery boundary** (unguessable UUID ids + scoped listing = "unlisted"-style), NOT a direct-read denial — `read()` is intentionally left unchanged. `hypha/artifact.py::search`; tests in `tests/test_artifact.py::test_private_children_recipient_scoping`.
+
 ### When Additional Permission Checks Are Required
 
 While workspace isolation provides baseline security, **additional permission validation is required for**:

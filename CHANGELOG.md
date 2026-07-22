@@ -1,5 +1,9 @@
 # Hypha Change Log
 
+### 0.21.112
+
+ - **Recipient-scoped "private children" collections (#0009).** A collection whose config sets `{"private_children": true, "recipient_field": "<manifest field>"}` becomes a cross-user **inbox / drop-box**: any writer may create a child addressed to any recipient, but when a *non-admin* caller lists or searches the collection, the server forces `WHERE manifest.<recipient_field> == caller.email` — so a recipient only ever enumerates the children addressed to them. A client-supplied filter on the recipient field is **ignored** (it cannot widen the view) and the scoping condition is **AND-ed unconditionally, even under `mode="OR"`**, so it can't be escaped by combining it with a permissive keyword/filter clause. Workspace admins (the collection owner, root) bypass and see all children. Direct `read(child_id)` is **unchanged**: privacy is a *discovery* boundary (unguessable UUID ids + scoped listing), analogous to "unlisted" visibility — a recipient only ever learns the ids of their own messages. Powers `svamp notify`-style cross-user notifications. `hypha/artifact.py::search`; test `tests/test_artifact.py::test_private_children_recipient_scoping`.
+
 ### 0.21.111
 
  - **Fix two low-volume WebSocket teardown races** (both caught/non-fatal, ~2/24h each in prod; flagged by the nightly review). The 0.21.107 send-after-close fix is confirmed holding (0/24h).
