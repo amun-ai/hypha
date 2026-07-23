@@ -129,6 +129,10 @@ def _make_http_server():
     server._connections = {}
     server._connection_info = {}
     server._lock = asyncio.Lock()
+    # Liveness-sweep state that close_all_streams() touches during shutdown
+    # (normally set by __init__, which this helper bypasses). #0011.
+    server._sweep_task = None
+    server._stop_sweep = False
     return server
 
 
