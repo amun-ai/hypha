@@ -47,14 +47,15 @@ async def _make_server(store):
     return server
 
 
-async def test_dead_streaming_client_is_reaped():
-    """A registered streaming client that does NOT answer an RPC ping (dead /
-    half-open) is reaped: its stream is closed and its service registrations are
-    removed."""
+async def test_dead_streaming_client_reaped_after_consecutive_ping_misses():
+    """A dead/half-open client (no RPC-ping responder) is reaped ONLY after
+    _stream_max_ping_misses CONSECUTIVE misses — not on the first miss — and its
+    service registrations are removed."""
     store = RedisStore(None, redis_uri=None)
     await store.init(reset_redis=True)
     try:
         server = await _make_server(store)
+        server._stream_max_ping_misses = 2
         ws = "ws-user-reaper-dead"
         client_id = "ghost-machine"
         conn_key = f"{ws}/{client_id}"
@@ -69,18 +70,50 @@ async def test_dead_streaming_client_is_reaped():
         service_key = f"services:public|test-svc:{ws}/{client_id}:built-in@app"
         await redis.set(service_key, b"{}")
 
-        # Force it to be an idle candidate and sweep.
-        server._last_activity[conn_key] = 0.0
-        await server._do_liveness_sweep()
+        server._last_activity[conn_key] = 0.0  # idle candidate
 
-        # The stream + local state are gone, and the None close-sentinel was
-        # queued.
-        assert conn_key not in server._connections, "dead stream must be reaped"
+        # First miss: NOT reaped yet (below the consecutive-miss threshold).
+        await server._do_liveness_sweep()
+        assert conn_key in server._connections, "must not reap on the first miss"
+        assert server._ping_misses.get(conn_key) == 1
+        assert await redis.get(service_key) is not None
+
+        # Second consecutive miss: reaped.
+        await server._do_liveness_sweep()
+        assert conn_key not in server._connections, (
+            "must reap after max consecutive misses"
+        )
         assert conn_key not in server._last_activity
-        # The service registration (the ghost) was removed by delete_client.
+        assert conn_key not in server._ping_misses
         assert await redis.get(service_key) is None, (
             "the dead client's service registration must be removed"
         )
+    finally:
+        await store.teardown()
+
+
+async def test_single_ping_miss_does_not_reap():
+    """A single ping miss must NEVER reap — a live-but-loaded streaming client
+    can miss one slow POST round-trip (FLAG 2). Reaping requires
+    _stream_max_ping_misses CONSECUTIVE misses."""
+    store = RedisStore(None, redis_uri=None)
+    await store.init(reset_redis=True)
+    try:
+        server = await _make_server(store)
+        server._stream_max_ping_misses = 3
+        ws = "ws-user-reaper-transient"
+        client_id = "loaded-machine"
+        conn_key = f"{ws}/{client_id}"
+
+        await server._create_connection(ws, client_id, _user(ws))
+        server._last_activity[conn_key] = 0.0
+
+        await server._do_liveness_sweep()  # one miss
+
+        assert conn_key in server._connections, (
+            "a single ping miss must not reap a (possibly just-loaded) client"
+        )
+        assert server._ping_misses.get(conn_key) == 1
     finally:
         await store.teardown()
 
@@ -134,6 +167,7 @@ async def test_alive_candidate_is_refreshed_not_reaped():
 
         await server._create_connection(ws, client_id, _user(ws))
         server._last_activity[conn_key] = 0.0  # stale ⇒ becomes a candidate
+        server._ping_misses[conn_key] = 2  # had earlier transient misses
 
         saved = store._workspace_manager
         store._workspace_manager = None  # ⇒ _ping_stream_client returns True (alive)
@@ -149,6 +183,11 @@ async def test_alive_candidate_is_refreshed_not_reaped():
         # be re-pinged every single sweep.
         assert server._last_activity[conn_key] > 0.0, (
             "an alive candidate's activity must be refreshed"
+        )
+        # A successful ping RESETS the consecutive-miss counter — earlier
+        # transient misses must not accumulate toward a reap.
+        assert conn_key not in server._ping_misses, (
+            "an answered ping must reset the consecutive-miss counter"
         )
     finally:
         await store.teardown()

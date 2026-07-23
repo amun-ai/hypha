@@ -90,6 +90,15 @@ class HTTPStreamingRPCServer:
         self._stream_ping_timeout = float(
             os.environ.get("HYPHA_STREAM_PING_TIMEOUT", "5")
         )
+        # Reap only after this many CONSECUTIVE ping misses — never on a single
+        # miss. The streaming ping is a full HTTP POST round-trip (slower than a
+        # WS frame), so a live-but-loaded machine can miss one; requiring N
+        # consecutive misses (reset on any answer) prevents false-reaping it.
+        self._stream_max_ping_misses = int(
+            os.environ.get("HYPHA_STREAM_MAX_PING_MISSES", "3")
+        )
+        # connection_key -> consecutive ping-miss count
+        self._ping_misses: Dict[str, int] = {}
         self._stop_sweep = False
         # Start the background liveness sweep (mirrors WebsocketServer's idle loop).
         try:
@@ -246,13 +255,26 @@ class HTTPStreamingRPCServer:
             workspace, client_id = connection_key.split("/", 1)
             alive = await self._ping_stream_client(workspace, client_id)
             if alive:
-                # Live idle client — refresh so it is re-pinged at most once per
-                # idle-threshold (bounds ping load to genuinely-idle streams).
+                # Live idle client — reset the miss counter and refresh so it is
+                # re-pinged at most once per idle-threshold (bounds ping load to
+                # genuinely-idle streams).
                 async with self._lock:
+                    self._ping_misses.pop(connection_key, None)
                     if connection_key in self._last_activity:
                         self._last_activity[connection_key] = time.time()
             else:
-                await self._reap_dead_stream(workspace, client_id, connection_key)
+                # Do NOT reap on a single miss — a live-but-loaded streaming
+                # client can miss one slow POST round-trip. Reap only after
+                # _stream_max_ping_misses CONSECUTIVE misses.
+                async with self._lock:
+                    if connection_key not in self._connections:
+                        continue  # gone during the ping
+                    misses = self._ping_misses.get(connection_key, 0) + 1
+                    self._ping_misses[connection_key] = misses
+                if misses >= self._stream_max_ping_misses:
+                    await self._reap_dead_stream(
+                        workspace, client_id, connection_key
+                    )
 
     async def _ping_stream_client(self, workspace: str, client_id: str) -> bool:
         """Active RPC-layer ping of a streaming client. True iff it answers 'pong'.
@@ -289,11 +311,11 @@ class HTTPStreamingRPCServer:
         """Reap a confirmed-dead streaming client: remove its service
         registrations and close its (ghost) stream. #0011."""
         logger.warning(
-            "Reaping dead HTTP-streaming client %s: no upstream activity for "
-            "%.0fs and it did not answer an RPC ping — removing its service "
-            "registrations (half-open peer, no FIN).",
+            "Reaping dead HTTP-streaming client %s: idle and failed %d "
+            "consecutive RPC pings — removing its service registrations "
+            "(half-open peer, no FIN).",
             connection_key,
-            self._stream_idle_threshold,
+            self._stream_max_ping_misses,
         )
         # Remove the client's service registrations (delete_client removes the
         # services:* keys — the actual ghost).
@@ -310,6 +332,7 @@ class HTTPStreamingRPCServer:
             queue = self._connections.pop(connection_key, None)
             self._connection_info.pop(connection_key, None)
             self._last_activity.pop(connection_key, None)
+            self._ping_misses.pop(connection_key, None)
         if queue is not None:
             try:
                 queue.put_nowait(None)
