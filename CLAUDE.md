@@ -498,6 +498,34 @@ land on the surviving replica).
   timeout-based disconnect detection. Tracked as F4; see amun-ai/hypha (svamp
   reliability audit).
 
+### Every Long-Lived Transport Needs a LIVENESS Reaper, Not Just a Drain Path (#0011)
+
+Sibling lesson to F4. A half-open peer (the socket path is severed with **no
+FIN** — container hard-removed / `docker compose down` yanks the veth, or any
+NAT/proxy drop) is **not** detected by "is the request disconnected?" checks,
+because the OS never delivers a close event. Each long-lived transport must have
+its **own** active liveness reaper, or a client that dies half-open leaks its
+service registrations forever (a **ghost** that keeps appearing in
+`list_services` and honestly times out on RPC — only a server restart clears it).
+
+- **WebSocket** reaps via `wait_for(websocket.receive(), idle_timeout)` — a pure
+  asyncio timer that fires regardless of socket state (`websocket.py`).
+- **HTTP-streaming (`/rpc`)** originally had **none**: its stream loop
+  (`http_rpc.py`) detected loss only via `request.is_disconnected()` (dead on a
+  half-open socket) and streamed a downstream `{"type":"ping"}` that the client
+  *ignores* (no pong) — so nothing reaped a half-open streaming peer. #0011 added
+  a background sweep: a stream idle (no upstream POST) beyond a threshold is only
+  a *candidate* (idle-but-live is normal for streaming), then **actively
+  RPC-pinged** (`workspace.ping_client` → the client's built-in service); only
+  **non-responders** are reaped via `store.remove_client` → `delete_client`.
+- **Key Lesson**: don't infer death from **silence** (false-reaps a live idle
+  client) and don't rely on the OS/`is_disconnected` (misses half-open) — **prove
+  death with an active ping** and reap only non-responders. `store.remove_client`
+  is what actually removes the `services:*` keys; `conn.disconnect()` alone does
+  NOT (it only tears down RPC routing). Reuse the existing `_ping_client`/
+  `delete_client` machinery rather than inventing a parallel one. Tests:
+  `tests/test_http_streaming_reaper.py`.
+
 ### Multi-Replica: Per-Pod Caches Must Be Invalidated Across Pods (F6)
 
 Any **per-pod in-memory cache keyed by client/peer identity** becomes a

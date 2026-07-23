@@ -66,8 +66,39 @@ class HTTPStreamingRPCServer:
         self._connections: Dict[str, asyncio.Queue] = {}
         # Track connection metadata
         self._connection_info: Dict[str, dict] = {}
+        # Last UPSTREAM (client->server POST) activity per connection. Used by the
+        # liveness sweep below. Unlike WebSockets — which reap a dead peer via
+        # wait_for(receive(), idle_timeout) — an HTTP-streaming half-open peer
+        # (docker veth yanked, NO FIN) is never detected by request.is_disconnected(),
+        # so its service registrations ghost indefinitely (only a server restart
+        # clears them). #0011.
+        self._last_activity: Dict[str, float] = {}
         # Lock for connection management
         self._lock = asyncio.Lock()
+        # Liveness sweep config (#0011): a /rpc stream with no upstream POST for
+        # STREAM_IDLE_THRESHOLD becomes a ping-verify CANDIDATE (idle-but-live is
+        # NORMAL for streaming — an idle client sends nothing upstream — so idle
+        # alone NEVER reaps; it only triggers an ACTIVE RPC-layer ping). Only
+        # non-responders are reaped, so a healthy idle machine is never
+        # false-reaped. WebSockets are untouched (they have their own reaper).
+        self._stream_idle_threshold = float(
+            os.environ.get("HYPHA_STREAM_IDLE_THRESHOLD", "60")
+        )
+        self._stream_sweep_interval = float(
+            os.environ.get("HYPHA_STREAM_SWEEP_INTERVAL", "30")
+        )
+        self._stream_ping_timeout = float(
+            os.environ.get("HYPHA_STREAM_PING_TIMEOUT", "5")
+        )
+        self._stop_sweep = False
+        # Start the background liveness sweep (mirrors WebsocketServer's idle loop).
+        try:
+            asyncio.get_running_loop()
+            self._sweep_task = asyncio.create_task(self._liveness_sweep_loop())
+        except RuntimeError:
+            # No running loop yet (e.g., constructed during startup/tests); the
+            # loop will be created lazily on first stream connect.
+            self._sweep_task = None
 
     def _norm_url(self, url: str) -> str:
         """Normalize URL with base path."""
@@ -114,6 +145,9 @@ class HTTPStreamingRPCServer:
                 logger.info(f"[HTTP RPC] Closing old connection for {connection_key}")
 
             self._connections[connection_key] = queue
+            # Seed liveness activity so a just-connected client is not swept
+            # before it has had a chance to be active (#0011).
+            self._last_activity[connection_key] = time.time()
             self._connection_info[connection_key] = {
                 "workspace": workspace,
                 "client_id": client_id,
@@ -145,6 +179,9 @@ class HTTPStreamingRPCServer:
         except Exception as e:
             logger.debug(f"notify_client_connected failed for {connection_key}: {e}")
 
+        # Ensure the liveness sweep is running (handles construction before a loop).
+        self._ensure_sweep_started()
+
         return conn, queue
 
     async def _remove_connection(self, workspace: str, client_id: str, conn: RedisRPCConnection):
@@ -153,11 +190,131 @@ class HTTPStreamingRPCServer:
         async with self._lock:
             self._connections.pop(connection_key, None)
             self._connection_info.pop(connection_key, None)
+            self._last_activity.pop(connection_key, None)
 
         try:
             await conn.disconnect("disconnected")
         except Exception as e:
             logger.warning(f"Error disconnecting: {e}")
+
+    def _ensure_sweep_started(self):
+        """Start the liveness sweep if it wasn't started at construction time
+        (e.g. the server was constructed before an event loop existed)."""
+        if self._sweep_task is None or self._sweep_task.done():
+            try:
+                self._sweep_task = asyncio.create_task(self._liveness_sweep_loop())
+            except RuntimeError:
+                pass  # still no running loop; try again on the next connect
+
+    async def _liveness_sweep_loop(self):
+        """Periodically ping-verify idle /rpc streams and reap non-responders.
+
+        This closes the HTTP-streaming analog of the WebSocket idle reaper: a
+        half-open streaming peer (no FIN, e.g. a container hard-removed) is never
+        surfaced by ``request.is_disconnected()``, so without this its service
+        registrations ghost forever. #0011.
+        """
+        while not self._stop_sweep:
+            try:
+                await asyncio.sleep(self._stream_sweep_interval)
+                await self._do_liveness_sweep()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:  # never let the sweep loop die
+                logger.warning("HTTP-streaming liveness sweep error: %s", e)
+
+    async def _do_liveness_sweep(self):
+        """One sweep pass: ping-verify idle streams, reap non-responders.
+
+        A stream with no upstream POST for ``_stream_idle_threshold`` is only a
+        CANDIDATE — idle-but-live is the NORMAL state for a streaming client (it
+        sends nothing upstream when idle), so idle alone NEVER reaps. We actively
+        RPC-ping each candidate and reap ONLY the ones that do not answer, so a
+        healthy idle machine is never false-reaped.
+        """
+        now = time.time()
+        async with self._lock:
+            candidates = [
+                key
+                for key, last in self._last_activity.items()
+                if now - last > self._stream_idle_threshold
+                and key in self._connections
+            ]
+        for connection_key in candidates:
+            if "/" not in connection_key:
+                continue
+            workspace, client_id = connection_key.split("/", 1)
+            alive = await self._ping_stream_client(workspace, client_id)
+            if alive:
+                # Live idle client — refresh so it is re-pinged at most once per
+                # idle-threshold (bounds ping load to genuinely-idle streams).
+                async with self._lock:
+                    if connection_key in self._last_activity:
+                        self._last_activity[connection_key] = time.time()
+            else:
+                await self._reap_dead_stream(workspace, client_id, connection_key)
+
+    async def _ping_stream_client(self, workspace: str, client_id: str) -> bool:
+        """Active RPC-layer ping of a streaming client. True iff it answers 'pong'.
+
+        Uses the workspace manager's ``ping_client`` (which pings the client's
+        built-in service). A live client — even one that is idle and never sends
+        upstream — answers the RPC ping; a half-open/dead client times out.
+        """
+        try:
+            wm = self.store._workspace_manager
+            if wm is None:
+                return True  # cannot verify — do NOT reap (fail safe)
+            root = self.store.get_root_user()
+            context = {
+                "ws": workspace,
+                "user": root.model_dump(),
+                "from": f"{workspace}/check-client-exists",
+            }
+            result = await asyncio.wait_for(
+                wm.ping_client(
+                    f"{workspace}/{client_id}",
+                    timeout=self._stream_ping_timeout,
+                    context=context,
+                ),
+                timeout=self._stream_ping_timeout + 2,
+            )
+            return result == "pong"
+        except Exception:
+            return False
+
+    async def _reap_dead_stream(
+        self, workspace: str, client_id: str, connection_key: str
+    ):
+        """Reap a confirmed-dead streaming client: remove its service
+        registrations and close its (ghost) stream. #0011."""
+        logger.warning(
+            "Reaping dead HTTP-streaming client %s: no upstream activity for "
+            "%.0fs and it did not answer an RPC ping — removing its service "
+            "registrations (half-open peer, no FIN).",
+            connection_key,
+            self._stream_idle_threshold,
+        )
+        # Remove the client's service registrations (delete_client removes the
+        # services:* keys — the actual ghost).
+        try:
+            await self.store.remove_client(
+                client_id, workspace, self.store.get_root_user(), unload=False
+            )
+        except Exception as e:
+            logger.warning("Error removing dead client %s: %s", connection_key, e)
+        # Drop local state immediately (don't rely on the ghost stream loop
+        # consuming the sentinel — a half-open stream may be slow to notice) and
+        # push the None sentinel to end stream_messages() if it is still running.
+        async with self._lock:
+            queue = self._connections.pop(connection_key, None)
+            self._connection_info.pop(connection_key, None)
+            self._last_activity.pop(connection_key, None)
+        if queue is not None:
+            try:
+                queue.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
 
     async def close_all_streams(self) -> int:
         """Signal every active HTTP streaming connection to close cleanly.
@@ -171,6 +328,10 @@ class HTTPStreamingRPCServer:
 
         Returns the number of connections that were signaled.
         """
+        # Stop the liveness sweep during shutdown (#0011).
+        self._stop_sweep = True
+        if self._sweep_task is not None and not self._sweep_task.done():
+            self._sweep_task.cancel()
         async with self._lock:
             queues = list(self._connections.values())
         if not queues:
@@ -473,6 +634,11 @@ class HTTPStreamingRPCServer:
                 # Check if this client has an active streaming connection
                 async with self._lock:
                     has_stream = connection_key in self._connections
+                    if has_stream:
+                        # Any upstream POST is a liveness signal — refresh the
+                        # activity timestamp so the liveness sweep won't ping/reap
+                        # an actively-communicating client (#0011).
+                        self._last_activity[connection_key] = time.time()
 
                 if not has_stream:
                     # For stateless calls, we need to create a temporary connection
