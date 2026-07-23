@@ -99,6 +99,20 @@ class HTTPStreamingRPCServer:
         )
         # connection_key -> consecutive ping-miss count
         self._ping_misses: Dict[str, int] = {}
+        # Wedge self-heal (#0012): a client that stops reading its downstream
+        # stream (StreamingResponse yield blocks on TCP backpressure) makes the
+        # stream loop stick — it never drains the queue, which fills and drops
+        # messages FOREVER, leaving the machine unresponsive with no auto-recovery
+        # (only a fresh reconnect clears it). We count CONSECUTIVE downstream-queue
+        # drops per connection (reset on any successful enqueue, so a slow-but-
+        # draining client never trips it) and, once a connection is clearly not
+        # draining, force-recycle it (cancel its stuck stream task) so the client
+        # reconnects with a fresh empty queue.
+        self._drop_counts: Dict[str, int] = {}
+        self._stream_tasks: Dict[str, asyncio.Task] = {}
+        self._stream_max_drops = int(
+            os.environ.get("HYPHA_STREAM_MAX_QUEUE_DROPS", "200")
+        )
         self._stop_sweep = False
         # Start the background liveness sweep (mirrors WebsocketServer's idle loop).
         try:
@@ -173,7 +187,18 @@ class HTTPStreamingRPCServer:
                 # If queue is full (slow/malicious client), drop messages
                 try:
                     queue.put_nowait(data)
+                    # Successful enqueue ⇒ the stream IS draining; reset the
+                    # consecutive-drop counter (a slow-but-draining client must
+                    # not accumulate toward a force-recycle). #0012
+                    if connection_key in self._drop_counts:
+                        self._drop_counts.pop(connection_key, None)
                 except asyncio.QueueFull:
+                    # Count CONSECUTIVE drops. A persistently-full queue means the
+                    # stream loop is stuck (client not reading) — the liveness
+                    # sweep force-recycles it past _stream_max_drops. #0012
+                    self._drop_counts[connection_key] = (
+                        self._drop_counts.get(connection_key, 0) + 1
+                    )
                     logger.warning(f"Message queue full for {connection_key}, dropping message")
             except Exception as e:
                 logger.error(f"Failed to queue message: {e}")
@@ -200,6 +225,8 @@ class HTTPStreamingRPCServer:
             self._connections.pop(connection_key, None)
             self._connection_info.pop(connection_key, None)
             self._last_activity.pop(connection_key, None)
+            self._drop_counts.pop(connection_key, None)
+            self._stream_tasks.pop(connection_key, None)
 
         try:
             await conn.disconnect("disconnected")
@@ -240,7 +267,24 @@ class HTTPStreamingRPCServer:
         sends nothing upstream when idle), so idle alone NEVER reaps. We actively
         RPC-ping each candidate and reap ONLY the ones that do not answer, so a
         healthy idle machine is never false-reaped.
+
+        Also (#0012) force-recycles WEDGED streams: a connection whose downstream
+        queue is persistently full (many CONSECUTIVE drops, i.e. not draining) is
+        aborted so the client reconnects with a fresh empty queue.
         """
+        # Wedge self-heal (#0012): recycle connections whose downstream queue is
+        # persistently full (not draining). Distinct from the idle/dead reap
+        # below — a wedged client is ALIVE (upstream-active), so we recycle its
+        # stream rather than reap its services.
+        async with self._lock:
+            wedged = [
+                key
+                for key, drops in self._drop_counts.items()
+                if drops >= self._stream_max_drops and key in self._connections
+            ]
+        for connection_key in wedged:
+            await self._recycle_wedged_stream(connection_key)
+
         now = time.time()
         async with self._lock:
             candidates = [
@@ -338,6 +382,32 @@ class HTTPStreamingRPCServer:
                 queue.put_nowait(None)
             except asyncio.QueueFull:
                 pass
+
+    async def _recycle_wedged_stream(self, connection_key: str):
+        """Force-recycle a wedged streaming connection (#0012).
+
+        The downstream queue is persistently full: the client stopped reading its
+        stream, so the loop is stuck on a backpressured ``yield`` and never drains
+        the queue (a None sentinel can't help — the loop isn't at ``queue.get``).
+        Cancelling the stream's response task aborts the stuck yield; the GET
+        stream ends, the client reconnects with a FRESH empty queue, and the
+        machine is responsive again. The client is ALIVE (upstream-active), so we
+        do NOT reap its services (it re-registers on reconnect) — we just recycle
+        the connection. The cancelled generator's ``finally`` runs
+        ``_remove_connection`` to clear local state.
+        """
+        async with self._lock:
+            drops = self._drop_counts.pop(connection_key, 0)
+            task = self._stream_tasks.get(connection_key)
+        logger.warning(
+            "Recycling wedged HTTP-streaming connection %s: downstream queue full "
+            "and not draining (%d consecutive drops) — aborting the stuck stream "
+            "so the client reconnects with a fresh queue.",
+            connection_key,
+            drops,
+        )
+        if task is not None and not task.done():
+            task.cancel()
 
     async def close_all_streams(self) -> int:
         """Signal every active HTTP streaming connection to close cleanly.
@@ -543,6 +613,12 @@ class HTTPStreamingRPCServer:
                 async def stream_messages():
                     """Generator that yields messages in the requested format."""
                     nonlocal new_reconnection_token
+                    # Register this response's task so the liveness sweep can
+                    # force-recycle a wedged stream (cancel this task to abort a
+                    # yield stuck on client backpressure). #0012
+                    self._stream_tasks[f"{workspace}/{client_id}"] = (
+                        asyncio.current_task()
+                    )
                     try:
                         # Send connection info as first message
                         conn_info = {

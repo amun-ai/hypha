@@ -191,3 +191,103 @@ async def test_alive_candidate_is_refreshed_not_reaped():
         )
     finally:
         await store.teardown()
+
+
+# ── #0012: wedged-stream (downstream queue full) force-recycle ───────────────
+
+
+async def test_drop_counter_increments_when_full_and_resets_on_drain():
+    """send_to_queue counts CONSECUTIVE downstream-queue drops, and a successful
+    enqueue (queue draining) resets the counter — so a slow-but-draining client
+    never accumulates toward a force-recycle. #0012"""
+    store = RedisStore(None, redis_uri=None)
+    await store.init(reset_redis=True)
+    try:
+        server = await _make_server(store)
+        ws = "ws-user-wedge-count"
+        client_id = "machine"
+        conn_key = f"{ws}/{client_id}"
+
+        conn, queue = await server._create_connection(ws, client_id, _user(ws))
+        # send_to_queue is the connection's message handler.
+        send = conn._handle_message
+
+        # Fill the queue to capacity so further enqueues drop.
+        while not queue.full():
+            queue.put_nowait(b"x")
+
+        await send(b"overflow")
+        assert server._drop_counts.get(conn_key) == 1
+        await send(b"overflow")
+        assert server._drop_counts.get(conn_key) == 2
+
+        # Drain one slot ⇒ next enqueue succeeds ⇒ counter RESETS.
+        queue.get_nowait()
+        await send(b"ok")
+        assert conn_key not in server._drop_counts, (
+            "a successful enqueue must reset the consecutive-drop counter"
+        )
+    finally:
+        await store.teardown()
+
+
+async def test_wedged_stream_is_force_recycled():
+    """A connection whose downstream queue is persistently full (drops past the
+    threshold, i.e. not draining) is force-recycled: its stuck stream task is
+    cancelled so the client reconnects with a fresh queue. #0012"""
+    store = RedisStore(None, redis_uri=None)
+    await store.init(reset_redis=True)
+    try:
+        server = await _make_server(store)
+        ws = "ws-user-wedge"
+        client_id = "wedged-machine"
+        conn_key = f"{ws}/{client_id}"
+
+        await server._create_connection(ws, client_id, _user(ws))
+        # Simulate the response task stuck on a backpressured yield.
+        stuck = asyncio.create_task(asyncio.sleep(3600))
+        server._stream_tasks[conn_key] = stuck
+        # Persistent drops at/above the threshold ⇒ wedged.
+        server._drop_counts[conn_key] = server._stream_max_drops
+
+        await server._do_liveness_sweep()
+
+        # The stuck stream task was cancelled (force-recycle) and the counter
+        # cleared.
+        try:
+            await stuck
+        except asyncio.CancelledError:
+            pass
+        assert stuck.cancelled(), "a wedged stream's task must be cancelled"
+        assert conn_key not in server._drop_counts
+    finally:
+        await store.teardown()
+
+
+async def test_below_threshold_stream_is_not_recycled():
+    """A connection with drops BELOW the threshold (transiently backed up, still
+    draining) is NOT force-recycled. #0012"""
+    store = RedisStore(None, redis_uri=None)
+    await store.init(reset_redis=True)
+    try:
+        server = await _make_server(store)
+        server._stream_idle_threshold = 1e9  # keep it out of the idle-ping path
+        ws = "ws-user-wedge-ok"
+        client_id = "busy-but-draining"
+        conn_key = f"{ws}/{client_id}"
+
+        await server._create_connection(ws, client_id, _user(ws))
+        stuck = asyncio.create_task(asyncio.sleep(3600))
+        server._stream_tasks[conn_key] = stuck
+        server._drop_counts[conn_key] = server._stream_max_drops - 1  # below
+
+        await server._do_liveness_sweep()
+        await asyncio.sleep(0)
+
+        assert not stuck.cancelled(), (
+            "a still-draining stream (below drop threshold) must not be recycled"
+        )
+        assert server._drop_counts.get(conn_key) == server._stream_max_drops - 1
+        stuck.cancel()
+    finally:
+        await store.teardown()
