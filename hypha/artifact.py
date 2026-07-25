@@ -23,6 +23,7 @@ from sqlalchemy import (
     and_,
     or_,
     update,
+    bindparam,
 )
 from sqlalchemy.sql import func
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
@@ -8879,60 +8880,71 @@ class ArtifactController:
             await session.close()
 
     def _build_manifest_condition(self, manifest_key, operator, value, backend):
-        """Helper function to build SQL conditions for manifest fields."""
+        """Helper function to build SQL conditions for manifest fields.
+
+        SECURITY (V16): ``manifest_key`` and ``value`` come from the user-supplied
+        ``filters`` argument of the public ``search()``/``list()`` methods. They
+        MUST NOT be interpolated into the SQL text — a payload such as
+        ``x' OR '1'='1`` would otherwise break out of the quoted literal and
+        rewrite the WHERE clause (SQL injection). Every key and value is passed as
+        a BOUND PARAMETER (``bindparam(..., unique=True)`` so combined conditions
+        never collide). See tests/test_artifact_sql_injection.py.
+        """
+        is_pg = backend == "postgresql"
+
+        def _cmp(op_sql, param_value):
+            # Compare the (bound) manifest key's text value against a bound param.
+            if is_pg:
+                return text(f"manifest ->> :k {op_sql} :v").bindparams(
+                    bindparam("k", value=manifest_key, unique=True),
+                    bindparam("v", value=param_value, unique=True),
+                )
+            return text(f"json_extract(manifest, :p) {op_sql} :v").bindparams(
+                bindparam("p", value=f"$.{manifest_key}", unique=True),
+                bindparam("v", value=param_value, unique=True),
+            )
+
         if operator == "$like":
             # Fuzzy matching
-            if backend == "postgresql":
-                return text(
-                    f"manifest->>'{manifest_key}' ILIKE '{value.replace('*', '%')}'"
-                )
-            else:
-                return text(
-                    f"json_extract(manifest, '$.{manifest_key}') LIKE '{value.replace('*', '%')}'"
-                )
+            return _cmp("ILIKE" if is_pg else "LIKE", value.replace("*", "%"))
         elif operator == "$in":
             # Array containment - any of the values
-            if backend == "postgresql":
-                # Quote each value in the array
-                quoted_values = [f"'{v}'" for v in value]
-                array_str = f"ARRAY[{', '.join(quoted_values)}]"
-                return text(f"(manifest->'{manifest_key}')::jsonb ?| {array_str}")
+            if is_pg:
+                return text("(manifest -> :k)::jsonb ?| :arr").bindparams(
+                    bindparam("k", value=manifest_key, unique=True),
+                    bindparam("arr", value=list(value), unique=True),
+                )
             else:
                 conditions = []
                 for v in value:
                     conditions.append(
-                        text(f"json_extract(manifest, '$.{manifest_key}') LIKE '%{v}%'")
+                        text("json_extract(manifest, :p) LIKE :v").bindparams(
+                            bindparam("p", value=f"$.{manifest_key}", unique=True),
+                            bindparam("v", value=f"%{v}%", unique=True),
+                        )
                     )
                 return or_(*conditions)
         elif operator == "$all":
             # Array containment - all values
-            if backend == "postgresql":
+            if is_pg:
                 return text(
-                    f"(manifest->'{manifest_key}')::jsonb @> '{json.dumps(value)}'::jsonb"
+                    "(manifest -> :k)::jsonb @> cast(:v as jsonb)"
+                ).bindparams(
+                    bindparam("k", value=manifest_key, unique=True),
+                    bindparam("v", value=json.dumps(value), unique=True),
                 )
             else:
                 array_str = json.dumps(value)[1:-1]  # Remove [] brackets
-                return text(
-                    f"json_extract(manifest, '$.{manifest_key}') LIKE '%{array_str}%'"
+                return text("json_extract(manifest, :p) LIKE :v").bindparams(
+                    bindparam("p", value=f"$.{manifest_key}", unique=True),
+                    bindparam("v", value=f"%{array_str}%", unique=True),
                 )
         else:  # exact match
             if isinstance(value, str) and "*" in value:
                 # Handle wildcard in simple string match
-                if backend == "postgresql":
-                    return text(
-                        f"manifest->>'{manifest_key}' ILIKE '{value.replace('*', '%')}'"
-                    )
-                else:
-                    return text(
-                        f"json_extract(manifest, '$.{manifest_key}') LIKE '{value.replace('*', '%')}'"
-                    )
+                return _cmp("ILIKE" if is_pg else "LIKE", value.replace("*", "%"))
             else:
-                if backend == "postgresql":
-                    return text(f"manifest->>'{manifest_key}' = '{value}'")
-                else:
-                    return text(
-                        f"json_extract(manifest, '$.{manifest_key}') = '{value}'"
-                    )
+                return _cmp("=", value)
 
     def _process_manifest_filter(self, manifest_filter, backend):
         """Process manifest filter with logical operators."""
@@ -9202,12 +9214,24 @@ class ArtifactController:
                 # Handle keyword-based search across manifest fields
                 if keywords:
                     for keyword in keywords:
+                        # SECURITY (V16): keyword is user-supplied — bind it,
+                        # never interpolate (SQL injection). Escape LIKE
+                        # metacharacters so a literal % / _ in the keyword is not
+                        # treated as a wildcard.
+                        escaped = (
+                            keyword.replace("\\", "\\\\")
+                            .replace("%", "\\%")
+                            .replace("_", "\\_")
+                        )
+                        like_value = f"%{escaped}%"
                         if backend == "postgresql":
-                            condition = text(f"manifest::text ILIKE '%{keyword}%'")
+                            condition = text(
+                                "manifest::text ILIKE :kw ESCAPE '\\'"
+                            ).bindparams(bindparam("kw", value=like_value, unique=True))
                         else:
                             condition = text(
-                                f"json_extract(manifest, '$') LIKE '%{keyword}%'"
-                            )
+                                "json_extract(manifest, '$') LIKE :kw ESCAPE '\\'"
+                            ).bindparams(bindparam("kw", value=like_value, unique=True))
                         conditions.append(condition)
 
                 # Handle filter-based search with specific key-value matching
@@ -9249,13 +9273,39 @@ class ArtifactController:
                                     config_value, dict
                                 ):
                                     for user_id, permission in config_value.items():
+                                        # SECURITY (V16): user_id + permission are
+                                        # user-supplied filter data — bind them,
+                                        # never interpolate (SQL injection).
+                                        # NOTE: permissions live in the `config`
+                                        # JSON column under the `permissions` key
+                                        # (there is no top-level `permissions`
+                                        # column); a bound `->>` key lookup handles
+                                        # special keys like '*'/'@' correctly.
                                         if backend == "postgresql":
                                             condition = text(
-                                                f"permissions->>'{user_id}' = '{permission}'"
+                                                "(config -> 'permissions') ->> :puid = :pperm"
+                                            ).bindparams(
+                                                bindparam(
+                                                    "puid", value=user_id, unique=True
+                                                ),
+                                                bindparam(
+                                                    "pperm",
+                                                    value=permission,
+                                                    unique=True,
+                                                ),
                                             )
                                         else:
                                             condition = text(
-                                                f"json_extract(permissions, '$.{user_id}') = '{permission}'"
+                                                "json_extract(config, '$.permissions') ->> :puid = :pperm"
+                                            ).bindparams(
+                                                bindparam(
+                                                    "puid", value=user_id, unique=True
+                                                ),
+                                                bindparam(
+                                                    "pperm",
+                                                    value=permission,
+                                                    unique=True,
+                                                ),
                                             )
                                         conditions.append(condition)
                             continue
@@ -9419,6 +9469,22 @@ class ArtifactController:
                 else:
                     field_name = "id"
                     ascending = True
+
+                # SECURITY (V16): order_by is user-supplied. For manifest.*/config.*
+                # ordering the JSON key is interpolated into a CASE/regex clause
+                # that cannot be practically bound; restrict it to a plain JSON
+                # path identifier so no SQL metacharacters can break out. A
+                # malicious field like `name'); DROP TABLE artifacts; --` is
+                # rejected here rather than executed.
+                if field_name.startswith("manifest.") or field_name.startswith(
+                    "config."
+                ):
+                    _json_key = field_name.split(".", 1)[1]
+                    if not re.fullmatch(r"[A-Za-z0-9_.\-]+", _json_key or ""):
+                        raise ValueError(
+                            f"Invalid order_by field '{field_name}': the JSON key "
+                            "may only contain letters, digits, '_', '.', and '-'."
+                        )
 
                 # Handle JSON fields (manifest.* or config.*)
                 if field_name.startswith("manifest."):
