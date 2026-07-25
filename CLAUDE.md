@@ -550,6 +550,17 @@ correctness hazard at N≥2 if it is not invalidated when that client moves pods
   on topology changes. Tracked as F6; tests in `test_cross_pod_reconnect.py` and
   `test_multi_replica_integration.py::test_cross_pod_repin_no_false_reject`.
 
+### HTTP Rate Limiter Runs BEFORE Auth — Tier by Cheaply-Verified Identity, Never by Header Presence (#0598(c))
+
+`HTTPRateLimitMiddleware` (`hypha/http.py`) is mounted **outermost** (http.py `add_middleware` last-wins → runs first), so it executes **before routing and before any `Depends(login_optional)` auth**. It therefore has **no validated identity** — only raw IP + headers. Consequence: behind a shared NAT/egress or a single busy daemon, legitimate first-party `/rpc` traffic used to collide with the anonymous per-IP bucket (100/s, burst 500) and get 429'd alongside flood traffic.
+
+Two-tier fix, and the **two traps to avoid**:
+
+1. **Never elevate on header *presence*** — a `Bearer` header is trivially forgeable. Elevation requires a **cryptographically verified** token. `hypha.core.auth.verify_internal_token_identity(authorization)` does **signature + expiry only** against the local `JWT_SECRET` (internal HS256 tokens): **no DB, no JWKS/Auth0 round-trip, no blocklist** — cheap enough for every request. Forged / expired / non-internal (Auth0 **RS256**) / absent → returns `None` → falls back to the anonymous per-IP tier (safe degradation; Auth0 callers simply don't get the higher tier, and revocation still enforced downstream at the real auth layer).
+2. **Elevate to a HIGH *FINITE* limit, not a path exemption.** A blanket `/rpc`-path exempt would kill the anti-flood protection on exactly the surface the red-team floods. The authenticated tier is `HYPHA_HTTP_AUTHENTICATED_RATE_LIMIT`/`_BURST_LIMIT` (default 1000/5000) — defense-in-depth. Bucket key (`_authenticated_bucket_key`) prefers the **`client_id`** query param (bounds ONE flooding daemon without starving the same user's other sessions), falls back to token **`sub`**, folds in **`workspace`** — never raw IP for authenticated callers.
+
+**Key Lesson**: a pre-auth middleware can still be identity-aware — but only via a **self-contained, no-network** token check (local-secret HS256 sig+exp), and the elevated tier must stay finite + narrowly-keyed. `verify_internal_token_identity` never raises. `_consume(key, rate=None, burst=None)` keeps its backward-compatible single-arg per-IP form. Tests: `tests/test_http_rate_limit.py` (anonymous-limited-but-authenticated-not, forged/expired does-not-bypass, client-id isolation, missing-client-id fallback).
+
 **Critical Pattern (V10-V14)**: When an ID contains a workspace prefix (e.g., `workspace/client_id`), always validate permission on the embedded workspace, not just `context["ws"]`.
 
 ```python
