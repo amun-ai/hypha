@@ -38,7 +38,7 @@ from hypha_rpc.rpc import RemoteException
 from hypha import hypha_rpc_version
 from hypha.core import UserPermission
 from hypha.core.auth import AUTH0_DOMAIN, extract_token_from_scope, update_user_scope
-from hypha.core.store import RedisStore
+from hypha.core.store import RedisStore, WorkspaceNotFoundError
 from hypha.utils import safe_join, is_safe_path
 from hypha.s3 import FSFileResponse
 
@@ -470,6 +470,30 @@ class ASGIRoutingMiddleware:
                         {
                             "type": "http.response.body",
                             "body": str(exp).encode(),
+                            "more_body": False,
+                        }
+                    )
+                    return
+                except WorkspaceNotFoundError as exp:
+                    # Unknown/inaccessible workspace is a client error (404), not a
+                    # server fault: warn without a traceback rather than let the
+                    # KeyError escape into the generic 500 handler. #0014.
+                    # KeyError's str() adds surrounding quotes; use the raw message.
+                    message = exp.args[0] if exp.args else str(exp)
+                    logger.warning(f"Workspace not found in ASGI service: {message}")
+                    await send(
+                        {
+                            "type": "http.response.start",
+                            "status": 404,
+                            "headers": [
+                                [b"content-type", b"text/plain"],
+                            ],
+                        }
+                    )
+                    await send(
+                        {
+                            "type": "http.response.body",
+                            "body": str(message).encode(),
                             "more_body": False,
                         }
                     )

@@ -58,6 +58,17 @@ logger = logging.getLogger("redis-store")
 logger.setLevel(LOGLEVEL)
 
 
+class WorkspaceNotFoundError(KeyError):
+    """Raised when a workspace does not exist and cannot be auto-created for the
+    caller.
+
+    Subclasses ``KeyError`` so existing callers/tests that expect a ``KeyError``
+    (and match on the message) keep working, while giving transports a specific
+    type to catch and translate into a clean client-facing 404 instead of an
+    opaque 500 + traceback. See #0014.
+    """
+
+
 class WorkspaceInterfaceContextManager:
     """Workspace interface context manager."""
 
@@ -498,7 +509,7 @@ class RedisStore:
                 )
             else:
                 # Workspace doesn't exist and can't be auto-created
-                raise KeyError(
+                raise WorkspaceNotFoundError(
                     f"Workspace {workspace} does not exist or is not accessible"
                 )
         else:
