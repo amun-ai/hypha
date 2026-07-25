@@ -404,3 +404,167 @@ class TestConnectionLimitProtection:
         # First 500 (burst) should pass, rest rejected
         assert allowed_count == 500
         assert rejected_count == 500
+
+
+# ── #0598(c) authenticated-tier rate limiting ───────────────────────────
+# A validated first-party (internal HS256) token elevates the caller from the
+# anonymous per-IP tier to a much higher, identity-keyed tier — so machine /rpc
+# traffic is not throttled like anonymous flood traffic. Header *presence* alone
+# never elevates: a forged/expired/non-internal token falls back to per-IP.
+
+
+def _make_internal_token(user_id: str, email: str = "a@b.com", expires_in: int = 3600):
+    """Build a REAL internal (HS256, JWT_SECRET-signed) token for a user."""
+    from hypha.core import UserInfo, UserPermission
+    from hypha.core.auth import _generate_presigned_token, create_scope
+
+    user_info = UserInfo(
+        id=user_id,
+        email=email,
+        is_anonymous=False,
+        roles=[],
+        scope=create_scope(workspaces={f"ws-user-{user_id}": UserPermission.admin}),
+    )
+    return _generate_presigned_token(user_info, expires_in)
+
+
+async def _drive(mw, *, ip="9.9.9.9", authorization=None, query_string=b"", path="/x/rpc"):
+    """Drive the middleware once; return the response status (200 = passed)."""
+    status = {"code": 200}
+
+    async def app(scope, receive, send):
+        status["code"] = 200
+
+    async def send(message):
+        if message.get("type") == "http.response.start":
+            status["code"] = message.get("status")
+
+    async def receive():
+        return {}
+
+    mw.app = app
+    headers = [(b"x-forwarded-for", ip.encode())]
+    if authorization:
+        headers.append((b"authorization", authorization.encode()))
+    scope = {
+        "type": "http",
+        "path": path,
+        "headers": headers,
+        "client": (ip, 12345),
+        "query_string": query_string,
+    }
+    await mw(scope, receive, send)
+    return status["code"]
+
+
+@pytest.mark.asyncio
+async def test_anonymous_ip_limited_but_authenticated_is_not():
+    """Same IP: anonymous exhausts a tiny per-IP bucket; a validated token does not."""
+    from hypha.http import HTTPRateLimitMiddleware
+
+    mw = HTTPRateLimitMiddleware(
+        app=None, rate=1, burst=3, auth_rate=1000, auth_burst=1000
+    )
+
+    # Anonymous from one IP: burst=3 passes, 4th is 429.
+    for _ in range(3):
+        assert await _drive(mw, ip="1.1.1.1") == 200
+    assert await _drive(mw, ip="1.1.1.1") == 429
+
+    # A validated first-party token from the SAME IP sails past the per-IP burst.
+    token = _make_internal_token("alice")
+    auth = f"Bearer {token}"
+    for _ in range(50):
+        assert await _drive(mw, ip="1.1.1.1", authorization=auth) == 200
+
+
+@pytest.mark.asyncio
+async def test_forged_bearer_does_not_bypass():
+    """A forged/invalid Bearer token must NOT elevate — falls back to per-IP tier."""
+    from hypha.http import HTTPRateLimitMiddleware
+
+    mw = HTTPRateLimitMiddleware(
+        app=None, rate=1, burst=3, auth_rate=1000, auth_burst=1000
+    )
+    forged = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.not.a.real.token"
+
+    # Header present but invalid → still per-IP: burst=3 then 429.
+    for _ in range(3):
+        assert await _drive(mw, ip="2.2.2.2", authorization=forged) == 200
+    assert await _drive(mw, ip="2.2.2.2", authorization=forged) == 429
+
+
+def _make_expired_internal_token(user_id: str, email: str = "a@b.com"):
+    """A correctly-signed internal token whose `exp` is already in the past."""
+    import datetime
+
+    from jose import jwt as _jwt
+
+    from hypha.core.auth import AUTH0_AUDIENCE, AUTH0_ISSUER, JWT_SECRET
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    payload = {
+        "iss": AUTH0_ISSUER,
+        "sub": user_id,
+        "aud": AUTH0_AUDIENCE,
+        "iat": now - datetime.timedelta(seconds=100),
+        "exp": now - datetime.timedelta(seconds=10),  # expired
+    }
+    return _jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+
+
+@pytest.mark.asyncio
+async def test_expired_internal_token_does_not_bypass():
+    """An EXPIRED but correctly-signed internal token must not elevate."""
+    from hypha.http import HTTPRateLimitMiddleware
+
+    mw = HTTPRateLimitMiddleware(
+        app=None, rate=1, burst=3, auth_rate=1000, auth_burst=1000
+    )
+    expired = _make_expired_internal_token("bob")
+    auth = f"Bearer {expired}"
+
+    for _ in range(3):
+        assert await _drive(mw, ip="3.3.3.3", authorization=auth) == 200
+    assert await _drive(mw, ip="3.3.3.3", authorization=auth) == 429
+
+
+@pytest.mark.asyncio
+async def test_client_id_keying_isolates_one_daemon():
+    """Two client_ids of the SAME user get independent buckets; one flooding
+    client does not starve the other (authenticated tier keyed on client_id)."""
+    from hypha.http import HTTPRateLimitMiddleware
+
+    mw = HTTPRateLimitMiddleware(
+        app=None, rate=1, burst=1, auth_rate=1, auth_burst=2
+    )
+    token = _make_internal_token("carol")
+    auth = f"Bearer {token}"
+    qs_a = b"workspace=ws-user-carol&client_id=daemon-a"
+    qs_b = b"workspace=ws-user-carol&client_id=daemon-b"
+
+    # daemon-a exhausts its own burst=2, then 429s.
+    assert await _drive(mw, authorization=auth, query_string=qs_a) == 200
+    assert await _drive(mw, authorization=auth, query_string=qs_a) == 200
+    assert await _drive(mw, authorization=auth, query_string=qs_a) == 429
+
+    # daemon-b (same user) is unaffected — its own fresh bucket.
+    assert await _drive(mw, authorization=auth, query_string=qs_b) == 200
+    assert await _drive(mw, authorization=auth, query_string=qs_b) == 200
+
+    # Keys are distinct and identity-scoped.
+    assert any(k.startswith("auth:carol") and "daemon-a" in k for k in mw._buckets)
+    assert any(k.startswith("auth:carol") and "daemon-b" in k for k in mw._buckets)
+
+
+@pytest.mark.asyncio
+async def test_missing_client_id_falls_back_to_user_key():
+    """Without a client_id query param the bucket key is just auth:<identity>."""
+    from hypha.http import HTTPRateLimitMiddleware
+
+    mw = HTTPRateLimitMiddleware(
+        app=None, rate=1, burst=1, auth_rate=100, auth_burst=100
+    )
+    token = _make_internal_token("dave")
+    assert await _drive(mw, authorization=f"Bearer {token}", query_string=b"") == 200
+    assert "auth:dave" in mw._buckets

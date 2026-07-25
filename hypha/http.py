@@ -12,6 +12,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs
 
 import httpx
 import msgpack
@@ -37,7 +38,12 @@ from hypha_rpc import RPC
 from hypha_rpc.rpc import RemoteException
 from hypha import hypha_rpc_version
 from hypha.core import UserPermission
-from hypha.core.auth import AUTH0_DOMAIN, extract_token_from_scope, update_user_scope
+from hypha.core.auth import (
+    AUTH0_DOMAIN,
+    extract_token_from_scope,
+    update_user_scope,
+    verify_internal_token_identity,
+)
 from hypha.core.store import RedisStore, WorkspaceNotFoundError
 from hypha.utils import safe_join, is_safe_path
 from hypha.s3 import FSFileResponse
@@ -262,47 +268,126 @@ def detected_response_type(request: Request):
     return content_type
 
 
-class HTTPRateLimitMiddleware:
-    """ASGI middleware that applies per-IP token-bucket rate limiting to HTTP requests.
+def _authenticated_bucket_key(identity: str, scope) -> str:
+    """Rate-limit bucket key for a validated first-party caller (#0598(c)).
 
-    Exempts health/liveness/readiness endpoints and WebSocket upgrade
-    requests to avoid interfering with Kubernetes probes and WS connections.
+    Prefer ``client_id`` (bounds a single flooding daemon without starving the
+    same user's other sessions), fall back to the token identity (per-user),
+    and fold in ``workspace`` when present. ``client_id`` / ``workspace`` are
+    read from the query string — both are declared query params on the ``/rpc``
+    endpoints, and absent elsewhere (then the key is simply ``auth:<identity>``).
+    """
+    client_id = None
+    workspace = None
+    qs = scope.get("query_string") or b""
+    if qs:
+        params = parse_qs(qs.decode("latin-1"))
+        cid = params.get("client_id")
+        ws = params.get("workspace")
+        if cid:
+            client_id = cid[0]
+        if ws:
+            workspace = ws[0]
+    parts = ["auth", identity]
+    if workspace:
+        parts.append(workspace)
+    if client_id:
+        parts.append(client_id)
+    return ":".join(parts)
+
+
+class HTTPRateLimitMiddleware:
+    """ASGI middleware applying token-bucket rate limiting to HTTP requests.
+
+    Two tiers (#0598(c)):
+
+    * **Anonymous / unverified** callers are limited per client IP.
+    * **Validated first-party** callers — a request whose ``Authorization``
+      header carries a locally-verifiable internal (HS256) Hypha token — get a
+      much higher, identity-keyed limit, so machine/daemon ``/rpc`` traffic is
+      not throttled like anonymous traffic. The authenticated tier is a high
+      *finite* limit (defense-in-depth), keyed on ``client_id`` (falling back to
+      the token ``sub``, with workspace folded in) so one flooding client is
+      bounded without starving the same user's other sessions.
+
+    Header *presence* alone never elevates: a forged/expired/RS256 token fails
+    :func:`verify_internal_token_identity` and falls back to the per-IP limit.
+
+    Exempts health/liveness/readiness endpoints and WebSocket upgrade requests
+    to avoid interfering with Kubernetes probes and WS connections.
     Configurable via environment variables:
-      HYPHA_HTTP_RATE_LIMIT  – sustained requests/sec per IP (default 100)
-      HYPHA_HTTP_BURST_LIMIT – burst capacity per IP (default 500)
+      HYPHA_HTTP_RATE_LIMIT               – sustained req/s per IP (default 100)
+      HYPHA_HTTP_BURST_LIMIT              – burst capacity per IP (default 500)
+      HYPHA_HTTP_AUTHENTICATED_RATE_LIMIT – sustained req/s per authenticated
+                                            identity (default 1000)
+      HYPHA_HTTP_AUTHENTICATED_BURST_LIMIT – burst per authenticated identity
+                                             (default 5000)
     """
 
     # Paths that must never be rate-limited (K8s probes, metrics)
     _EXEMPT_PREFIXES = ("/health",)
 
-    def __init__(self, app: ASGIApp, **kwargs):
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        rate: float = None,
+        burst: int = None,
+        auth_rate: float = None,
+        auth_burst: int = None,
+        **kwargs,
+    ):
         self.app = app
-        self._rate = float(os.environ.get("HYPHA_HTTP_RATE_LIMIT", "100"))
-        self._burst = int(os.environ.get("HYPHA_HTTP_BURST_LIMIT", "500"))
-        # per-IP buckets: {ip: (tokens, last_monotonic)}
+        self._rate = float(
+            rate if rate is not None else os.environ.get("HYPHA_HTTP_RATE_LIMIT", "100")
+        )
+        self._burst = int(
+            burst if burst is not None else os.environ.get("HYPHA_HTTP_BURST_LIMIT", "500")
+        )
+        # Authenticated first-party callers get a much higher (but still finite)
+        # limit — the loop-law interim (1000/5000) made permanent + cluster-wide.
+        self._auth_rate = float(
+            auth_rate
+            if auth_rate is not None
+            else os.environ.get("HYPHA_HTTP_AUTHENTICATED_RATE_LIMIT", "1000")
+        )
+        self._auth_burst = int(
+            auth_burst
+            if auth_burst is not None
+            else os.environ.get("HYPHA_HTTP_AUTHENTICATED_BURST_LIMIT", "5000")
+        )
+        # per-key buckets: {key: (tokens, last_monotonic)} — key is an IP for the
+        # anonymous tier or "auth:<identity>[:ws][:client_id]" for authenticated.
         self._buckets: dict = {}
         self._last_cleanup = time.monotonic()
         self._cleanup_interval = 300  # purge stale entries every 5 min
 
-    def _consume(self, ip: str) -> tuple:
-        """Try to consume one token for the given IP.
+    def _consume(self, key: str, rate: float = None, burst: int = None) -> tuple:
+        """Try to consume one token for the given bucket key.
+
+        ``rate``/``burst`` default to the anonymous per-IP limits, so the legacy
+        single-argument call ``_consume(ip)`` keeps its original behavior; the
+        tiered caller passes the authenticated limits explicitly.
 
         Returns (allowed: bool, retry_after: float).
         retry_after is only meaningful when allowed is False.
         """
         import time as _time
 
+        rate = self._rate if rate is None else rate
+        burst = self._burst if burst is None else burst
+
         now = _time.monotonic()
-        if ip in self._buckets:
-            tokens, last = self._buckets[ip]
-            tokens = min(self._burst, tokens + (now - last) * self._rate)
+        if key in self._buckets:
+            tokens, last = self._buckets[key]
+            tokens = min(burst, tokens + (now - last) * rate)
         else:
-            tokens = float(self._burst)
+            tokens = float(burst)
         if tokens >= 1:
-            self._buckets[ip] = (tokens - 1, now)
+            self._buckets[key] = (tokens - 1, now)
             return True, 0.0
-        self._buckets[ip] = (tokens, now)
-        retry_after = (1.0 - tokens) / self._rate if self._rate > 0 else 1.0
+        self._buckets[key] = (tokens, now)
+        retry_after = (1.0 - tokens) / rate if rate > 0 else 1.0
         return False, retry_after
 
     def _maybe_cleanup(self):
@@ -337,16 +422,26 @@ class HTTPRateLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # Extract client IP (first entry in X-Forwarded-For or direct peer)
-        forwarded = req_headers.get("x-forwarded-for")
-        if forwarded:
-            ip = forwarded.split(",")[0].strip()
+        # A validated first-party (internal HS256) token elevates the caller to
+        # the authenticated tier, keyed on identity rather than raw IP (#0598(c)).
+        # Header presence alone never elevates — a forged/expired/RS256 token
+        # returns None here and falls through to the anonymous per-IP tier.
+        identity = verify_internal_token_identity(req_headers.get("authorization"))
+        if identity:
+            key = _authenticated_bucket_key(identity, scope)
+            rate, burst = self._auth_rate, self._auth_burst
         else:
-            ip = scope.get("client", ("unknown",))[0]
+            # Extract client IP (first entry in X-Forwarded-For or direct peer)
+            forwarded = req_headers.get("x-forwarded-for")
+            if forwarded:
+                key = forwarded.split(",")[0].strip()
+            else:
+                key = scope.get("client", ("unknown",))[0]
+            rate, burst = None, None  # -> anonymous per-IP defaults in _consume
 
         self._maybe_cleanup()
 
-        allowed, retry_after = self._consume(ip)
+        allowed, retry_after = self._consume(key, rate, burst)
         if not allowed:
             retry_after_ceil = math.ceil(retry_after)
             response = JSONResponse(
