@@ -229,6 +229,23 @@ python -m hypha.server --host=0.0.0.0 --port=9527 \
     --startup-functions=my_auth.py:hypha_startup
 ```
 
+> **Startup gotchas** (two traps first-time integrators hit):
+>
+> - **`--from-env` vs. CLI flags.** When you start with `--from-env`, environment
+>   variables are applied to the configuration, but **command-line flags take
+>   precedence** (as of 0.21.116): a `--startup-functions=...` passed on the CLI is
+>   kept, and a conflicting environment value is logged as ignored. If you configure
+>   Hypha *entirely* through the environment (e.g. a container running `--from-env`
+>   with no CLI flags), set **`HYPHA_STARTUP_FUNCTIONS=my_auth.py:hypha_startup`**
+>   instead of the flag — otherwise your module simply never loads and Auth0/default
+>   auth is served with no error. Hypha logs the resolved list at boot as
+>   `Effective startup_functions: [...]`; check that line to confirm your module
+>   loaded.
+> - **Reloading a changed module.** A startup module is imported **once**, at server
+>   start. If you bind-mount `my_auth.py` into a container and edit it,
+>   `docker compose up -d` will **not** reload it while the container keeps running —
+>   restart the process (`docker compose restart hypha`) to pick up the change.
+
 ### Custom Token Extraction (get_token)
 
 By default, Hypha looks for tokens in the `Authorization` header or `access_token` cookie. You can customize this behavior by providing a `get_token` function that extracts tokens from custom locations in the request:
@@ -714,6 +731,72 @@ The login service implements the OAuth-like flow used by hypha-rpc's `login()` f
 - **report_handler**: Reports successful login (called by login page)
 - **logout_handler**: Returns logout URL for ending sessions (called by hypha-rpc's `logout()`)
 
+**The login lifecycle.** These handlers cooperate in one round trip. The client
+never talks to your page directly for the token — it gets the token from the
+trusted `check()` RPC, so the page only needs to *report* completion:
+
+```
+ client (hypha-rpc)                 login service              login page (index)
+ ─────────────────────────────────────────────────────────────────────────────
+  login({server_url})
+     │
+     ├─ start()  ──────────────▶  start_handler()
+     │                             returns {login_url, key,
+     │  ◀───────────────────────           report_url, check_url}
+     │
+     ├─ open login_url  ─────────────────────────────────────▶  index_handler()
+     │                                                           serves HTML
+     ├─ check(key) ───────────▶  check_handler(key)  ┐          user authenticates
+     │   (long-poll, blocks)      polls session      │                │
+     │                                                │   report(key, token, …)
+     │                            report_handler() ◀──┼────────────────┘
+     │                            marks session       │   (page → service)
+     │                            completed, stores    │
+     │  ◀── raw token string ──   token               ┘
+     │
+     └─ connect_to_server({token}) ──▶  parse_token(token) → UserInfo
+```
+
+**Exact handler contracts (item 3).** Getting a return *shape* wrong silently
+breaks login with no server-side error, so these are strict:
+
+| Handler | Signature | Success return | Pending / not-ready | Error |
+| ------- | --------- | -------------- | ------------------- | ----- |
+| `start` | `start(workspace=None, expires_in=None)` | `{"login_url", "key", "report_url", "check_url"}` | — | raise |
+| `index` | `index(scope)` — an HTTP *functions* handler; receives the raw ASGI scope | `{"status", "headers", "body"}` (the login-page HTML) | — | raise |
+| `report` | `report(key, token=None, **kwargs)` | mark the session complete and store the token; the return value is ignored (convention: `{"success": True}`) | — | raise (e.g. invalid key) |
+| `check` | `check(key, timeout=180, profile=False)` | the **raw token string** — or a `{"token", "user_id", "email", …}` dict when `profile=True` | `None` (when called with `timeout=0`) | raise `TimeoutError` after `timeout` seconds; raise on invalid key |
+
+Key rules:
+- **`check` must return the RAW token string on success** — exactly what
+  `connect_to_server({"token": ...})` expects. Do **not** return `"Bearer <token>"`
+  or wrap it; a wrong shape fails the connect step with a confusing error, not a
+  login error.
+- **`start`/`check`/`report` are RPC methods** (also reachable over HTTP at
+  `/public/services/hypha-login/<name>`). **`index` is the only one that must be an
+  HTTP functions handler** returning `{status, headers, body}`.
+- Handlers may be **sync or async** — both are awaited.
+
+**Omitting a handler falls back to the default.** You do not have to implement all
+four. If you provide *some but not all* of `index`/`start`/`check`/`report`, the
+omitted ones fall back to Hypha's built-in local-auth handlers (via
+`create_login_service`) — so you can, for example, override only the `index` page
+and reuse the default session/`check`/`report` machinery. Likewise
+`parse_token`/`generate_token`/`get_token` are independent: omit any and the default
+JWT behavior is used (and the default `parse_token` falls back to `_parse_token`,
+so root and service tokens keep validating).
+
+**Supporting no-popup (inline) login.** hypha-rpc's `login({mode: "inline"})` runs
+the login page in an in-page iframe instead of a popup. To support it, your `index`
+page must — on success, *when it is embedded* (`window.parent !== window`) — call
+`window.parent.postMessage({ type: "hypha-login-complete", key }, "*")` instead of
+`window.close()`. The message carries **only the public `key`, never the token**
+(the client still receives the token through the trusted `check(key)` RPC), so a
+wildcard `targetOrigin` is safe here. Keep the existing popup/`window.close()` path
+for the non-embedded case. Auth0's hosted page cannot be iframed (it sets
+`X-Frame-Options`) and therefore always uses the popup flow — inline mode is for
+local-auth and custom providers only.
+
 #### 4. Additional Methods
 Any extra keyword arguments to `register_auth_service` are added as methods to the login service. These can be called via `/public/services/hypha-login/<method_name>` (and are also reachable over HTTP at `/public/apps/hypha-login/<method_name>`).
 
@@ -1067,7 +1150,13 @@ python -m hypha.server --host=0.0.0.0 --port=9527 \
 
 ### Custom Login Service
 
-You can customize the login interface and flow by providing custom handlers:
+This is a **minimal, non-email login flow** — the smallest set of handlers that
+exercises the full `start → index → report → check` lifecycle (see [the handler
+contracts above](#3-login-service-handlers)). The identity here is generic (no email
+or password), so it adapts directly to a phone-number/OTP, hardware-key, or
+kiosk-code provider. Note it **omits** `parse_token`/`generate_token`, so Hypha's
+default HS256 JWT handling is used for both — `report_login` receives an
+already-minted token and just stores it:
 
 ```python
 # custom_login.py
@@ -1077,8 +1166,8 @@ import shortuuid
 # Store login sessions
 LOGIN_SESSIONS = {}
 
-async def custom_login_page(event):
-    """Serve custom login page."""
+async def custom_login_page(scope):
+    """Serve custom login page (an HTTP functions handler → {status, headers, body})."""
     return {
         "status": 200,
         "headers": {"Content-Type": "text/html"},
@@ -1086,28 +1175,38 @@ async def custom_login_page(event):
     }
 
 async def start_login(workspace=None, expires_in=None):
-    """Start a login session."""
+    """Start a login session. Returns the key + the URLs the client/page use."""
     key = shortuuid.uuid()
     LOGIN_SESSIONS[key] = {"status": "pending", "workspace": workspace}
     return {
         "login_url": f"/public/apps/hypha-login/?key={key}",
         "key": key,
+        "report_url": "/public/services/hypha-login/report",
+        "check_url": "/public/services/hypha-login/check",
     }
 
 async def check_login(key, timeout=180, profile=False):
-    """Check login status."""
-    # Wait for login completion
-    for _ in range(timeout):
-        if key in LOGIN_SESSIONS and LOGIN_SESSIONS[key]["status"] == "complete":
-            return LOGIN_SESSIONS[key]["token"]
+    """Poll for completion: raw token string on success, None while pending."""
+    if key not in LOGIN_SESSIONS:
+        raise ValueError("Invalid login key")
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        if LOGIN_SESSIONS[key]["status"] == "complete":
+            return LOGIN_SESSIONS[key]["token"]  # raw token, NOT "Bearer ..."
+        # timeout=0 is a non-blocking probe → return None immediately when pending
+        if asyncio.get_event_loop().time() >= deadline:
+            if timeout == 0:
+                return None
+            raise TimeoutError("Login timeout")
         await asyncio.sleep(1)
-    raise TimeoutError("Login timeout")
 
 async def report_login(key, token, **kwargs):
-    """Report login completion."""
-    if key in LOGIN_SESSIONS:
-        LOGIN_SESSIONS[key]["status"] = "complete"
-        LOGIN_SESSIONS[key]["token"] = token
+    """Report login completion (called by the login page to store the token)."""
+    if key not in LOGIN_SESSIONS:
+        raise ValueError("Invalid login key")
+    LOGIN_SESSIONS[key]["status"] = "complete"
+    LOGIN_SESSIONS[key]["token"] = token
+    return {"success": True}
 
 async def hypha_startup(server):
     """Register custom login service."""
