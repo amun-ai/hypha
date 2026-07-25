@@ -715,7 +715,27 @@ The login service implements the OAuth-like flow used by hypha-rpc's `login()` f
 - **logout_handler**: Returns logout URL for ending sessions (called by hypha-rpc's `logout()`)
 
 #### 4. Additional Methods
-Any extra keyword arguments to `register_auth_service` are added as methods to the login service. These can be called via `/public/services/hypha-login/<method_name>`.
+Any extra keyword arguments to `register_auth_service` are added as methods to the login service. These can be called via `/public/services/hypha-login/<method_name>` (and are also reachable over HTTP at `/public/apps/hypha-login/<method_name>`).
+
+**Accessing the authenticated caller in an extra handler.** These extra handlers are HTTP *functions-service* handlers: each is called with the raw ASGI `scope` (not the RPC `context` dict). Hypha resolves the caller for you — honoring your custom `get_token`/`parse_token` and enforcing the block-list — and injects the result as **`scope["user"]`**, with the same shape as an RPC `context["user"]`. So an admin-only endpoint can authenticate the caller directly, without re-parsing the `Authorization` header or reading the token from the request body:
+
+```python
+from hypha.core import UserInfo, UserPermission
+
+async def list_pending(scope):
+    user = UserInfo.model_validate(scope["user"])  # authenticated caller
+    if user.is_anonymous:
+        return {"status": 401, "body": "Login required"}
+    # ...enforce your own admin check, e.g. user.email in ADMIN_EMAILS...
+    return {"status": 200, "headers": {"Content-Type": "application/json"}, "body": "..."}
+
+await server.register_auth_service(
+    # ...index/start/check/report handlers...
+    list_pending=list_pending,  # extra handler; receives scope["user"]
+)
+```
+
+`scope["user"]` is always present for functions handlers — an unauthenticated request yields an **anonymous** `UserInfo` (`is_anonymous == True`), never a missing key. This is *identity only*; you still enforce your own authorization (role/admin checks) inside the handler.
 
 ### Using Your Custom Authentication
 
