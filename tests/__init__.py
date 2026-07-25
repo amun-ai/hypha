@@ -10,12 +10,19 @@ SIO_PORT2 = 38223
 SIO_PORT_REDIS_1 = SIO_PORT + 8
 SIO_PORT_REDIS_2 = SIO_PORT + 9
 SIO_PORT_SQLITE = SIO_PORT + 20
+SIO_PORT_UNLOAD_GRACE = SIO_PORT + 30
 TRITON_PORT = 38284
 WS_SERVER_URL = f"ws://127.0.0.1:{SIO_PORT}/ws"
 SERVER_URL = f"http://127.0.0.1:{SIO_PORT}"
 SERVER_URL_REDIS_1 = f"http://127.0.0.1:{SIO_PORT_REDIS_1}"
 SERVER_URL_REDIS_2 = f"http://127.0.0.1:{SIO_PORT_REDIS_2}"
 SERVER_URL_SQLITE = f"http://127.0.0.1:{SIO_PORT_SQLITE}"
+SERVER_URL_UNLOAD_GRACE = f"http://127.0.0.1:{SIO_PORT_UNLOAD_GRACE}"
+
+# Grace period (seconds) used by the fastapi_server_unload_grace fixture. Kept
+# short so tests run fast, but large enough to reliably observe the "still
+# present within grace" window before eventual unload.
+UNLOAD_GRACE_PERIOD = 3.0
 
 MINIO_PORT = 38483
 MINIO_SERVER_URL = f"http://127.0.0.1:{MINIO_PORT}"

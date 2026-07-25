@@ -352,6 +352,35 @@ class WorkspaceManager:
         else:
             self.SessionLocal = None
         self._enable_service_search = enable_service_search
+        # Debounce workspace unloads triggered by the last client disconnecting.
+        # An app that intentionally closes+reconnects on a cadence (e.g. a
+        # feedback-sink that reconnects every ~30s) otherwise tears down and
+        # reloads its workspace on every cycle. When the grace period is > 0, the
+        # last-client-disconnect schedules a delayed unload instead of running it
+        # inline; a client that (re)connects within the window cancels the pending
+        # unload (see the client_connected hook in register_service) — and even if
+        # the cancel is missed (e.g. the reconnect lands on another replica), the
+        # delayed task's call to unload_if_empty() re-checks emptiness and skips
+        # the unload if a client came back. Default 0 = immediate unload (the
+        # original behavior, unchanged); operators opt in by setting
+        # HYPHA_WORKSPACE_UNLOAD_GRACE_PERIOD (seconds).
+        try:
+            self._unload_grace_period = float(
+                os.environ.get("HYPHA_WORKSPACE_UNLOAD_GRACE_PERIOD", "0") or "0"
+            )
+        except ValueError:
+            logger.warning(
+                "Invalid HYPHA_WORKSPACE_UNLOAD_GRACE_PERIOD; falling back to 0 (immediate unload)"
+            )
+            self._unload_grace_period = 0.0
+        if self._unload_grace_period < 0:
+            self._unload_grace_period = 0.0
+        # workspace_id -> pending debounced-unload asyncio.Task
+        self._pending_unloads: Dict[str, asyncio.Task] = {}
+        if self._unload_grace_period > 0:
+            logger.info(
+                f"Workspace unload debounce enabled: {self._unload_grace_period}s grace period"
+            )
         # Initialize elegant activity-based workspace cleanup
         self._activity_manager = WorkspaceActivityManager(
             activity_tracker=activity_tracker,
@@ -2373,6 +2402,10 @@ class WorkspaceManager:
                         f"Failed to run setup for default service `{client_id}`: {e}"
                     )
             if ":built-in@" in key:
+                # A client (re)connected: cancel any pending debounced unload so a
+                # quick reconnect RESUMES the still-loaded workspace instead of it
+                # being torn down out from under the returning client.
+                self._cancel_pending_unload(ws)
                 await self._event_bus.broadcast(
                     ws, "client_connected", {"id": client_id, "workspace": ws}
                 )
@@ -3529,17 +3562,68 @@ class WorkspaceManager:
                     # Only unload if no other clients remain; force-unloading while
                     # other clients are still connected would disconnect them before
                     # they receive the client_disconnected event via Redis broadcast.
-                    await self.unload_if_empty(context=context)
+                    await self._schedule_unload_if_empty(cws, context)
                 else:
                     logger.info(
                         f"Unloading workspace {cws} for non-anonymous user (while deleting client {client_id})"
                     )
                     # otherwise delete the workspace if it is empty
-                    await self.unload_if_empty(context=context)
+                    await self._schedule_unload_if_empty(cws, context)
             else:
                 logger.warning(
                     f"Workspace {cws} not found (while deleting client {client_id})"
                 )
+
+    def _cancel_pending_unload(self, workspace: str):
+        """Cancel a pending debounced unload for a workspace (e.g. on reconnect)."""
+        task = self._pending_unloads.pop(workspace, None)
+        if task is not None and not task.done():
+            task.cancel()
+            logger.debug(f"Cancelled pending unload for workspace {workspace}")
+
+    async def _schedule_unload_if_empty(self, workspace: str, context=None):
+        """Unload the workspace if empty, debounced by the configured grace period.
+
+        With grace period 0 (default) this is exactly the original behavior:
+        unload_if_empty() runs inline. With a grace period > 0, the unload is
+        deferred: any earlier pending unload for this workspace is cancelled and a
+        fresh delayed task is scheduled. A client that (re)connects within the
+        window cancels the task via _cancel_pending_unload(); and as a backstop
+        the delayed task itself calls unload_if_empty(), which re-checks that the
+        workspace is still empty before unloading (so a reconnect that races the
+        cancel — e.g. onto another replica — still does NOT tear down an
+        now-active workspace).
+        """
+        grace = self._unload_grace_period
+        if grace <= 0:
+            await self.unload_if_empty(context=context)
+            return
+
+        # Replace any existing pending unload for this workspace.
+        self._cancel_pending_unload(workspace)
+
+        async def _delayed_unload():
+            try:
+                await asyncio.sleep(grace)
+                await self.unload_if_empty(context=context)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(
+                    f"Debounced unload of workspace {workspace} failed: {e}"
+                )
+            finally:
+                # Only clear our own entry; a newer schedule may have replaced us.
+                if self._pending_unloads.get(workspace) is task:
+                    self._pending_unloads.pop(workspace, None)
+
+        task = asyncio.create_task(_delayed_unload())
+        self._pending_unloads[workspace] = task
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+        logger.debug(
+            f"Scheduled debounced unload of workspace {workspace} in {grace}s"
+        )
 
     async def unload_if_empty(self, context=None):
         """Delete the workspace if it is empty."""
