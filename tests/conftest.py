@@ -755,6 +755,65 @@ def fastapi_server_sqlite_fixture(minio_server):
         proc.terminate()
 
 
+@pytest_asyncio.fixture(name="fastapi_server_unload_grace", scope="session")
+def fastapi_server_unload_grace_fixture(minio_server):
+    """Start a server with a non-zero workspace-unload grace period.
+
+    Sets HYPHA_WORKSPACE_UNLOAD_GRACE_PERIOD so the last-client-disconnect no
+    longer unloads the workspace immediately, but defers it by the grace period
+    (cancellable on reconnect). Used to exercise the debounce behavior (#0007).
+    """
+    from . import SIO_PORT_UNLOAD_GRACE, UNLOAD_GRACE_PERIOD
+
+    dirpath = tempfile.mkdtemp()
+    db_path = f"sqlite+aiosqlite:///{dirpath}/artifacts.db"
+    grace_env = test_env.copy()
+    grace_env["HYPHA_WORKSPACE_UNLOAD_GRACE_PERIOD"] = str(UNLOAD_GRACE_PERIOD)
+    with subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "hypha.server",
+            f"--port={SIO_PORT_UNLOAD_GRACE}",
+            "--enable-server-apps",
+            "--enable-s3",
+            f"--database-uri={db_path}",
+            "--migrate-database=head",
+            "--reset-redis",
+            f"--endpoint-url={MINIO_SERVER_URL}",
+            f"--access-key-id={MINIO_ROOT_USER}",
+            f"--secret-access-key={MINIO_ROOT_PASSWORD}",
+            f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
+            f"--workspace-bucket=my-workspaces",
+            "--s3-admin-type=generic",
+        ],
+        env=grace_env,
+    ) as proc:
+        timeout = 20
+        while timeout > 0:
+            try:
+                response = requests.get(
+                    f"http://127.0.0.1:{SIO_PORT_UNLOAD_GRACE}/health/readiness"
+                )
+                if response.ok:
+                    break
+            except RequestException:
+                pass
+            timeout -= 0.1
+            time.sleep(0.1)
+        if timeout <= 0:
+            raise TimeoutError(
+                "Server (fastapi_server_unload_grace) did not start in time"
+            )
+        response = requests.get(
+            f"http://127.0.0.1:{SIO_PORT_UNLOAD_GRACE}/health/liveness"
+        )
+        assert response.ok
+        yield
+        proc.kill()
+        proc.terminate()
+
+
 @pytest_asyncio.fixture(name="fastapi_server_redis_1", scope="session")
 def fastapi_server_redis_1(redis_server, minio_server):
     """Start server as test fixture and tear down after test."""
