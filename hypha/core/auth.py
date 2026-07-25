@@ -10,7 +10,7 @@ import sys
 from calendar import timegm
 import datetime
 from os import environ as env
-from typing import List, Union, Dict, Callable
+from typing import List, Union, Dict, Callable, Optional
 from urllib.request import urlopen
 
 import shortuuid
@@ -400,6 +400,58 @@ async def parse_auth_token(token: str, expected_workspace: str = None):
     if inspect.isawaitable(user_info):
         user_info = await user_info
     return user_info
+
+
+def verify_internal_token_identity(authorization: str) -> Optional[str]:
+    """Cheaply verify a first-party (internal HS256) token; return its identity.
+
+    HOT-PATH helper for :class:`hypha.http.HTTPRateLimitMiddleware` (#0598(c)).
+    It performs **signature + expiry verification only**, against the local
+    ``JWT_SECRET`` — no DB lookup, no JWKS / Auth0 round-trip, no blocklist
+    check — so it is safe to call on every HTTP request.
+
+    Auth0 (RS256) and custom-async auth providers are intentionally NOT elevated
+    here: they return ``None`` and fall back to the anonymous per-IP rate limit
+    (safe degradation — they simply do not receive the higher authenticated
+    tier). Revocation/blocklist enforcement still happens at the real auth layer
+    downstream; the authenticated tier is a high *finite* limit, not an exemption.
+
+    Args:
+        authorization: The raw ``Authorization`` header value (may be ``None``).
+
+    Returns:
+        The verified token ``sub`` (user id), the sentinel ``"root"`` for the
+        configured root token, or ``None`` when the token is absent, malformed,
+        non-internal, expired, or signature-invalid. Never raises.
+    """
+    if not authorization:
+        return None
+    token = extract_token_from_authorization(authorization)
+    if not token:
+        return None
+    # Root token is an opaque configured string, not a JWT.
+    if _current_root_token and token == _current_root_token:
+        return "root"
+    try:
+        header = jwt.get_unverified_header(token)
+    except Exception:
+        return None
+    # Only elevate locally-verifiable internal tokens; skip Auth0/RS256 here.
+    if header.get("alg") != "HS256":
+        return None
+    try:
+        payload = jwt.decode(
+            token,
+            JWT_SECRET,
+            algorithms=["HS256"],
+            audience=AUTH0_AUDIENCE,
+            issuer=AUTH0_ISSUER,
+        )
+    except Exception:
+        return None
+    sub = payload.get("sub")
+    return sub or None
+
 
 def _generate_presigned_token(
     user_info: UserInfo,
