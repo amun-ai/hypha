@@ -942,6 +942,84 @@ async def store_user_with_artifacts(server, user_data):
     )
 ```
 
+##### Indexed lookups — do NOT `list()` + scan on every login
+
+A custom auth provider typically needs to look a user up by a login
+identifier (email, phone number, API-key hash) on **every** request or login.
+The naive approach — `list()` the whole users collection and scan it in Python
+— is O(n) per lookup and will not scale past a few hundred users.
+
+The Artifact Manager `search()` method pushes a **manifest-field filter down
+into the database** (a single indexed SQL query), so use it instead of
+enumerating the collection:
+
+```python
+async def find_user_by_phone(server, phone: str):
+    """O(1)-ish DB lookup by a manifest field — NOT list()+scan."""
+    artifact_manager = await server.get_service("public/artifact-manager")
+    matches = await artifact_manager.search(
+        parent_id="ws-user-root/auth-users",
+        # manifest fields are addressed under the "manifest" key:
+        filters={"manifest": {"phone": phone}},   # -> WHERE manifest->>'phone' = :phone (bound)
+        limit=1,
+    )
+    return matches[0] if matches else None
+```
+
+Manifest fields are nested under the `"manifest"` key (top-level filter keys
+like `type`, `created_by`, `parent_id` address artifact columns instead).
+Within `"manifest"`, a value supports exact match (`{"phone": "..."}`) plus the
+operators `$like` (substring), `$in` (any-of), and `$all` (all-of), e.g.
+`filters={"manifest": {"status": {"$in": ["active", "trial"]}}}`. Filter
+**keys and values are always bound as SQL parameters** (never
+string-interpolated — see the V16 hardening), so a user-controlled login
+identifier is safe to pass directly.
+
+> If your user base is large or lookups are extremely hot, storing users in a
+> table you own (Postgres/MongoDB, indexed on the login column) via the
+> `AuthStorage` pattern above is still the most direct route; the point is
+> simply **never** to `list()` + scan a collection per request.
+
+#### 4. Revoking Tokens and Disabling a User
+
+`parse_token` runs on every request, so it is tempting to hand-roll a
+"is this user still enabled?" cache in your provider. You don't need to —
+Hypha already enforces **two server-side revocation mechanisms on every
+request** (both backed by Redis, so there is no per-request DB hit and no cache
+for you to maintain):
+
+**Revoke a single token** — an admin calls `revoke_token(token)` on the server
+API. The token is stored under `revoked_token:<token>` in Redis with a TTL
+equal to the token's own remaining lifetime, and `parse_user_token` rejects it
+("Token has been revoked") on every subsequent request until it would have
+expired anyway:
+
+```python
+# Connected as a workspace/server admin:
+await server.revoke_token(token)   # that exact token is dead immediately
+```
+
+**Disable a whole principal** (all their tokens and live sessions) — the
+`admin-utils` service exposes `block_user` / `unblock_user` (and
+`block_ip` / `unblock_ip`). A block is written to a **durable Postgres
+blocklist and synced into a Redis cache**, is enforced at the auth boundary for
+**both** WebSocket connects and stateless HTTP/MCP requests, and additionally
+**kicks the user's currently-open WebSocket connections**:
+
+```python
+admin = await server.get_service("admin-utils")
+# duration in seconds (0 = 30 days); reason is surfaced in the 403 / close reason
+await admin.block_user("github|478667", duration=0, reason="account disabled")
+# ... later, to re-enable:
+await admin.unblock_user("github|478667")
+await admin.list_blocked()   # {"users": [...], "ips": [...]}
+```
+
+This is the correct way to gate a disabled user from a custom provider: call
+`block_user` when you disable the account (in your own admin flow) and let the
+server enforce it centrally — do **not** re-validate account status from a
+self-managed cache inside `parse_token`.
+
 ### Advanced Authentication Patterns
 
 #### Multi-Factor Authentication (MFA)
