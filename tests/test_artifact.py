@@ -163,6 +163,76 @@ async def test_sqlite_create_and_search_artifacts(
     await api.disconnect()
 
 
+async def test_search_exact_manifest_field_lookup_for_auth_store(
+    minio_server, fastapi_server_sqlite, test_user_token
+):
+    """Docs (#0006 item 5): a custom auth provider that keeps users as artifacts
+    must look a user up by an EXACT manifest field (email/phone/api-key hash) via
+    search(filters={"manifest": {<field>: <exact value>}}) — a single indexed
+    DB query — NOT list()+O(n) scan.
+
+    The existing search tests only exercise wildcard ($like) manifest matches; this
+    locks the exact-match-by-field contract that docs/auth.md now documents as the
+    indexed auth-store lookup, so the documented pattern can't silently regress.
+    """
+    api = await connect_to_server(
+        {
+            "name": "auth-store lookup client",
+            "server_url": SERVER_URL_SQLITE,
+            "token": test_user_token,
+        }
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest={"name": "auth-users"},
+    )
+
+    # Three "user" artifacts with distinct exact login identifiers.
+    phones = ["+46700000001", "+46700000002", "+46700000003"]
+    created = []
+    for idx, phone in enumerate(phones):
+        u = await artifact_manager.create(
+            type="user",
+            parent_id=collection.id,
+            manifest={"name": f"user-{idx}", "phone": phone, "status": "active"},
+            version="stage",
+        )
+        await artifact_manager.commit(artifact_id=u.id)
+        created.append(u)
+
+    # EXACT match on a manifest field returns exactly the one matching user.
+    matches = await artifact_manager.search(
+        parent_id=collection.id,
+        filters={"manifest": {"phone": "+46700000002"}},
+        limit=1,
+    )
+    assert len(matches) == 1, f"expected exactly one match, got {len(matches)}"
+    assert matches[0]["manifest"]["phone"] == "+46700000002"
+    assert matches[0]["manifest"]["name"] == "user-1"
+
+    # A non-existent identifier returns nothing (not a partial/substring hit).
+    none_match = await artifact_manager.search(
+        parent_id=collection.id,
+        filters={"manifest": {"phone": "+4670000000"}},  # prefix of the others
+        limit=1,
+    )
+    assert none_match == [], "exact match must not fall back to substring/prefix"
+
+    # $in (any-of) is also supported for status-gated lookups.
+    active = await artifact_manager.search(
+        parent_id=collection.id,
+        filters={"manifest": {"status": {"$in": ["active", "trial"]}}},
+    )
+    assert len(active) == len(phones)
+
+    for u in created:
+        await artifact_manager.delete(artifact_id=u.id)
+    await artifact_manager.delete(artifact_id=collection.id)
+    await api.disconnect()
+
+
 async def test_artifact_alias_length_validation(
     minio_server, fastapi_server_sqlite, test_user_token
 ):
