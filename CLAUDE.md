@@ -451,6 +451,19 @@ All vulnerabilities documented with tests in `tests/test_security_vulnerabilitie
 | V9 | Conditional token validation | ALWAYS validate tokens |
 | V10-V14 | Cross-workspace bypass | Extract workspace from ID, validate permission on TARGET workspace |
 | V15 | Wildcard shadows specific permission | `get_permission` must return the STRONGEST of `*` and the per-workspace grant, never short-circuit on `*` |
+| V16 | SQL injection via `text(f"...")` in artifact filters | NEVER f-string user-supplied filter keys/values/keywords into `text()`; BIND them with `bindparam(..., unique=True)`. For clauses that can't be bound (order_by JSON key), VALIDATE against a strict identifier allow-list |
+
+#### V16: SQL Injection in Artifact-Manager `search()`/`list()` Filters (HIGH — data exfiltration/integrity)
+
+- **Pattern**: The public `@schema_method`s `search()`/`list()`/`list_children` on the artifact-manager built their WHERE clause by f-string-interpolating **user-supplied** `filters` keys/values, `keywords`, and `order_by` fields directly into SQLAlchemy `text()` — e.g. `text(f"manifest->>'{key}' = '{value}'")`, `text(f"manifest::text ILIKE '%{keyword}%'")`, `text(f"permissions->>'{user_id}' = '{permission}'")`, and the `order_by` `CASE` clause. Any caller with read/list access could pass a value like `nope' OR '1'='1` to break out of the quoted literal and rewrite the query — a classic boolean/UNION SQL injection, remotely exploitable on both PostgreSQL and SQLite (both dialect branches were vulnerable).
+- **Root Cause**: `text()` treats its string as raw SQL; interpolated attacker input is parsed as SQL, not data. The code predates a bind-parameter discipline for the JSON-path filter builders.
+- **Fix**:
+  - `_build_manifest_condition` (`$like`/`$in`/`$all`/exact) — bind BOTH the manifest key and the value: `text("manifest ->> :k = :v").bindparams(bindparam("k", value=key, unique=True), bindparam("v", value=value, unique=True))` (PG) / `json_extract(manifest, :p)` with `:p = "$.<key>"` (SQLite). `unique=True` auto-uniquifies names (`k_1`, `k_2`, …) so combined AND/OR conditions never collide.
+  - `keywords` fuzzy search — bind the `LIKE` pattern AND escape `%`/`_`/`\` metacharacters (`... LIKE :kw ESCAPE '\'`) so a literal wildcard in the keyword is not treated as one.
+  - `config.permissions` filter — bind `user_id` + `permission`. This branch ALSO had a latent bug: it referenced a non-existent bare `permissions` column (permissions live in the `config` JSON column under `permissions`); fixed to `(config -> 'permissions') ->> :puid` (PG) / `json_extract(config, '$.permissions') ->> :puid` (SQLite). The bound `->>` key lookup correctly handles special keys like `*`/`@`/dotted ids. (Because it always raised `no such column`, the branch was dead — a regression test now asserts it actually matches.)
+  - `order_by` manifest./config. path — the JSON key is interpolated into a multi-occurrence `CASE`/regex clause that can't be practically bound; instead VALIDATE it against `^[A-Za-z0-9_.\-]+$` and raise `ValueError` on anything else (order_by fields are single JSON-path identifiers).
+- **Location**: `hypha/artifact.py` — `_build_manifest_condition`, the `keywords` loop, the `config.permissions` filter branch, and the `order_by` JSON-field guard (all inside `search()`).
+- **Key Lesson**: `text()` + f-string + any user input = SQL injection. Bind every user-supplied key/value with `bindparam(..., unique=True)` (works identically across PG pyformat and SQLite qmark; binding BOTH key and value is fully injection-proof with no false rejections). When a value genuinely cannot be a bind parameter (an identifier in a structural position like an order_by field), validate it against a strict allow-list rather than interpolating. Tests: `tests/test_artifact_sql_injection.py` (5 tests, both dialects).
 
 #### V15: Wildcard `*` Permission Shadows Specific Workspace Grant (HIGH — availability/authorization)
 
