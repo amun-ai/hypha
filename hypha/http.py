@@ -547,7 +547,7 @@ class ASGIRoutingMiddleware:
                             lookup_workspace + "/" + service_id, {"mode": _mode}
                         )
                         await self._handle_app_service(
-                            service, workspace, path, scope, receive, send
+                            service, workspace, path, scope, receive, send, user_info
                         )
                         return
                 except PermissionError as exp:
@@ -615,7 +615,9 @@ class ASGIRoutingMiddleware:
 
         await self.app(scope, receive, send)
 
-    async def _handle_app_service(self, service, workspace, path, scope, receive, send):
+    async def _handle_app_service(
+        self, service, workspace, path, scope, receive, send, user_info=None
+    ):
         """Handle an app service request (ASGI or functions type)."""
         service_type = getattr(service, "type", None)
         if service_type in ["asgi", "ASGI"]:
@@ -646,7 +648,9 @@ class ASGIRoutingMiddleware:
                 {"scope": scope, "receive": receive, "send": send}
             )
         elif service_type == "functions":
-            await self.handle_function_service(service, path, scope, receive, send)
+            await self.handle_function_service(
+                service, path, scope, receive, send, user_info
+            )
         else:
             await send(
                 {
@@ -674,7 +678,9 @@ class ASGIRoutingMiddleware:
                 return None
         return current if callable(current) else None
 
-    async def handle_function_service(self, service, path, scope, receive, send):
+    async def handle_function_service(
+        self, service, path, scope, receive, send, user_info=None
+    ):
         """Handle function service with support for nested functions and default fallback."""
         # Clean up the path
         path = path.strip("/")
@@ -706,6 +712,18 @@ class ASGIRoutingMiddleware:
             while event.get("more_body"):
                 body += await receive()["body"]
             scope["body"] = body or None
+
+            # Inject the already-authenticated caller so functions handlers
+            # (e.g. custom-auth extra_handlers) can see the user WITHOUT
+            # re-parsing the token themselves. login_optional already ran in the
+            # ASGI dispatch (honoring custom get_token/parse_token + blocklist);
+            # its result was previously discarded for functions services (#0006
+            # item 2). Same shape as an RPC context["user"] (a model_dump), so
+            # handlers can do UserInfo.model_validate(scope["user"]). Scoped to
+            # the functions path to avoid shadowing Starlette's request.user on
+            # mounted ASGI apps.
+            if user_info is not None:
+                scope["user"] = user_info.model_dump(mode="json")
 
             try:
                 result = await func(scope)

@@ -275,6 +275,33 @@ def custom_get_token(scope):
     return None
 
 
+async def custom_whoami(scope):
+    """Extra login-service handler that reports the authenticated caller.
+
+    Demonstrates #0006 item 2: an extra_handler is an HTTP functions-service
+    handler that receives the raw ASGI ``scope``. Before the fix it had no way
+    to see the authenticated user (no ``context`` is injected and
+    ``scope["headers"]`` is a decoded dict that breaks ``extract_token_from_scope``).
+    After the fix the server injects the already-parsed identity as
+    ``scope["user"]`` (same shape as an RPC ``context["user"]``).
+    """
+    user = scope.get("user")
+    if user is None:
+        body = {"present": False, "is_anonymous": None, "id": None, "email": None}
+    else:
+        body = {
+            "present": True,
+            "is_anonymous": user.get("is_anonymous"),
+            "id": user.get("id"),
+            "email": user.get("email"),
+        }
+    return {
+        "status": 200,
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps(body),
+    }
+
+
 async def hypha_startup(server):
     """Startup function with complete custom authentication and login service."""
     # Register complete custom authentication with login service
@@ -286,6 +313,7 @@ async def hypha_startup(server):
         start_handler=custom_start_login,
         check_handler=custom_check_login,
         report_handler=custom_report_login,
+        whoami=custom_whoami,  # extra_handler: needs the authenticated user (#0006 item 2)
     )
     
     # Register a test service to verify the custom auth is working

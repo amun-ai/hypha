@@ -561,6 +561,34 @@ Two-tier fix, and the **two traps to avoid**:
 
 **Key Lesson**: a pre-auth middleware can still be identity-aware — but only via a **self-contained, no-network** token check (local-secret HS256 sig+exp), and the elevated tier must stay finite + narrowly-keyed. `verify_internal_token_identity` never raises. `_consume(key, rate=None, burst=None)` keeps its backward-compatible single-arg per-IP form. Tests: `tests/test_http_rate_limit.py` (anonymous-limited-but-authenticated-not, forged/expired does-not-bypass, client-id isolation, missing-client-id fallback).
 
+### Functions-Service Handlers Get `scope["user"]`, Not a `context` — Don't Discard the Already-Parsed Identity (#0006 item 2)
+
+A **functions-type** service (incl. every custom-auth `extra_handler` registered via
+`register_auth_service(..., <name>=handler)`) is invoked over HTTP by
+`handle_function_service` (`hypha/http.py`) with the **raw ASGI `scope`** — there is
+**no** `context` kwarg and **no** `context["user"]`. So a handler that expected the
+usual RPC `context` saw an anonymous/absent user **even with a valid `Authorization:
+Bearer`**, and couldn't fix it itself: `handle_function_service` rewrites
+`scope["headers"]` into a decoded **dict** before dispatch, which breaks
+`extract_token_from_scope` (its default branch iterates header *tuples*, not a dict).
+That forced integrators to re-validate the caller JWT out of the request **body**.
+
+- **Root cause**: the ASGI apps dispatch **already** resolves the caller once via
+  `store.login_optional(request)` (honoring custom `get_token`/`parse_token` +
+  enforcing the block-list) — then **threw that `user_info` away** for functions
+  services. The identity was computed and discarded.
+- **Fix**: thread `user_info` through `_handle_app_service` → `handle_function_service`
+  and inject it as **`scope["user"]`** (a `model_dump`, the **same shape** as an RPC
+  `context["user"]`, so a handler does `UserInfo.model_validate(scope["user"])`). No
+  re-parse, no extra round-trip. Injected on the **functions path only** — never on
+  ASGI-mounted apps, where `scope["user"]` is Starlette's `request.user` and must not
+  be shadowed. Anonymous callers get an anonymous `UserInfo` (never absent).
+- **Key Lesson**: when an authenticated identity is already resolved upstream in a
+  request path, **pass it down** — do not force downstream handlers to re-parse the
+  token (double work + the header-shape trap above). A functions handler's contract is
+  `scope`, so surface auth *through the scope*, not a phantom `context`.
+  `hypha/http.py`; test `tests/test_custom_auth_server.py::test_extra_handler_receives_authenticated_user`.
+
 **Critical Pattern (V10-V14)**: When an ID contains a workspace prefix (e.g., `workspace/client_id`), always validate permission on the embedded workspace, not just `context["ws"]`.
 
 ```python

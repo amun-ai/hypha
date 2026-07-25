@@ -465,5 +465,51 @@ async def test_custom_get_token_priority(custom_auth_server):
         assert data["id"] == workspace
 
 
+@pytest.mark.asyncio
+async def test_extra_handler_receives_authenticated_user(custom_auth_server):
+    """#0006 item 2: an extra_handler (HTTP functions-service handler) must be
+    able to see the authenticated caller via the injected ``scope["user"]``.
+
+    Regression for the silent-failure trap where extra_handlers always saw an
+    anonymous/absent user even with a valid Bearer, forcing integrators to
+    re-validate the JWT from the request body themselves.
+    """
+    server_url = custom_auth_server.replace("http://", "ws://") + "/ws"
+
+    # Mint a real authenticated (custom) token via the server.
+    async with connect_to_server(
+        {"client_id": "test-whoami-gen", "server_url": server_url}
+    ) as api:
+        workspace = api.config.workspace
+        custom_token = await api.generate_token(
+            config={"workspace": workspace, "expires_in": 3600}
+        )
+        assert custom_token.startswith("CUSTOM:")
+
+    base_url = custom_auth_server
+    whoami_url = f"{base_url}/public/apps/hypha-login/whoami"
+
+    # 1) Anonymous (no token) -> handler sees an anonymous user.
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(whoami_url)
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["present"] is True, "scope['user'] must be injected for functions handlers"
+        assert data["is_anonymous"] is True
+
+    # 2) Authenticated (custom token via the fixture's custom get_token header)
+    #    -> handler sees the real, non-anonymous identity.
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(whoami_url, headers={"X-Hypha-Token": custom_token})
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["present"] is True
+        assert data["is_anonymous"] is False, (
+            "extra_handler must see the authenticated user, not anonymous"
+        )
+        assert data["id"], "authenticated user id must be present"
+        assert data["email"] and data["email"].endswith("@example.com")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
