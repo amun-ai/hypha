@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from hypha import __version__
+from hypha.logging_utils import install_asyncio_connlost_filter
 from hypha.http_rpc import setup_http_rpc
 from hypha.core.store import RedisStore
 from hypha.http import HTTPProxy
@@ -260,6 +261,13 @@ def merge_env_into_args(args, env_args, defaults):
 def create_application(args):
     """Create a hypha application."""
     global minio_proc
+
+    # Silence asyncio's benign "socket.send() raised exception." warnings emitted
+    # in bursts when the MCP/SSE transport writes to an already-disconnected
+    # client (no traceback; real error surfaced via connection_lost). Narrowly
+    # scoped to the asyncio logger and the two exact messages — see
+    # hypha/logging_utils.py.
+    install_asyncio_connlost_filter()
 
     if args.from_env:
         logger.info("Loading arguments from environment variables")
