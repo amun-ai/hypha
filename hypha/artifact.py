@@ -4875,6 +4875,106 @@ class ArtifactController:
                     version_key + "/",
                 )
 
+    def _stage_backup_prefix(self, s3_config, artifact):
+        """S3 key root where pristine committed files are stashed while an
+        in-place (edit_version) staging session is open. Sits beside the
+        ``v{index}/`` version folders, so it is invisible to every
+        version-scoped read, listing and file count."""
+        return safe_join(s3_config["prefix"], f"{artifact.id}/.stage_backup")
+
+    async def _backup_committed_file_for_inplace_edit(
+        self, s3_client, s3_config, artifact, version_index, path
+    ):
+        """Copy the pristine committed bytes of ``path`` into the stage-backup
+        area before an in-place staged write (or removal) destroys them, so
+        ``discard`` can restore the committed version exactly.
+
+        Idempotent per staging session: only the first touch of a path is
+        backed up (later touches see the edited bytes and must not clobber the
+        pristine copy). Files that do not yet exist in the committed version
+        (genuinely new uploads) are left untouched and are cleaned up by
+        ``discard`` instead of restored.
+        """
+        bucket = s3_config["bucket"]
+        src_key = safe_join(
+            s3_config["prefix"], f"{artifact.id}/v{version_index}/{path}"
+        )
+        backup_key = safe_join(self._stage_backup_prefix(s3_config, artifact), path)
+        try:
+            # Already backed up earlier in this staging session - keep the
+            # pristine copy, do not overwrite it with edited content.
+            await s3_client.head_object(Bucket=bucket, Key=backup_key)
+            return
+        except ClientError:
+            pass
+        try:
+            # Only committed content is worth protecting; a 404 means this is a
+            # newly added file with nothing to lose.
+            await s3_client.head_object(Bucket=bucket, Key=src_key)
+        except ClientError:
+            return
+        try:
+            await s3_client.copy_object(
+                Bucket=bucket,
+                CopySource={"Bucket": bucket, "Key": src_key},
+                Key=backup_key,
+            )
+        except ClientError as e:
+            # Best-effort: if the backup copy fails (e.g. an oversized object
+            # beyond the single-part copy limit) we log and proceed. This is no
+            # worse than the prior behaviour, and weight-sized changes are
+            # expected to go through a new version rather than an in-place edit.
+            logger.warning(
+                f"Failed to back up committed file '{path}' before staged "
+                f"overwrite for artifact {artifact.id}: {e}"
+            )
+
+    async def _restore_inplace_stage_backup(
+        self, s3_client, s3_config, artifact, version_index
+    ):
+        """Restore every stage-backed-up committed file to its pristine bytes
+        and return the set of restored (version-relative) paths. Used by
+        ``discard`` to undo in-place staged writes without losing committed
+        content."""
+        bucket = s3_config["bucket"]
+        backup_root = self._stage_backup_prefix(s3_config, artifact)
+        restored = set()
+        paginator = s3_client.get_paginator("list_objects_v2")
+        async for page in paginator.paginate(
+            Bucket=bucket, Prefix=backup_root + "/"
+        ):
+            for obj in page.get("Contents", []):
+                backup_key = obj["Key"]
+                rel_path = backup_key[len(backup_root) + 1 :]
+                dest_key = safe_join(
+                    s3_config["prefix"],
+                    f"{artifact.id}/v{version_index}/{rel_path}",
+                )
+                try:
+                    await s3_client.copy_object(
+                        Bucket=bucket,
+                        CopySource={"Bucket": bucket, "Key": backup_key},
+                        Key=dest_key,
+                    )
+                    restored.add(rel_path)
+                except ClientError as e:
+                    logger.warning(
+                        f"Failed to restore committed file '{rel_path}' on "
+                        f"discard for artifact {artifact.id}: {e}"
+                    )
+        return restored
+
+    async def _clear_stage_backup(self, s3_client, s3_config, artifact):
+        """Delete the stage-backup area (called on commit and after a discard
+        restore). Safe to call when no backup exists."""
+        backup_root = self._stage_backup_prefix(s3_config, artifact)
+        try:
+            await remove_objects_async(s3_client, s3_config["bucket"], backup_root + "/")
+        except Exception as e:
+            logger.warning(
+                f"Failed to clear stage backup for artifact {artifact.id}: {e}"
+            )
+
     @schema_method
     async def create(
         self,
@@ -6277,6 +6377,12 @@ class ArtifactController:
                         artifact.config["download_weights"] = existing_weights
                         flag_modified(artifact, "config")
 
+                    # In-place (edit_version) commits keep the edited bytes, so
+                    # the pristine backup taken during staging is no longer
+                    # needed. No-op when nothing was backed up.
+                    if not has_new_version_intent and versions:
+                        await self._clear_stage_backup(s3_client, s3_config, artifact)
+
                     # Count files in the target version based on intent
                     if has_new_version_intent:
                         # Files are in new version index
@@ -7462,11 +7568,22 @@ class ArtifactController:
 
                 s3_config = self._get_s3_config(artifact, parent_artifact)
 
+                # In-place edits overwrite the committed version's files. Stash
+                # the pristine committed bytes first so discard can restore them.
+                back_up_inplace = (
+                    not has_new_version_intent and bool(artifact.versions or [])
+                )
+
                 # Use single S3 client for all URL generations
                 async with self._create_client_async(s3_config) as s3_client:
                     presigned_urls = {}
 
                     for fpath, dweight in zip(file_paths, download_weights):
+                        if back_up_inplace:
+                            await self._backup_committed_file_for_inplace_edit(
+                                s3_client, s3_config, artifact,
+                                target_version_index, fpath,
+                            )
                         file_key = safe_join(
                             s3_config["prefix"],
                             f"{artifact.id}/v{target_version_index}/{fpath}",
@@ -7607,6 +7724,12 @@ class ArtifactController:
                 )
 
                 async with self._create_client_async(s3_config) as s3_client:
+                    # In-place edits overwrite the committed version's file;
+                    # stash pristine bytes first so discard can restore them.
+                    if not has_new_version_intent and (artifact.versions or []):
+                        await self._backup_committed_file_for_inplace_edit(
+                            s3_client, s3_config, artifact, version_index, file_path,
+                        )
                     # Create the multipart upload to get an UploadId
                     mpu = await s3_client.create_multipart_upload(
                         Bucket=s3_config["bucket"], Key=s3_key
@@ -8595,6 +8718,14 @@ class ArtifactController:
                         target_version_index = max(0, len(artifact.versions or []) - 1)
 
                     async with self._create_client_async(s3_config) as s3_client:
+                        # In-place edits overwrite the committed version's
+                        # files; stash pristine bytes first so discard can
+                        # restore them.
+                        if not has_new_version_intent and (artifact.versions or []):
+                            await self._backup_committed_file_for_inplace_edit(
+                                s3_client, s3_config, artifact,
+                                target_version_index, file_path,
+                            )
                         file_key = safe_join(
                             s3_config["prefix"],
                             f"{artifact.id}/v{target_version_index}/{file_path}",
@@ -10076,38 +10207,58 @@ class ArtifactController:
                             f"Failed to clean up staged files from new version: {e}"
                         )
                 else:
-                    # Files are in existing version - need to restore from committed state
+                    # In-place (edit_version) staging writes edited bytes
+                    # directly onto the committed version's files. Restore the
+                    # pristine committed bytes from the stage backup, then drop
+                    # any files that were newly added during staging (they have
+                    # no committed counterpart and so were never backed up).
                     if artifact.versions and len(artifact.versions) > 0:
-                        # We need to restore the committed files by removing staged files
                         staged_files_version_index = max(0, len(artifact.versions) - 1)
-
-                        # Delete only the files that were added during staging
                         try:
                             async with self._create_client_async(
                                 s3_config
                             ) as s3_client:
+                                # 1) Restore every backed-up committed file.
+                                restored = await self._restore_inplace_stage_backup(
+                                    s3_client,
+                                    s3_config,
+                                    artifact,
+                                    staged_files_version_index,
+                                )
+
+                                # 2) Delete staged files that were newly added
+                                #    (not present in the committed version, so
+                                #    absent from the backup set).
                                 staging_files = staging_dict.get("files", [])
                                 for file_info in staging_files:
                                     if "_intent" in file_info or "_remove" in file_info:
                                         continue
+                                    path = file_info["path"]
+                                    if path in restored:
+                                        continue
                                     file_key = safe_join(
                                         s3_config["prefix"],
-                                        f"{artifact.id}/v{staged_files_version_index}/{file_info['path']}",
+                                        f"{artifact.id}/v{staged_files_version_index}/{path}",
                                     )
                                     try:
                                         await s3_client.delete_object(
                                             Bucket=s3_config["bucket"], Key=file_key
                                         )
                                         logger.info(
-                                            f"Deleted staged file: {file_info['path']}"
+                                            f"Deleted newly added staged file: {path}"
                                         )
                                     except Exception as e:
                                         logger.warning(
-                                            f"Failed to delete staged file {file_info['path']}: {e}"
+                                            f"Failed to delete staged file {path}: {e}"
                                         )
+
+                                # 3) Remove the stage backup area.
+                                await self._clear_stage_backup(
+                                    s3_client, s3_config, artifact
+                                )
                         except Exception as e:
                             logger.warning(
-                                f"Failed to clean up staged files from existing version: {e}"
+                                f"Failed to restore committed files on discard: {e}"
                             )
 
                 # With the new staging dict structure, the database always has the published version
