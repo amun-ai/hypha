@@ -48,6 +48,15 @@ from . import (
     POSTGRES_URI,
 )
 os.environ["ACTIVITY_CHECK_INTERVAL"] = "0.3"
+# #0015: The shared integration server runs strict zero-growth leak detectors
+# (test_mcp/http/a2a_memory_leak_detection) that assume a quiescent server. The
+# continuous orphan-reaper sweep (default every 300s) would otherwise fire
+# mid-measurement — spinning up an RPC client and probing accumulated orphans —
+# and its transient RSS/connection burst would race the leak window and trip the
+# assertion. Set interval<=0 so the integration server does exactly ONE boot-time
+# orphan pass (a no-op on a fresh boot) and no recurring sweeps. The continuous
+# loop behavior is covered in isolation by tests/test_orphan_reaper.py.
+os.environ["HYPHA_ORPHAN_REAP_INTERVAL"] = "-1"
 
 # Ensure proxy is not used for localhost connections during tests
 # This is critical for tests that connect to local servers
