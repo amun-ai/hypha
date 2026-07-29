@@ -539,6 +539,46 @@ service registrations forever (a **ghost** that keeps appearing in
   `delete_client` machinery rather than inventing a parallel one. Tests:
   `tests/test_http_streaming_reaper.py`.
 
+### Never Block the Startup/Readiness Path on Unbounded O(N) Cleanup (#0015)
+
+Sibling lesson to the liveness reaper. The reaper machinery above is correct —
+but WHERE you run it matters as much as HOW. A cleanup that pings dead peers is
+**self-scaling with the failure it cleans up**: the worse the crash, the bigger
+the orphan pile, the longer the cleanup — so putting it in the **readiness path**
+turns a one-off incident into a **CrashLoop that feeds itself**.
+
+- **Incident (#0015, 2026-07-29 hypha-server outage):** `init()` awaited
+  `_cleanup_orphaned_client_services` **inline** in the readiness path
+  (`store.py`), and that reap pinged every orphaned client **SEQUENTIALLY** with a
+  3s timeout. A dead client never answers, so cost was **O(N × 3s)**. A prior
+  crash left ~1700 orphan registrations in Redis → boot blocked ~**85 min**,
+  blowing past the 15-min startup probe → the pod was killed **before becoming
+  ready** → CrashLoop. Each failed boot cleaned nothing and the pile only grew.
+  (The synchronous S3 CORS-apply logged next to it was a red herring — it's
+  already bounded to ~10s once via `create_client_sync(connect_timeout=5,
+  read_timeout=10, retries={'max_attempts':0})`, #831, non-fatal; the proximate
+  log line, not the cause.)
+- **Fix (three parts):** (1) **move the reap OUT of the readiness path** into a
+  deferred post-startup `asyncio.create_task` (`_orphan_reaper_task`, mirrors
+  `_malloc_trim_task`) so readiness never waits on it; (2) **parallelize** the
+  pings with a concurrency-capped `asyncio.gather` + `Semaphore`
+  (`HYPHA_ORPHAN_REAP_CONCURRENCY`, default 50) so one pass is
+  ~`ceil(N/cap) × timeout`, not `N × timeout`; (3) run it **continuously** on an
+  interval (`HYPHA_ORPHAN_REAP_INTERVAL`, default 300s; `<=0` disables the loop
+  but still does one boot pass) so the pile is trimmed and never grows to a
+  restart-choking size. Leader-gated (F6): one reaper suffices since pings route
+  through the event bus. `hypha/core/store.py::_cleanup_orphaned_client_services`
+  / `_orphan_reaper_loop`; tests `tests/test_orphan_reaper.py`.
+- **Key Lesson:** a readiness/startup path must be **O(1)-ish and bounded** — never
+  gate "ready" on work whose duration scales with accumulated failure state.
+  Recovery/cleanup that pings peers, scans Redis, or reconciles state belongs in a
+  **deferred, continuously-running, concurrency-bounded background task**, not in
+  `init()`. If a cleanup's worst case grows with how bad the last crash was, an
+  inline version guarantees the next crash is worse. The reproduction that catches
+  this: **pre-seed a large orphan pile in Redis, then assert `init()` returns
+  promptly AND the orphans are still present right after** (proving the reap did
+  not run inline) — a timing-independent proof.
+
 ### Multi-Replica: Per-Pod Caches Must Be Invalidated Across Pods (F6)
 
 Any **per-pod in-memory cache keyed by client/peer identity** becomes a
