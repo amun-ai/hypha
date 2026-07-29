@@ -377,6 +377,7 @@ class RedisStore:
         self._tracker_task = None
         self._leader_lease = None
         self._malloc_trim_task = None
+        self._orphan_reaper_task = None
         # self._house_keeping_task = None
 
         self._shared_anonymous_user = None
@@ -829,26 +830,53 @@ class RedisStore:
             f"{self._root_user.get_workspace()}/{self._server_id}",
         }
 
+        # Build the candidate list (skip this server's own + manager/checker).
+        candidates = []
+        for ws_client in clients:
+            if ws_client in server_client_ids:
+                continue
+            workspace, client_id = ws_client.split("/", 1)
+            # Skip the manager and server-checker clients
+            if client_id.startswith("manager-") or client_id == "orphan-checker":
+                continue
+            candidates.append((workspace, client_id))
+
+        if not candidates:
+            return
+
+        # Ping the candidates CONCURRENTLY, concurrency-capped. A dead client
+        # never answers, so a SEQUENTIAL loop costs O(N x ping_timeout) and, on
+        # a large post-crash pile, blocked the readiness path for tens of
+        # minutes (#0015: ~1700 orphans x 3s ~= 85 min → startup-probe CrashLoop).
+        # Bounding concurrency keeps one pass at ~ceil(N/concurrency) x timeout.
+        concurrency = max(1, int(os.environ.get("HYPHA_ORPHAN_REAP_CONCURRENCY", "50")))
+        ping_timeout = float(os.environ.get("HYPHA_ORPHAN_REAP_PING_TIMEOUT", "3"))
+        sem = asyncio.Semaphore(concurrency)
+
         # Create a temporary RPC to ping clients
         rpc = self.create_rpc(
             "root", self._root_user, client_id="orphan-checker", silent=True
         )
-        orphaned_clients = []
-        try:
-            for ws_client in clients:
-                if ws_client in server_client_ids:
-                    continue
-                workspace, client_id = ws_client.split("/", 1)
-                # Skip the manager and server-checker clients
-                if client_id.startswith("manager-") or client_id == "orphan-checker":
-                    continue
+
+        async def _probe(workspace, client_id):
+            # Returns (workspace, client_id) if the client is unreachable
+            # (orphaned), else None.
+            async with sem:
                 try:
                     svc = await rpc.get_remote_service(
-                        f"{workspace}/{client_id}:built-in", {"timeout": 3}
+                        f"{workspace}/{client_id}:built-in", {"timeout": ping_timeout}
                     )
                     await svc.ping("ping")
+                    return None
                 except Exception:
-                    orphaned_clients.append((workspace, client_id))
+                    return (workspace, client_id)
+
+        orphaned_clients = []
+        try:
+            results = await asyncio.gather(
+                *[_probe(ws, cid) for ws, cid in candidates]
+            )
+            orphaned_clients = [r for r in results if r is not None]
 
             if orphaned_clients:
                 logger.warning(
@@ -876,6 +904,51 @@ class RedisStore:
             logger.error("Error during orphaned client cleanup: %s", e)
         finally:
             await rpc.disconnect()
+
+    async def _orphan_reaper_loop(self):
+        """Post-startup background reaper for orphaned client registrations.
+
+        Moved OUT of the readiness path (#0015): a server crash can leave
+        thousands of dead clients' service keys in Redis. Reaping them inline
+        during ``init()`` blocked boot for O(N x ping_timeout) — a ~1700-orphan
+        pile took ~85 min, blowing past the startup probe and CrashLooping the
+        pod (which only grew the pile). Running the reap as a deferred,
+        continuous background task means:
+          - readiness never waits on the reap, and
+          - the pile is trimmed continuously, so it never grows to a
+            restart-choking size.
+
+        Leader-gated (F6): in a multi-replica deployment only the leader reaps.
+        The ping goes through the Redis event bus, so a client connected to ANY
+        server responds — one reaper suffices and avoids N pods duplicating the
+        scan. With fakeredis / a single replica this instance is always the
+        leader, preserving single-instance behavior.
+
+        Env config:
+          - HYPHA_ORPHAN_REAP_INITIAL_DELAY (default 5s): delay before the first
+            pass, so it doesn't compete with the rest of startup registration.
+          - HYPHA_ORPHAN_REAP_INTERVAL (default 300s): interval between passes.
+            <=0 disables the CONTINUOUS loop but still runs a single boot pass to
+            clear a crash pile.
+        """
+        interval = float(os.environ.get("HYPHA_ORPHAN_REAP_INTERVAL", "300"))
+        initial_delay = float(os.environ.get("HYPHA_ORPHAN_REAP_INITIAL_DELAY", "5"))
+        try:
+            if initial_delay > 0:
+                await asyncio.sleep(initial_delay)
+            while True:
+                try:
+                    if self.is_leader():
+                        await self._cleanup_orphaned_client_services()
+                except Exception as e:
+                    logger.error("Orphan reaper iteration failed: %s", e)
+                if interval <= 0:
+                    # Continuous reaping disabled: the single boot pass above is
+                    # enough to clear a crash pile; exit without looping.
+                    return
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            return
 
     async def _maybe_reset_redis(self, reset_redis: bool):
         """Flush shared Redis only when explicitly requested AND no other hypha
@@ -951,7 +1024,9 @@ class RedisStore:
                     )
             # Root token is already set in __init__
         await self.check_and_cleanup_servers()
-        await self._cleanup_orphaned_client_services()
+        # NOTE: orphaned client-service cleanup is intentionally NOT awaited here.
+        # It is deferred to the post-startup `_orphan_reaper_loop` background task
+        # (#0015) so a large post-crash orphan pile can never block readiness.
         self._workspace_manager = await self.register_workspace_manager()
 
         try:
@@ -1074,6 +1149,11 @@ class RedisStore:
         # path only covers git ops; this loop bounds the steady-state plateau
         # for all traffic. No-op on non-glibc platforms.
         self._malloc_trim_task = asyncio.create_task(self._periodic_malloc_trim())
+
+        # Deferred, continuous orphan-service reaper (#0015). Runs OFF the
+        # readiness path so a post-crash orphan pile never blocks boot, and keeps
+        # the pile trimmed so it never grows to a restart-choking size.
+        self._orphan_reaper_task = asyncio.create_task(self._orphan_reaper_loop())
 
         logger.info("Server initialized with server id: %s", self._server_id)
         logger.info("Currently connected hypha servers: %s", servers)
@@ -1585,6 +1665,13 @@ class RedisStore:
             self._malloc_trim_task.cancel()
             try:
                 await self._malloc_trim_task
+            except asyncio.CancelledError:
+                pass
+
+        if self._orphan_reaper_task:
+            self._orphan_reaper_task.cancel()
+            try:
+                await self._orphan_reaper_task
             except asyncio.CancelledError:
                 pass
 
