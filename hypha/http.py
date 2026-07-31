@@ -593,6 +593,41 @@ class ASGIRoutingMiddleware:
                         }
                     )
                     return
+                except RemoteException as exp:
+                    # The service lookup / handler runs on the workspace-manager
+                    # side, so a missing service surfaces here as a RemoteException
+                    # (not a local KeyError). Map it to an HTTP status the same way
+                    # the /services function endpoints do. A missing service is a
+                    # client-side lookup miss (404), not a server fault -> warn
+                    # without a traceback rather than let it fall into the generic
+                    # 500 handler + ERROR:http stack trace. #0017.
+                    # (A multiple-match ambiguity raises AssertionError -> mapped to
+                    # 400 with its explanatory message, so it is surfaced, NOT
+                    # masked. Genuine server faults still map to 500 + ERROR below.)
+                    status_code = _get_status_for_remote_exception(exp)
+                    if status_code >= 500:
+                        logger.exception(f"Error in ASGI service: {exp}")
+                    else:
+                        logger.warning(
+                            f"ASGI service lookup failed ({status_code}): {exp}"
+                        )
+                    await send(
+                        {
+                            "type": "http.response.start",
+                            "status": status_code,
+                            "headers": [
+                                [b"content-type", b"text/plain"],
+                            ],
+                        }
+                    )
+                    await send(
+                        {
+                            "type": "http.response.body",
+                            "body": _get_safe_error_detail(exp).encode(),
+                            "more_body": False,
+                        }
+                    )
+                    return
                 except Exception as exp:
                     logger.exception(f"Error in ASGI service: {exp}")
                     await send(
