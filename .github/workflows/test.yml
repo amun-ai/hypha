@@ -67,6 +67,20 @@ jobs:
           key: playwright-${{ hashFiles('requirements.txt') }}
           restore-keys: |
             playwright-
+      - name: Cache fastembed models
+        # Vector-search tests (e.g. test_artifact_vector_collection) download the
+        # ~130MB BAAI/bge-small-en-v1.5 ONNX model from the HuggingFace Hub on first
+        # use. Combined with `pytest -x`, a single unreachable-Hub moment aborts the
+        # whole suite at ~10%. Caching the model like the Playwright browser above
+        # removes the per-run dependency on Hub availability after the first warm-up.
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/fastembed
+            ~/.cache/huggingface
+          key: fastembed-${{ hashFiles('requirements*.txt') }}
+          restore-keys: |
+            fastembed-
       - name: Install conda dependencies
         run: |
           conda install -c conda-forge conda-pack numpy ipykernel pip git-lfs python=${{ matrix.python-version }}
