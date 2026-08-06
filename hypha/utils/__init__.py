@@ -198,6 +198,21 @@ def is_safe_path(basedir: str, path: str, follow_symlinks: bool = True) -> bool:
     return basedir == os.path.commonpath((basedir, matchpath))
 
 
+class UnsafePathError(Exception):
+    """Raised by :func:`safe_join` when an untrusted path component would escape
+    the trusted base directory (an absolute path or a ``..`` traversal).
+
+    Subclasses ``Exception`` directly (NOT ``ValueError``) so that the ~90
+    existing ``safe_join`` callers — most of which only ``except Exception`` —
+    are entirely unaffected, while a path-aware caller (the ``/{page:path}``
+    fallback route) can catch it *specifically* and return a client-facing 404
+    instead of letting a bare exception escape into the ASGI error middleware
+    (HTTP 500 + a full traceback per probe). The traversal is still blocked;
+    this type only makes the rejection catchable without changing any existing
+    ``except Exception`` behavior.
+    """
+
+
 def safe_join(directory: str, *pathnames: str) -> Optional[str]:
     """Safely join zero or more untrusted path components to a base directory.
 
@@ -206,6 +221,7 @@ def safe_join(directory: str, *pathnames: str) -> Optional[str]:
     :param pathnames: The untrusted path components relative to the
         base directory.
     :return: A safe path, otherwise ``None``.
+    :raises UnsafePathError: if a component would escape ``directory``.
 
     This function is copied from:
     https://github.com/pallets/werkzeug/blob/fb7ddd89ae3072e4f4002701a643eb247a402b64/src/werkzeug/security.py#L222
@@ -222,7 +238,7 @@ def safe_join(directory: str, *pathnames: str) -> Optional[str]:
             or filename == ".."
             or filename.startswith("../")
         ):
-            raise Exception(
+            raise UnsafePathError(
                 f"Illegal file path: `{filename}`, "
                 "you can only operate within the work directory."
             )

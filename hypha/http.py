@@ -45,7 +45,7 @@ from hypha.core.auth import (
     verify_internal_token_identity,
 )
 from hypha.core.store import RedisStore, WorkspaceNotFoundError
-from hypha.utils import safe_join, is_safe_path
+from hypha.utils import safe_join, is_safe_path, UnsafePathError
 from hypha.s3 import FSFileResponse
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
@@ -1879,12 +1879,52 @@ class HTTPProxy:
             """Route for getting pages, if other matches not found, this will be the fallback."""
             if not page or page == "/":
                 page = "index.html"
-            dir_path = page.split("/")[0]
-            if dir_path not in self.templates_files and "-" in dir_path:
-                inner_path = "/".join(page.split("/")[1:])
-                if not inner_path:
-                    inner_path = "index.html"
-                if not os.path.exists(safe_join(str(self.ws_apps_dir), inner_path)):
+            try:
+                dir_path = page.split("/")[0]
+                if dir_path not in self.templates_files and "-" in dir_path:
+                    inner_path = "/".join(page.split("/")[1:])
+                    if not inner_path:
+                        inner_path = "index.html"
+                    if not os.path.exists(
+                        safe_join(str(self.ws_apps_dir), inner_path)
+                    ):
+                        return JSONResponse(
+                            status_code=404,
+                            content={
+                                "success": False,
+                                "detail": f"File not found: {inner_path}",
+                            },
+                        )
+                    else:
+                        # redirect /{workspace} to /{workspace}/
+                        if not page.endswith("/") and inner_path == "index.html":
+                            # redirect it to the version with trailing slash
+                            return RedirectResponse(norm_url(f"/{dir_path}/"))
+                    return FileResponse(safe_join(str(self.ws_apps_dir), inner_path))
+                file_path = safe_join(str(self.templates_dir), page)
+                if not is_safe_path(str(self.templates_dir), file_path):
+                    return JSONResponse(
+                        status_code=403,
+                        content={"success": False, "detail": f"Unsafe path: {page}"},
+                    )
+                if not os.path.exists(file_path):
+                    return JSONResponse(
+                        status_code=404,
+                        content={
+                            "success": False,
+                            "detail": f"File not found: {page}",
+                        },
+                    )
+                assert os.path.basename(file_path) not in [
+                    "apps",
+                    "ws",
+                ], f"Invalid page name: {page}"
+                # compile the jinja template
+                file_path = safe_join(str(self.templates_dir), page)
+                assert is_safe_path(
+                    str(self.templates_dir), file_path
+                ), f"Unsafe path: {page}"
+                if not os.path.exists(file_path):
                     return JSONResponse(
                         status_code=404,
                         content={
@@ -1892,19 +1932,17 @@ class HTTPProxy:
                             "detail": f"File not found: {inner_path}",
                         },
                     )
-                else:
-                    # redirect /{workspace} to /{workspace}/
-                    if not page.endswith("/") and inner_path == "index.html":
-                        # redirect it to the version with trailing slash
-                        return RedirectResponse(norm_url(f"/{dir_path}/"))
-                return FileResponse(safe_join(str(self.ws_apps_dir), inner_path))
-            file_path = safe_join(str(self.templates_dir), page)
-            if not is_safe_path(str(self.templates_dir), file_path):
-                return JSONResponse(
-                    status_code=403,
-                    content={"success": False, "detail": f"Unsafe path: {page}"},
-                )
-            if not os.path.exists(file_path):
+                return FileResponse(file_path)
+            except UnsafePathError:
+                # A PHP-scanner / traversal probe: an absolute or `..` page path
+                # that safe_join correctly rejected. This is a CLIENT error
+                # (404), not a server fault -> return a clean 404 with a single
+                # WARNING line instead of letting the exception escape into the
+                # ASGI error middleware (HTTP 500 + a full multi-frame traceback
+                # per probe, an attacker-controlled log-amplification primitive).
+                # Nothing escaped the templates dir; only the error handling
+                # changes here. #0018.
+                logger.warning(f"Rejected unsafe page path: {page!r}")
                 return JSONResponse(
                     status_code=404,
                     content={
@@ -1912,21 +1950,3 @@ class HTTPProxy:
                         "detail": f"File not found: {page}",
                     },
                 )
-            assert os.path.basename(file_path) not in [
-                "apps",
-                "ws",
-            ], f"Invalid page name: {page}"
-            # compile the jinja template
-            file_path = safe_join(str(self.templates_dir), page)
-            assert is_safe_path(
-                str(self.templates_dir), file_path
-            ), f"Unsafe path: {page}"
-            if not os.path.exists(file_path):
-                return JSONResponse(
-                    status_code=404,
-                    content={
-                        "success": False,
-                        "detail": f"File not found: {inner_path}",
-                    },
-                )
-            return FileResponse(file_path)
