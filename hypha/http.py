@@ -115,6 +115,45 @@ def _get_status_for_remote_exception(exc: RemoteException) -> int:
     return 500
 
 
+# The hypha-rpc method-call timer raises a builtin TimeoutError whose message
+# begins with this literal prefix (rpc.py:572,
+# f"Method call timed out: {method_name}, context: {self._description}").
+# The interpolation starts AFTER the colon, so the prefix is a stable literal.
+_RPC_METHOD_TIMEOUT_PREFIX = "Method call timed out:"
+
+
+def _is_expected_service_timeout(exc: Exception) -> bool:
+    """Return True only for a hypha-rpc server->client METHOD-CALL timeout.
+
+    Such a timeout means the callee (e.g. a half-open browser/laptop client)
+    stopped answering mid-request. It is high-volume, expected, and its
+    traceback names nothing actionable (just the internal rpc await chain), so
+    it should be logged as a WARNING + 504, not an ERROR + 500 + traceback.
+
+    Discrimination is by message ORIGIN, not exception type. That is deliberate:
+
+    * ``TimeoutError`` is a subclass of ``OSError`` (``TimeoutError.__mro__`` is
+      ``[TimeoutError, OSError, Exception, BaseException, object]``). A bare
+      ``except TimeoutError`` / ``isinstance(exc, TimeoutError)`` carve-out would
+      ALSO swallow OS-level socket/S3/redis/httpx/DNS timeouts raised *inside* a
+      service-function body — and for those the traceback is the only thing that
+      names the dead dependency. So we additionally require the rpc-timer prefix.
+    * The rpc SESSION-expiry timer (rpc.py:1779,
+      ``"Session expired (TTL=...): {key}"``) is intentionally EXCLUDED — it is a
+      rare, diagnostic client-leak signal and must stay ERROR + 500 + traceback.
+
+    Cross-repo coupling: this string-matches a message owned by hypha-rpc. If
+    that message is reworded upstream the carve-out silently stops matching — but
+    fails SAFE: the timeout reverts to 500 + full traceback (noisy, not silent).
+    The coupling-free graduation path is a dedicated
+    ``RPCMethodTimeoutError(TimeoutError)`` in hypha-rpc; not worth the cross-repo
+    round-trip for the low volume this carve-out addresses today.
+    """
+    return isinstance(exc, TimeoutError) and str(exc).startswith(
+        _RPC_METHOD_TIMEOUT_PREFIX
+    )
+
+
 class MsgpackResponse(Response):
     """Response class for msgpack encoding."""
 
@@ -1493,6 +1532,20 @@ class HTTPProxy:
                             },
                         )
                     except Exception as e:
+                        # A hypha-rpc server->client method-call timeout means the
+                        # callee went away mid-request; log it as WARNING + 504, not
+                        # ERROR + traceback (see _is_expected_service_timeout — the
+                        # discriminator string-matches a hypha-rpc-owned message and
+                        # fails safe to the 500 path below if that message changes).
+                        if _is_expected_service_timeout(e):
+                            logger.warning(f"Service call timed out (callee unavailable): {e}")
+                            return JSONResponse(
+                                status_code=504,
+                                content={
+                                    "success": False,
+                                    "detail": _get_safe_error_detail(e),
+                                },
+                            )
                         # SECURITY: Log full traceback server-side, send sanitized message to client
                         logger.error(f"Error calling service function: {e}\n{traceback.format_exc()}")
                         return JSONResponse(
@@ -1532,6 +1585,17 @@ class HTTPProxy:
                     content={"success": False, "detail": _get_safe_error_detail(e)},
                 )
             except Exception as e:
+                # Same rpc method-call timeout carve-out as the inner arm above.
+                # In-clause (not a separate `except TimeoutError`) on purpose: this
+                # is the OUTERMOST handler, so a re-raise here would escape the
+                # endpoint and SKIP the traceback log — the in-clause check keeps a
+                # non-rpc TimeoutError on the 500+traceback path.
+                if _is_expected_service_timeout(e):
+                    logger.warning(f"Service call timed out (callee unavailable): {e}")
+                    return JSONResponse(
+                        status_code=504,
+                        content={"success": False, "detail": _get_safe_error_detail(e)},
+                    )
                 # SECURITY: Log full traceback server-side, send sanitized message to client
                 logger.error(f"Error in service function endpoint: {e}\n{traceback.format_exc()}")
                 return JSONResponse(
