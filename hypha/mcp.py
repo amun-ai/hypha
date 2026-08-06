@@ -8,6 +8,7 @@ via HTTP endpoints with proper MCP protocol handling.
 import inspect
 import json
 import logging
+import os
 import asyncio
 from typing import Any, Dict, Optional, List, Callable, Union
 import anyio
@@ -20,8 +21,9 @@ from starlette.types import ASGIApp, Scope, Receive, Send
 from starlette.requests import Request
 from pydantic import AnyUrl
 
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOGLEVEL)
 
 import mcp.types as types
 from mcp.server.lowlevel import Server
