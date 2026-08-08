@@ -160,11 +160,26 @@ class HTTPStreamingRPCServer:
             # If so, close it first to prevent queue mismatch between old stream and new messages
             if connection_key in self._connections:
                 old_queue = self._connections[connection_key]
-                # Signal old stream to stop by putting a sentinel value
+                # Signal old stream to stop by putting a sentinel value.
                 try:
                     old_queue.put_nowait(None)  # None signals stream to close
                 except asyncio.QueueFull:
-                    pass  # Old queue is full, it will be replaced anyway
+                    pass  # sentinel dropped — the cancel below is the real stop
+                # F1: the None sentinel is SILENTLY DROPPED when the old stream's
+                # queue is full — which is EXACTLY the half-open-socket case (the
+                # peer stopped reading, so event-bus messages piled up to maxsize).
+                # A dropped sentinel orphans the old generator: it keeps looping,
+                # yielding a keep-alive ping every 30s to a dead socket forever
+                # (asyncio "socket.send() raised exception."), and it is unreachable
+                # by the #0011 reaper (now keyed to the NEW live connection) and by
+                # #0012 (its _stream_tasks entry is overwritten by the new
+                # generation). So termination must NOT depend on the sentinel:
+                # deterministically cancel the old generation's task, mirroring the
+                # websocket.py supersede-cancel (#0007). The cancelled generator's
+                # `finally` runs identity-guarded cleanup (see _remove_connection).
+                old_task = self._stream_tasks.get(connection_key)
+                if old_task is not None and not old_task.done():
+                    old_task.cancel()
                 logger.info(f"[HTTP RPC] Closing old connection for {connection_key}")
 
             self._connections[connection_key] = queue
@@ -218,15 +233,35 @@ class HTTPStreamingRPCServer:
 
         return conn, queue
 
-    async def _remove_connection(self, workspace: str, client_id: str, conn: RedisRPCConnection):
-        """Remove and cleanup a connection."""
+    async def _remove_connection(
+        self,
+        workspace: str,
+        client_id: str,
+        conn: RedisRPCConnection,
+        queue: Optional[asyncio.Queue] = None,
+        task: Optional[asyncio.Task] = None,
+    ):
+        """Remove and cleanup a connection.
+
+        connection_key is REUSED across reconnect generations, so this cleanup is
+        IDENTITY-GUARDED (F1): a superseded OLD generation running its `finally`
+        must clear only ITS OWN state and never the freshly-registered NEW
+        connection's queue/task. When ``queue``/``task`` are given (the generator
+        passes its own), the shared dict entries are popped only if they still
+        point at this generation; the per-generation ``conn`` is always
+        disconnected. (Http-streaming analog of websocket.py's ``_ws_generation``
+        guard, #0007.) Callers that pass neither keep the old unconditional
+        behavior.
+        """
         connection_key = f"{workspace}/{client_id}"
         async with self._lock:
-            self._connections.pop(connection_key, None)
-            self._connection_info.pop(connection_key, None)
-            self._last_activity.pop(connection_key, None)
-            self._drop_counts.pop(connection_key, None)
-            self._stream_tasks.pop(connection_key, None)
+            if queue is None or self._connections.get(connection_key) is queue:
+                self._connections.pop(connection_key, None)
+                self._connection_info.pop(connection_key, None)
+                self._last_activity.pop(connection_key, None)
+                self._drop_counts.pop(connection_key, None)
+            if task is None or self._stream_tasks.get(connection_key) is task:
+                self._stream_tasks.pop(connection_key, None)
 
         try:
             await conn.disconnect("disconnected")
@@ -377,11 +412,19 @@ class HTTPStreamingRPCServer:
             self._connection_info.pop(connection_key, None)
             self._last_activity.pop(connection_key, None)
             self._ping_misses.pop(connection_key, None)
+            self._drop_counts.pop(connection_key, None)
+            ghost_task = self._stream_tasks.get(connection_key)
         if queue is not None:
             try:
                 queue.put_nowait(None)
             except asyncio.QueueFull:
                 pass
+        # F1: on a half-open stream the queue can be FULL, so the None sentinel
+        # above is dropped and the generator keeps yielding pings to the dead
+        # socket even after its services are removed. Cancel the task so the ping
+        # loop actually stops; its `finally` runs the identity-guarded cleanup.
+        if ghost_task is not None and not ghost_task.done():
+            ghost_task.cancel()
 
     async def _recycle_wedged_stream(self, connection_key: str):
         """Force-recycle a wedged streaming connection (#0012).
@@ -616,9 +659,8 @@ class HTTPStreamingRPCServer:
                     # Register this response's task so the liveness sweep can
                     # force-recycle a wedged stream (cancel this task to abort a
                     # yield stuck on client backpressure). #0012
-                    self._stream_tasks[f"{workspace}/{client_id}"] = (
-                        asyncio.current_task()
-                    )
+                    this_task = asyncio.current_task()
+                    self._stream_tasks[f"{workspace}/{client_id}"] = this_task
                     try:
                         # Send connection info as first message
                         conn_info = {
@@ -680,8 +722,11 @@ class HTTPStreamingRPCServer:
                                 break
 
                     finally:
-                        # Cleanup connection
-                        await self._remove_connection(workspace, client_id, conn)
+                        # Cleanup connection — identity-guarded so a superseded
+                        # generation never clobbers the NEW connection's state (F1).
+                        await self._remove_connection(
+                            workspace, client_id, conn, queue=queue, task=this_task
+                        )
 
                 return StreamingResponse(
                     stream_messages(),
