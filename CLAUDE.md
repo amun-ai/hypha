@@ -539,6 +539,51 @@ service registrations forever (a **ghost** that keeps appearing in
   `delete_client` machinery rather than inventing a parallel one. Tests:
   `tests/test_http_streaming_reaper.py`.
 
+### A Client-Liveness Reaper Does NOT Catch a Supersede-ORPHAN — Reused connection_key Needs a Generation Guard (F1)
+
+Sibling lesson to #0011/#0012. The #0011 reaper proves a client is dead by
+**pinging the client**; but a reconnect **supersede** produces a ghost the reaper
+structurally cannot see: the client is very much **alive** (on its NEW
+connection), while an **OLD** HTTP-streaming generator for the same
+`connection_key` is orphaned and keeps writing to a dead socket.
+
+- **Incident (F1, sage-rabbit nightly 2026-08-08):** exactly 4 half-open sockets
+  written every ~30s (a keep-alive ping), signature
+  `WARNING:asyncio:socket.send() raised exception.`, preceded by
+  `INFO:http-rpc:Stream cancelled for …` — pinned at 4 (not churning), never
+  reaped, invisible to the ws leak counter. **Root cause** (`hypha/http_rpc.py`):
+  `_create_connection` reused `connection_key` (`workspace/client_id`) across
+  reconnect generations and signaled the OLD generator to stop with ONLY a
+  `put_nowait(None)` sentinel — which is **silently dropped on `QueueFull`**, and
+  a full downstream queue is EXACTLY the half-open-socket case (the peer stopped
+  reading, so event-bus messages piled up to `maxsize`). The dropped sentinel
+  orphaned the old generator: it looped forever yielding a 30s ping to the dead
+  socket, and was unreachable by the #0011 reaper (now keyed to the NEW live
+  connection → `ping_client` answers 'pong' → judged alive) AND by #0012 (its
+  `_stream_tasks` entry overwritten by the new generation → nothing left to
+  cancel). #1037's `ConnLostWriteFilter` only **silenced** the symptom — it would
+  have **masked** this real leak.
+- **Fix (mirror the websocket.py supersede-cancel, #0007):** (1) on replacement,
+  **deterministically cancel the old generation's task** (`_stream_tasks[key]`) so
+  termination never depends on the droppable sentinel; (2) make the reaper
+  (`_reap_dead_stream`) **also cancel** the task (its own `None` push has the same
+  full-queue weakness); (3) **identity-guard** `_remove_connection` — because
+  `connection_key` is reused, a superseded old generation's `finally` must clear
+  only ITS OWN `queue`/`task` (compare `is`), never the freshly-registered NEW
+  connection's state. The per-generation `conn` is always disconnected.
+- **Key Lesson:** an active-ping reaper answers "is the CLIENT alive," not "is THIS
+  stream still the live one." Any per-`connection_key` state reused across
+  reconnect generations needs a **generation guard** (websocket.py has
+  `_ws_generation`; http-streaming now cancels-old-on-supersede + identity-guards
+  cleanup). And **never rely on a bounded-queue sentinel as the sole stop signal**
+  — the one time you most need it (half-open peer, full queue) is the one time it
+  is dropped; cancel the task instead. Eliminating the orphan is strictly better
+  than making a leak counter "observe" it. `hypha/http_rpc.py`
+  (`_create_connection`, `_remove_connection`, `_reap_dead_stream`); tests
+  `tests/test_http_streaming_reaper.py` (`test_full_queue_replacement_cancels_old_stream_task`,
+  `test_superseded_generation_cleanup_does_not_clobber_new_connection`,
+  `test_reaped_dead_stream_cancels_its_generator_task`). Shipped 0.21.131.
+
 ### Never Block the Startup/Readiness Path on Unbounded O(N) Cleanup (#0015)
 
 Sibling lesson to the liveness reaper. The reaper machinery above is correct —
