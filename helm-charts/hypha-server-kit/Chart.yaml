@@ -2,12 +2,12 @@ apiVersion: v2
 name: hypha-server-kit
 description: A comprehensive Helm chart for Hypha server with integrated dependencies
 type: application
-version: 0.21.131
-appVersion: "0.21.131"
+version: 0.21.132
+appVersion: "0.21.132"
 
 dependencies:
   - name: hypha-server
-    version: "0.21.131"
+    version: "0.21.132"
     repository: "file://../hypha-server"
     condition: hypha-server.enabled
   
