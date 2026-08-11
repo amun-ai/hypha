@@ -1327,7 +1327,12 @@ class RedisStore:
             )
             if user_info.scope.current_workspace is None:
                 user_info.scope.current_workspace = user_info.get_workspace()
-            logger.info(f"login_optional: parsed user_info: id={user_info.id}, is_anonymous={user_info.is_anonymous}")
+            # DEBUG, not INFO: this fires on every token-bearing HTTP/MCP request
+            # (the stateless /rpc + /mcp auth boundary). At INFO it was ~39% of prod
+            # log volume (~915k lines/day) with no steady-state diagnostic value —
+            # it only restates that a valid token parsed. Kept at DEBUG for deep
+            # debugging. Log-hygiene family: #0021 (see #0008, #0020).
+            logger.debug(f"login_optional: parsed user_info: id={user_info.id}, is_anonymous={user_info.is_anonymous}")
             # Enforce the user/IP blocklist on HTTP + MCP requests too. block_user/
             # block_ip otherwise only took effect on WebSocket connect
             # (WebsocketServer.check_connection_allowed), so a blocked principal could
