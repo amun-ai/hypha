@@ -1116,14 +1116,77 @@ class RedisStore:
         if startup_functions:
             await self._run_startup_functions(startup_functions)
         
-        # check if the login service is registered after startup functions
-        # this allows startup functions to register custom login services
-        try:
-            # Use native mode to prefer locally connected hypha-login service
-            await api.get_service_info("public/hypha-login", {"mode": "native:random"})
-            logger.info("Login service already registered (likely from startup function)")
-        except RemoteException:
-            logger.info("No custom login service found, registering default login service")
+        # Ensure a LIVE hypha-login service is registered after startup
+        # functions (this allows startup functions to register custom login
+        # services). A Redis service registration is NOT proof of liveness:
+        # get_service_info is a pure registry scan with no liveness check, so on
+        # a server that does NOT reset Redis (production), a stale hypha-login
+        # marker left by a previous, now-dead server generation resolves here and
+        # we would wrongly skip registering a working login service — every
+        # subsequent /public/services/hypha-login/start then 404s
+        # ("Service not found: public/*:hypha-login@*"). Before #0015 the inline
+        # orphan reap on the readiness path cleared that dead client first and
+        # masked this; #0015 deferred that reap off the readiness path, which
+        # exposed the latent false-positive (observed deploying 0.21.132, cured
+        # by rolling back to 0.21.107). So prove liveness by pinging the resolved
+        # owner; reap any unreachable stale owner and register the default.
+        login_ping_timeout = float(
+            os.environ.get("HYPHA_LOGIN_PING_TIMEOUT", "3")
+        )
+        login_is_live = False
+        # Bounded by the (normally 0 or 1) number of hypha-login registrations:
+        # each iteration either confirms a live login or removes exactly one
+        # unreachable owner, so multiple dead generations still converge quickly.
+        for _ in range(10):
+            try:
+                # Use native mode to prefer a locally connected hypha-login.
+                login_info = await self._workspace_manager.get_service_info(
+                    "public/hypha-login",
+                    {"mode": "native:random"},
+                    context={
+                        "user": self._root_user.model_dump(),
+                        "ws": "public",
+                        "from": "public/check-client-exists",
+                    },
+                )
+            except KeyError:
+                # No hypha-login registered at all — fall through to register the
+                # default one below.
+                break
+            owner = login_info.id.split(":")[0]  # "public/<client_id>"
+            ping_result = await self._workspace_manager.ping_client(
+                owner,
+                login_ping_timeout,
+                context={
+                    "user": self._root_user.model_dump(),
+                    "ws": "public",
+                    "from": "public/check-client-exists",
+                },
+            )
+            if ping_result == "pong":
+                login_is_live = True
+                logger.info(
+                    "Login service already registered and reachable (owner=%s)",
+                    owner,
+                )
+                break
+            # Stale marker: the registration exists but its owner is unreachable.
+            # Reap that dead client's services (mirrors the wholesale client reap
+            # 0.21.107 did inline on boot) and retry, in case multiple dead
+            # generations left markers.
+            logger.warning(
+                "Found a stale hypha-login registration owned by unreachable "
+                "client %s (%s); reaping it and re-checking.",
+                owner,
+                ping_result,
+            )
+            ws_name, client_name = owner.split("/", 1)
+            await self._clear_client_services(ws_name, client_name)
+
+        if not login_is_live:
+            logger.info(
+                "No live login service found, registering default login service"
+            )
             await api.register_service(create_login_service(self))
         
         # check if the queue service is registered
