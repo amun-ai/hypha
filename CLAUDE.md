@@ -624,6 +624,29 @@ turns a one-off incident into a **CrashLoop that feeds itself**.
   promptly AND the orphans are still present right after** (proving the reap did
   not run inline) — a timing-independent proof.
 
+- **Sibling fix (#0043, 0.21.134):** #0015 hardened only the orphaned-**client**
+  reap. The **server**-check phase `check_and_cleanup_servers` (also awaited inline
+  in `init()`) had the *identical* `O(N × timeout)` shape — `list_servers()` scans
+  `services:*|*:public/*:built-in@*` (the built-in of EVERY public-workspace client,
+  so a non-reset prod Redis carries a pile of dead built-ins), and the old loop
+  pinged each SEQUENTIALLY with a hardcoded 2s resolution timeout **and a fully
+  unbounded `svc.ping`**. Fix mirrors #0015 but **stays on the readiness path** (it's
+  the cheap dup-self-id guard + dead-server sweep, which must run before this server
+  registers its own built-in): concurrent probe (`HYPHA_SERVER_CHECK_CONCURRENCY`,
+  50), each probe bounded on BOTH resolution and the ping
+  (`asyncio.wait_for(svc.ping(...), HYPHA_SERVER_CHECK_TIMEOUT=2)`), plus an overall
+  `HYPHA_SERVER_CHECK_DEADLINE` (60) — on deadline, log + continue (the deferred
+  reaper trims the rest). Contracts preserved: dup-self-id `RuntimeError` (via a
+  `nonlocal` flag checked after `gather`) and the exact dead-server cleanup key
+  patterns (server-owned only; user services untouched). The same unbounded-ping
+  (item 4) gap in `_cleanup_orphaned_client_services._probe` was fixed too. Reproduce
+  before fix: 12 dead servers → `init()` took **24.3s** (12 × ~2s serial), ~1s after.
+  `hypha/core/store.py::check_and_cleanup_servers`; tests
+  `tests/test_server_check_bounded.py`. **Lesson: when you fix an O(N×timeout)
+  readiness hang, grep for EVERY inline peer-ping/scan loop `init()` awaits — the fix
+  rarely covers them all in one pass, and `list_servers`/`list_clients`-style scans
+  enumerate far more than "live instances."**
+
 ### Multi-Replica: Per-Pod Caches Must Be Invalidated Across Pods (F6)
 
 Any **per-pod in-memory cache keyed by client/peer identity** becomes a
