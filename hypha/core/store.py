@@ -681,54 +681,140 @@ class RedisStore:
         await self._redis.rpush("change_log", *map(str, database_change_log))
 
     async def check_and_cleanup_servers(self):
-        """Cleanup and check servers."""
+        """Detect dead hypha servers, clean up their leftover services, and guard
+        against booting with a server id that is already live.
+
+        BOUNDED + CONCURRENT (Task A). ``list_servers()`` scans
+        ``services:*|*:public/*:built-in@*`` — the built-in service of EVERY
+        public-workspace client — so after a crash/rollout a non-reset (prod)
+        Redis can carry a large pile of DEAD built-in registrations. This runs on
+        the readiness path (``init()``), so it must NOT be O(N x timeout):
+
+          * Each server is probed CONCURRENTLY (concurrency-capped), so one pass
+            is ~ceil(N/cap) x timeout instead of N x timeout.
+          * Each probe is time-bounded: BOTH the ``get_remote_service`` resolution
+            AND the ``svc.ping`` itself get an explicit timeout — a half-open peer
+            that resolves but never replies to ``ping`` can no longer hang boot.
+          * The WHOLE phase is bounded by an overall deadline; on deadline we log
+            and continue startup (the background reaper trims the rest) rather
+            than block readiness. This is the sibling fix to #0015, which
+            hardened the orphaned-client reap but left this server-check phase on
+            the readiness path with the same O(N x timeout) shape.
+        """
         server_ids = await self.list_servers()
         logger.info("Connected hypha servers: %s", server_ids)
-        if server_ids:
-            rpc = self.create_rpc(
-                "root", self._root_user, client_id="server-checker", silent=True
+        if not server_ids:
+            return
+
+        check_timeout = float(os.environ.get("HYPHA_SERVER_CHECK_TIMEOUT", "2"))
+        concurrency = max(
+            1, int(os.environ.get("HYPHA_SERVER_CHECK_CONCURRENCY", "50"))
+        )
+        deadline = float(os.environ.get("HYPHA_SERVER_CHECK_DEADLINE", "60"))
+        sem = asyncio.Semaphore(concurrency)
+
+        rpc = self.create_rpc(
+            "root", self._root_user, client_id="server-checker", silent=True
+        )
+
+        # Set if a LIVE server already holds THIS server's id (a fatal misconfig).
+        self_id_is_live = False
+
+        async def _probe(server_id):
+            # Returns server_id when the server is DEAD (to be cleaned), else None.
+            nonlocal self_id_is_live
+            async with sem:
+                try:
+                    svc = await rpc.get_remote_service(
+                        f"public/{server_id}:built-in", {"timeout": check_timeout}
+                    )
+                    # Bound the ping itself: get_remote_service's timeout only
+                    # covers resolution, not the ping round-trip.
+                    assert (
+                        await asyncio.wait_for(
+                            svc.ping("ping"), timeout=check_timeout
+                        )
+                        == "pong"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Server %s is not responding (error: %s), marking for cleanup...",
+                        server_id,
+                        e,
+                    )
+                    return server_id
+                else:
+                    if server_id == self._server_id:
+                        self_id_is_live = True
+                    return None
+
+        dead_servers = []
+        try:
+            logger.info(
+                "Probing %d server registration(s) (timeout=%ss, concurrency=%d, deadline=%ss)",
+                len(server_ids),
+                check_timeout,
+                concurrency,
+                deadline,
             )
             try:
-                for server_id in server_ids:
-                    try:
-                        svc = await rpc.get_remote_service(
-                            f"public/{server_id}:built-in", {"timeout": 2}
-                        )
-                        assert await svc.ping("ping") == "pong"
-                    except Exception as e:
-                        logger.warning(
-                            f"Server {server_id} is not responding (error: {e}), cleaning up ALL its services..."
-                        )
-                        # Clean up ALL services from the dead server across all workspaces
-                        # When a server is dead, we need to clean up everything it might have left behind
-                        patterns = [
-                            f"services:*|*:*/{server_id}:*@*",  # Direct server services
-                            f"services:*|*:*/{server_id}-*:*@*",  # Services from server-generated clients
-                            f"services:*|*:*/manager-{server_id}:*@*",  # Manager services
-                        ]
-                        
-                        all_keys = []
-                        for pattern in patterns:
-                            keys = await self._scan_keys(pattern)
-                            all_keys.extend(keys)
-                        
-                        if all_keys:
-                            logger.info(f"Removing {len(all_keys)} services from dead server {server_id}")
-                            # Use pipeline for efficient bulk deletion
-                            pipeline = self._redis.pipeline()
-                            for key in all_keys:
-                                pipeline.delete(key)
-                            await pipeline.execute()
-                            logger.info(f"Successfully cleaned up dead server {server_id}")
-                    else:
-                        if server_id == self._server_id:
-                            raise RuntimeError(
-                                f"Server with the same id ({server_id}) is already running, please use a different server id by passing `--server-id=new-server-id` to the command line."
-                            )
-            except Exception as exp:
-                raise exp
-            finally:
-                await rpc.disconnect()
+                results = await asyncio.wait_for(
+                    asyncio.gather(*[_probe(sid) for sid in server_ids]),
+                    timeout=deadline,
+                )
+                dead_servers = [r for r in results if r is not None]
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Server-check phase exceeded its %ss deadline over %d server(s); "
+                    "continuing startup — remaining dead registrations will be trimmed "
+                    "by the background reaper.",
+                    deadline,
+                    len(server_ids),
+                )
+
+            # A LIVE server already running with our id is a hard misconfiguration.
+            if self_id_is_live:
+                raise RuntimeError(
+                    f"Server with the same id ({self._server_id}) is already running, "
+                    "please use a different server id by passing "
+                    "`--server-id=new-server-id` to the command line."
+                )
+
+            if dead_servers:
+                logger.info(
+                    "Cleaning up %d dead server(s): %s",
+                    len(dead_servers),
+                    dead_servers,
+                )
+                all_keys = []
+                for server_id in dead_servers:
+                    # Clean up ALL services the dead server might have left behind
+                    # across all workspaces.
+                    patterns = [
+                        f"services:*|*:*/{server_id}:*@*",  # Direct server services
+                        f"services:*|*:*/{server_id}-*:*@*",  # Server-generated clients
+                        f"services:*|*:*/manager-{server_id}:*@*",  # Manager services
+                    ]
+                    for pattern in patterns:
+                        keys = await self._scan_keys(pattern)
+                        all_keys.extend(keys)
+
+                if all_keys:
+                    logger.info(
+                        "Removing %d service(s) from %d dead server(s)",
+                        len(all_keys),
+                        len(dead_servers),
+                    )
+                    # Pipeline for efficient bulk deletion.
+                    pipeline = self._redis.pipeline()
+                    for key in all_keys:
+                        pipeline.delete(key)
+                    await pipeline.execute()
+                    logger.info("Successfully cleaned up dead servers")
+        except Exception as exp:
+            raise exp
+        finally:
+            await rpc.disconnect()
 
     async def _clear_client_services(self, workspace: str, client_id: str):
         """Clear a workspace."""
@@ -866,7 +952,10 @@ class RedisStore:
                     svc = await rpc.get_remote_service(
                         f"{workspace}/{client_id}:built-in", {"timeout": ping_timeout}
                     )
-                    await svc.ping("ping")
+                    # Bound the ping itself: get_remote_service's timeout only
+                    # covers resolution, not the ping round-trip. A half-open peer
+                    # that resolves but never replies would otherwise hang the pass.
+                    await asyncio.wait_for(svc.ping("ping"), timeout=ping_timeout)
                     return None
                 except Exception:
                     return (workspace, client_id)
