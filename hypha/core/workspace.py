@@ -2393,14 +2393,33 @@ class WorkspaceManager:
             await self._redis.hset(key, mapping=redis_data)
             # Default service created by api.export({}), typically used for hypha apps
             if ":default@" in key:
+                # Probe for an optional `setup` method WITHOUT triggering an
+                # AttributeError: the remote-service proxy (Munch/ObjectProxy)
+                # raises AttributeError('setup') when a default service simply
+                # does not define setup() — a benign, expected condition. The old
+                # `if svc.setup:` turned that into a per-client ERROR whose detail
+                # interpolated to the useless bare string "setup" (~20/24h in
+                # prod, unactionable by construction). getattr(..., None) makes
+                # "no setup method" a silent no-op; only a setup() that actually
+                # exists and RAISES is a real failure worth an ERROR — now with
+                # the exception type + repr so it is diagnosable. See #0044.
                 try:
                     svc = await self._rpc.get_remote_service(client_id + ":default")
-                    if svc.setup:
-                        await svc.setup()
                 except Exception as e:
                     logger.error(
-                        f"Failed to run setup for default service `{client_id}`: {e}"
+                        f"Failed to resolve default service `{client_id}` for setup: "
+                        f"{type(e).__name__}: {e!r}"
                     )
+                    svc = None
+                setup = getattr(svc, "setup", None) if svc is not None else None
+                if callable(setup):
+                    try:
+                        await setup()
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to run setup for default service `{client_id}`: "
+                            f"{type(e).__name__}: {e!r}"
+                        )
             if ":built-in@" in key:
                 # A client (re)connected: cancel any pending debounced unload so a
                 # quick reconnect RESUMES the still-loaded workspace instead of it

@@ -24,6 +24,7 @@ import shortuuid
 import msgpack
 from fastapi import Depends, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.requests import ClientDisconnect
 
 from hypha.core import RedisRPCConnection, UserInfo, UserPermission
 from hypha.core.auth import (
@@ -881,6 +882,14 @@ class HTTPStreamingRPCServer:
                         workspace, client_id, user_info, body
                     )
 
+            except ClientDisconnect:
+                # The client hung up before/while its request body arrived — a
+                # normal network condition, NOT a server error. Abort quietly at
+                # DEBUG with no traceback; there is no client left to answer, and
+                # logging this at ERROR+traceback (618/24h in prod) poisons the
+                # ERROR metric that health thresholds key on. See log-hygiene #0044.
+                logger.debug("Client disconnected before the RPC request body was received")
+                return Response(status_code=499)
             except Exception as e:
                 logger.error(f"Error in rpc_post: {e}\n{traceback.format_exc()}")
                 return JSONResponse(

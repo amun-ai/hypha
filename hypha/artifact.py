@@ -9110,7 +9110,7 @@ class ArtifactController:
             PermissionError: If user lacks read permission on parent or workspace
             HTTPException: If parent collection not found
         """
-        logger.info(f"search: stage parameter value = {stage}")
+        logger.debug(f"search: stage parameter value = {stage}")
 
         # Convert 'all' to None for internal implementation
         if stage == "all":
@@ -9379,7 +9379,7 @@ class ArtifactController:
 
                 # Stage filtering logic
                 if stage is not None:  # If stage is explicitly True or False
-                    logger.info(f"Adding stage filter condition: stage={stage}")
+                    logger.debug(f"Adding stage filter condition: stage={stage}")
                     if backend == "sqlite":
                         if stage:
                             # Return only staged artifacts
@@ -9387,13 +9387,13 @@ class ArtifactController:
                                 ArtifactModel.staging.is_not(None),
                                 text("staging != 'null'"),
                             )
-                            logger.info(
+                            logger.debug(
                                 "Adding condition to return ONLY STAGED artifacts"
                             )
                         else:
                             # Return only committed artifacts
                             stage_condition = text("json_array_length(versions) > 0")
-                            logger.info(
+                            logger.debug(
                                 "Adding condition to return ONLY COMMITTED artifacts (with at least 1 version)"
                             )
                     else:
@@ -9403,7 +9403,7 @@ class ArtifactController:
                                 ArtifactModel.staging.is_not(None),
                                 text("staging::text != 'null'"),
                             )
-                            logger.info(
+                            logger.debug(
                                 "Adding condition to return ONLY STAGED artifacts"
                             )
                         else:
@@ -9411,7 +9411,7 @@ class ArtifactController:
                             stage_condition = (
                                 func.json_array_length(ArtifactModel.versions) > 0
                             )
-                            logger.info(
+                            logger.debug(
                                 "Adding condition to return ONLY COMMITTED artifacts (with at least 1 version)"
                             )
 
