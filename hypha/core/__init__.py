@@ -615,6 +615,17 @@ class WorkspaceInfo(BaseModel):
         # check if user_info.id or user_info.email is in the owners list
         if user_info.id in self.owners or user_info.email in self.owners:
             return True
+        # A user always owns their personal workspace ("ws-user-<uid>"), including
+        # when acting through a child token whose own id differs but whose parent
+        # is the user. The parent chain is assigned server-side in generate_token()
+        # (not settable by a caller), so this cannot be forged. This keeps ownership
+        # recognition consistent with how personal workspaces are keyed, regardless
+        # of what is materialised in the owners list.
+        personal_workspaces = {f"ws-user-{user_info.id}"}
+        if user_info.parent:
+            personal_workspaces.add(f"ws-user-{user_info.parent}")
+        if self.id in personal_workspaces:
+            return True
         return False
 
 
