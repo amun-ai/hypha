@@ -833,7 +833,7 @@ async def test_normal_return_cleanup():
 
 
 @pytest.mark.asyncio
-async def test_orphaned_client_cleanup_on_startup():
+async def test_orphaned_client_cleanup_on_startup(monkeypatch):
     """Test that orphaned client services are cleaned up when a new server starts.
 
     Bug 2: When a server crashes without graceful shutdown, user-connected
@@ -846,6 +846,12 @@ async def test_orphaned_client_cleanup_on_startup():
     from hypha.core import RedisEventBus
     from fastapi import FastAPI
     from fakeredis import aioredis
+
+    # This test drives a single reap pass over a genuinely-dead client; require
+    # only one failed probe so that one pass reaps it. The consecutive-failure
+    # guard (which protects live clients racing a reconnect) is covered in
+    # test_orphan_reaper_confirmation.py (#1052).
+    monkeypatch.setenv("HYPHA_ORPHAN_REAP_MIN_FAILURES", "1")
 
     app = FastAPI()
 

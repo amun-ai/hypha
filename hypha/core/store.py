@@ -378,6 +378,12 @@ class RedisStore:
         self._leader_lease = None
         self._malloc_trim_task = None
         self._orphan_reaper_task = None
+        # Per-client CONSECUTIVE orphan-probe failure counts, tracked across
+        # reaper passes. A client's services are only reaped after it fails
+        # `HYPHA_ORPHAN_REAP_MIN_FAILURES` consecutive probes (#1052), so a
+        # single dropped cross-pod ping (e.g. a brief subscription-convergence
+        # window on reconnect) can never delete a live client's registration.
+        self._orphan_probe_failures = {}  # {"workspace/client_id": int}
         # self._house_keeping_task = None
 
         self._shared_anonymous_user = None
@@ -937,6 +943,14 @@ class RedisStore:
         # Bounding concurrency keeps one pass at ~ceil(N/concurrency) x timeout.
         concurrency = max(1, int(os.environ.get("HYPHA_ORPHAN_REAP_CONCURRENCY", "50")))
         ping_timeout = float(os.environ.get("HYPHA_ORPHAN_REAP_PING_TIMEOUT", "3"))
+        # A client is only reaped after this many CONSECUTIVE failed probes
+        # (#1052). The cross-pod ping is best-effort — a single dropped message
+        # during a reconnect/subscription-convergence window must NOT delete a
+        # live client's registration. With the default 300s interval, 3 failures
+        # span ~10 min — far longer than any transient unreachability window
+        # (and longer than the subscription reconcile interval), so only a
+        # genuinely dead client accumulates enough failures to be reaped.
+        min_failures = max(1, int(os.environ.get("HYPHA_ORPHAN_REAP_MIN_FAILURES", "3")))
         sem = asyncio.Semaphore(concurrency)
 
         # Create a temporary RPC to ping clients
@@ -960,34 +974,69 @@ class RedisStore:
                 except Exception:
                     return (workspace, client_id)
 
-        orphaned_clients = []
         try:
             results = await asyncio.gather(
                 *[_probe(ws, cid) for ws, cid in candidates]
             )
-            orphaned_clients = [r for r in results if r is not None]
+            unreachable = {f"{r[0]}/{r[1]}" for r in results if r is not None}
 
-            if orphaned_clients:
+            # Update the CONSECUTIVE-failure counters (#1052): increment for
+            # every unreachable client, reset any client that answered, and drop
+            # counters for clients no longer present (reconnected away / already
+            # gone). Only clients that have failed `min_failures` consecutive
+            # passes are actually reaped, so one dropped cross-pod ping cannot
+            # delete a live client's registration.
+            candidate_keys = {f"{ws}/{cid}" for ws, cid in candidates}
+            self._orphan_probe_failures = {
+                k: v for k, v in self._orphan_probe_failures.items()
+                if k in candidate_keys
+            }
+            confirmed_orphans = []
+            for ws, cid in candidates:
+                client_key = f"{ws}/{cid}"
+                if client_key in unreachable:
+                    count = self._orphan_probe_failures.get(client_key, 0) + 1
+                    self._orphan_probe_failures[client_key] = count
+                    if count >= min_failures:
+                        confirmed_orphans.append((ws, cid))
+                else:
+                    self._orphan_probe_failures.pop(client_key, None)
+
+            if unreachable:
+                logger.info(
+                    "Orphan reaper: %d client(s) unreachable this pass, "
+                    "%d confirmed dead (>=%d consecutive failures)",
+                    len(unreachable),
+                    len(confirmed_orphans),
+                    min_failures,
+                )
+
+            if confirmed_orphans:
                 logger.warning(
                     "Found %d orphaned clients, cleaning up their services...",
-                    len(orphaned_clients),
+                    len(confirmed_orphans),
                 )
                 pipeline = self._redis.pipeline()
                 total_keys = 0
-                for workspace, client_id in orphaned_clients:
+                for workspace, client_id in confirmed_orphans:
                     svc_pattern = f"services:*|*:{workspace}/{client_id}:*@*"
                     svc_keys = await self._scan_keys(svc_pattern)
                     for k in svc_keys:
                         pipeline.delete(k)
                         total_keys += 1
+                    # Clear the counter once reaped so a client that later
+                    # reconnects under the same id starts fresh.
+                    self._orphan_probe_failures.pop(
+                        f"{workspace}/{client_id}", None
+                    )
                 if total_keys:
                     await pipeline.execute()
                     logger.info(
                         "Removed %d service keys from %d orphaned clients",
                         total_keys,
-                        len(orphaned_clients),
+                        len(confirmed_orphans),
                     )
-            else:
+            elif not unreachable:
                 logger.info("No orphaned client services found")
         except Exception as e:
             logger.error("Error during orphaned client cleanup: %s", e)
