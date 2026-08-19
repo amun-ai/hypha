@@ -1286,11 +1286,18 @@ class WorkspaceManager:
         allowed_workspace = config.workspace or ws
 
         maximum_permission = user_info.get_permission(allowed_workspace)
-        if not maximum_permission:
+        if maximum_permission != UserPermission.admin:
+            # A workspace owner may always mint tokens for their OWN workspace,
+            # even when the presented token only grants read_write (or nothing).
+            # This ownership fallback previously ran only when the resolved
+            # permission was falsy, so an owner acting through a read_write token
+            # — e.g. a child token scoped to their own workspace — fell through to
+            # "Only admin can generate token" and could not start their own
+            # server-apps. See amun-ai/hypha#958.
             workspace_info = await self.load_workspace_info(allowed_workspace)
-            if workspace_info.owned_by(user_info):
+            if workspace_info is not None and workspace_info.owned_by(user_info):
                 maximum_permission = UserPermission.admin
-            else:
+            elif not maximum_permission:
                 raise PermissionError(
                     f"You do not have any permission for workspace: {allowed_workspace}"
                 )

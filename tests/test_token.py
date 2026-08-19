@@ -35,6 +35,39 @@ async def test_generate_token(fastapi_server):
     await api1.disconnect()
 
 
+async def test_owner_can_generate_token_with_read_write_token(fastapi_server):
+    """A workspace owner may mint tokens for their own workspace through a
+    read_write token.
+
+    Regression for amun-ai/hypha#958: the owner-elevation fallback in
+    generate_token() previously only ran when the resolved permission was falsy,
+    so an owner acting through a read_write token (e.g. a child token scoped to
+    their own workspace) hit "Only admin can generate token" and could not start
+    their own server-apps.
+    """
+    async with connect_to_server(
+        {"name": "owner app", "server_url": WS_SERVER_URL, "client_id": "owner-app"}
+    ) as api1:
+        workspace = api1.config.workspace
+        # A read_write (non-admin) token for the owner's own workspace.
+        rw_token = await api1.generate_token({"permission": "read_write"})
+
+        async with connect_to_server(
+            {
+                "name": "owner app rw",
+                "server_url": WS_SERVER_URL,
+                "client_id": "owner-app-rw",
+                "token": rw_token,
+                "workspace": workspace,
+            }
+        ) as api2:
+            # The owner (through the read_write child token) must still be able to
+            # mint a token for their own workspace — this raised
+            # "Only admin can generate token" before the fix.
+            child_token = await api2.generate_token({"permission": "read_write"})
+            assert isinstance(child_token, str) and child_token
+
+
 async def test_revoke_token(fastapi_server):
     """Test connecting to the server with a revoked token."""
     async with connect_to_server(
