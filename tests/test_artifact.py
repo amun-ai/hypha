@@ -1646,7 +1646,125 @@ async def test_workspace_based_permissions(
     
     # Clean up
     await artifact_manager1.delete(collection["id"])
-    
+
+    await api1.disconnect()
+    await api2.disconnect()
+
+
+async def test_collection_permission_fallback_for_children(
+    minio_server, fastapi_server, test_user_token, test_user_token_2
+):
+    """A user holding a collection-level read_write permission (e.g. a model-zoo
+    reviewer with ``rw+``) must be authorized for read/write operations on the
+    collection's CHILD artifacts — including staged/versionless children whose own
+    config only lists the uploader — while delete stays owner/admin-only.
+
+    Regression test for the collection-level permission fallback: previously the
+    parent-collection fallback in ``_get_artifact_with_permission`` only covered
+    read operations, so a collection-``rw+`` reviewer got a PermissionError on
+    ``edit``/``commit``/``put_file`` of a child model.
+    """
+    # Owner / uploader
+    api1 = await connect_to_server(
+        {"name": "owner-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager1 = await api1.get_service("public/artifact-manager")
+    user1_info = api1.config["user"]
+
+    # Reviewer (a different user) — will hold rw+ on the PARENT collection only
+    api2 = await connect_to_server(
+        {"name": "reviewer-client", "server_url": SERVER_URL, "token": test_user_token_2}
+    )
+    artifact_manager2 = await api2.get_service("public/artifact-manager")
+    user2_info = api2.config["user"]
+
+    # Collection: owner has full access, reviewer holds collection-level rw+.
+    collection = await artifact_manager1.create(
+        type="collection",
+        alias="reviewer-collection",
+        manifest={"name": "Reviewer Collection"},
+        config={
+            "permissions": {
+                user1_info["id"]: "*",
+                user2_info["id"]: "rw+",  # collection-level reviewer
+            }
+        },
+    )
+
+    # Committed child model — its OWN config lists only the uploader (user1).
+    child = await artifact_manager1.create(
+        parent_id=collection["id"],
+        type="model",
+        alias="committed-model",
+        manifest={"name": "Committed Model"},
+        version="v0",
+    )
+    # Sanity: the reviewer is NOT listed on the child's own permissions.
+    assert user2_info["id"] not in (child.get("config", {}) or {}).get(
+        "permissions", {}
+    )
+
+    # Reviewer can EDIT the committed child via the collection-level rw+ fallback.
+    await artifact_manager2.edit(
+        artifact_id=child["id"],
+        manifest={"name": "Reviewed committed model"},
+    )
+    read_child = await artifact_manager2.read(artifact_id=child["id"])
+    assert read_child["manifest"]["name"] == "Reviewed committed model"
+
+    # Staged / versionless child: reviewer must be able to edit + put_file + commit.
+    staged_child = await artifact_manager1.create(
+        parent_id=collection["id"],
+        type="model",
+        alias="staged-model",
+        manifest={"name": "Staged Model"},
+        stage=True,
+    )
+    # Reviewer edits the staged child (still uncommitted).
+    await artifact_manager2.edit(
+        artifact_id=staged_child["id"],
+        manifest={"name": "Reviewed staged model"},
+        stage=True,
+    )
+    # Reviewer uploads a file to the staged child.
+    put_url = await artifact_manager2.put_file(
+        artifact_id=staged_child["id"], file_path="weights.txt"
+    )
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.put(put_url, data=b"model-weights")
+        assert resp.status_code == 200
+    # Reviewer commits the staged child.
+    await artifact_manager2.commit(artifact_id=staged_child["id"])
+    committed = await artifact_manager2.read(artifact_id=staged_child["id"])
+    assert committed["manifest"]["name"] == "Reviewed staged model"
+
+    # Delete must NOT be granted through the collection-level fallback: rw+ on the
+    # parent does not include delete, and delete stays owner/admin-only.
+    with pytest.raises(Exception) as exc_info:
+        await artifact_manager2.delete(artifact_id=child["id"])
+    assert "permission" in str(exc_info.value).lower()
+
+    # A user with only READ (not rw+) on the parent collection must NOT be able to
+    # edit children — the fallback requires the WRITE permission on the parent.
+    await artifact_manager1.edit(
+        collection["id"],
+        config={
+            "permissions": {
+                user1_info["id"]: "*",
+                user2_info["id"]: "r",  # downgrade reviewer to read-only
+            }
+        },
+    )
+    with pytest.raises(Exception) as exc_info:
+        await artifact_manager2.edit(
+            artifact_id=child["id"],
+            manifest={"name": "Should be denied"},
+        )
+    assert "permission" in str(exc_info.value).lower()
+
+    # Owner cleanup (owner still has full access via child "*" + parent).
+    await artifact_manager1.delete(collection["id"], recursive=True)
+
     await api1.disconnect()
     await api2.disconnect()
 

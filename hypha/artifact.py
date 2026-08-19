@@ -2540,11 +2540,25 @@ class ArtifactController:
         if artifact_permissions:
             for perm in artifact_permissions:
                 if not await self._check_permissions(artifact, user_info, perm):
-                    # Try parent as fallback for read operations
-                    if perm in ["read", "list", "get_file", "list_files", "get_vector", "list_vectors", "search_vectors"]:
-                        if parent_artifact and await self._check_permissions(parent_artifact, user_info, perm):
+                    # Fall back to the PARENT COLLECTION for read AND read_write
+                    # operations. A user who holds a sufficient permission on the
+                    # parent collection (e.g. a model-zoo reviewer with "rw+") is
+                    # authorized for read/write operations (edit, commit, put_file,
+                    # remove_file, discard_changes, ...) on its child artifacts,
+                    # INCLUDING staged/versionless children whose own config only
+                    # lists the uploader. Admin-level operations (delete,
+                    # reset_stats, publish, get_secret) are deliberately EXCLUDED
+                    # from this fallback so that deletion stays owner/admin-only and
+                    # cannot be granted through a collection-level permission.
+                    if (
+                        operation_map.get(perm, UserPermission.read_write)
+                        != UserPermission.admin
+                    ):
+                        if parent_artifact and await self._check_permissions(
+                            parent_artifact, user_info, perm
+                        ):
                             continue  # Permission granted through parent
-                    
+
                     # Check workspace-level permission as final fallback
                     # Workspace owners always have highest permission
                     if not user_info.check_permission(artifact.workspace, operation_map.get(perm, UserPermission.read_write)):
