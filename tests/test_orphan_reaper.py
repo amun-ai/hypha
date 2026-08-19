@@ -52,6 +52,10 @@ async def test_reap_removes_dead_clients_concurrently(monkeypatch):
     pings CONCURRENTLY so a pile of orphans is bounded, not O(N x timeout)."""
     monkeypatch.setenv("HYPHA_ORPHAN_REAP_PING_TIMEOUT", "1")
     monkeypatch.setenv("HYPHA_ORPHAN_REAP_CONCURRENCY", "50")
+    # This test asserts the concurrency/timing of a SINGLE reap pass; require
+    # only one failed probe so one pass reaps (the consecutive-failure guard is
+    # covered separately in test_orphan_reaper_confirmation.py — #1052).
+    monkeypatch.setenv("HYPHA_ORPHAN_REAP_MIN_FAILURES", "1")
     store = RedisStore(None, redis_uri=None)
     await store.init(reset_redis=True)
     try:

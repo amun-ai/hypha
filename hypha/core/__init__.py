@@ -1256,7 +1256,21 @@ class RedisEventBus:
         self._redis_event_bus = EventBus(logger)
         # Track local clients for optimized routing
         self._local_clients = set()  # Set of "workspace/client_id" strings
-        self._subscribed_patterns = set()  # Track which patterns we've subscribed to
+        # `_subscribed_patterns` = the DESIRED set (what we want wired to Redis).
+        # `_confirmed_patterns` = the subset actually confirmed on the live
+        # pubsub. Separating them fixes the #1053 convergence race: a psubscribe
+        # that times out/errors at register time used to leave the pattern in the
+        # desired set but unwired, and the desired-set membership guard then made
+        # every later subscribe a no-op — a permanent cross-pod black hole. Now
+        # the guard is keyed on `_confirmed_patterns`, so a desired-but-unconfirmed
+        # pattern is retried (on the next subscribe call, on reconnect, and by the
+        # background reconciler) until it is actually wired.
+        self._subscribed_patterns = set()  # DESIRED patterns
+        self._confirmed_patterns = set()  # patterns confirmed on the live pubsub
+        self._reconcile_task = None
+        self._reconcile_interval = float(
+            os.environ.get("HYPHA_SUBSCRIPTION_RECONCILE_INTERVAL", "5.0")
+        )
         self._pubsub = None  # Store the pubsub object for dynamic subscriptions
         # Track recently-disconnected clients for fast dead-peer detection
         self._recently_disconnected = {}  # {client_key: disconnect_timestamp}
@@ -1312,34 +1326,95 @@ class RedisEventBus:
         except Exception:
             pass
 
+    async def _ensure_pattern_subscribed(self, pattern: str) -> bool:
+        """Wire a DESIRED pattern to the live pubsub, idempotently.
+
+        Returns True if the pattern is confirmed on the pubsub after this call.
+        A no-op (returns True) if already confirmed. Leaves the pattern
+        unconfirmed (returns False) if the pubsub is unavailable, the circuit
+        breaker is open, or the psubscribe times out/errors — so a later call
+        (subscribe / reconnect / reconciler) retries it rather than treating a
+        recorded-but-unwired pattern as done (#1053).
+        """
+        if pattern in self._confirmed_patterns:
+            return True
+        if not self._pubsub or self._circuit_breaker_open:
+            return False
+        try:
+            # Add timeout to prevent hanging on Redis connection issues
+            await asyncio.wait_for(self._pubsub.psubscribe(pattern), timeout=5.0)
+            self._confirmed_patterns.add(pattern)
+            logger.debug("Subscribed to client events: %s", pattern)
+            RedisEventBus._patterns_subscribed_total.inc()
+            RedisEventBus._patterns_subscribed_total_int += 1
+            # Mark successful operation
+            self._consecutive_failures = 0
+            return True
+        except asyncio.TimeoutError:
+            logger.warning("Timeout subscribing to client events %s", pattern)
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self._max_failures:
+                self._circuit_breaker_open = True
+            return False
+        except Exception as e:
+            logger.warning("Failed to subscribe to client events %s: %s", pattern, e)
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self._max_failures:
+                self._circuit_breaker_open = True
+            return False
+
+    async def _rewire_desired_patterns(self):
+        """Re-wire ALL desired targeted patterns onto the current pubsub.
+
+        Called after (re)connecting the pubsub. The fresh pubsub has nothing
+        wired, so `_confirmed_patterns` is reset first; then every desired
+        pattern is re-attempted WITHOUT discarding on failure — a transient
+        re-subscribe failure must not permanently lose a client's cross-pod
+        events (the reconciler retries any that stay unconfirmed) — #1053.
+        """
+        self._confirmed_patterns = set()
+        for pattern in list(self._subscribed_patterns):
+            if await self._ensure_pattern_subscribed(pattern):
+                logger.debug("Re-subscribed to pattern: %s", pattern)
+
+    async def _reconcile_subscriptions(self):
+        """Retry wiring every DESIRED pattern that is not yet confirmed.
+
+        Called on an interval by the background reconcile loop. In steady state
+        the desired and confirmed sets are equal, so this is a cheap no-op; it
+        only does work after a transient psubscribe failure left a pattern
+        recorded-but-unwired (#1053). Bounded by the number of unconfirmed
+        patterns.
+        """
+        pending = self._subscribed_patterns - self._confirmed_patterns
+        for pattern in pending:
+            await self._ensure_pattern_subscribed(pattern)
+
+    async def _reconcile_loop(self):
+        """Periodically reconcile desired vs confirmed subscriptions."""
+        while not self._stop:
+            try:
+                await asyncio.sleep(self._reconcile_interval)
+                if self._stop:
+                    break
+                await self._reconcile_subscriptions()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning("Subscription reconcile loop error: %s", e)
+
     async def subscribe_to_client_events(self, workspace: str, client_id: str):
         """Subscribe to events for a specific client using targeted prefix."""
         client_key = f"{workspace}/{client_id}"
         # Subscribe to targeted messages for this client
         pattern = f"targeted:{client_key}:*"
-        if pattern not in self._subscribed_patterns:
-            # Record desired subscription regardless of pubsub availability
-            self._subscribed_patterns.add(pattern)
-            RedisEventBus._active_patterns_gauge.set(len(self._subscribed_patterns))
-            if self._pubsub and not self._circuit_breaker_open:
-                try:
-                    # Add timeout to prevent hanging on Redis connection issues
-                    await asyncio.wait_for(self._pubsub.psubscribe(pattern), timeout=5.0)
-                    logger.debug("Subscribed to client events: %s", pattern)
-                    RedisEventBus._patterns_subscribed_total.inc()
-                    RedisEventBus._patterns_subscribed_total_int += 1
-                    # Mark successful operation
-                    self._consecutive_failures = 0
-                except asyncio.TimeoutError:
-                    logger.warning("Timeout subscribing to client events %s", pattern)
-                    self._consecutive_failures += 1
-                    if self._consecutive_failures >= self._max_failures:
-                        self._circuit_breaker_open = True
-                except Exception as e:
-                    logger.warning("Failed to subscribe to client events %s: %s", pattern, e)
-                    self._consecutive_failures += 1
-                    if self._consecutive_failures >= self._max_failures:
-                        self._circuit_breaker_open = True
+        # Always record the DESIRED subscription regardless of pubsub
+        # availability. The guard is on `_confirmed_patterns` (inside
+        # `_ensure_pattern_subscribed`), NOT on the desired set, so a
+        # desired-but-unconfirmed pattern is retried instead of no-op'd (#1053).
+        self._subscribed_patterns.add(pattern)
+        RedisEventBus._active_patterns_gauge.set(len(self._subscribed_patterns))
+        await self._ensure_pattern_subscribed(pattern)
 
     async def unsubscribe_from_client_events(self, workspace: str, client_id: str):
         """Unsubscribe from events for a specific client."""
@@ -1365,7 +1440,8 @@ class RedisEventBus:
                 except Exception as e:
                     logger.warning("Failed to unsubscribe from client events %s: %s", pattern, e)
             self._subscribed_patterns.discard(pattern)
-        
+            self._confirmed_patterns.discard(pattern)
+
         RedisEventBus._active_patterns_gauge.set(len(self._subscribed_patterns))
 
     def is_local_client(self, workspace: str, client_id: str) -> bool:
@@ -1455,6 +1531,7 @@ class RedisEventBus:
                 try:
                     await asyncio.wait_for(self._pubsub.punsubscribe(pattern), timeout=5.0)
                     self._subscribed_patterns.discard(pattern)
+                    self._confirmed_patterns.discard(pattern)
                     logger.debug(f"Cleaned up orphaned pattern: {pattern}")
                 except asyncio.TimeoutError:
                     logger.warning(f"Timeout cleaning up orphaned pattern: {pattern}")
@@ -1471,10 +1548,11 @@ class RedisEventBus:
         client_key = f"{workspace}/{client_id}"
         if not self.is_local_client(workspace, client_id):
             pattern = f"event:*:{client_key}:*"
-            if pattern not in self._subscribed_patterns and self._pubsub:
+            if pattern not in self._confirmed_patterns and self._pubsub:
+                self._subscribed_patterns.add(pattern)
                 try:
                     await self._pubsub.psubscribe(pattern)
-                    self._subscribed_patterns.add(pattern)
+                    self._confirmed_patterns.add(pattern)
                     logger.debug(f"Subscribed to pattern: {pattern}")
                 except Exception as e:
                     logger.warning(f"Failed to subscribe to pattern {pattern}: {e}")
@@ -1487,6 +1565,10 @@ class RedisEventBus:
 
         # Start the Redis subscription task
         self._subscribe_task = loop.create_task(self._subscribe_redis())
+        # Start the subscription reconciler (retries desired-but-unconfirmed
+        # patterns so a transient psubscribe failure never permanently
+        # black-holes a client's cross-pod events — #1053).
+        self._reconcile_task = loop.create_task(self._reconcile_loop())
 
         # Wait for readiness signal
         await self._ready
@@ -1648,11 +1730,13 @@ class RedisEventBus:
         # Cancel tasks first
         if self._subscribe_task:
             self._subscribe_task.cancel()
+        if self._reconcile_task:
+            self._reconcile_task.cancel()
 
         # Wait for tasks to complete
         try:
             await asyncio.gather(
-                self._subscribe_task, return_exceptions=True
+                self._subscribe_task, self._reconcile_task, return_exceptions=True
             )
         except asyncio.CancelledError:
             pass
@@ -1679,23 +1763,21 @@ class RedisEventBus:
                 
                 # Subscribe to all broadcast messages (server-wide events)
                 await pubsub.psubscribe("broadcast:*")
-                
-                # Re-subscribe to any existing targeted client patterns
-                for pattern in list(self._subscribed_patterns):
-                    try:
-                        await pubsub.psubscribe(pattern)
-                        logger.debug(f"Re-subscribed to pattern: {pattern}")
-                    except Exception as e:
-                        logger.warning(f"Failed to re-subscribe to pattern {pattern}: {e}")
-                        self._subscribed_patterns.discard(pattern)
-                
-                if not self._ready.done():
-                    self._ready.set_result(True)
-                self._counter.labels(event="subscription", status="success").inc()
-                # Mark healthy on successful subscription
+
+                # The fresh pubsub just accepted a psubscribe, so it is healthy:
+                # clear the breaker BEFORE re-wiring targeted patterns, otherwise
+                # a stale-open breaker would make `_ensure_pattern_subscribed`
+                # refuse to wire them on this good connection.
                 self._last_successful_connection = time.time()
                 self._consecutive_failures = 0
                 self._circuit_breaker_open = False
+
+                # Re-wire all DESIRED targeted patterns onto the fresh pubsub.
+                await self._rewire_desired_patterns()
+
+                if not self._ready.done():
+                    self._ready.set_result(True)
+                self._counter.labels(event="subscription", status="success").inc()
 
                 while not self._stop:
                     try:
