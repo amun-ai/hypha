@@ -226,6 +226,82 @@ async def test_file_removal_version_handling(minio_server, fastapi_server_sqlite
     files = await artifact_manager.list_files(artifact_id=artifact.id, version="v1")
     assert len(files) == 1
     assert files[0]["name"] == "file3.txt"
-    
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=artifact.id, delete_files=True)
+
+
+async def test_discard_inplace_edit_preserves_committed_files(
+    minio_server, fastapi_server_sqlite, test_user_token
+):
+    """Discarding an in-place (edit_version) staging session must restore the
+    committed file bytes that were overwritten during staging, and drop files
+    that were newly added while staging. Regression test for the discard
+    data-loss bug where staged in-place writes clobbered committed content and
+    discard then deleted it outright."""
+
+    api = await connect_to_server(
+        {
+            "name": "test discard inplace client",
+            "server_url": SERVER_URL_SQLITE,
+            "token": test_user_token,
+        }
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create and commit an initial version with one file.
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Discard Inplace Test"},
+        config={"permissions": {"*": "rw+"}},
+        stage=True,
+    )
+    put_url = await artifact_manager.put_file(
+        artifact_id=artifact.id, file_path="keep.txt"
+    )
+    assert requests.put(put_url, data="ORIGINAL committed content").ok
+    artifact = await artifact_manager.commit(artifact_id=artifact.id)
+    assert len(artifact["versions"]) == 1
+
+    # Stage an in-place edit: overwrite the committed file AND add a new file.
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest={"name": "Discard Inplace Test", "description": "editing"},
+        stage=True,
+    )
+    put_url = await artifact_manager.put_file(
+        artifact_id=artifact.id, file_path="keep.txt"
+    )
+    assert requests.put(put_url, data="OVERWRITTEN staged content").ok
+    put_url = await artifact_manager.put_file(
+        artifact_id=artifact.id, file_path="new_during_stage.txt"
+    )
+    assert requests.put(put_url, data="added while staging").ok
+
+    # Sanity: staging shows the edited bytes and the new file.
+    staged_url = await artifact_manager.get_file(
+        artifact_id=artifact.id, file_path="keep.txt", version="stage"
+    )
+    assert requests.get(staged_url).text == "OVERWRITTEN staged content"
+
+    # Discard everything.
+    await artifact_manager.discard(artifact_id=artifact.id)
+
+    # The committed version must still have exactly the original file/content.
+    files = await artifact_manager.list_files(artifact_id=artifact.id, version="v0")
+    file_names = [f["name"] for f in files]
+    assert file_names == ["keep.txt"], f"unexpected files after discard: {file_names}"
+
+    restored_url = await artifact_manager.get_file(
+        artifact_id=artifact.id, file_path="keep.txt"
+    )
+    assert requests.get(restored_url).text == "ORIGINAL committed content"
+
+    # The newly added staged file must be gone.
+    with pytest.raises(Exception, match="does not exist"):
+        await artifact_manager.get_file(
+            artifact_id=artifact.id, file_path="new_during_stage.txt"
+        )
+
     # Clean up
     await artifact_manager.delete(artifact_id=artifact.id, delete_files=True)
