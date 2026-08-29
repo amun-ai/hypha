@@ -131,7 +131,7 @@ setup(
             "redisvl>=0.4.1; python_version >= '3.9' and python_version < '3.14'",
             "mcp>=1.10.0; python_version >= '3.10'",
             "litellm-proxy-extras==0.2.19",
-            "rich==13.7.1",
+            "rich==15.0.0",
             "litellm-enterprise==0.1.20",
             "diskcache>=5.6.1",
             "polars>=1.31.0; python_version >= '3.10'",
