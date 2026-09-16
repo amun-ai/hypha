@@ -75,6 +75,11 @@ HYPHA_GIT_STREAM_THRESHOLD = int(
 # working set (bounded) rather than cumulative throughput. A whole-pack-load
 # regression holds the pack LIVE, which trim cannot release, so this does NOT
 # mask that regression (see test_git_clone_memory_flat_curve).
+# Escape hatch: set to 0 (or any value <= 0) to DISABLE mid-stream trimming
+# entirely (e.g. to isolate its cost or on an allocator where it is unwanted);
+# raise it to trim less often. Each trim is an allocator arena walk that runs
+# in the producer thread (never the event loop); at 16 MiB that is ~25 walks
+# for a 400 MB pack, negligible against the network egress.
 HYPHA_GIT_STREAM_TRIM_INTERVAL = int(
     os.environ.get("HYPHA_GIT_STREAM_TRIM_INTERVAL", str(16 * 1024 * 1024))
 )
@@ -1066,7 +1071,10 @@ class GitHTTPHandler:
                         queue.put(_wrap(frame)), loop
                     ).result()
                 since_trim += len(data)
-                if since_trim >= HYPHA_GIT_STREAM_TRIM_INTERVAL:
+                if (
+                    HYPHA_GIT_STREAM_TRIM_INTERVAL > 0
+                    and since_trim >= HYPHA_GIT_STREAM_TRIM_INTERVAL
+                ):
                     since_trim = 0
                     _malloc_trim()
 
