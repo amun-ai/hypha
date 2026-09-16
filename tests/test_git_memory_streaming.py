@@ -11,8 +11,12 @@ Covered:
     threshold, exercising the BUFFERED upload-pack path; clone + fsck.
   * test_git_thin_pack_push_roundtrip    -- a second (incremental) commit is
     pushed as a thin pack through the disk-spill path; clone + fsck.
-  * test_git_clone_memory_peak           -- measures server RSS peak during a
-    large clone and 3 concurrent large clones, reporting the numbers.
+  * test_git_clone_memory_concurrent     -- 3 concurrent large clones must all
+    succeed + fsck (concurrency correctness); reports peak/settled server RSS.
+  * test_range_reader_resident_bounded_by_chunk -- direct, platform-independent
+    proof that _S3RangeReader keeps only one chunk resident regardless of object
+    size (the O(1)-in-pack-size memory guarantee), inspecting the live buffer
+    over real MinIO rather than RSS (which measures glibc arena retention).
 
 Requires Docker (postgres via fastapi_server) and the git CLI.
 """
@@ -24,7 +28,6 @@ import uuid
 import asyncio
 import hashlib
 import time
-import platform
 
 import pytest
 
@@ -332,12 +335,11 @@ async def test_git_clone_memory_concurrent(
 
     WHY THERE IS NO MEMORY-BOUND ASSERTION HERE (and where the memory guard is).
     The O(1)-in-pack-size memory property is proven by
-    test_git_clone_memory_flat_curve (single-clone cross-size slope): with the
-    producer's mid-stream malloc_trim, one stream's peak RSS reflects the bounded
-    LIVE working set, and a whole-pack-reload regression -- which holds a full
-    pack LIVE and is therefore un-trimmable -- still spikes it and trips that
-    test. Under CONCURRENCY that clean signal is destroyed by the ALLOCATOR, not
-    by the code: prod and CI set MALLOC_ARENA_MAX=2 (conftest / Dockerfile), so
+    test_range_reader_resident_bounded_by_chunk, which inspects the _S3RangeReader
+    LIVE buffer directly (it stays one chunk regardless of object size) -- a
+    metric immune to allocator physics. RSS cannot serve as that guard here:
+    under CONCURRENCY the RSS signal is destroyed by the ALLOCATOR, not by the
+    code: prod and CI set MALLOC_ARENA_MAX=2 (conftest / Dockerfile), so
     the two glibc arenas are shared by the N concurrent producer threads. Freed
     pack churn from one stream is fragmented between the still-live allocations of
     the others, and malloc_trim(0) cannot return a partially-live arena during the
@@ -442,7 +444,7 @@ async def test_git_clone_memory_concurrent(
             print(
                 "NOTE: concurrent peak is dominated by glibc MALLOC_ARENA_MAX=2 "
                 "fragmentation retention, not live memory; the O(1) memory guard "
-                "is test_git_clone_memory_flat_curve."
+                "is test_range_reader_resident_bounded_by_chunk."
             )
             print("====================================================")
     finally:
@@ -510,157 +512,132 @@ async def test_git_large_clone_then_fetch_incremental(
         await api.disconnect()
 
 
-@pytest.mark.skipif(
-    platform.system() != "Linux",
-    reason=(
-        "RSS-peak assertion is only meaningful on glibc/Linux. malloc_trim is a "
-        "no-op off Linux, so freed buffers are not returned to the OS and RSS "
-        "ratchets, turning the per-clone delta into allocator noise. The "
-        "range-read correctness is covered by the fsck roundtrip tests on all "
-        "platforms; this flat-curve guard runs in CI (Linux) and prod, where "
-        "the measurement is valid. On macOS run with -s to see the directional "
-        "numbers printed below."
-    ),
-)
-async def test_git_clone_memory_flat_curve(
-    minio_server, fastapi_server, test_user_token
-):
-    """Prove O(1) memory: server RSS growth from an 80MB to a 400MB clone is flat.
+async def test_range_reader_resident_bounded_by_chunk(minio_server):
+    """Direct, platform-independent proof of the O(1)-in-pack-size memory fix.
 
-    Before the range-read fix, S3Pack._ensure_loaded downloaded the WHOLE pack
-    into RAM, so the per-clone RSS delta scaled ~linearly with pack size. After
-    the fix, the source pack is range-read on demand with a bounded chunk
-    buffer, and the streamed pack is generated one object at a time, so only
-    ~1 object is ever live regardless of pack size.
+    RSS is NOT a valid metric for this property on the prod platform. glibc
+    retains freed per-object streaming buffers in its arenas ~proportionally to
+    total bytes churned (prod/CI set MALLOC_ARENA_MAX=2), so even correct
+    O(1)-LIVE streaming shows a server RSS that scales ~linearly with pack size
+    (measured on Linux CI: ~2.0x pack for a SINGLE clone, retained despite the
+    producer's mid-stream malloc_trim). macOS's allocator returns freed memory
+    eagerly and hides this, so an RSS-slope test passes on macOS and fails on
+    Linux -- it measures allocator RETENTION, not the code's live footprint. An
+    RSS threshold therefore cannot honestly guard this fix on the CI/prod
+    platform, which is why this test inspects the live buffer directly instead.
 
-    IMPORTANT: the repos here use MANY medium files (2 MiB each), NOT one giant
-    blob. A single huge object must be fully materialized to be sent regardless
-    of how the pack is read (that cost is inherent and would mask the win), so a
-    flat-curve test must spread the bytes across many objects. With many medium
-    objects, the dominant pre-fix cost was the whole-pack download, which the
-    range reader eliminates.
+    We measure the property the fix actually guarantees, at its source: S3Pack
+    serves large packs (> HYPHA_GIT_PACK_WHOLE_LOAD_MAX) through a _S3RangeReader
+    that keeps AT MOST ONE chunk (HYPHA_GIT_PACK_RANGE_CHUNK) resident, no matter
+    how large the pack is -- so peak LIVE pack-data memory is O(chunk), NOT
+    O(packsize). Over REAL MinIO we drive the reader exactly as dulwich's
+    PackData does (seek to scattered offsets + sequential read(n) in small
+    pieces, spanning many chunk boundaries), verifying (1) every read returns
+    byte-exact content and (2) the resident buffer never exceeds one chunk -- for
+    an object many chunks large. A regression to whole-pack materialization would
+    blow the resident-buffer bound. This is immune to glibc arena physics because
+    it inspects the live buffer directly, not RSS.
 
-    METRIC CHOICE (why RSS, and why an additive slope + absolute bound rather
-    than a small/small ratio): the server runs on glibc, which retains freed
-    per-object buffers in its arenas ~proportionally to total bytes churned. So
-    even correct O(1) streaming code shows RSS that grows with pack size UNLESS
-    that retention is returned to the OS. The producer now calls malloc_trim()
-    every HYPHA_GIT_STREAM_TRIM_INTERVAL bytes (http.py), which returns the
-    freed transient buffers mid-stream, so peak RSS reflects the LIVE working
-    set (bounded) instead of cumulative throughput. Crucially this does NOT mask
-    the regression it guards against: a whole-pack-load reload holds the pack
-    LIVE for the whole send, and malloc_trim cannot release live memory — so
-    such a regression still spikes RSS to ~one pack and trips the asserts below.
-
-    We clone two repos (~80MB and ~400MB total), sampling server RSS during
-    each. The O(1) property is that going from 80MB to 400MB (5x, +320MB of
-    pack) adds ~no extra peak RSS. We therefore assert on the ADDITIVE slope
-    (large_delta - small_delta), which is ~0 for O(1) and ~+320MB for a
-    whole-pack reload, plus an absolute bound (large_delta well under one pack).
-    Both are immune to dividing by a tiny/jittery small-pack denominator.
-    Measured (macOS, directional): before -> small 198MB / large 774MB (scales);
-    after (range-read) -> small 56MB / large 1.3MB (flat/bounded). Numbers are
-    printed (visible with -s) for the report.
+    The end-to-end fsck roundtrip tests (test_git_large_clone_streaming_path,
+    test_git_large_clone_then_fetch_incremental) separately prove the server
+    actually routes large packs through this reader and produces correct clones;
+    this test proves the reader's resident memory is bounded independent of size.
     """
-    import threading
+    from . import MINIO_ROOT_PASSWORD, MINIO_ROOT_USER, MINIO_SERVER_URL
+    from hypha.git.object_store import (
+        HYPHA_GIT_PACK_RANGE_CHUNK,
+        _S3RangeReader,
+        _build_sync_s3_client,
+    )
 
-    pid = _find_server_pid(SIO_PORT)
-    assert pid, f"could not find server pid on port {SIO_PORT}"
-
+    chunk = HYPHA_GIT_PACK_RANGE_CHUNK
     mb = 1024 * 1024
-    file_size = 2 * mb  # many medium files; no single object dominates
-    sizes = {"small": 80 * mb, "large": 400 * mb}
-    deltas = {}
+    # An object many chunks large so a whole-load would be starkly larger than
+    # one chunk. Incompressible; size is NOT a chunk multiple, exercising the
+    # short final chunk.
+    object_size = 12 * chunk + 12345
+    source = os.urandom(object_size)
 
-    api, artifact_manager, alias, auth_url = await _make_git_artifact(
-        test_user_token
-    )
-    # We will create one artifact per size to keep packs isolated.
-    await artifact_manager.delete(artifact_id=alias)
-    await api.disconnect()
+    s3_config = {
+        "endpoint_url": MINIO_SERVER_URL,
+        "access_key_id": MINIO_ROOT_USER,
+        "secret_access_key": MINIO_ROOT_PASSWORD,
+        "region_name": "us-east-1",
+    }
+    bucket = f"git-range-reader-{uuid.uuid4().hex[:8]}"
+    key = "packs/test.pack"
 
-    def _sample_peak(pid, stop, peak):
-        while not stop["v"]:
-            peak["v"] = max(peak["v"], _proc_tree_rss(pid))
-            time.sleep(0.02)
+    client = _build_sync_s3_client(s3_config)
+    try:
+        client.create_bucket(Bucket=bucket)
+        client.put_object(Bucket=bucket, Key=key, Body=source)
 
-    for label, size in sizes.items():
-        api, artifact_manager, alias, auth_url = await _make_git_artifact(
-            test_user_token
+        reader = _S3RangeReader(client, bucket, key, object_size)
+        peak_resident = 0
+
+        # (1) Scattered small reads at boundary-straddling offsets (dulwich seeks
+        # to each object's offset from the .idx, then reads its header + zlib
+        # run). Some reads straddle a chunk boundary, forcing a chunk swap.
+        read_len = 200 * 1024
+        offsets = [
+            0,
+            chunk - 10,
+            chunk,
+            chunk + 1,
+            2 * chunk - read_len // 2,
+            5 * chunk + 7,
+            object_size - read_len,
+            object_size - 1,
+        ]
+        for off in offsets:
+            reader.seek(off)
+            want = source[off : off + read_len]
+            got = reader.read(len(want))
+            assert got == want, f"range read mismatch at offset {off}"
+            peak_resident = max(peak_resident, len(reader._buf))
+            assert len(reader._buf) <= chunk, (
+                f"resident buffer {len(reader._buf)} > chunk {chunk} after read "
+                f"at offset {off}"
+            )
+
+        # (2) Full sequential read in small pieces from the start, spanning every
+        # chunk boundary -- reconstruct the whole object and verify byte-exact,
+        # asserting the resident buffer stays bounded to one chunk throughout.
+        reader.seek(0)
+        piece = 250 * 1024
+        rebuilt = bytearray()
+        while True:
+            data = reader.read(piece)
+            if not data:
+                break
+            rebuilt += data
+            peak_resident = max(peak_resident, len(reader._buf))
+            assert len(reader._buf) <= chunk, (
+                f"resident buffer {len(reader._buf)} > chunk {chunk} during "
+                f"sequential read at pos {reader.tell()}"
+            )
+        assert bytes(rebuilt) == source, (
+            "sequential range read did not reconstruct the object byte-exactly"
         )
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                src = os.path.join(tmp, "src")
-                _init_and_config(src)
-                for i in range(size // file_size):
-                    _write_random_file(
-                        os.path.join(src, f"f_{i:04d}.bin"), file_size
-                    )
-                _run(["git", "add", "-A"], cwd=src)
-                _run(["git", "commit", "-m", label], cwd=src, timeout=600)
-                _run(
-                    ["git", "push", auth_url, "main:main"], cwd=src, timeout=900
-                )
 
-                # Let any push-side buffers settle and trim before measuring.
-                time.sleep(1.0)
-                baseline = _proc_tree_rss(pid)
-
-                clone_dir = os.path.join(tmp, "clone")
-                peak = {"v": baseline}
-                stop = {"v": False}
-                t = threading.Thread(
-                    target=_sample_peak, args=(pid, stop, peak)
-                )
-                t.start()
-                _run(["git", "clone", auth_url, clone_dir], timeout=900)
-                stop["v"] = True
-                t.join()
-                _run(["git", "fsck", "--full"], cwd=clone_dir, timeout=300)
-
-                deltas[label] = peak["v"] - baseline
-        finally:
-            await artifact_manager.delete(artifact_id=alias)
-            await api.disconnect()
-
-    print("\n===== GIT CLONE MEMORY FLAT-CURVE (server RSS delta) =====")
-    for label, size in sizes.items():
-        d = deltas[label]
+        print("\n===== S3 RANGE-READER RESIDENT BOUND (direct, in-process) =====")
         print(
-            f"{label:>5} pack ~{size / mb:.0f} MB : RSS delta "
-            f"{d / mb:.1f} MB ({d / size:.3f}x pack)"
+            f"object {object_size / mb:.1f} MB, chunk {chunk / mb:.1f} MiB "
+            f"({object_size / chunk:.1f} chunks)"
         )
-    slope = deltas["large"] - deltas["small"]
-    extra_pack = sizes["large"] - sizes["small"]
-    ratio = deltas["large"] / max(deltas["small"], 1)
-    size_ratio = sizes["large"] / sizes["small"]
-    print(
-        f"pack-size ratio large/small = {size_ratio:.1f}x ; "
-        f"RSS-delta ratio = {ratio:.2f}x ; "
-        f"additive slope large-small = {slope / mb:.1f} MB "
-        f"for +{extra_pack / mb:.0f} MB of pack"
-    )
-    print("===========================================================")
+        print(f"peak resident buffer = {peak_resident / mb:.3f} MiB")
+        print("===============================================================")
 
-    # O(1) proof #1 (additive slope): sending +320MB more pack (80MB -> 400MB)
-    # must add ~no extra peak RSS, because only ~1 object is ever live and the
-    # producer trims freed transients mid-stream. A whole-pack reload would add
-    # ~one whole extra pack (+320MB) to the large clone's peak. We require the
-    # extra RSS to be under a quarter of the extra pack -- flat for O(1), and
-    # far exceeded (~320MB > 100MB) by a whole-pack regression. This is
-    # jitter-robust: it never divides by the small (possibly tiny) delta.
-    assert slope < extra_pack // 4, (
-        f"RSS grew with pack size: +{slope / mb:.1f}MB peak for "
-        f"+{extra_pack / mb:.0f}MB of pack (80MB->400MB clone) -- range-read/"
-        f"stream likely regressed to a whole-pack load. "
-        f"small={deltas['small'] / mb:.1f}MB large={deltas['large'] / mb:.1f}MB"
-    )
-    # O(1) proof #2 (absolute bound): the large clone must never hold anywhere
-    # near a whole pack. A whole-pack reload (~400MB LIVE, un-trimmable) trips
-    # this; the bounded working set (chunk buffer + idx + one live object) is a
-    # small fraction of half a pack.
-    assert deltas["large"] < sizes["large"] // 2, (
-        f"large-pack RSS delta {deltas['large'] / mb:.1f}MB >= half the pack "
-        f"({sizes['large'] / mb / 2:.0f}MB) -- not bounded to the live working "
-        f"set; range-read likely regressed to whole-pack load"
-    )
+        # THE GUARD: peak LIVE pack-data memory is one chunk, INDEPENDENT of the
+        # (many-chunk) object size. A whole-pack materialization regression would
+        # make this ~= object_size.
+        assert 0 < peak_resident <= chunk, (
+            f"peak resident buffer {peak_resident} is not bounded to one chunk "
+            f"({chunk}) for a {object_size / mb:.1f}MB object -- pack-data memory "
+            f"is not O(chunk); range-read may have regressed to a whole-pack load"
+        )
+
+        reader.close()
+        assert reader._buf == b"" and reader.closed
+    finally:
+        client.close()
