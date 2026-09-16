@@ -460,17 +460,29 @@ async def test_git_clone_memory_peak(
             # return and that does NOT scale with pack size or concurrency -- so an
             # absolute single-clone bound conflates that benign cost with the live
             # working set (and would not even trip on a 1x-pack reload). Three
-            # concurrent clones instead hold three live working sets AT ONCE: O(1)
-            # streaming keeps that near ~0 (bounded chunk buffers + ~one live object
-            # per op), while any whole-pack reload holds ~3x pack LIVE
-            # simultaneously -- un-trimmable, far over one repo. This is the
-            # allocator-noise-immune guard; the cross-size slope proof is in
-            # test_git_clone_memory_flat_curve.
-            assert delta_concurrent < repo_size, (
+            # concurrent clones instead hold three live working sets AT ONCE, so the
+            # delta separates two regimes cleanly:
+            #   * O(1) streaming (correct): 3 bounded chunk buffers + ~one live
+            #     object per op + the pymalloc growth of 3x concurrent object
+            #     enumeration (retained, glibc-arena-cap-independent, but bounded by
+            #     object COUNT not pack SIZE) -> on the order of ONE repo, upper-
+            #     bounded well under 2x.
+            #   * Whole-pack reload (regression): each of the 3 ops holds a full
+            #     pack LIVE at once -> ~3x repo, un-trimmable and un-cappable.
+            # The server subprocess runs with MALLOC_ARENA_MAX=2 (set in
+            # tests/conftest.py, matching prod's Dockerfile), which caps glibc's
+            # freed-buffer retention so this delta reflects the LIVE set rather than
+            # churn noise -- yet cannot hide a regression, because LIVE memory is
+            # neither trimmed nor arena-capped. Threshold at the midpoint of the two
+            # regimes (1.5x repo): ~2x margin below the regression signal (3x) and
+            # above the O(1) live set (~1x). The cross-size slope proof (magnitude-
+            # independent) is in test_git_clone_memory_flat_curve.
+            guard = (repo_size * 3) // 2  # 1.5x repo: midpoint of O(1) vs reload
+            assert delta_concurrent < guard, (
                 f"3-concurrent-clone RSS delta {delta_concurrent / mb:.1f}MB "
-                f"exceeds one repo ({repo_size / mb:.1f}MB) -- each concurrent op "
-                f"is holding ~a whole pack live (streaming/range-read regressed to "
-                f"a whole-pack load)"
+                f"exceeds {guard / mb:.1f}MB (1.5x repo) -- each concurrent op is "
+                f"holding ~a whole pack live (streaming/range-read regressed to a "
+                f"whole-pack load)"
             )
     finally:
         await artifact_manager.delete(artifact_id=alias)

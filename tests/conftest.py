@@ -65,6 +65,21 @@ os.environ["NO_PROXY"] = os.environ.get("NO_PROXY", "") + ",localhost,127.0.0.1"
 
 test_env = os.environ.copy()
 
+# Prod-faithful glibc arena capping for every test server subprocess.
+# Production sets `ENV MALLOC_ARENA_MAX=2` in the Dockerfile (line ~101) alongside
+# per-request malloc_trim(0) (hypha/git/http.py) and a periodic trim (store.py).
+# Without this cap the CI server runs with default arenas (8x cores), so glibc
+# retains freed pack/enumeration buffers proportional to total bytes churned --
+# retention that scales with pack size and concurrency and swings run-to-run
+# (observed 0MB -> 871MB for identical code). That noise makes gross RSS delta a
+# useless O(1) proxy for the git-memory tests. Capping to 2 arenas bounds the
+# *freed-buffer* retention so RSS delta reflects the LIVE working set: a genuinely
+# O(1) streaming/range-read path stays flat, while a whole-pack-load regression --
+# which holds the pack LIVE and thus cannot be trimmed or arena-capped -- still
+# trips the guard. So this makes the measurement prod-faithful WITHOUT masking a
+# real regression. See tests/test_git_memory_streaming.py.
+test_env.setdefault("MALLOC_ARENA_MAX", "2")
+
 
 def _wait_for_server_health(server_url, server_name, max_timeout=60):
     """Helper function to wait for server health checks with robust retry logic.
