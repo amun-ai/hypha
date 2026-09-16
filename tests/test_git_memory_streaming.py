@@ -527,13 +527,13 @@ async def test_git_large_clone_then_fetch_incremental(
 async def test_git_clone_memory_flat_curve(
     minio_server, fastapi_server, test_user_token
 ):
-    """Prove O(1) memory: server RSS delta during a clone is ~FLAT vs pack size.
+    """Prove O(1) memory: server RSS growth from an 80MB to a 400MB clone is flat.
 
     Before the range-read fix, S3Pack._ensure_loaded downloaded the WHOLE pack
     into RAM, so the per-clone RSS delta scaled ~linearly with pack size. After
     the fix, the source pack is range-read on demand with a bounded chunk
-    buffer, so the delta is bounded and roughly the same for a small and a large
-    pack.
+    buffer, and the streamed pack is generated one object at a time, so only
+    ~1 object is ever live regardless of pack size.
 
     IMPORTANT: the repos here use MANY medium files (2 MiB each), NOT one giant
     blob. A single huge object must be fully materialized to be sent regardless
@@ -542,9 +542,24 @@ async def test_git_clone_memory_flat_curve(
     objects, the dominant pre-fix cost was the whole-pack download, which the
     range reader eliminates.
 
+    METRIC CHOICE (why RSS, and why an additive slope + absolute bound rather
+    than a small/small ratio): the server runs on glibc, which retains freed
+    per-object buffers in its arenas ~proportionally to total bytes churned. So
+    even correct O(1) streaming code shows RSS that grows with pack size UNLESS
+    that retention is returned to the OS. The producer now calls malloc_trim()
+    every HYPHA_GIT_STREAM_TRIM_INTERVAL bytes (http.py), which returns the
+    freed transient buffers mid-stream, so peak RSS reflects the LIVE working
+    set (bounded) instead of cumulative throughput. Crucially this does NOT mask
+    the regression it guards against: a whole-pack-load reload holds the pack
+    LIVE for the whole send, and malloc_trim cannot release live memory — so
+    such a regression still spikes RSS to ~one pack and trips the asserts below.
+
     We clone two repos (~80MB and ~400MB total), sampling server RSS during
-    each, and assert the LARGE-pack delta is not materially larger than the
-    small-pack delta (i.e. it does NOT scale with the ~5x size difference).
+    each. The O(1) property is that going from 80MB to 400MB (5x, +320MB of
+    pack) adds ~no extra peak RSS. We therefore assert on the ADDITIVE slope
+    (large_delta - small_delta), which is ~0 for O(1) and ~+320MB for a
+    whole-pack reload, plus an absolute bound (large_delta well under one pack).
+    Both are immune to dividing by a tiny/jittery small-pack denominator.
     Measured (macOS, directional): before -> small 198MB / large 774MB (scales);
     after (range-read) -> small 56MB / large 1.3MB (flat/bounded). Numbers are
     printed (visible with -s) for the report.
@@ -617,28 +632,37 @@ async def test_git_clone_memory_flat_curve(
             f"{label:>5} pack ~{size / mb:.0f} MB : RSS delta "
             f"{d / mb:.1f} MB ({d / size:.3f}x pack)"
         )
+    slope = deltas["large"] - deltas["small"]
+    extra_pack = sizes["large"] - sizes["small"]
     ratio = deltas["large"] / max(deltas["small"], 1)
     size_ratio = sizes["large"] / sizes["small"]
     print(
         f"pack-size ratio large/small = {size_ratio:.1f}x ; "
-        f"RSS-delta ratio = {ratio:.2f}x"
+        f"RSS-delta ratio = {ratio:.2f}x ; "
+        f"additive slope large-small = {slope / mb:.1f} MB "
+        f"for +{extra_pack / mb:.0f} MB of pack"
     )
     print("===========================================================")
 
-    # O(1) proof: a 5x pack-size increase must NOT produce a ~5x RSS-delta
-    # increase. With range reads the delta is bounded (chunk buffer + idx +
-    # one live object), so the ratio should be near 1. Allow generous slack for
-    # allocator noise and the (size-proportional) .idx: assert the large delta
-    # is < 2.0x the small delta even though the pack is 5x bigger. A whole-pack
-    # reload regression would push this toward ~5x and trip the assertion.
-    assert ratio < 2.0, (
-        f"RSS delta scaled with pack size (ratio {ratio:.2f}x for a "
-        f"{size_ratio:.1f}x size increase) -- range-read likely regressed to "
-        f"whole-pack load. small={deltas['small'] / mb:.1f}MB "
-        f"large={deltas['large'] / mb:.1f}MB"
+    # O(1) proof #1 (additive slope): sending +320MB more pack (80MB -> 400MB)
+    # must add ~no extra peak RSS, because only ~1 object is ever live and the
+    # producer trims freed transients mid-stream. A whole-pack reload would add
+    # ~one whole extra pack (+320MB) to the large clone's peak. We require the
+    # extra RSS to be under a quarter of the extra pack -- flat for O(1), and
+    # far exceeded (~320MB > 100MB) by a whole-pack regression. This is
+    # jitter-robust: it never divides by the small (possibly tiny) delta.
+    assert slope < extra_pack // 4, (
+        f"RSS grew with pack size: +{slope / mb:.1f}MB peak for "
+        f"+{extra_pack / mb:.0f}MB of pack (80MB->400MB clone) -- range-read/"
+        f"stream likely regressed to a whole-pack load. "
+        f"small={deltas['small'] / mb:.1f}MB large={deltas['large'] / mb:.1f}MB"
     )
-    # And the absolute large-pack delta must be well under one pack size.
-    assert deltas["large"] < sizes["large"], (
-        f"large-pack RSS delta {deltas['large'] / mb:.1f}MB >= pack size "
-        f"{sizes['large'] / mb:.1f}MB -- not bounded"
+    # O(1) proof #2 (absolute bound): the large clone must never hold anywhere
+    # near a whole pack. A whole-pack reload (~400MB LIVE, un-trimmable) trips
+    # this; the bounded working set (chunk buffer + idx + one live object) is a
+    # small fraction of half a pack.
+    assert deltas["large"] < sizes["large"] // 2, (
+        f"large-pack RSS delta {deltas['large'] / mb:.1f}MB >= half the pack "
+        f"({sizes['large'] / mb / 2:.0f}MB) -- not bounded to the live working "
+        f"set; range-read likely regressed to whole-pack load"
     )

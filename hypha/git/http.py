@@ -65,6 +65,19 @@ HYPHA_GIT_PACK_ACQUIRE_TIMEOUT = float(
 HYPHA_GIT_STREAM_THRESHOLD = int(
     os.environ.get("HYPHA_GIT_STREAM_THRESHOLD", str(8 * 1024 * 1024))
 )
+# During a streamed clone the producer thread decompresses one object at a
+# time and frees it immediately, but glibc retains those freed buffers in its
+# arenas (it does not auto-return them). Over a large pack that retention
+# accumulates ~proportionally to total bytes sent, ratcheting single-op peak
+# RSS toward one whole pack even though only ~1 object is ever live. We call
+# malloc_trim() every this-many bytes of pack output to return the freed
+# transient buffers to the OS mid-stream, so peak RSS reflects the live
+# working set (bounded) rather than cumulative throughput. A whole-pack-load
+# regression holds the pack LIVE, which trim cannot release, so this does NOT
+# mask that regression (see test_git_clone_memory_flat_curve).
+HYPHA_GIT_STREAM_TRIM_INTERVAL = int(
+    os.environ.get("HYPHA_GIT_STREAM_TRIM_INTERVAL", str(16 * 1024 * 1024))
+)
 
 _pack_op_semaphore: Optional[asyncio.Semaphore] = None
 
@@ -1034,10 +1047,17 @@ class GitHTTPHandler:
         def _produce():
             """Sync producer: write pack chunks, side-band-wrap, enqueue."""
             buf = bytearray()
+            # Cumulative bytes emitted since the last malloc_trim. dulwich frees
+            # each object buffer right after writing it, but glibc keeps the
+            # freed memory in its arenas; trimming periodically returns it to the
+            # OS so single-op peak RSS stays bounded to the live working set
+            # instead of scaling with total pack size.
+            since_trim = 0
 
             def sink(data: bytes):
                 # Accumulate then emit fixed-size side-band frames so each
                 # pkt-line stays within the 65520 byte limit.
+                nonlocal since_trim
                 buf.extend(data)
                 while len(buf) >= chunk_size:
                     frame = bytes(buf[:chunk_size])
@@ -1045,6 +1065,10 @@ class GitHTTPHandler:
                     asyncio.run_coroutine_threadsafe(
                         queue.put(_wrap(frame)), loop
                     ).result()
+                since_trim += len(data)
+                if since_trim >= HYPHA_GIT_STREAM_TRIM_INTERVAL:
+                    since_trim = 0
+                    _malloc_trim()
 
             try:
                 write_pack_data(
