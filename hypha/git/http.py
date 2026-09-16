@@ -965,6 +965,15 @@ class GitHTTPHandler:
         Uses the pre-loaded in-memory packs (call resolve_pack_shas first).
         This is an upper-bound estimate of the response size; the actual
         compressed pack is smaller. Used only to choose buffered vs streamed.
+
+        Short-circuits as soon as the running total exceeds the streaming
+        threshold: the ONLY consumer compares the result against
+        HYPHA_GIT_STREAM_THRESHOLD, so once we are provably over it the exact
+        total is irrelevant and an underestimate still yields the (correct)
+        streamed decision. Without this early-exit, a large clone would
+        decompress EVERY object's content here just to sum sizes -- an entire
+        extra pass over the pack, immediately discarded, inflating peak RSS
+        during resolve for no benefit.
         """
         store = self.repo._object_store
         total = 0
@@ -974,6 +983,9 @@ class GitHTTPHandler:
                 total += len(data)
             except KeyError:
                 continue
+            if total > HYPHA_GIT_STREAM_THRESHOLD:
+                # Buffered-vs-streamed decision (streamed) is already settled.
+                break
         return total
 
     def iter_pack_records(self, shas: list[bytes]):
@@ -1126,7 +1138,23 @@ class GitHTTPHandler:
         result: set,
         exclude: set,
     ):
-        """Collect all objects reachable from a given SHA."""
+        """Collect all objects reachable from a given SHA.
+
+        Memory note: tree entries are classified by their MODE, so blob content
+        is NEVER fetched during this walk. A blob's SHA is already given by its
+        parent tree entry; fetching the blob only to add its SHA and no-op on an
+        ``isinstance(obj, Blob)`` branch would decompress a whole pack's worth of
+        blob content into (immediately-freed) memory during resolve, inflating
+        peak RSS ~proportionally to repo size and concurrency for no benefit.
+        Only commits, trees, and tags are fetched (needed to enumerate their
+        children); blob/symlink SHAs are added directly, and gitlink (submodule)
+        entries are skipped (their commit lives in another repository). The blob
+        content is read exactly once, later and one object at a time, by
+        iter_pack_records during streaming.
+        """
+        import stat
+        from dulwich.objects import Commit, Tag, Tree, S_ISGITLINK
+
         if sha in result or sha in exclude:
             return
 
@@ -1137,9 +1165,6 @@ class GitHTTPHandler:
 
         result.add(sha)
 
-        # Recursively collect based on object type
-        from dulwich.objects import Blob, Commit, Tag, Tree
-
         if isinstance(obj, Commit):
             # Add tree
             await self._collect_reachable_objects(obj.tree, result, exclude)
@@ -1148,13 +1173,23 @@ class GitHTTPHandler:
             for parent_sha in obj.parents:
                 await self._collect_reachable_objects(parent_sha, result, exclude)
         elif isinstance(obj, Tree):
-            # Add all entries
             for entry in obj.items():
-                await self._collect_reachable_objects(entry.sha, result, exclude)
+                if S_ISGITLINK(entry.mode):
+                    # Submodule gitlink: commit is not present in this repo.
+                    continue
+                if stat.S_ISDIR(entry.mode):
+                    # Subtree: must fetch to enumerate its children.
+                    await self._collect_reachable_objects(
+                        entry.sha, result, exclude
+                    )
+                elif entry.sha not in exclude:
+                    # Blob or symlink: SHA is known from the tree entry; add it
+                    # WITHOUT fetching/decompressing the content.
+                    result.add(entry.sha)
         elif isinstance(obj, Tag):
             # Add tagged object
             await self._collect_reachable_objects(obj.object[1], result, exclude)
-        # Blobs have no children
+        # A want that points directly at a blob has no children.
 
     def _create_empty_pack(self) -> bytes:
         """Create an empty pack file."""
