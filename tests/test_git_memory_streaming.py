@@ -320,173 +320,161 @@ def _proc_tree_rss(pid):
 @pytest.mark.skipif(
     platform.system() != "Linux",
     reason=(
-        "RSS-peak assertion is only meaningful on glibc/Linux. malloc_trim "
-        "(both the per-request trim and the periodic loop) is a no-op off "
-        "Linux, so on macOS/musl freed pack memory is not returned and RSS "
-        "ratchets — the single-clone delta becomes allocator noise rather than "
-        "a real signal. The correctness of streaming/disk-spill is covered by "
-        "the fsck roundtrip tests on all platforms; this memory guard runs in "
-        "CI (Linux) and prod, where the measurement is valid."
+        "RSS assertion is only meaningful on glibc/Linux. malloc_trim (the "
+        "producer's mid-stream trim and the periodic loop) is a no-op off Linux, "
+        "so freed pack memory is not returned and RSS ratchets, turning the "
+        "delta into allocator noise. Streaming/range-read correctness is covered "
+        "by the fsck roundtrip tests on all platforms; this concurrency memory "
+        "guard runs in CI (Linux) and prod, where the measurement is valid. On "
+        "macOS run with -s to see the directional numbers printed below."
     ),
 )
 async def test_git_clone_memory_peak(
     minio_server, fastapi_server, test_user_token
 ):
-    """Measure server RSS peak during a large clone and 3 concurrent clones.
+    """Concurrency memory guard: 3 concurrent clones, cross-size RSS SLOPE.
 
-    Reports the numbers (visible with -s). With the streaming/disk-spill fix the
-    per-op peak should be far below the old ~6-7x repo-size buffering, and the
-    concurrent peak is bounded by the pack-op semaphore (default 4).
+    WHY A SLOPE, NOT AN ABSOLUTE PEAK. The server RSS is sampled during the
+    concurrent clones on a process warmed by the full preceding test suite
+    (baseline ~1GB+). An ABSOLUTE peak delta on that warm process is dominated
+    by transient glibc/pymalloc churn that the 0.02s sampler catches BEFORE
+    malloc_trim returns it -- it reflects momentary allocator retention, NOT the
+    live working set, so it is large (multiple x repo) and NON-RESPONSIVE to real
+    per-op memory reductions. The churn-immune signal is the ADDITIVE SLOPE of the
+    concurrent RSS delta across two pack SIZES at CONSTANT object COUNT: every
+    bounded structure (zlib deflate window, the maxsize-8 side-band queue, the
+    range-read chunk buffer, the per-object enumeration dict) is fixed by object
+    count and concurrency -- NONE scale with pack bytes -- so they cancel in the
+    slope, leaving ONLY a term that scales with pack BYTES, i.e. a whole-pack
+    reload:
+      * O(1) streaming/range-read (correct): slope ~ 0 (a few tens of MB of churn).
+      * Whole-pack reload (regression): each of the 3 concurrent ops holds a full
+        pack LIVE at once -> slope ~ 3x the pack-size delta, un-trimmable.
+    The SINGLE-clone cross-size proof is test_git_clone_memory_flat_curve; this
+    test extends the same magnitude-independent methodology UNDER CONCURRENCY,
+    which additionally catches a concurrency-specific size-scaling regression
+    (e.g. a shared per-op buffer that only balloons when N ops overlap) that a
+    single-clone test cannot see. The concurrent clones also assert functional
+    success (returncode == 0) -- N simultaneous large clones must not error/OOM.
     """
-    import psutil  # noqa: F401  (ensure available)
+    import threading
 
     pid = _find_server_pid(SIO_PORT)
     assert pid, f"could not find server pid on port {SIO_PORT}"
 
-    repo_size = 200 * 1024 * 1024  # 200MB to keep the test reasonably fast
+    mb = 1024 * 1024
+    # CONSTANT object count across sizes so ONLY pack bytes vary between the two
+    # measurements -- this is what makes the slope isolate byte-scaling. Random
+    # (incompressible) files => ~one blob object each, so object count is fixed.
+    n_files = 40
+    n_concurrent = 3
+    sizes = {"small": 60 * mb, "large": 300 * mb}
+    deltas = {}
 
-    api, artifact_manager, alias, auth_url = await _make_git_artifact(
-        test_user_token
-    )
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            src = os.path.join(tmp, "src")
-            _init_and_config(src)
-            # MANY medium files (not one giant blob): this is the case range-read
-            # bounds — each object is fetched on demand, so per-clone memory stays
-            # well under the repo size regardless of total size. (A single giant
-            # blob is the inherent worst case range-read does NOT improve — it must
-            # be materialized to send — so it is NOT a meaningful guard here; the
-            # flat-curve proof across pack sizes is in test_git_clone_memory_flat_curve.)
-            n_files = 100
-            per_file = repo_size // n_files
-            for i in range(n_files):
-                _write_random_file(os.path.join(src, f"f_{i}.bin"), per_file)
-            _run(["git", "add", "-A"], cwd=src)
-            _run(["git", "commit", "-m", "many"], cwd=src, timeout=300)
-            _run(["git", "push", auth_url, "main:main"], cwd=src, timeout=600)
+    def _sample_peak(pid, stop, peak):
+        while not stop["v"]:
+            peak["v"] = max(peak["v"], _proc_tree_rss(pid))
+            time.sleep(0.02)
 
-            baseline = _proc_tree_rss(pid)
-
-            import threading
-
-            def _sampler(stop, peak):
-                while not stop["v"]:
-                    peak["v"] = max(peak["v"], _proc_tree_rss(pid))
-                    time.sleep(0.02)
-
-            # --- Single large clone, sample RSS while it runs (diagnostic) ---
-            # This first large op also warms the arenas for the concurrent guard
-            # below. On a cold process the FIRST large clone grows pymalloc arenas
-            # by ~2x repo with the transient Python objects created while
-            # enumerating/streaming the pack, and RETAINS them (pymalloc frees an
-            # arena only when it becomes fully empty; the producer's mid-stream
-            # malloc_trim is glibc-malloc only and cannot return pymalloc arenas).
-            # That cost is one-time and does NOT scale with pack size or
-            # concurrency -- proven by the ~0 concurrent delta below -- so we report
-            # the single-clone number but do NOT assert a tight bound on it: an
-            # absolute single-clone RSS ratio conflates that benign one-time
-            # retention with the live working set (and would not even trip on a
-            # 1x-pack reload). The O(1) proof is the concurrent live-set delta here
-            # plus the cross-size slope in test_git_clone_memory_flat_curve.
-            single_dir = os.path.join(tmp, "single")
-            peak_single = {"v": baseline}
-            stop = {"v": False}
-            t = threading.Thread(target=_sampler, args=(stop, peak_single))
-            t.start()
-            _run(["git", "clone", auth_url, single_dir], timeout=600)
-            stop["v"] = True
-            t.join()
-
-            # --- 3 concurrent large clones (the O(1) regression guard) ---
-            # Fresh baseline AFTER the single clone (arenas now warm) so this
-            # measures ONLY the additional live memory of 3 simultaneous clones.
-            # Three live working sets held at once cannot be trimmed away, so O(1)
-            # streaming adds ~0, while a whole-pack reload holds ~3x pack LIVE --
-            # an allocator-noise-immune signal.
-            time.sleep(1.0)
-            conc_baseline = _proc_tree_rss(pid)
-            peak_concurrent = {"v": conc_baseline}
-            stop2 = {"v": False}
-            t2 = threading.Thread(target=_sampler, args=(stop2, peak_concurrent))
-            t2.start()
-
-            async def _clone(idx):
-                d = os.path.join(tmp, f"conc_{idx}")
-                proc = await asyncio.create_subprocess_exec(
-                    "git",
-                    "clone",
-                    auth_url,
-                    d,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.PIPE,
-                    env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    for label, repo_size in sizes.items():
+        per_file = repo_size // n_files
+        api, artifact_manager, alias, auth_url = await _make_git_artifact(
+            test_user_token
+        )
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                src = os.path.join(tmp, "src")
+                _init_and_config(src)
+                for i in range(n_files):
+                    _write_random_file(
+                        os.path.join(src, f"f_{i:04d}.bin"), per_file
+                    )
+                _run(["git", "add", "-A"], cwd=src)
+                _run(["git", "commit", "-m", label], cwd=src, timeout=600)
+                _run(
+                    ["git", "push", auth_url, "main:main"], cwd=src, timeout=900
                 )
-                _, err = await proc.communicate()
-                assert proc.returncode == 0, f"concurrent clone {idx} failed: {err}"
 
-            await asyncio.gather(*[_clone(i) for i in range(3)])
-            stop2["v"] = True
-            t2.join()
+                # Warm the arenas with one clone first, so the measured concurrent
+                # delta excludes the one-time, RETAINED pymalloc arena growth of the
+                # first enumeration (glibc-arena-cap-independent, bounded by object
+                # COUNT not pack SIZE -- so it is ~constant across the two sizes and
+                # would cancel in the slope anyway; warming just tightens the numbers).
+                warm_dir = os.path.join(tmp, "warm")
+                _run(["git", "clone", auth_url, warm_dir], timeout=900)
 
-            mb = 1024 * 1024
-            delta_single = peak_single["v"] - baseline
-            delta_concurrent = peak_concurrent["v"] - conc_baseline
-            print("\n===== GIT CLONE MEMORY (server RSS, process tree) =====")
-            print(f"repo size             : {repo_size / mb:.1f} MB")
-            print(f"baseline RSS          : {baseline / mb:.1f} MB")
-            print(f"peak (1 large clone)  : {peak_single['v'] / mb:.1f} MB "
-                  f"(+{delta_single / mb:.1f} MB over baseline, "
-                  f"{delta_single / repo_size:.2f}x repo) [diagnostic]")
-            print(f"conc baseline RSS     : {conc_baseline / mb:.1f} MB")
-            print(f"peak (3 concurrent)   : {peak_concurrent['v'] / mb:.1f} MB "
-                  f"(+{delta_concurrent / mb:.1f} MB over conc-baseline, "
-                  f"{delta_concurrent / repo_size:.2f}x repo)")
-            print("========================================================")
+                # Let push/warm buffers settle and trim before the fresh baseline.
+                time.sleep(1.0)
+                baseline = _proc_tree_rss(pid)
+                peak = {"v": baseline}
+                stop = {"v": False}
+                t = threading.Thread(target=_sample_peak, args=(pid, stop, peak))
+                t.start()
 
-            # REGRESSION GUARD (O(1) memory). History of the per-op peak:
-            #   * Original buffered path: ~6-7x repo (decompressed object_list +
-            #     full BytesIO pack + joined response).
-            #   * After the streaming/disk-spill fix (#977): ~3.2-4.5x, but the
-            #     source S3Pack was still loaded WHOLE into RAM by
-            #     S3Pack._ensure_loaded (~1x repo of unavoidable cost per op).
-            #   * After the range-read fix: the source pack is range-read on demand
-            #     (bounded chunk buffer, default 4 MiB), so per-op memory no longer
-            #     scales with pack size.
-            #
-            # Why assert on the CONCURRENT delta, not the single-clone delta: the
-            # single-clone number is dominated by a one-time, RETAINED pymalloc
-            # arena growth (see the single-clone note above) that malloc_trim cannot
-            # return and that does NOT scale with pack size or concurrency -- so an
-            # absolute single-clone bound conflates that benign cost with the live
-            # working set (and would not even trip on a 1x-pack reload). Three
-            # concurrent clones instead hold three live working sets AT ONCE, so the
-            # delta separates two regimes cleanly:
-            #   * O(1) streaming (correct): 3 bounded chunk buffers + ~one live
-            #     object per op + the pymalloc growth of 3x concurrent object
-            #     enumeration (retained, glibc-arena-cap-independent, but bounded by
-            #     object COUNT not pack SIZE) -> on the order of ONE repo, upper-
-            #     bounded well under 2x.
-            #   * Whole-pack reload (regression): each of the 3 ops holds a full
-            #     pack LIVE at once -> ~3x repo, un-trimmable and un-cappable.
-            # The server subprocess runs with MALLOC_ARENA_MAX=2 (set in
-            # tests/conftest.py, matching prod's Dockerfile), which caps glibc's
-            # freed-buffer retention so this delta reflects the LIVE set rather than
-            # churn noise -- yet cannot hide a regression, because LIVE memory is
-            # neither trimmed nor arena-capped. Threshold at the midpoint of the two
-            # regimes (1.5x repo): ~2x margin below the regression signal (3x) and
-            # above the O(1) live set (~1x). The cross-size slope proof (magnitude-
-            # independent) is in test_git_clone_memory_flat_curve.
-            guard = (repo_size * 3) // 2  # 1.5x repo: midpoint of O(1) vs reload
-            assert delta_concurrent < guard, (
-                f"3-concurrent-clone RSS delta {delta_concurrent / mb:.1f}MB "
-                f"exceeds {guard / mb:.1f}MB (1.5x repo) -- each concurrent op is "
-                f"holding ~a whole pack live (streaming/range-read regressed to a "
-                f"whole-pack load)"
-            )
-    finally:
-        await artifact_manager.delete(artifact_id=alias)
-        await api.disconnect()
+                async def _clone(idx):
+                    d = os.path.join(tmp, f"conc_{idx}")
+                    proc = await asyncio.create_subprocess_exec(
+                        "git",
+                        "clone",
+                        auth_url,
+                        d,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.PIPE,
+                        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                    )
+                    _, err = await proc.communicate()
+                    assert proc.returncode == 0, (
+                        f"concurrent clone {idx} ({label}) failed: {err}"
+                    )
+
+                await asyncio.gather(*[_clone(i) for i in range(n_concurrent)])
+                stop["v"] = True
+                t.join()
+                deltas[label] = peak["v"] - baseline
+        finally:
+            await artifact_manager.delete(artifact_id=alias)
+            await api.disconnect()
+
+    slope = deltas["large"] - deltas["small"]
+    size_delta = sizes["large"] - sizes["small"]
+    print("\n===== GIT CONCURRENT-CLONE MEMORY SLOPE (server RSS delta) =====")
+    print(
+        f"object count (constant): {n_files} ; concurrency: {n_concurrent}"
+    )
+    for label in ("small", "large"):
+        print(
+            f"{label:>5} pack ~{sizes[label] / mb:.0f} MB : "
+            f"{n_concurrent}-concurrent RSS delta {deltas[label] / mb:.1f} MB"
+        )
+    print(
+        f"pack-size delta = {size_delta / mb:.0f} MB ; additive slope "
+        f"large-small = {slope / mb:.1f} MB"
+    )
+    print("================================================================")
+
+    # REGRESSION GUARD (O(1) memory under concurrency). At constant object count
+    # the ONLY structure that can grow with pack BYTES is a whole-pack reload; with
+    # n_concurrent ops that regression adds ~n_concurrent x size_delta to the large
+    # measurement's slope (the regression SIGNAL, here ~3x = 720MB). A healthy O(1)
+    # streaming path adds ~0 (bounded per-op buffers, fixed by object count, cancel
+    # in the slope) on Linux, where the producer's mid-stream malloc_trim returns
+    # the transient glibc-arena churn so peak ~= live set. This guard is immune to
+    # the warm-server baseline (subtracts out of the slope) and largely to churn
+    # (~constant across the two sizes). Threshold at 2x size_delta: strictly below
+    # the ~3x regression signal (still fails a real whole-pack reload with 1.5x
+    # headroom) yet comfortably above the churn ceiling -- on macOS, where NO trim
+    # runs and churn ratchets to its worst case, the observed slope is ~224MB, well
+    # under this 480MB bound, and Linux (trimmed) is far lower still. The
+    # magnitude-independent single-clone slope proof is in
+    # test_git_clone_memory_flat_curve.
+    guard = 2 * size_delta  # 2x pack-size delta; regression signal is ~3x (n_concurrent)
+    assert slope < guard, (
+        f"concurrent-clone RSS slope {slope / mb:.1f}MB across +{size_delta / mb:.0f}MB "
+        f"of pack (at constant object count, {n_concurrent} concurrent) exceeds "
+        f"{guard / mb:.0f}MB -- per-op memory is scaling with pack SIZE under "
+        f"concurrency (streaming/range-read regressed to a whole-pack load). "
+        f"small={deltas['small'] / mb:.1f}MB large={deltas['large'] / mb:.1f}MB"
+    )
 
 
 async def test_git_large_clone_then_fetch_incremental(
