@@ -378,6 +378,7 @@ class RedisStore:
         self._leader_lease = None
         self._malloc_trim_task = None
         self._orphan_reaper_task = None
+        self._login_guard_task = None
         # self._house_keeping_task = None
 
         self._shared_anonymous_user = None
@@ -994,6 +995,131 @@ class RedisStore:
         finally:
             await rpc.disconnect()
 
+    async def _ensure_login_service_registered(self):
+        """Ensure a LIVE ``hypha-login`` is registered; (re)register the default
+        if none is live. Shared by boot (``init``) and the periodic guard loop
+        (``_login_guard_loop``).
+
+        A Redis service registration is NOT proof of liveness: ``get_service_info``
+        is a pure registry scan with no liveness check, so on a server that does
+        NOT reset Redis (production) a ``hypha-login`` marker left by a previous,
+        now-dead server generation resolves here and we would wrongly skip
+        registering a working login service — every subsequent
+        ``/public/services/hypha-login/start`` then 404s ("Service not found:
+        public/*:hypha-login@*"). Before #0015 the inline orphan reap on the
+        readiness path cleared that dead client first and masked this; #0015
+        deferred that reap off the readiness path, which exposed the latent
+        false-positive (observed deploying 0.21.132, cured by rolling back to
+        0.21.107). So we prove liveness by pinging the resolved owner, reap any
+        unreachable stale owner, and register the default only if none is live.
+
+        Called periodically by ``_login_guard_loop`` as well as once at boot: the
+        boot decision alone is a register-once TOCTOU. During a RollingUpdate a
+        NEW pod can boot while the OLD login owner is still LIVE, correctly defer
+        to it — and then the old pod's graceful shutdown clears the login key,
+        leaving login permanently orphaned because nothing re-evaluates the boot
+        decision (#63, prod 09-23). Re-running this check on an interval converts
+        that permanent outage into a bounded self-heal.
+
+        Returns True if a live login is present afterwards.
+        """
+        api = await self.get_public_api()
+        login_ping_timeout = float(os.environ.get("HYPHA_LOGIN_PING_TIMEOUT", "3"))
+        login_context = {
+            "user": self._root_user.model_dump(),
+            "ws": "public",
+            "from": "public/check-client-exists",
+        }
+        login_is_live = False
+        # Bounded by the (normally 0 or 1) number of hypha-login registrations:
+        # each iteration either confirms a live login or removes exactly one
+        # unreachable owner, so multiple dead generations still converge quickly.
+        for _ in range(10):
+            try:
+                # Use native mode to prefer a locally connected hypha-login.
+                login_info = await self._workspace_manager.get_service_info(
+                    "public/hypha-login",
+                    {"mode": "native:random"},
+                    context=login_context,
+                )
+            except KeyError:
+                # No hypha-login registered at all — fall through to register the
+                # default one below.
+                break
+            owner = login_info.id.split(":")[0]  # "public/<client_id>"
+            ping_result = await self._workspace_manager.ping_client(
+                owner,
+                login_ping_timeout,
+                context=login_context,
+            )
+            if ping_result == "pong":
+                login_is_live = True
+                logger.info(
+                    "Login service already registered and reachable (owner=%s)",
+                    owner,
+                )
+                break
+            # Stale marker: the registration exists but its owner is unreachable.
+            # Reap that dead client's services (mirrors the wholesale client reap
+            # 0.21.107 did inline on boot) and retry, in case multiple dead
+            # generations left markers.
+            logger.warning(
+                "Found a stale hypha-login registration owned by unreachable "
+                "client %s (%s); reaping it and re-checking.",
+                owner,
+                ping_result,
+            )
+            ws_name, client_name = owner.split("/", 1)
+            await self._clear_client_services(ws_name, client_name)
+
+        if not login_is_live:
+            logger.info(
+                "No live login service found, registering default login service"
+            )
+            await api.register_service(create_login_service(self))
+        return login_is_live
+
+    async def _login_guard_loop(self):
+        """Leader-gated periodic guard that keeps a live ``hypha-login``
+        registered (#63).
+
+        The default login service is registered once at boot, and the boot check
+        correctly DEFERS when another server already owns a live login (#0042).
+        But that is a register-once TOCTOU: during a RollingUpdate (``maxSurge=1``)
+        a new pod boots while the old login owner is still LIVE, defers to it, and
+        then the old pod's graceful shutdown clears the login key — leaving login
+        permanently orphaned (``/public/services/hypha-login`` 404 while the server
+        is fully healthy). This was a recurring single-pod-rollout outage in prod
+        (09-23) that only a manual restart cleared.
+
+        Re-running the boot check on an interval heals it: after any orphaning
+        event the leader re-registers the default login within one interval
+        (bounded self-heal instead of a permanent outage). ``LeaderLease.stop()``
+        releases the lease on graceful shutdown, so on a rolling restart the
+        surviving pod becomes leader within one renew tick (<=5s) and this guard
+        then re-registers on its next tick.
+
+        Leader-gated (F6): only the leader re-registers, so N replicas cannot each
+        register a duplicate ``hypha-login`` and create resolution ambiguity. With
+        fakeredis / a single replica this instance is always the leader. Set
+        ``HYPHA_LOGIN_GUARD_INTERVAL`` <= 0 to disable (used by deterministic
+        tests that drive ``_ensure_login_service_registered`` by hand).
+        """
+        interval = float(os.environ.get("HYPHA_LOGIN_GUARD_INTERVAL", "30"))
+        if interval <= 0:
+            return
+        while True:
+            # Delay first so boot's own registration settles before the first
+            # re-check, and so this never contends with init's inline check.
+            await asyncio.sleep(interval)
+            try:
+                if self.is_leader():
+                    await self._ensure_login_service_registered()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("Login guard loop error: %s", e)
+
     async def _orphan_reaper_loop(self):
         """Post-startup background reaper for orphaned client registrations.
 
@@ -1204,80 +1330,14 @@ class RedisStore:
 
         if startup_functions:
             await self._run_startup_functions(startup_functions)
-        
-        # Ensure a LIVE hypha-login service is registered after startup
-        # functions (this allows startup functions to register custom login
-        # services). A Redis service registration is NOT proof of liveness:
-        # get_service_info is a pure registry scan with no liveness check, so on
-        # a server that does NOT reset Redis (production), a stale hypha-login
-        # marker left by a previous, now-dead server generation resolves here and
-        # we would wrongly skip registering a working login service — every
-        # subsequent /public/services/hypha-login/start then 404s
-        # ("Service not found: public/*:hypha-login@*"). Before #0015 the inline
-        # orphan reap on the readiness path cleared that dead client first and
-        # masked this; #0015 deferred that reap off the readiness path, which
-        # exposed the latent false-positive (observed deploying 0.21.132, cured
-        # by rolling back to 0.21.107). So prove liveness by pinging the resolved
-        # owner; reap any unreachable stale owner and register the default.
-        login_ping_timeout = float(
-            os.environ.get("HYPHA_LOGIN_PING_TIMEOUT", "3")
-        )
-        login_is_live = False
-        # Bounded by the (normally 0 or 1) number of hypha-login registrations:
-        # each iteration either confirms a live login or removes exactly one
-        # unreachable owner, so multiple dead generations still converge quickly.
-        for _ in range(10):
-            try:
-                # Use native mode to prefer a locally connected hypha-login.
-                login_info = await self._workspace_manager.get_service_info(
-                    "public/hypha-login",
-                    {"mode": "native:random"},
-                    context={
-                        "user": self._root_user.model_dump(),
-                        "ws": "public",
-                        "from": "public/check-client-exists",
-                    },
-                )
-            except KeyError:
-                # No hypha-login registered at all — fall through to register the
-                # default one below.
-                break
-            owner = login_info.id.split(":")[0]  # "public/<client_id>"
-            ping_result = await self._workspace_manager.ping_client(
-                owner,
-                login_ping_timeout,
-                context={
-                    "user": self._root_user.model_dump(),
-                    "ws": "public",
-                    "from": "public/check-client-exists",
-                },
-            )
-            if ping_result == "pong":
-                login_is_live = True
-                logger.info(
-                    "Login service already registered and reachable (owner=%s)",
-                    owner,
-                )
-                break
-            # Stale marker: the registration exists but its owner is unreachable.
-            # Reap that dead client's services (mirrors the wholesale client reap
-            # 0.21.107 did inline on boot) and retry, in case multiple dead
-            # generations left markers.
-            logger.warning(
-                "Found a stale hypha-login registration owned by unreachable "
-                "client %s (%s); reaping it and re-checking.",
-                owner,
-                ping_result,
-            )
-            ws_name, client_name = owner.split("/", 1)
-            await self._clear_client_services(ws_name, client_name)
 
-        if not login_is_live:
-            logger.info(
-                "No live login service found, registering default login service"
-            )
-            await api.register_service(create_login_service(self))
-        
+        # Ensure a LIVE hypha-login service is registered after startup functions
+        # (this allows startup functions to register custom login services). See
+        # _ensure_login_service_registered for the liveness-proving rationale
+        # (#0042) and the periodic re-check that heals the live-handoff race
+        # (#63).
+        await self._ensure_login_service_registered()
+
         # check if the queue service is registered
         try:
             await api.get_service_info("public/queue")
@@ -1306,6 +1366,11 @@ class RedisStore:
         # readiness path so a post-crash orphan pile never blocks boot, and keeps
         # the pile trimmed so it never grows to a restart-choking size.
         self._orphan_reaper_task = asyncio.create_task(self._orphan_reaper_loop())
+
+        # Periodic login guard (#63). Re-runs the boot login check on an interval
+        # so a live-handoff race on a RollingUpdate cannot permanently orphan the
+        # default hypha-login service (see _login_guard_loop).
+        self._login_guard_task = asyncio.create_task(self._login_guard_loop())
 
         logger.info("Server initialized with server id: %s", self._server_id)
         logger.info("Currently connected hypha servers: %s", servers)
@@ -1829,6 +1894,13 @@ class RedisStore:
             self._orphan_reaper_task.cancel()
             try:
                 await self._orphan_reaper_task
+            except asyncio.CancelledError:
+                pass
+
+        if self._login_guard_task:
+            self._login_guard_task.cancel()
+            try:
+                await self._login_guard_task
             except asyncio.CancelledError:
                 pass
 
