@@ -696,13 +696,17 @@ invalidated moments later and **nothing re-evaluates it**.
   into a shared **`_ensure_login_service_registered()`** and re-run it on an
   interval via a **leader-gated** background task **`_login_guard_loop()`**
   (`HYPHA_LOGIN_GUARD_INTERVAL`, default 30s; `<=0` disables). After any orphaning
-  event the leader re-registers the default login within one interval — a
-  **bounded self-heal** replacing a **permanent** outage. `LeaderLease.stop()`
-  releases the lease on graceful shutdown, so the survivor becomes leader within
-  one renew tick (≤5s) and the guard fixes it on its next tick. Leader-gating (F6)
-  prevents N replicas each registering a **duplicate** `hypha-login` (resolution
-  ambiguity — never mask that with a default-mode select). Wired into `init`,
-  cancelled in `teardown`.
+  event the leader re-registers the default login — a **bounded self-heal**
+  replacing a **permanent** outage. The guard re-checks BOTH on the
+  **leader-acquire edge** and every interval: `LeaderLease.stop()` releases the
+  lease on graceful shutdown, so the survivor becomes leader within one renew tick
+  (≤5s) and re-registers **the instant it acquires** — collapsing the login-down
+  window from ~(election + interval) to ~election time (the gap is total
+  login-down for real users). Leadership is polled at `min(interval, 5s)` (the
+  renew cadence); the periodic re-check is the backstop for a login that dies with
+  no leadership change. Leader-gating (F6) prevents N replicas each registering a
+  **duplicate** `hypha-login` (resolution ambiguity — never mask that with a
+  default-mode select). Wired into `init`, cancelled in `teardown`.
 - **Considered and DECLINED — "skip clearing the login key on shutdown when another
   live server exists":** it does not shrink the window (both *delete* and *skip*
   fail during it; the guard is what heals) and **reintroduces the #0042
