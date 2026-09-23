@@ -1104,17 +1104,34 @@ class RedisStore:
         fakeredis / a single replica this instance is always the leader. Set
         ``HYPHA_LOGIN_GUARD_INTERVAL`` <= 0 to disable (used by deterministic
         tests that drive ``_ensure_login_service_registered`` by hand).
+
+        Re-checks BOTH on the leader-acquire edge and every ``interval``. Running
+        it the instant this server becomes leader collapses the post-handoff
+        login-down window from ~(leader-election + interval) to ~leader-election
+        time — which matters because the gap is total login-down for real users.
+        Leadership is polled at min(interval, 5s) (the LeaderLease renew cadence),
+        so the edge is detected within one renew tick; the periodic re-check is
+        the backstop for a login that dies without any leadership change.
         """
         interval = float(os.environ.get("HYPHA_LOGIN_GUARD_INTERVAL", "30"))
         if interval <= 0:
             return
+        poll = min(interval, 5.0)
+        # At boot the sole server is already leader and init ran the inline check,
+        # so seeding was_leader from the current state avoids a redundant
+        # re-register on the very first tick.
+        was_leader = self.is_leader()
+        elapsed = 0.0
         while True:
-            # Delay first so boot's own registration settles before the first
-            # re-check, and so this never contends with init's inline check.
-            await asyncio.sleep(interval)
+            await asyncio.sleep(poll)
+            elapsed += poll
             try:
-                if self.is_leader():
+                leader_now = self.is_leader()
+                just_acquired = leader_now and not was_leader
+                was_leader = leader_now
+                if leader_now and (just_acquired or elapsed >= interval):
                     await self._ensure_login_service_registered()
+                    elapsed = 0.0
             except asyncio.CancelledError:
                 raise
             except Exception as e:

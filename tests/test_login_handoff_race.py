@@ -171,6 +171,50 @@ async def test_login_guard_loop_reregisters_when_leader(monkeypatch):
         await store_b.teardown()
 
 
+async def test_login_guard_reregisters_promptly_on_leader_acquire(monkeypatch):
+    """On the leader-ACQUIRE edge the guard re-registers immediately, not after a
+    full interval — collapsing the post-handoff login-down window to ~election
+    time. Uses a LARGE interval so a re-register within a few seconds can ONLY be
+    the edge path, not the periodic backstop.
+    """
+    monkeypatch.setenv("HYPHA_ORPHAN_REAP_INITIAL_DELAY", "60")
+    monkeypatch.setenv("HYPHA_LOGIN_PING_TIMEOUT", "2")
+    # Large periodic interval: a prompt re-register cannot be the periodic tick.
+    monkeypatch.setenv("HYPHA_LOGIN_GUARD_INTERVAL", "600")
+
+    store_a = RedisStore(None, redis_uri=None)
+    await store_a.init(reset_redis=True)
+
+    store_b = RedisStore(None, redis_uri=None)
+    # B starts as a NON-leader (A is live and leads); its guard loop seeds
+    # was_leader=False and polls leadership at min(600, 5)=5s.
+    leader_flag = {"v": False}
+    monkeypatch.setattr(store_b, "is_leader", lambda: leader_flag["v"])
+    await store_b.init(reset_redis=False)
+    try:
+        await store_a.teardown()
+        store_a = None
+        assert await _login_owners(store_b) == set(), "repro premise wrong"
+
+        # Simulate B winning leadership (the failover edge).
+        leader_flag["v"] = True
+
+        # The edge must be picked up within ~one poll (5s) + ensure, WELL under
+        # the 600s periodic interval. Poll up to ~12s.
+        for _ in range(48):
+            await asyncio.sleep(0.25)
+            if await _login_owners(store_b) == {store_b._server_id}:
+                break
+        assert await _login_owners(store_b) == {store_b._server_id}, (
+            "the guard did not re-register on the leader-acquire edge (it should "
+            "not have waited for the 600s periodic interval)"
+        )
+    finally:
+        if store_a is not None:
+            await store_a.teardown()
+        await store_b.teardown()
+
+
 async def test_login_guard_is_leader_gated(monkeypatch):
     """A NON-leader must NOT re-register (prevents duplicate hypha-login keys /
     thundering-herd registration churn across replicas)."""
