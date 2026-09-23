@@ -671,6 +671,54 @@ correctness hazard at N≥2 if it is not invalidated when that client moves pods
   on topology changes. Tracked as F6; tests in `test_cross_pod_reconnect.py` and
   `test_multi_replica_integration.py::test_cross_pod_repin_no_false_reject`.
 
+### A Register-ONCE-at-Boot Singleton Is a TOCTOU — Needs a Periodic Guard, Not Just a Liveness-Proving Boot Check (#63)
+
+Sibling to #0042. #0042 taught: a Redis registration is not proof of liveness, so
+the boot check must **ping** the resolved `hypha-login` owner before trusting it
+(a DEAD prev-gen marker must not shadow registration). But making the boot check
+correct is not enough if it **only runs at boot**: the decision it makes can be
+invalidated moments later and **nothing re-evaluates it**.
+
+- **Incident (#63, prod kth-k8s 09-23, pod wheat-accordion-70572137; cleared only
+  by manual rollout restart):** a **recurring total login outage on single-pod
+  rollouts**. On a RollingUpdate (`maxSurge=1`) the NEW pod boots while the
+  login-owning OLD pod is still **LIVE**; the new pod's boot check resolves the old
+  login, pings it, gets `pong`, logs `Login service already registered and
+  reachable (owner=<oldserver>)`, and correctly **defers** (skips registering). The
+  old pod then terminates and its graceful shutdown `_clear_all_server_services`
+  **deletes the `hypha-login` key it owned**. The new pod never retries
+  (register-once-at-boot) → **zero** `hypha-login` registrations → `GET
+  /public/services/hypha-login` 404s while the server is fully healthy (readiness
+  200, redis connected, NOT pool exhaustion). Distinct from #0042: there the
+  deferred-to owner was DEAD (stale marker); here it was **genuinely LIVE at boot**
+  and only died afterward — a classic **register-once TOCTOU**.
+- **Fix (`hypha/core/store.py`):** extract the boot liveness-check/register block
+  into a shared **`_ensure_login_service_registered()`** and re-run it on an
+  interval via a **leader-gated** background task **`_login_guard_loop()`**
+  (`HYPHA_LOGIN_GUARD_INTERVAL`, default 30s; `<=0` disables). After any orphaning
+  event the leader re-registers the default login within one interval — a
+  **bounded self-heal** replacing a **permanent** outage. `LeaderLease.stop()`
+  releases the lease on graceful shutdown, so the survivor becomes leader within
+  one renew tick (≤5s) and the guard fixes it on its next tick. Leader-gating (F6)
+  prevents N replicas each registering a **duplicate** `hypha-login` (resolution
+  ambiguity — never mask that with a default-mode select). Wired into `init`,
+  cancelled in `teardown`.
+- **Considered and DECLINED — "skip clearing the login key on shutdown when another
+  live server exists":** it does not shrink the window (both *delete* and *skip*
+  fail during it; the guard is what heals) and **reintroduces the #0042
+  stale-marker footgun** (a key pointing at a dead owner). The periodic guard alone
+  is the honest cure.
+- **Key Lesson:** a boot-time idempotency/skip decision about a **shared singleton**
+  (login, queue, any register-if-absent public service) is a TOCTOU — it can be
+  invalidated by a peer's later shutdown and there is no retry. Pair the
+  liveness-proving check with a **leader-gated periodic re-check** so the invariant
+  ("a live one exists") is *maintained*, not just *asserted once*. Test it with a
+  faithful **two-pod** simulation: two `RedisStore` instances share one in-process
+  fakeredis (db 11, same as `test_cross_pod_reconnect`); B defers to live A over the
+  shared event bus, A tears down and clears its login, assert the orphan reproduces
+  and the guard re-registers. `tests/test_login_handoff_race.py` (4 tests);
+  reported by valiant-goat; same family as F6 / #1056 multi-replica handoff.
+
 ### A Missing Attribute on a Remote-Service Proxy RAISES — `if svc.setup:` Is a Benign ERROR Factory (#0044)
 
 Three prod log-hygiene fixes (zippy-goat nightly 2026-08-13), but the reusable **code** trap is the third. The remote-service proxy returned by `get_remote_service` is a Munch/ObjectProxy: accessing an **undefined** attribute (`svc.setup`) does **not** return `None` — it **raises `AttributeError('setup')`**. In `hypha/core/workspace.py`, the default-service registration path did `if svc.setup: await svc.setup()` inside a broad `except Exception as e: logger.error(f"... {e}")`. A default service that simply defines no `setup()` (the common case) therefore logged a **per-client ERROR** whose `{e}` interpolated to the **useless bare string `"setup"`** (~20/24h in prod, unactionable by construction — the detail names the missing attribute, not any real failure).
