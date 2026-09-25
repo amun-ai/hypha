@@ -78,7 +78,7 @@ setup(
     extras_require={
         "s3": [
             "aiobotocore>=2.1.0",
-            "dulwich>=0.22,<2",  # For Git storage support (streaming pack APIs)
+            "dulwich>=1.2,<1.3",  # For Git storage support (streaming pack APIs); minor-pinned for reproducible CI
         ],
         "server-apps": [
             "redis==5.2.0",

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -22,6 +23,79 @@ logger = logging.getLogger("minio")
 logger.setLevel(LOGLEVEL)
 
 MATH_PATTERN = re.compile("{(.+?)}")
+
+
+def _extract_binary_from_docker_image(image, src_path, dst_path):
+    """Copy a single binary out of a container image into ``dst_path``.
+
+    Used as the fallback binary source after the direct HTTP download fails:
+    in 2026 MinIO removed all free binary archive downloads from ``dl.min.io``
+    (every ``server``/``client`` archive URL — pinned, latest, and non-archive —
+    now returns HTTP 410 Gone) and ships no raw binaries as GitHub release
+    assets. The official binaries are still distributed inside the ``quay.io``
+    container images (``quay.io/minio/minio`` and ``quay.io/minio/mc``), which
+    remain anonymously pullable, so we extract them via ``docker create`` +
+    ``docker cp``.
+
+    Only attempted on Linux, where the extracted Linux binary actually runs
+    (the images carry Linux binaries; on macOS/Windows hosts they would not
+    execute). Requires a working Docker daemon — already a hard requirement of
+    the CI environment. Returns True only if ``dst_path`` exists afterwards.
+    """
+    if sys.platform != "linux":
+        logger.warning(
+            "Cannot extract MinIO binary from %s on %s: the image ships Linux "
+            "binaries. Place the executable manually under %s.",
+            image,
+            sys.platform,
+            os.path.dirname(dst_path) or ".",
+        )
+        return False
+
+    if shutil.which("docker") is None:
+        logger.error(
+            "MinIO binary download failed (dl.min.io returns 410) and Docker is "
+            "not available to extract %s from %s.",
+            os.path.basename(src_path),
+            image,
+        )
+        return False
+
+    print(f"Extracting {src_path} from {image} (dl.min.io downloads are gone)...")
+    create = subprocess.run(
+        ["docker", "create", image], capture_output=True, text=True
+    )
+    if create.returncode != 0:
+        logger.error(
+            "Failed to create container from %s: %s", image, create.stderr.strip()
+        )
+        return False
+    container_id = create.stdout.strip()
+    try:
+        copy = subprocess.run(
+            ["docker", "cp", f"{container_id}:{src_path}", dst_path],
+            capture_output=True,
+            text=True,
+        )
+        if copy.returncode != 0:
+            logger.error(
+                "Failed to copy %s from %s: %s",
+                src_path,
+                image,
+                copy.stderr.strip(),
+            )
+            return False
+    finally:
+        subprocess.run(
+            ["docker", "rm", "-f", container_id], capture_output=True, text=True
+        )
+
+    if not os.path.exists(dst_path):
+        return False
+    st = os.stat(dst_path)
+    os.chmod(dst_path, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    print(f"Extracted {os.path.basename(dst_path)} from {image}.")
+    return True
 
 
 def setup_minio_executables(
@@ -119,7 +193,22 @@ def setup_minio_executables(
             download_success = False
 
     if not download_success:
-        return minio_version, mc_version, minio_path, mc_path
+        # dl.min.io removed all free binary archive downloads (HTTP 410). Fall
+        # back to extracting the binaries from the official quay.io images,
+        # which still ship them anonymously. In production the binaries are
+        # baked into the container image, so the os.path.exists checks above
+        # short-circuit and this fallback is never reached.
+        extracted = True
+        if not os.path.exists(minio_path):
+            extracted &= _extract_binary_from_docker_image(
+                f"quay.io/minio/minio:{minio_version}", "/usr/bin/minio", minio_path
+            )
+        if not os.path.exists(mc_path):
+            extracted &= _extract_binary_from_docker_image(
+                f"quay.io/minio/mc:{mc_version}", "/usr/bin/mc", mc_path
+            )
+        if not extracted:
+            return minio_version, mc_version, minio_path, mc_path
 
     # Skip chmod operations on Windows as they're not needed
     if sys.platform != "win32":
