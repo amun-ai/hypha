@@ -403,6 +403,124 @@ async def test_git_clone_add_commit_push(
     await api.disconnect()
 
 
+async def test_git_clone_nested_directories_roundtrip(
+    minio_server,
+    fastapi_server,
+    test_user_token,
+):
+    """Push a repo with NESTED directories, then clone it and verify every
+    file (including deeply-nested ones) survives the roundtrip.
+
+    This exercises the subtree-recursion path of the server-side reachability
+    walk (``_collect_reachable_objects`` in hypha/git/http.py). That walk
+    classifies each tree entry by its MODE: it recurses into subtrees
+    (``S_ISDIR``), skips gitlinks, and adds blob/symlink SHAs directly WITHOUT
+    fetching their content (a memory optimization). A regression in the subtree
+    classification would drop the blobs living inside subdirectories from the
+    generated pack, so a fresh clone would fail ``git fsck`` (missing objects)
+    or check out an incomplete tree. Flat-file clone tests cannot catch that.
+    """
+    import subprocess
+    import uuid
+    from hypha_rpc import connect_to_server
+
+    api = await connect_to_server({
+        "name": "git-nested-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
+
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    artifact_alias = f"git-nested-{uuid.uuid4().hex[:8]}"
+    await artifact_manager.create(
+        alias=artifact_alias,
+        manifest={"name": "Git Nested Dirs Test"},
+        config={"storage": "git"},
+    )
+
+    workspace = api.config.workspace
+    port = SIO_PORT
+    auth_url = (
+        f"http://git:{test_user_token}@127.0.0.1:{port}"
+        f"/{workspace}/git/{artifact_alias}"
+    )
+
+    # Nested layout: root file + one-level + deeply-nested subdirectories.
+    nested_files = {
+        "README.md": "# Nested Repo\n",
+        "dir1/a.txt": "alpha\n",
+        "dir1/sub/b.txt": "beta-nested\n",
+        "dir1/sub/deep/c.txt": "gamma-deep\n",
+        "dir2/d.txt": "delta\n",
+    }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = os.path.join(tmpdir, "src")
+        os.makedirs(src, exist_ok=True)
+        subprocess.run(["git", "init", "-b", "main"], cwd=src, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.com"],
+            cwd=src, check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test User"], cwd=src, check=True,
+        )
+
+        for rel_path, content in nested_files.items():
+            abs_path = os.path.join(src, rel_path)
+            os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+            with open(abs_path, "w") as f:
+                f.write(content)
+
+        subprocess.run(["git", "add", "-A"], cwd=src, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "nested tree"], cwd=src, check=True,
+        )
+        push = subprocess.run(
+            ["git", "push", auth_url, "main:main"],
+            cwd=src, capture_output=True, text=True, timeout=30,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+        assert push.returncode == 0, (
+            f"git push failed: stdout={push.stdout}, stderr={push.stderr}"
+        )
+
+        # Fresh clone: the pack must contain every nested blob and subtree.
+        dst = os.path.join(tmpdir, "dst")
+        clone = subprocess.run(
+            ["git", "clone", auth_url, dst],
+            capture_output=True, text=True, timeout=30,
+        )
+        assert clone.returncode == 0, (
+            f"git clone failed: stdout={clone.stdout}, stderr={clone.stderr}"
+        )
+
+        # Every nested file present with exact content.
+        for rel_path, content in nested_files.items():
+            cloned = os.path.join(dst, rel_path)
+            assert os.path.exists(cloned), (
+                f"nested file {rel_path} missing from clone"
+            )
+            with open(cloned, "r") as f:
+                assert f.read() == content, f"content mismatch for {rel_path}"
+
+        # Object database must be complete and consistent (proves no subtree
+        # or blob was dropped from the generated pack).
+        fsck = subprocess.run(
+            ["git", "fsck", "--full", "--strict"],
+            cwd=dst, capture_output=True, text=True, timeout=30,
+        )
+        assert fsck.returncode == 0, (
+            f"git fsck failed on clone: stdout={fsck.stdout}, "
+            f"stderr={fsck.stderr}"
+        )
+
+    # Cleanup
+    await artifact_manager.delete(artifact_id=artifact_alias)
+    await api.disconnect()
+
+
 async def test_git_receive_pack_requires_auth(
     minio_server,
     fastapi_server,
