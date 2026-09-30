@@ -1076,7 +1076,20 @@ class RedisStore:
             logger.info(
                 "No live login service found, registering default login service"
             )
-            await api.register_service(create_login_service(self))
+            # overwrite=True is REQUIRED for the guard to be able to heal at all.
+            # The RPC peer keeps every service it registered in its own local
+            # ``_services`` dict for the lifetime of the process, and that entry
+            # is NOT removed when the service's Redis registration goes away. So
+            # on a server that registered login at boot and later lost the Redis
+            # key at runtime (a reaper, a client-services clear, workspace
+            # churn), a plain register_service raises "Service already exists:
+            # hypha-login" — the guard would then log that warning every interval
+            # and NEVER recover, which is precisely the permanent outage it
+            # exists to prevent. Overwriting our OWN stale local entry is safe:
+            # registration is keyed by this server's client id, so this can only
+            # replace a registration this server itself made, never another
+            # server's live login.
+            await api.register_service(create_login_service(self), overwrite=True)
         return login_is_live
 
     async def _login_guard_loop(self):

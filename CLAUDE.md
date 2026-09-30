@@ -713,6 +713,26 @@ invalidated moments later and **nothing re-evaluates it**.
   fail during it; the guard is what heals) and **reintroduces the #0042
   stale-marker footgun** (a key pointing at a dead owner). The periodic guard alone
   is the honest cure.
+- **A self-heal that cannot RE-register heals nothing — `overwrite=True` is load-bearing
+  (prod 09-30, 0.21.133, hypha.aicell.io):** the guard above covers the handoff case
+  only because the deferring pod **never registered** login, so its RPC peer has no
+  local entry. On the *other* orphaning shape — this server DID register login at boot
+  and the Redis key vanished at **runtime** (`replicas=1`, 20h uptime, no peer,
+  readiness 200) — a plain `api.register_service(create_login_service(self))` raises
+  **`Service already exists: hypha-login`**. The RPC peer keeps every service it
+  registered in its own local `RPC._services` dict **for the lifetime of the process**,
+  and that entry is **not** removed when the Redis registration goes away. The guard's
+  broad `except` then logged that warning **every interval forever** and never healed —
+  a guard that looks alive in the logs while the outage is permanent. Fix: register with
+  `overwrite=True`. Safe because registration is keyed by *this server's* client id, so
+  it can only replace a registration this server itself made, never another server's
+  live login.
+- **Key Lesson (testing):** the handoff test passed with the broken re-register, because
+  it orphans login via a **peer teardown**. Prove a self-heal against **every** way the
+  invariant can break, not just the one you diagnosed — the single-server runtime-
+  deregistration test (`test_single_server_runtime_deregistration_self_heals`) deletes
+  the key straight out of Redis, deliberately **mechanism-blind**, which is the whole
+  point of a reconcile loop: it must heal without knowing what broke it.
 - **Key Lesson:** a boot-time idempotency/skip decision about a **shared singleton**
   (login, queue, any register-if-absent public service) is a TOCTOU — it can be
   invalidated by a peer's later shutdown and there is no retry. Pair the

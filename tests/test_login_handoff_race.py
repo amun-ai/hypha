@@ -246,6 +246,68 @@ async def test_login_guard_is_leader_gated(monkeypatch):
         await store_b.teardown()
 
 
+async def test_single_server_runtime_deregistration_self_heals(monkeypatch):
+    """Hypothesis (b): a SINGLE long-lived server whose login key disappears at
+    RUNTIME — no peer, no handoff — must still self-heal.
+
+    Prod 09-30 (hypha.aicell.io, 0.21.133) reported ``hypha-login`` 404 on a
+    ``replicas=1`` pod that had been up 20 HOURS with a healthy readiness probe.
+    Two causes could not be discriminated without pod logs: (a) the boot check
+    deferred to the outgoing pod during the rolling update 20h earlier (the
+    live-handoff race above), or (b) login registered fine at boot and was
+    deregistered at runtime by some other mechanism (a reaper, a client-services
+    clear, workspace churn).
+
+    The guard must be robust to (b) WITHOUT knowing the mechanism, so this test
+    deletes the registration directly out of Redis — deliberately mechanism-blind,
+    standing in for whatever removed it — rather than reproducing any one cause.
+    Unlike every other test here there is no second server: the orphan appears
+    while this server keeps running, which is what makes it the (b) case.
+    """
+    monkeypatch.setenv("HYPHA_ORPHAN_REAP_INITIAL_DELAY", "60")
+    monkeypatch.setenv("HYPHA_LOGIN_PING_TIMEOUT", "2")
+    monkeypatch.setenv("HYPHA_LOGIN_GUARD_INTERVAL", "1")
+
+    store = RedisStore(None, redis_uri=None)
+    await store.init(reset_redis=True)
+    try:
+        assert await _login_owners(store) == {store._server_id}, (
+            "boot should register a login owned by this server"
+        )
+
+        # The orphaning event: the registration vanishes while the server stays up.
+        keys = await store._scan_keys("services:*|*:public/*:hypha-login@*")
+        assert keys, "no login key to delete — repro premise wrong"
+        for key in keys:
+            await store._redis.delete(key)
+        assert await _login_owners(store) == set(), (
+            "expected zero login owners after the runtime deregistration"
+        )
+
+        # THE FIX: the periodic guard notices and re-registers, unattended. Before
+        # #63 nothing re-evaluated the boot decision, so this stayed empty until a
+        # manual pod restart — the 20h prod outage.
+        for _ in range(40):
+            await asyncio.sleep(0.25)
+            if await _login_owners(store) == {store._server_id}:
+                break
+        assert await _login_owners(store) == {store._server_id}, (
+            "the login guard did not heal a runtime deregistration on a single "
+            "server — a replicas=1 deployment would stay 404 until a restart"
+        )
+
+        # End-to-end: the healed login actually answers, not just a key in Redis.
+        api = await store.get_public_api()
+        login_svc = await asyncio.wait_for(
+            api.get_service("public/hypha-login", {"mode": "native:random"}),
+            timeout=10,
+        )
+        result = await asyncio.wait_for(login_svc.start(), timeout=10)
+        assert "login_url" in result, f"start_login returned unexpectedly: {result}"
+    finally:
+        await store.teardown()
+
+
 async def test_clean_boot_still_registers_login(monkeypatch):
     """Regression: a normal single-server boot still registers exactly one live
     login owned by this server (the guard/extraction must not change the happy
