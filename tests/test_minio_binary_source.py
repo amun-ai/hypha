@@ -17,12 +17,21 @@ hundred KB rather than the ~100 MB of a full download.
 """
 
 import hashlib
+import os
+import shutil
+import sys
 import urllib.error
 import urllib.request
 
 import pytest
 
-from hypha.minio import _download_verified, _github_release_url, _platform_tag
+from hypha.minio import (
+    _download_verified,
+    _extract_binary_from_docker_image,
+    _github_release_url,
+    _platform_tag,
+    setup_minio_executables,
+)
 
 # The versions hypha pins in setup_minio_executables: the defaults and the pair
 # used for file_system_mode. All four must be fetchable or some code path breaks.
@@ -155,3 +164,82 @@ def test_dl_min_io_is_still_dead():
     with pytest.raises(urllib.error.HTTPError) as exc:
         urllib.request.urlopen(url, timeout=60)
     assert exc.value.code == 410, f"dl.min.io now returns {exc.value.code}, not 410"
+
+
+def test_setup_minio_executables_installs_runnable_binaries(tmp_path):
+    """End to end: a fresh directory ends up with both runnable binaries.
+
+    This is the exact precondition the ``minio_server`` fixture needs to start
+    and the ``--s3-admin-type=minio`` fixtures need for admin ops — i.e. the
+    thing whose absence blocked the entire CI matrix. Downloads the real
+    binaries (~130 MB), so it is the slow-but-decisive counterpart to the
+    range-GET checks above.
+
+    Replaces the former ``test_setup_minio_executables_recovers_via_quay``:
+    that test kept passing after the source moved to the GitHub release assets,
+    but for a completely different reason than its name claimed, which makes it
+    actively misleading about where the binaries come from.
+    """
+    exe_dir = str(tmp_path / "bin")
+    minio_version, mc_version, minio_path, mc_path = setup_minio_executables(exe_dir)
+
+    assert minio_version == "RELEASE.2024-07-16T23-46-41Z"
+    assert mc_version == "RELEASE.2025-04-08T15-39-49Z"
+
+    for path, label in ((minio_path, "minio server"), (mc_path, "mc client")):
+        assert os.path.exists(path), f"{label} binary must be present"
+        assert os.access(path, os.X_OK), f"{label} binary must be executable"
+        assert os.path.getsize(path) > 1_000_000, f"{label} binary looks truncated"
+
+    # No partial-download remnants left behind.
+    leftovers = [n for n in os.listdir(exe_dir) if n.endswith(".part")]
+    assert not leftovers, f"partial downloads were not cleaned up: {leftovers}"
+
+
+@pytest.mark.skipif(
+    sys.platform == "linux",
+    reason="characterizes the non-Linux guard; on Linux extraction is attempted",
+)
+def test_docker_extraction_refuses_on_non_linux_host(tmp_path):
+    """The legacy Docker-image path must refuse on non-Linux hosts.
+
+    The images carry Linux binaries, so extracting one onto macOS/Windows would
+    produce a file that cannot execute. Retained from the #1060 test suite: the
+    guard is still live code even though the images are no longer a usable
+    public source.
+    """
+    dst = str(tmp_path / "mc")
+    assert (
+        _extract_binary_from_docker_image(
+            "quay.io/minio/mc:RELEASE.2025-04-08T15-39-49Z", "/usr/bin/mc", dst
+        )
+        is False
+    )
+    assert not os.path.exists(dst), "no binary should be written on a non-Linux host"
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or shutil.which("docker") is None,
+    reason="requires a Linux host with Docker to attempt an image pull",
+)
+def test_docker_image_source_is_gated(tmp_path):
+    """Documents that the #1060 container fallback is no longer a public source.
+
+    ``quay.io/minio/*`` now rejects anonymous pulls (401), so ``docker create``
+    fails with "Unable to find image ... locally" and the helper returns False.
+    This replaces ``test_extract_mc_binary_from_quay_image``, which asserted the
+    extraction SUCCEEDS — a capability that no longer exists, and the single
+    test that kept CI red after the source was fixed.
+
+    If this ever starts failing, anonymous pulls work again and the "last
+    resort only" comments in hypha/minio.py need revisiting.
+    """
+    dst = str(tmp_path / "mc")
+    ok = _extract_binary_from_docker_image(
+        "quay.io/minio/mc:RELEASE.2025-04-08T15-39-49Z", "/usr/bin/mc", dst
+    )
+    assert ok is False, (
+        "anonymous pulls from quay.io/minio/mc appear to work again — the "
+        "container fallback may be viable once more"
+    )
+    assert not os.path.exists(dst)
