@@ -714,11 +714,11 @@ invalidated moments later and **nothing re-evaluates it**.
   stale-marker footgun** (a key pointing at a dead owner). The periodic guard alone
   is the honest cure.
 - **A self-heal that cannot RE-register heals nothing — `overwrite=True` is load-bearing
-  (prod 09-30, 0.21.133, hypha.aicell.io):** the guard above covers the handoff case
-  only because the deferring pod **never registered** login, so its RPC peer has no
-  local entry. On the *other* orphaning shape — this server DID register login at boot
-  and the Redis key vanished at **runtime** (`replicas=1`, 20h uptime, no peer,
-  readiness 200) — a plain `api.register_service(create_login_service(self))` raises
+  (found while hardening for prod 09-30, 0.21.133, hypha.aicell.io):** the guard above
+  covers the handoff case only because the deferring pod **never registered** login, so
+  its RPC peer has no local entry. On the *other* orphaning shape — this server DID
+  register login at boot and the Redis key vanished at **runtime** — a plain
+  `api.register_service(create_login_service(self))` raises
   **`Service already exists: hypha-login`**. The RPC peer keeps every service it
   registered in its own local `RPC._services` dict **for the lifetime of the process**,
   and that entry is **not** removed when the Redis registration goes away. The guard's

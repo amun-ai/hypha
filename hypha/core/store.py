@@ -995,7 +995,7 @@ class RedisStore:
         finally:
             await rpc.disconnect()
 
-    async def _ensure_login_service_registered(self):
+    async def _ensure_login_service_registered(self, source="boot"):
         """Ensure a LIVE ``hypha-login`` is registered; (re)register the default
         if none is live. Shared by boot (``init``) and the periodic guard loop
         (``_login_guard_loop``).
@@ -1020,6 +1020,17 @@ class RedisStore:
         leaving login permanently orphaned because nothing re-evaluates the boot
         decision (#63, prod 09-23). Re-running this check on an interval converts
         that permanent outage into a bounded self-heal.
+
+        ``source`` labels the caller ("boot" or "guard") in every decision log
+        line. This is deliberately logged on EVERY pass, not just on a state
+        change: a register-once-at-boot bug is near-unprovable after the fact,
+        because by the time anyone notices login is down the boot log has
+        rotated out of the kubelet buffer. That is exactly what happened in the
+        09-30 prod incident — 59k lines captured from the dying pod, zero
+        startup markers, so the boot decision could not be recovered and the
+        cause stayed formally unproven. Logging the decision every interval
+        keeps the current state visible in a RECENT window instead of only at
+        boot, and the label says which pass you are looking at.
 
         Returns True if a live login is present afterwards.
         """
@@ -1055,7 +1066,8 @@ class RedisStore:
             if ping_result == "pong":
                 login_is_live = True
                 logger.info(
-                    "Login service already registered and reachable (owner=%s)",
+                    "login-check[%s]: login is registered and reachable (owner=%s)",
+                    source,
                     owner,
                 )
                 break
@@ -1064,8 +1076,9 @@ class RedisStore:
             # 0.21.107 did inline on boot) and retry, in case multiple dead
             # generations left markers.
             logger.warning(
-                "Found a stale hypha-login registration owned by unreachable "
-                "client %s (%s); reaping it and re-checking.",
+                "login-check[%s]: stale hypha-login registration owned by "
+                "unreachable client %s (%s); reaping it and re-checking.",
+                source,
                 owner,
                 ping_result,
             )
@@ -1074,7 +1087,9 @@ class RedisStore:
 
         if not login_is_live:
             logger.info(
-                "No live login service found, registering default login service"
+                "login-check[%s]: no live login service found, registering the "
+                "default login service",
+                source,
             )
             # overwrite=True is REQUIRED for the guard to be able to heal at all.
             # The RPC peer keeps every service it registered in its own local
@@ -1143,7 +1158,7 @@ class RedisStore:
                 just_acquired = leader_now and not was_leader
                 was_leader = leader_now
                 if leader_now and (just_acquired or elapsed >= interval):
-                    await self._ensure_login_service_registered()
+                    await self._ensure_login_service_registered(source="guard")
                     elapsed = 0.0
             except asyncio.CancelledError:
                 raise

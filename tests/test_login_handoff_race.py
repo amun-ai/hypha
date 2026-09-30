@@ -258,6 +258,14 @@ async def test_single_server_runtime_deregistration_self_heals(monkeypatch):
     deregistered at runtime by some other mechanism (a reaper, a client-services
     clear, workspace churn).
 
+    It stayed unproven. The dying pod's logs were captured before the restart,
+    but the 21h-old kubelet buffer had already rotated past boot: 59k lines, zero
+    startup markers, and no login-decision line anywhere — only a steady stream
+    of failed ``public/*:hypha-login`` lookups across the whole window. The
+    timing is consistent with (a) but that is circumstantial, so this incident
+    must NOT be cited as proof of the handoff race. Which is the point: the guard
+    has to cover both, because in practice you cannot find out which one you got.
+
     The guard must be robust to (b) WITHOUT knowing the mechanism, so this test
     deletes the registration directly out of Redis — deliberately mechanism-blind,
     standing in for whatever removed it — rather than reproducing any one cause.
