@@ -999,6 +999,17 @@ fix for the first.
   `linux-arm64`/`darwin-arm64`, which the old URLs never supported (linux was
   hardcoded to amd64). The Docker-image path survives only as a local-cache last
   resort, with its false claim corrected.
+- **The first fix was INCOMPLETE — fix the artifact supply EVERYWHERE, not just where
+  the failure surfaced.** #1063 fixed `hypha/minio.py` (the test-fixture download) and
+  CI went green on all three Python versions, which looked like done. It was not: the
+  **`Dockerfile`** fetched the same binaries from the same dead host
+  (`wget https://dl.min.io/server/minio/release/linux-amd64/minio`), so the very next
+  push to `main` passed every test and then failed in **`Publish Docker`** with
+  `ERROR 410: Gone` — no image published for the release that had just been cut. The
+  green test suite could never have caught it, because the image build is not part of
+  the test job. Same lesson shape as #0043's sibling note on #0015: when you fix an
+  externally-sourced dependency, `grep` the WHOLE repo for the dead host — build
+  files, CI workflows, and scripts included — not just the module that raised.
 - **Key Lesson:** when CI depends on fetching a third-party artifact, **test the
   fetch itself** — `tests/test_minio_binary_source.py` range-GETs every pinned
   binary on every supported platform tag and asserts the sha256 sidecar parses, so
