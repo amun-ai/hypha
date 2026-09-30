@@ -42,11 +42,29 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Install MinIO server and client
+# Install MinIO server and client.
+#
+# These used to come from dl.min.io, which now returns HTTP 410 Gone for every
+# server/client URL — pinned, "latest", and archive alike — so this layer failed
+# the image build outright (#0007). The minio/* container images are no longer a
+# fallback either: both quay.io and Docker Hub reject anonymous pulls with 401.
+# The GitHub release assets are the only remaining free source, and unlike the
+# old URLs they are versioned and ship a published sha256, so the build is now
+# reproducible and integrity-checked instead of tracking a moving "latest".
+#
+# Versions are pinned to match hypha/minio.py::setup_minio_executables. The
+# installed filenames (/home/bin/minio, /home/bin/mc) are deliberately unchanged.
+ARG MINIO_VERSION=RELEASE.2024-07-16T23-46-41Z
+ARG MC_VERSION=RELEASE.2025-04-08T15-39-49Z
 RUN mkdir -p /home/bin && \
     cd /home/bin && \
-    wget https://dl.min.io/server/minio/release/linux-amd64/minio && \
-    wget https://dl.min.io/client/mc/release/linux-amd64/mc && \
+    wget -O minio "https://github.com/minio/minio/releases/download/${MINIO_VERSION}/minio.linux-amd64.${MINIO_VERSION}" && \
+    wget -O minio.sha256sum "https://github.com/minio/minio/releases/download/${MINIO_VERSION}/minio.linux-amd64.${MINIO_VERSION}.sha256sum" && \
+    echo "$(cut -d' ' -f1 minio.sha256sum)  minio" | sha256sum -c - && \
+    wget -O mc "https://github.com/minio/mc/releases/download/${MC_VERSION}/mc.linux-amd64.${MC_VERSION}" && \
+    wget -O mc.sha256sum "https://github.com/minio/mc/releases/download/${MC_VERSION}/mc.linux-amd64.${MC_VERSION}.sha256sum" && \
+    echo "$(cut -d' ' -f1 mc.sha256sum)  mc" | sha256sum -c - && \
+    rm -f minio.sha256sum mc.sha256sum && \
     chmod +x /home/bin/minio /home/bin/mc && \
     chmod -R 777 /home
 
