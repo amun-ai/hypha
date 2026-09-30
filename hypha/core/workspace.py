@@ -173,6 +173,17 @@ class WorkspaceActivityManager:
         """Check if activity tracking is enabled."""
         return self._enabled
 
+    def is_protected(self, workspace_id: str) -> bool:
+        """Whether this is a protected system workspace.
+
+        Protected system workspaces (``public``, ``ws-user-root``,
+        ``ws-anonymous``) must never be deleted — neither via activity-based
+        cleanup nor by unload(). Removing e.g. ``public`` from the Redis
+        ``workspaces`` hash 404s every public-service lookup (prod incident
+        2026-09-14).
+        """
+        return workspace_id in self._protected_workspaces
+
     async def register_for_cleanup(self, workspace_id: str) -> bool:
         """
         Register a persistent workspace for activity-based cleanup.
@@ -3332,9 +3343,19 @@ class WorkspaceManager:
                     # System workspaces are protected and won't be registered
                     if await self._activity_manager.register_for_cleanup(ws):
                         logger.debug(f"Registered persistent workspace {ws} for activity-based cleanup")
-                    else:
-                        # Either activity manager disabled or protected workspace - delete immediately
+                    elif not self._activity_manager.is_protected(ws):
+                        # Ordinary persistent workspace with no active cleanup tracking
+                        # (activity manager disabled): drop the Redis record — it is
+                        # reloaded from S3 on next access.
                         await self._redis.hdel("workspaces", ws)
+                    else:
+                        # Protected system workspace (public, ws-user-root, ws-anonymous):
+                        # NEVER delete its Redis record. register_for_cleanup() returns False
+                        # for these precisely BECAUSE they are protected, so the old else-branch
+                        # deleted the exact workspaces it meant to shield — 404ing every
+                        # public-service lookup (prod incident 2026-09-14). Keep it in Redis
+                        # (status=None) so it is re-prepared on next access.
+                        logger.debug(f"Keeping protected system workspace {ws} in Redis")
                 else:
                     logger.warning(
                         f"Skipping cleanup of persistent workspace {ws} because S3 controller is not available"
