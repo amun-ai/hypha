@@ -3,23 +3,23 @@ entries:
   hypha-server:
   - apiVersion: v2
     appVersion: 0.20.14
-    created: "2026-08-13T02:35:31.591079362Z"
+    created: "2026-09-30T14:55:14.465557468Z"
     description: A Helm chart for deploying Hypha Server to Kubernetes
-    digest: fa69cda6697d2bcbf9e1fb5306290250492f4a49bd3e3bc359c0ab00cbd9bf24
+    digest: 26de01067f898bc44c5b939dcdeca74a77944fae361a3c42bd2b2e6cdfbe456b
     name: hypha-server
     type: application
     urls:
-    - https://docs.amun.ai/hypha-server-0.21.135.tgz
-    version: 0.21.135
+    - https://docs.amun.ai/hypha-server-0.21.136.tgz
+    version: 0.21.136
   hypha-server-kit:
   - apiVersion: v2
-    appVersion: 0.21.135
-    created: "2026-08-13T02:35:31.609198997Z"
+    appVersion: 0.21.136
+    created: "2026-09-30T14:55:14.48330971Z"
     dependencies:
     - condition: hypha-server.enabled
       name: hypha-server
       repository: file://../hypha-server
-      version: 0.21.135
+      version: 0.21.136
     - condition: minio.enabled
       name: minio
       repository: https://charts.bitnami.com/bitnami
@@ -33,7 +33,7 @@ entries:
       repository: https://charts.bitnami.com/bitnami
       version: 21.2.13
     description: A comprehensive Helm chart for Hypha server with integrated dependencies
-    digest: fe1e1fcdb04286fa38b692cbf380c3eedb1a14b82bea0f2ecd7e3a32c8c9a704
+    digest: 2949e9913472ea111c025acc2b4ddba7f955a097ce83da67711e62f73b1eb64a
     home: https://github.com/amun-ai/hypha
     keywords:
     - hypha
@@ -52,17 +52,17 @@ entries:
     - https://github.com/amun-ai/hypha
     type: application
     urls:
-    - https://docs.amun.ai/hypha-server-kit-0.21.135.tgz
-    version: 0.21.135
+    - https://docs.amun.ai/hypha-server-kit-0.21.136.tgz
+    version: 0.21.136
   redis:
   - apiVersion: v2
     appVersion: 5.0.8
-    created: "2026-08-13T02:35:31.609323681Z"
+    created: "2026-09-30T14:55:14.483460353Z"
     description: A Helm chart for deploying Redis to Kubernetes
-    digest: 619e430a32897ad365c1dc31e2c6dc81063bcad260a219c2923b82ac26536075
+    digest: bca2989e9e11eb68ce389d76aa5f76e6588eb3e0faef9022cdd6a4e16415d76c
     name: redis
     type: application
     urls:
     - https://docs.amun.ai/redis-0.1.0.tgz
     version: 0.1.0
-generated: "2026-08-13T02:35:31.590287094Z"
+generated: "2026-09-30T14:55:14.464767151Z"
