@@ -1018,9 +1018,11 @@ class RedisStore:
         generations overlap, a NEW pod can boot while the OLD login owner is
         still LIVE, correctly defer to it — and then the old pod's graceful
         shutdown clears the login key, leaving login permanently orphaned because
-        nothing re-evaluates the boot decision (#63, prod 09-23). Re-running this
-        check on an interval converts that permanent outage into a bounded
-        self-heal.
+        nothing re-evaluates the boot decision (#63). Re-running this check on an
+        interval converts that permanent outage into a bounded self-heal — and,
+        because it is cause-agnostic, covers every other way the key can go
+        missing too (which matters, since no confirmed prod incident has been
+        traced to the overlap race itself).
 
         ``source`` labels the caller ("boot" or "guard") in every decision log
         line. This is deliberately logged on EVERY pass, not just on a state
@@ -1118,15 +1120,21 @@ class RedisStore:
         overlap, a new pod boots while the old login owner is still LIVE, defers
         to it, and then the old pod's graceful shutdown clears the login key —
         leaving login permanently orphaned (``/public/services/hypha-login`` 404
-        while the server is fully healthy). This was a recurring prod outage
-        (09-23) that only a manual restart cleared.
+        while the server is fully healthy).
 
-        Note the overlap does NOT come from helm rollouts: prod runs
-        ``replicas=1`` with ``RollingUpdate maxSurge=0, maxUnavailable=1``
-        precisely so the old pod is fully gone before the new one starts. It
-        comes from restarts ``maxSurge`` does not govern — a bare pod delete, a
-        node eviction, an OOMKill, or an auto-heal restart — where the
-        replacement can start while the outgoing pod is still shutting down.
+        This race explains **zero confirmed production incidents** — do not cite
+        one. kth-k8s runs ``replicas=1`` with ``RollingUpdate maxSurge=0,
+        maxUnavailable=1``, so a rollout cannot create two live generations, and
+        cluster history shows **every** recent prod restart carried a
+        ``kubectl.kubernetes.io/restartedAt`` annotation, i.e. all were rollout
+        restarts (no bare pod delete / OOMKill, and no helm upgrade since
+        2026-08-20). The guard is justified as a **cause-agnostic** invariant
+        keeper, not as the fix for a diagnosed outage.
+
+        The race is still reachable in principle — through restarts ``maxSurge``
+        does not govern (bare pod delete, node eviction, OOMKill, auto-heal),
+        where a replacement can start while the outgoing pod is still shutting
+        down — it just has not been the observed trigger anywhere yet.
 
         Re-running the boot check on an interval heals it: after any orphaning
         event the leader re-registers the default login within one interval
