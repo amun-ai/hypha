@@ -1014,12 +1014,13 @@ class RedisStore:
         unreachable stale owner, and register the default only if none is live.
 
         Called periodically by ``_login_guard_loop`` as well as once at boot: the
-        boot decision alone is a register-once TOCTOU. During a RollingUpdate a
-        NEW pod can boot while the OLD login owner is still LIVE, correctly defer
-        to it — and then the old pod's graceful shutdown clears the login key,
-        leaving login permanently orphaned because nothing re-evaluates the boot
-        decision (#63, prod 09-23). Re-running this check on an interval converts
-        that permanent outage into a bounded self-heal.
+        boot decision alone is a register-once TOCTOU. Whenever two server
+        generations overlap, a NEW pod can boot while the OLD login owner is
+        still LIVE, correctly defer to it — and then the old pod's graceful
+        shutdown clears the login key, leaving login permanently orphaned because
+        nothing re-evaluates the boot decision (#63, prod 09-23). Re-running this
+        check on an interval converts that permanent outage into a bounded
+        self-heal.
 
         ``source`` labels the caller ("boot" or "guard") in every decision log
         line. This is deliberately logged on EVERY pass, not just on a state
@@ -1113,12 +1114,19 @@ class RedisStore:
 
         The default login service is registered once at boot, and the boot check
         correctly DEFERS when another server already owns a live login (#0042).
-        But that is a register-once TOCTOU: during a RollingUpdate (``maxSurge=1``)
-        a new pod boots while the old login owner is still LIVE, defers to it, and
-        then the old pod's graceful shutdown clears the login key — leaving login
-        permanently orphaned (``/public/services/hypha-login`` 404 while the server
-        is fully healthy). This was a recurring single-pod-rollout outage in prod
+        But that is a register-once TOCTOU: whenever two server generations
+        overlap, a new pod boots while the old login owner is still LIVE, defers
+        to it, and then the old pod's graceful shutdown clears the login key —
+        leaving login permanently orphaned (``/public/services/hypha-login`` 404
+        while the server is fully healthy). This was a recurring prod outage
         (09-23) that only a manual restart cleared.
+
+        Note the overlap does NOT come from helm rollouts: prod runs
+        ``replicas=1`` with ``RollingUpdate maxSurge=0, maxUnavailable=1``
+        precisely so the old pod is fully gone before the new one starts. It
+        comes from restarts ``maxSurge`` does not govern — a bare pod delete, a
+        node eviction, an OOMKill, or an auto-heal restart — where the
+        replacement can start while the outgoing pod is still shutting down.
 
         Re-running the boot check on an interval heals it: after any orphaning
         event the leader re-registers the default login within one interval
@@ -1413,8 +1421,9 @@ class RedisStore:
         self._orphan_reaper_task = asyncio.create_task(self._orphan_reaper_loop())
 
         # Periodic login guard (#63). Re-runs the boot login check on an interval
-        # so a live-handoff race on a RollingUpdate cannot permanently orphan the
-        # default hypha-login service (see _login_guard_loop).
+        # so a live-handoff race between overlapping server generations cannot
+        # permanently orphan the default hypha-login service (see
+        # _login_guard_loop).
         self._login_guard_task = asyncio.create_task(self._login_guard_loop())
 
         logger.info("Server initialized with server id: %s", self._server_id)

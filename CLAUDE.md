@@ -680,10 +680,22 @@ the boot check must **ping** the resolved `hypha-login` owner before trusting it
 correct is not enough if it **only runs at boot**: the decision it makes can be
 invalidated moments later and **nothing re-evaluates it**.
 
+- **What creates the overlap — NOT a helm rollout (corrected 2026-09-30 against the
+  live deployment):** `hypha-server` runs `replicas=1` with `RollingUpdate
+  maxSurge=0, maxUnavailable=1`, switched to no-overlap on 2026-06-17 for exactly
+  this failure (recorded in `hypha-server/values.yaml`). A helm upgrade therefore
+  **cannot** produce two live generations: the old pod fully terminates — clearing
+  its login key and releasing the leader lease — before the new one starts, and the
+  new pod's boot check registers login with no competitor. The race reaches prod
+  only through restarts `maxSurge` does not govern: a bare `kubectl delete pod`, a
+  node eviction, an OOMKill, or an auto-heal restart, where the replacement can
+  start while the outgoing pod is still in graceful shutdown. **Do not claim a
+  rolling update as the trigger** — an earlier revision of this section did, and it
+  was wrong.
 - **Incident (#63, prod kth-k8s 09-23, pod wheat-accordion-70572137; cleared only
-  by manual rollout restart):** a **recurring total login outage on single-pod
-  rollouts**. On a RollingUpdate (`maxSurge=1`) the NEW pod boots while the
-  login-owning OLD pod is still **LIVE**; the new pod's boot check resolves the old
+  by manual rollout restart):** a **recurring total login outage**. Two generations
+  overlapped: the NEW pod booted while the
+  login-owning OLD pod was still **LIVE**; the new pod's boot check resolves the old
   login, pings it, gets `pong`, logs `Login service already registered and
   reachable (owner=<oldserver>)`, and correctly **defers** (skips registering). The
   old pod then terminates and its graceful shutdown `_clear_all_server_services`

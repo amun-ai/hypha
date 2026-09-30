@@ -1,11 +1,28 @@
 """Task #63 — the default ``hypha-login`` service must not be permanently
-orphaned by a LIVE-HANDOFF race during a RollingUpdate.
+orphaned by a LIVE-HANDOFF race when two server generations overlap.
+
+What triggers the overlap in production (corrected 2026-09-30 by kth-k8s against
+the live deployment — an earlier revision of this file asserted it was a
+``maxSurge=1`` rolling update, which is WRONG for prod):
+
+``hypha-server`` runs ``replicas=1`` with ``RollingUpdate maxSurge=0,
+maxUnavailable=1``. That is deliberate — ``hypha-server/values.yaml`` records the
+switch to no-overlap on 2026-06-17 for exactly this failure. So a **helm/rollout
+update cannot produce overlap at all**: the old pod fully terminates (clearing
+its login key, releasing the leader lease) before the new one starts, and the new
+pod's boot check simply registers login with no competitor.
+
+The overlap therefore arrives through restarts that ``maxSurge`` does not govern
+— a bare ``kubectl delete pod``, a node eviction, an OOMKill restart, or the
+hypha-health auto-heal restart — any of which can start the replacement while the
+outgoing pod is still in graceful shutdown. The race below is reachable in prod,
+just NOT via helm upgrades.
 
 Production symptom (kth-k8s, 09-23, pod wheat-accordion-70572137; cured only by a
 manual rollout restart):
 
-1. Rolling restart, ``maxSurge=1``: the NEW pod boots WHILE the login-owning OLD
-   pod is still reachable.
+1. Two generations overlap: the NEW pod boots WHILE the login-owning OLD pod is
+   still reachable.
 2. The new pod's boot check (``RedisStore.init`` -> the login idempotency block in
    ``hypha/core/store.py``) resolves the old pod's ``hypha-login``, pings its
    owner, gets a ``pong``, logs ``Login service already registered and reachable
@@ -257,6 +274,13 @@ async def test_single_server_runtime_deregistration_self_heals(monkeypatch):
     live-handoff race above), or (b) login registered fine at boot and was
     deregistered at runtime by some other mechanism (a reaper, a client-services
     clear, workspace churn).
+
+    Since then (a) has become the LESS likely of the two for this incident: prod
+    rolls with ``maxSurge=0``, so if the 09-29 15:04Z pod arrived via a helm
+    rollout there was no live owner to defer to and the handoff race could not
+    have applied. It would require that restart to have been a pod-delete /
+    eviction / OOMKill / auto-heal instead. Nobody should state that the handoff
+    race explains this outage.
 
     It stayed unproven. The dying pod's logs were captured before the restart,
     but the 21h-old kubelet buffer had already rotated past boot: 59k lines, zero
