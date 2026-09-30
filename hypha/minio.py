@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import re
 import shutil
 import stat
@@ -25,17 +26,103 @@ logger.setLevel(LOGLEVEL)
 MATH_PATTERN = re.compile("{(.+?)}")
 
 
+def _platform_tag():
+    """Return the MinIO release-asset platform tag for the current host.
+
+    Matches the ``<os>-<arch>`` component of the GitHub release asset names
+    (e.g. ``linux-amd64``, ``darwin-arm64``). Raises NotImplementedError for
+    platforms MinIO does not publish binaries for.
+    """
+    machine = platform.machine().lower()
+    arch = {
+        "x86_64": "amd64",
+        "amd64": "amd64",
+        "arm64": "arm64",
+        "aarch64": "arm64",
+    }.get(machine)
+    if arch is None:
+        raise NotImplementedError(
+            f"No MinIO release binary is published for machine {machine!r}. "
+            "Download minio and mc manually from "
+            "https://github.com/minio/minio/releases and place them under the "
+            "executable path."
+        )
+    if sys.platform == "darwin":
+        return f"darwin-{arch}"
+    if sys.platform == "linux":
+        return f"linux-{arch}"
+    if sys.platform == "win32":
+        return "windows-amd64"
+    raise NotImplementedError(
+        f"No MinIO release binary is published for platform {sys.platform!r}. "
+        "Download minio and mc manually from "
+        "https://github.com/minio/minio/releases and place them under the "
+        "executable path."
+    )
+
+
+def _github_release_url(repo, base, version, platform_tag):
+    """Build the GitHub release download URL for a MinIO binary.
+
+    MinIO publishes every platform binary as a plain release asset named
+    ``<base>.<platform_tag>.<version>`` (``.exe`` suffixed on Windows), next to
+    a ``.sha256sum`` sidecar. These are served anonymously from
+    ``github.com/minio/<repo>/releases/download/<version>/`` and are the only
+    remaining free source — see ``setup_minio_executables``.
+    """
+    asset = f"{base}.{platform_tag}.{version}"
+    if platform_tag.startswith("windows"):
+        asset += ".exe"
+    return (
+        f"https://github.com/minio/{repo}/releases/download/{version}/{asset}",
+        f"https://github.com/minio/{repo}/releases/download/{version}/"
+        f"{asset}.sha256sum",
+    )
+
+
+def _download_verified(url, sha_url, dst_path):
+    """Download ``url`` to ``dst_path``, verifying its published sha256.
+
+    The checksum is mandatory, not best-effort: these binaries are fetched over
+    the network and then executed, so a truncated or substituted download must
+    fail loudly rather than surface later as an inscrutable MinIO startup error.
+    A partial file is removed so a retry re-downloads instead of treating the
+    corrupt remnant as a cached binary.
+    """
+    expected = (
+        urllib.request.urlopen(sha_url).read().decode().split()[0].strip().lower()
+    )
+    tmp_path = dst_path + ".part"
+    digest = hashlib.sha256()
+    try:
+        with urllib.request.urlopen(url) as response, open(tmp_path, "wb") as handle:
+            for chunk in iter(lambda: response.read(1024 * 1024), b""):
+                digest.update(chunk)
+                handle.write(chunk)
+        actual = digest.hexdigest()
+        if actual != expected:
+            raise ValueError(
+                f"Checksum mismatch for {url}: expected {expected}, got {actual}"
+            )
+        os.replace(tmp_path, dst_path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+
+
 def _extract_binary_from_docker_image(image, src_path, dst_path):
     """Copy a single binary out of a container image into ``dst_path``.
 
-    Used as the fallback binary source after the direct HTTP download fails:
-    in 2026 MinIO removed all free binary archive downloads from ``dl.min.io``
-    (every ``server``/``client`` archive URL — pinned, latest, and non-archive —
-    now returns HTTP 410 Gone) and ships no raw binaries as GitHub release
-    assets. The official binaries are still distributed inside the ``quay.io``
-    container images (``quay.io/minio/minio`` and ``quay.io/minio/mc``), which
-    remain anonymously pullable, so we extract them via ``docker create`` +
-    ``docker cp``.
+    Legacy last-resort fallback, kept only for environments that already hold
+    the image locally. It is NOT a working public source any more: as of
+    2026-09-30 ``quay.io/minio/*`` and ``docker.io/minio/*`` both reject
+    anonymous pulls with HTTP 401, so a plain ``docker create`` fails with
+    "Unable to find image ... locally". The primary source is now the GitHub
+    release assets (see ``_github_release_url``) — note the claim in the
+    previous revision that MinIO "ships no raw binaries as GitHub release
+    assets" was simply wrong, which is why this Docker path was reached for at
+    all.
 
     Only attempted on Linux, where the extracted Linux binary actually runs
     (the images carry Linux binaries; on macOS/Windows hosts they would not
@@ -143,41 +230,27 @@ def setup_minio_executables(
     mc_path = os.path.join(executable_path, mc_executable)
     minio_path = os.path.join(executable_path, minio_executable)
 
-    if sys.platform == "darwin":
-        # Detect architecture for macOS (Apple Silicon vs Intel)
-        import platform
-        machine = platform.machine()
-        if machine == "arm64":
-            arch = "arm64"
-        else:
-            arch = "amd64"
-        minio_url = f"https://dl.min.io/server/minio/release/darwin-{arch}/archive/minio.{minio_version}"
-        mc_url = (
-            f"https://dl.min.io/client/mc/release/darwin-{arch}/archive/mc.{mc_version}"
-        )
-    elif sys.platform == "linux":
-        minio_url = f"https://dl.min.io/server/minio/release/linux-amd64/archive/minio.{minio_version}"
-        mc_url = (
-            f"https://dl.min.io/client/mc/release/linux-amd64/archive/mc.{mc_version}"
-        )
-    elif sys.platform == "win32":
-        minio_url = f"https://dl.min.io/server/minio/release/windows-amd64/archive/minio.{minio_version}"
-        mc_url = (
-            f"https://dl.min.io/client/mc/release/windows-amd64/archive/mc.{mc_version}"
-        )
-    else:
-        raise NotImplementedError(
-            "Manual setup required to, please download minio and minio client \
-    from https://min.io/ and place them under "
-            + executable_path
-        )
+    # Binaries come from the GitHub release assets. The historical source,
+    # dl.min.io, is GONE: as of 2026 every server/client archive URL — pinned,
+    # latest, and non-archive alike — returns HTTP 410, and the container
+    # images that #1060 fell back to (quay.io/minio/*, docker.io/minio/*) now
+    # reject anonymous pulls with 401. The GitHub release assets remain
+    # anonymously downloadable for every version this project pins, and carry a
+    # published sha256 sidecar, so they are both the only working source and a
+    # verifiable one. They also cover linux-arm64 and darwin-arm64, which the
+    # old dl.min.io URLs never did (linux was hardcoded to amd64).
+    platform_tag = _platform_tag()
+    minio_url, minio_sha_url = _github_release_url(
+        "minio", "minio", minio_version, platform_tag
+    )
+    mc_url, mc_sha_url = _github_release_url("mc", "mc", mc_version, platform_tag)
 
     download_success = True
 
     if not os.path.exists(minio_path):
         try:
             print(f"Minio server executable {minio_version} not found, downloading... ")
-            urllib.request.urlretrieve(minio_url, minio_path)
+            _download_verified(minio_url, minio_sha_url, minio_path)
             print(f"Successfully downloaded Minio server {minio_version}")
         except Exception as e:
             print(f"Failed to download Minio server: {str(e)}")
@@ -186,18 +259,18 @@ def setup_minio_executables(
     if not os.path.exists(mc_path):
         try:
             print(f"Minio client executable {mc_version} not found, downloading... ")
-            urllib.request.urlretrieve(mc_url, mc_path)
+            _download_verified(mc_url, mc_sha_url, mc_path)
             print(f"Successfully downloaded Minio client {mc_version}")
         except Exception as e:
             print(f"Failed to download Minio client: {str(e)}")
             download_success = False
 
     if not download_success:
-        # dl.min.io removed all free binary archive downloads (HTTP 410). Fall
-        # back to extracting the binaries from the official quay.io images,
-        # which still ship them anonymously. In production the binaries are
-        # baked into the container image, so the os.path.exists checks above
-        # short-circuit and this fallback is never reached.
+        # Last resort for hosts that already hold the image locally; see
+        # _extract_binary_from_docker_image for why this is no longer a working
+        # public source. In production the binaries are baked into the
+        # container image, so the os.path.exists checks above short-circuit and
+        # neither this nor the download above is reached.
         extracted = True
         if not os.path.exists(minio_path):
             extracted &= _extract_binary_from_docker_image(
