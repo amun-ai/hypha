@@ -402,7 +402,26 @@ def start_minio_server(
             stderr=subprocess.DEVNULL,
         )
 
-        # Wait for server to be available
+        # Wait for the server to be READY, not merely LIVE.
+        #
+        # This gate used to poll /minio/health/live. That is the LIVENESS probe:
+        # it succeeds as soon as the HTTP listener is accepting connections,
+        # which is BEFORE the object layer and the IAM subsystem have
+        # initialized. Callers immediately construct a MinioClient, whose first
+        # act is `mc alias set` — an IAM operation — so on a loaded machine it
+        # could lose the race and fail with:
+        #
+        #   Unable to initialize new alias from the provided credentials.
+        #   Server not initialized yet, please try again.
+        #
+        # In CI that surfaced as the far less obvious "Local auth server did not
+        # start in time" fixture timeout, and because CI runs `pytest -x` it
+        # killed an entire ~40 minute run partway through (#0008).
+        #
+        # /minio/health/ready is the READINESS probe: it reports whether the
+        # server can actually serve requests. Returning only once it passes makes
+        # this function's contract "the server is usable when I return" rather
+        # than "a socket is open".
         start_time = time.time()
         logger.info(f"Starting Minio server at {server_url}...")
 
@@ -412,7 +431,7 @@ def start_minio_server(
                 # from injecting auth headers that MinIO doesn't support
                 session = requests.Session()
                 session.trust_env = False
-                response = session.get(f"{server_url}/minio/health/live")
+                response = session.get(f"{server_url}/minio/health/ready")
                 if response.ok:
                     logger.info("Minio server started successfully.")
                     return proc, server_url, workdir
