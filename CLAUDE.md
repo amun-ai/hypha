@@ -884,6 +884,48 @@ When you run tests, use pytest and make sure you ran it inside the conda env nam
 - Do not convert exceptions to warnings
 - Do not use default values to mask multiple-service issues (e.g., don't auto-select when multiple services respond - this hides cleanup issues)
 
+### Third-Party Binary Supply: Pin a Source You VERIFY, and Test the Fetch Itself (#0007)
+
+The test suite downloads the MinIO server/client binaries at fixture time, so the
+project's CI availability is coupled to a third party's distribution policy. That
+coupling broke CI **twice in two weeks**, and the second break was caused by the
+fix for the first.
+
+- **What happened:** MinIO withdrew its free binary distribution. Every
+  `dl.min.io` server/client archive URL — pinned, `latest`, and non-archive alike
+  — began returning **HTTP 410 Gone**. PR #1060 worked around it by extracting the
+  binaries from the `quay.io/minio/*` container images; two weeks later those
+  images (and `docker.io/minio/*`) started rejecting **anonymous** pulls with
+  **HTTP 401**, so every PR in the repo failed at the first S3 fixture with
+  `RuntimeError: Failed to start Minio server with Docker: Unable to find image
+  'minio/minio:latest' locally`. The failure surfaced on `tests/test_a2a.py`
+  simply because it is the first test to need S3 — it is **not** an a2a bug, and
+  reading it as one wastes the whole debugging session.
+- **Root cause of the bad fallback:** #1060's code asserted in its own docstring
+  that MinIO "ships no raw binaries as GitHub release assets." That was **false**.
+  Every pinned version publishes `minio.<os>-<arch>.<RELEASE>` /
+  `mc.<os>-<arch>.<RELEASE>` assets, for linux/darwin/windows × amd64/arm64, each
+  with a `.sha256sum` sidecar, anonymously downloadable from
+  `github.com/minio/<repo>/releases/download/<version>/`. An unverified premise
+  sent the fix down a path that was strictly more fragile than the one available.
+- **Fix:** `hypha/minio.py` fetches from the GitHub release assets
+  (`_github_release_url`) and verifies the published sha256 (`_download_verified`)
+  — mandatory, not best-effort, because these binaries are executed; a partial
+  download is removed rather than cached. `_platform_tag()` also picks up
+  `linux-arm64`/`darwin-arm64`, which the old URLs never supported (linux was
+  hardcoded to amd64). The Docker-image path survives only as a local-cache last
+  resort, with its false claim corrected.
+- **Key Lesson:** when CI depends on fetching a third-party artifact, **test the
+  fetch itself** — `tests/test_minio_binary_source.py` range-GETs every pinned
+  binary on every supported platform tag and asserts the sha256 sidecar parses, so
+  a gated or withdrawn source fails as *"the binary source is gone"* instead of an
+  unrelated-looking fixture timeout in whichever test happens to need S3 first.
+  Mocking that URL would defeat the entire purpose: a mocked builder stays green
+  through both a 410 and a 401. Keep a test that asserts the *dead* source is
+  still dead (`test_dl_min_io_is_still_dead`), so the comments explaining why the
+  source moved stay honest instead of hardening into folklore. And before building
+  a fallback, **verify the premise that rules out the simpler source**.
+
 ### Version Bumping
 
 When bumping the version (e.g., `0.21.44` -> `0.21.45`), search the entire project for the old version string and replace all occurrences. The version appears in the following files:
