@@ -692,10 +692,20 @@ invalidated moments later and **nothing re-evaluates it**.
   start while the outgoing pod is still in graceful shutdown. **Do not claim a
   rolling update as the trigger** — an earlier revision of this section did, and it
   was wrong.
-- **Incident (#63, prod kth-k8s 09-23, pod wheat-accordion-70572137; cleared only
-  by manual rollout restart):** a **recurring total login outage**. Two generations
-  overlapped: the NEW pod booted while the
-  login-owning OLD pod was still **LIVE**; the new pod's boot check resolves the old
+- **This race explains ZERO confirmed production incidents — do not cite one.**
+  Cluster history (2026-09-30) shows **every** recent kth-k8s restart carried a
+  `kubectl.kubernetes.io/restartedAt` annotation — all `kubectl rollout restart`,
+  no bare pod delete or OOMKill, and no helm upgrade since 2026-08-20. Under
+  `maxSurge=0` every one of those was no-overlap, so the race cannot have caused
+  them, including 09-23. The guard is justified as a **cause-agnostic invariant
+  keeper**, not as the fix for a diagnosed outage; claiming otherwise sends the
+  next investigator down a path the deployment strategy already rules out.
+  **Still unexplained:** the 09-23 pod logged the skip line with *no* live peer
+  available. The mechanism that fits is a **self-match** — see the sub-bullet
+  under the mechanism below.
+- **Mechanism (as it would occur):** two generations overlap; the NEW pod boots
+  while the
+  login-owning OLD pod is still **LIVE**; the new pod's boot check resolves the old
   login, pings it, gets `pong`, logs `Login service already registered and
   reachable (owner=<oldserver>)`, and correctly **defers** (skips registering). The
   old pod then terminates and its graceful shutdown `_clear_all_server_services`
@@ -745,6 +755,24 @@ invalidated moments later and **nothing re-evaluates it**.
   deregistration test (`test_single_server_runtime_deregistration_self_heals`) deletes
   the key straight out of Redis, deliberately **mechanism-blind**, which is the whole
   point of a reconcile loop: it must heal without knowing what broke it.
+- **The skip line does NOT prove a peer existed — `owner=` can be THIS pod (SELF-MATCH).**
+  `_ensure_login_service_registered` runs *after* startup functions, deliberately, so a
+  custom login registered by a startup function is not clobbered. But that means anything
+  which registers `hypha-login` earlier in **this same pod's** boot makes the check resolve
+  it, ping its owner — **itself, obviously alive** — and log
+  `login is registered and reachable (owner=public/<id>)`. Reproduced: the line appears with
+  `owner` equal to the pod's *own* public client id, with no second server anywhere. So the
+  skip line is evidence that *a* login resolved and its owner answered, **not** that a
+  previous generation was still live.
+  **Diagnostic:** compare the `owner=public/<id>` in the line against that pod's own
+  server/client id (`Server info: {'server_id': ...}` at boot). **Same → self-match**, the
+  skip was legitimate and the outage must come from a *later* runtime deregistration.
+  **Different → a genuine foreign owner existed**, which under `maxSurge=0` means something
+  else shares the Redis and is worth hunting. This is the cheapest available discriminator
+  and it needs only the boot log.
+  Note the self-match case is exactly the one where **`overwrite=True` is load-bearing**:
+  the same pod's RPC peer already holds `hypha-login` in `RPC._services`, so a guard
+  re-registration without it raises `Service already exists` forever.
 - **Key Lesson:** a boot-time idempotency/skip decision about a **shared singleton**
   (login, queue, any register-if-absent public service) is a TOCTOU — it can be
   invalidated by a peer's later shutdown and there is no retry. Pair the

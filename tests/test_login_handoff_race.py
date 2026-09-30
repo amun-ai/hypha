@@ -18,8 +18,17 @@ hypha-health auto-heal restart — any of which can start the replacement while 
 outgoing pod is still in graceful shutdown. The race below is reachable in prod,
 just NOT via helm upgrades.
 
-Production symptom (kth-k8s, 09-23, pod wheat-accordion-70572137; cured only by a
-manual rollout restart):
+THIS RACE EXPLAINS ZERO CONFIRMED PRODUCTION INCIDENTS — do not cite one. Cluster
+history (2026-09-30) shows every recent kth-k8s restart carried a
+``kubectl.kubernetes.io/restartedAt`` annotation (all ``kubectl rollout restart``;
+no bare pod delete, no OOMKill, no helm upgrade since 2026-08-20), and under
+``maxSurge=0`` every one of those was no-overlap. The guard is justified as a
+cause-agnostic invariant keeper, not as the fix for a diagnosed outage.
+
+Note in particular that the 09-23 skip line does NOT prove a peer existed — see
+``test_skip_line_can_be_a_self_match`` below.
+
+Mechanism, as it would occur:
 
 1. Two generations overlap: the NEW pod boots WHILE the login-owning OLD pod is
    still reachable.
@@ -56,6 +65,7 @@ then that the guard re-registers a live login owned by B.
 """
 
 import asyncio
+import logging
 
 import pytest
 
@@ -353,5 +363,65 @@ async def test_clean_boot_still_registers_login(monkeypatch):
         assert owners == {store._server_id}, (
             f"clean boot should register exactly the server's own login, got {owners}"
         )
+    finally:
+        await store.teardown()
+
+
+async def test_skip_line_can_be_a_self_match(monkeypatch, caplog):
+    """The 'already registered and reachable' skip line does NOT prove a peer.
+
+    Forensic pin, added after kth-k8s established (2026-09-30, from ReplicaSet
+    history) that EVERY recent prod restart was a ``kubectl rollout restart``.
+    Under ``maxSurge=0`` those are all no-overlap, so on 09-23 there was no live
+    peer to defer to — yet that pod logged the skip line. That looked like a
+    liveness-check false positive.
+
+    It is not. ``_ensure_login_service_registered`` runs AFTER startup functions
+    (deliberately, so a custom login from a startup function is not clobbered),
+    so anything that registers ``hypha-login`` earlier in THIS pod's own boot
+    makes the check resolve it and ping its owner — itself, trivially alive.
+
+    The line therefore means "a login resolved and its owner answered", not "a
+    previous generation was still live". The discriminator is whether ``owner``
+    equals this pod's own client id, which is what this test pins.
+
+    This is also precisely the case where ``overwrite=True`` is load-bearing: the
+    same pod's RPC peer already holds ``hypha-login`` in ``RPC._services``.
+    """
+    monkeypatch.setenv("HYPHA_ORPHAN_REAP_INITIAL_DELAY", "60")
+    monkeypatch.setenv("HYPHA_LOGIN_GUARD_INTERVAL", "0")
+    monkeypatch.setenv("HYPHA_LOGIN_PING_TIMEOUT", "2")
+
+    store = RedisStore(None, redis_uri=None)
+    await store.init(reset_redis=True)
+    try:
+        api = await store.get_public_api()
+        own_client = api.rpc.get_client_info()["id"]
+
+        # Exactly one server exists; init() already registered login on it.
+        assert await _login_owners(store) == {store._server_id}
+
+        # Re-run the boot check, as a fresh pod would after its startup
+        # functions had already registered a login.
+        with caplog.at_level(logging.INFO, logger="redis-store"):
+            live = await store._ensure_login_service_registered(source="boot")
+
+        assert live is True, "the check should report a live login"
+
+        skip_lines = [
+            r.getMessage()
+            for r in caplog.records
+            if "is registered and reachable" in r.getMessage()
+        ]
+        assert skip_lines, f"expected the skip line, got: {caplog.messages}"
+
+        # THE POINT: the owner is THIS pod, with no peer in existence.
+        assert f"owner=public/{own_client}" in skip_lines[0], (
+            "the skip line should name this pod's own client as the owner — "
+            f"got {skip_lines[0]!r}"
+        )
+
+        # And the login is still registered exactly once (no duplicate).
+        assert await _login_owners(store) == {store._server_id}
     finally:
         await store.teardown()
