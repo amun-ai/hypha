@@ -9251,8 +9251,131 @@ async def test_set_parent_permissions(
     
     await api1.disconnect()
     await api2.disconnect()
-    
+
     print("✅ set_parent permission tests completed successfully")
+
+
+async def test_per_artifact_permission_overrides_parent_collection(
+    minio_server, fastapi_server_sqlite, test_user_token, test_user_token_2
+):
+    """Issue #1066: a per-artifact permission written for a user who is ALSO
+    listed in the parent collection's config.permissions must be honoured, not
+    silently overwritten by the collection-level value.
+
+    Before the fix, edit()'s committed path did
+    ``permissions.update(parent_permissions)`` — so the parent collection's map
+    overwrote any child key it also contained. An admin granting a collection
+    reviewer elevated rights on a specific child read back as the collection
+    value, and edit() still reported success (the worst outcome: a silent
+    discard a bulk script cannot detect).
+    """
+    unique_suffix = str(int(time.time() * 1000))[-6:]
+
+    api1 = await connect_to_server(
+        {"name": "perm-client-1", "server_url": SERVER_URL_SQLITE, "token": test_user_token}
+    )
+    artifact_manager = await api1.get_service("public/artifact-manager")
+    user1_info = api1.config["user"]
+
+    api2 = await connect_to_server(
+        {"name": "perm-client-2", "server_url": SERVER_URL_SQLITE, "token": test_user_token_2}
+    )
+    user2_info = api2.config["user"]
+    USER = user2_info["id"]  # a reviewer who IS in the collection permission map
+
+    # Collection with USER listed at the collection level (rw+).
+    collection = await artifact_manager.create(
+        type="collection",
+        alias=f"perm-coll-{unique_suffix}",
+        manifest={"name": "Perm Collection"},
+        config={"permissions": {user1_info["id"]: "*", USER: "rw+"}},
+    )
+
+    # A COMMITTED child of the collection (the bug only manifests once committed).
+    child = await artifact_manager.create(
+        parent_id=collection["id"],
+        alias=f"perm-child-{unique_suffix}",
+        type="generic",
+        manifest={"name": "probe"},
+        config={"permissions": {}},
+        stage=True,
+    )
+    await artifact_manager.commit(artifact_id=child["id"])
+
+    # Grant USER full control (*) on THIS child specifically.
+    cfg = (await artifact_manager.read(artifact_id=child["id"]))["config"]
+    cfg["permissions"][USER] = "*"
+    await artifact_manager.edit(artifact_id=child["id"], config=cfg)  # reports success
+
+    stored = (await artifact_manager.read(artifact_id=child["id"]))["config"][
+        "permissions"
+    ][USER]
+    assert stored == "*", (
+        f"per-artifact permission for a collection-listed user was discarded: "
+        f"wrote '*', read back '{stored}' (expected '*')"
+    )
+
+    # Control 1: a user NOT in the collection map must still work (already did).
+    cfg = (await artifact_manager.read(artifact_id=child["id"]))["config"]
+    cfg["permissions"]["github|000-not-in-collection"] = "r"
+    await artifact_manager.edit(artifact_id=child["id"], config=cfg)
+    perms = (await artifact_manager.read(artifact_id=child["id"]))["config"][
+        "permissions"
+    ]
+    assert perms["github|000-not-in-collection"] == "r"
+    # ... and the override for the collection-listed user still holds.
+    assert perms[USER] == "*"
+
+    # Control 2: the editor keeps full access to the child.
+    assert perms[user1_info["id"]] == "*"
+
+    await artifact_manager.delete(collection["id"], recursive=True)
+    await api1.disconnect()
+    await api2.disconnect()
+    print("✅ per-artifact permission override test passed")
+
+
+async def test_edit_rejects_unknown_permission_code(
+    minio_server, fastapi_server_sqlite, test_user_token
+):
+    """Issue #1066 (independent hardening): an unrecognised permission code such
+    as ``admin`` must be rejected at write time, not silently stored (where
+    _expand_permission maps it to an empty op list → grants nothing)."""
+    unique_suffix = str(int(time.time() * 1000))[-6:]
+    api = await connect_to_server(
+        {"name": "perm-client-x", "server_url": SERVER_URL_SQLITE, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Unknown code on a top-level artifact create.
+    with pytest.raises(Exception, match=r"(?i).*permission code.*admin.*"):
+        await artifact_manager.create(
+            type="generic",
+            alias=f"badperm-{unique_suffix}",
+            manifest={"name": "bad"},
+            config={"permissions": {"github|123": "admin"}},
+        )
+
+    # Unknown code on edit of an existing artifact.
+    good = await artifact_manager.create(
+        type="generic",
+        alias=f"goodperm-{unique_suffix}",
+        manifest={"name": "good"},
+        config={"permissions": {}},
+    )
+    cfg = (await artifact_manager.read(artifact_id=good["id"]))["config"]
+    cfg["permissions"]["github|123"] = "admin"
+    with pytest.raises(Exception, match=r"(?i).*permission code.*admin.*"):
+        await artifact_manager.edit(artifact_id=good["id"], config=cfg)
+
+    # A valid code and an explicit op-list are both accepted.
+    cfg["permissions"]["github|123"] = "rw+"
+    cfg["permissions"]["github|456"] = ["read", "list"]
+    await artifact_manager.edit(artifact_id=good["id"], config=cfg)
+
+    await artifact_manager.delete(good["id"])
+    await api.disconnect()
+    print("✅ unknown permission code rejection test passed")
 
 
 async def test_controlled_collections(

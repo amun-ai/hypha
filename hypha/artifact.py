@@ -2332,6 +2332,47 @@ class ArtifactController:
         else:
             return permission  # Assume it's already a list
 
+    # Known permission codes — the keys of the _expand_permission map above.
+    # Keep in sync with that map. A permission value may also be an explicit
+    # list of operation names (treated as already-expanded).
+    _VALID_PERMISSION_CODES = frozenset(
+        {"n", "l", "l+", "lv", "lv+", "lf", "lf+", "r", "r+", "rw", "rd+", "rw+", "*"}
+    )
+
+    def _validate_permissions(self, permissions):
+        """Reject unrecognised permission codes before they are stored (#1066).
+
+        A permission value must be either a known string code (see
+        ``_expand_permission``) or an explicit list of operation names (already
+        expanded). An unknown string code such as ``admin`` otherwise maps to an
+        EMPTY op list in ``_expand_permission`` and would be stored silently
+        while granting nothing — a footgun. Raise a clear error that names the
+        offending key and code instead.
+        """
+        if not permissions:
+            return
+        if not isinstance(permissions, dict):
+            raise ValueError(
+                f"config.permissions must be a mapping of id -> permission, got "
+                f"{type(permissions).__name__}."
+            )
+        for key, value in permissions.items():
+            if isinstance(value, str):
+                if value not in self._VALID_PERMISSION_CODES:
+                    raise ValueError(
+                        f"Invalid permission code '{value}' for '{key}'. Valid "
+                        f"codes are: {', '.join(sorted(self._VALID_PERMISSION_CODES))}"
+                        f" — or provide an explicit list of operations."
+                    )
+            elif isinstance(value, list):
+                continue  # explicit op list — accepted as already-expanded
+            else:
+                raise ValueError(
+                    f"Invalid permission value for '{key}': expected a permission "
+                    f"code string or a list of operations, got "
+                    f"{type(value).__name__}."
+                )
+
     async def _check_permissions(self, artifact, user_info, operation):
         """Check whether a user has permission to perform an operation on an artifact.
         
@@ -5291,6 +5332,7 @@ class ArtifactController:
                     parent_artifact.config["permissions"] if parent_artifact else {}
                 )
                 permissions = config.get("permissions", {}) if config else {}
+                self._validate_permissions(permissions)
                 # created_by (below) is attributed to the EFFECTIVE (human) id
                 # (parent-or-self) so a user keeps VISIBILITY of artifacts an agent
                 # creates on their behalf — "My Artifacts" filters by created_by. That is
@@ -5912,11 +5954,24 @@ class ArtifactController:
                     if type is not None:
                         artifact.type = type
                     if config is not None:
+                        self._validate_permissions(config.get("permissions"))
                         if parent_artifact:
-                            parent_permissions = parent_artifact.config.get("permissions", {})
+                            # Honour the explicit per-artifact permissions (#1066).
+                            # The child's own config.permissions is authoritative
+                            # and must NOT be overridden by the parent collection's
+                            # permissions: the previous `permissions.update(
+                            # parent_permissions)` made the parent win, so any key
+                            # also present on the collection (e.g. a reviewer) had
+                            # its just-written per-artifact value silently discarded
+                            # while edit() still reported success. Inherited
+                            # collection access is still enforced at read time via
+                            # the parent fallback in _check_permissions; it does not
+                            # need to be (and must not be) re-imposed on the stored
+                            # child map. Mirrors create(), which stores the child's
+                            # explicit permissions verbatim plus the editor's own
+                            # full access.
                             permissions = config.get("permissions", {})
                             permissions[user_info.id] = "*"
-                            permissions.update(parent_permissions)
                             config["permissions"] = permissions
                         artifact.config = config
                         flag_modified(artifact, "config")
