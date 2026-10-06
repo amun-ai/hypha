@@ -89,6 +89,212 @@ logger.setLevel(LOGLEVEL)
 # URLs, breadcrumb UIs and S3/file-system paths; cap it to a sane slug length.
 MAX_ARTIFACT_ALIAS_LENGTH = 64
 
+# Permission codes accepted as `config.permissions` values, mapped to the
+# operations each one allows. This is the single source of truth for both
+# expanding a code at check time and validating one at write time, so the two
+# cannot drift apart.
+PERMISSION_CODE_OPERATIONS = {
+    "n": [],
+    "l": [
+        "list",
+    ],
+    "l+": ["list", "draft"],  # Can list and create drafts
+    "lv": ["list", "list_vectors"],
+    "lv+": [
+        "list",
+        "list_vectors",
+        "draft",  # Can create drafts
+        "attach",  # Can attach drafts to become children
+        "add_vectors",
+    ],
+    "lf": ["list", "list_files"],
+    "lf+": ["list", "list_files", "draft", "attach", "put_file"],
+    "r": [
+        "read",
+        "get_file",
+        "list_files",
+        "list",
+        "search_vectors",
+        "get_vector",
+    ],
+    "r+": [
+        "read",
+        "get_file",
+        "put_file",
+        "list_files",
+        "list",
+        "search_vectors",
+        "get_vector",
+        "draft",  # Can create drafts
+        "attach",  # Can attach drafts to become children
+        "add_vectors",
+    ],
+    "rw": [
+        "read",
+        "get_file",
+        "get_vector",
+        "search_vectors",
+        "list_files",
+        "list_vectors",
+        "list",
+        "edit",
+        "commit",
+        "put_file",
+        "add_vectors",
+        "remove_file",
+        "remove_vectors",
+        "discard_changes",
+        "detach",  # Can detach from parent (for rw and higher)
+        "mutate",  # Can modify existing committed versions
+    ],
+    "rd+": [
+        "read",
+        "get_file",
+        "get_status",
+        "get_vector",
+        "search_vectors",
+        "list_files",
+        "list_vectors",
+        "list",
+        "edit",
+        # "commit", can create draft but not commit
+        "put_file",
+        "add_vectors",
+        "remove_file",
+        "remove_vectors",
+        "discard_changes",
+        "draft",  # Can create drafts
+    ],
+    "rw+": [
+        "read",
+        "get_file",
+        "get_status",
+        "get_vector",
+        "search_vectors",
+        "list_files",
+        "list_vectors",
+        "list",
+        "edit",
+        "commit",
+        "put_file",
+        "add_vectors",
+        "remove_file",
+        "remove_vectors",
+        "discard_changes",
+        "draft",  # Can create drafts
+        "attach",  # Can attach drafts to become children
+        "detach",  # Can detach from parent
+        "mutate",  # Can modify existing committed versions
+    ],
+    "*": [
+        "read",
+        "get_file",
+        "get_status",
+        "get_vector",
+        "search_vectors",
+        "list_files",
+        "list_vectors",
+        "list",
+        "edit",
+        "commit",
+        "put_file",
+        "add_vectors",
+        "remove_file",
+        "remove_vectors",
+        "discard_changes",
+        "create",  # Full create permission (legacy, includes draft+attach)
+        "draft",  # Can create drafts
+        "attach",  # Can attach drafts to become children
+        "detach",  # Can detach from parent
+        "mutate",  # Can modify existing committed versions
+        "reset_stats",
+        "publish",
+        "delete",
+    ],
+}
+
+# Workspace-level permission required to perform each artifact operation when
+# the artifact's own ACL does not grant it.
+OPERATION_PERMISSION_LEVELS = {
+    "list": UserPermission.read,
+    "read": UserPermission.read,
+    "get_vector": UserPermission.read,
+    "get_file": UserPermission.read,
+    "get_status": UserPermission.read,
+    "list_files": UserPermission.read,
+    "list_vectors": UserPermission.read,
+    "search_vectors": UserPermission.read,
+    "create": UserPermission.read_write,
+    "draft": UserPermission.read_write,  # Creating drafts
+    "attach": UserPermission.read_write,  # Attaching drafts as children
+    "detach": UserPermission.read_write,  # Detaching from parent
+    "edit": UserPermission.read_write,
+    "commit": UserPermission.read_write,
+    "add_vectors": UserPermission.read_write,
+    "put_file": UserPermission.read_write,
+    "remove_vectors": UserPermission.read_write,
+    "remove_file": UserPermission.read_write,
+    "discard_changes": UserPermission.read_write,
+    "set_secret": UserPermission.read_write,
+    "set_download_weight": UserPermission.read_write,
+    "delete": UserPermission.admin,
+    "reset_stats": UserPermission.admin,
+    "publish": UserPermission.admin,
+    "get_secret": UserPermission.admin,
+}
+
+# Operation names accepted when a permission is written as an explicit list
+# instead of a code. The union covers operations that are checked directly
+# via _check_permissions (e.g. "mutate") and so never reach the map above.
+VALID_PERMISSION_OPERATIONS = frozenset(OPERATION_PERMISSION_LEVELS) | {
+    operation
+    for operations in PERMISSION_CODE_OPERATIONS.values()
+    for operation in operations
+}
+
+
+def validate_permissions_config(config):
+    """Reject `config.permissions` values that would silently grant nothing.
+
+    An unrecognised code such as "admin" expands to an empty operation list, so
+    storing it looks like a successful grant while denying every operation. Fail
+    the write instead of leaving the caller to discover it by reading back.
+    """
+    if not isinstance(config, dict):
+        return
+    permissions = config.get("permissions")
+    if permissions is None:
+        return
+    if not isinstance(permissions, dict):
+        raise ValueError(
+            "config.permissions must be a mapping of user/workspace key to "
+            f"permission, got {type(permissions).__name__}."
+        )
+    for key, value in permissions.items():
+        if isinstance(value, str):
+            if value not in PERMISSION_CODE_OPERATIONS:
+                raise ValueError(
+                    f"Invalid permission code '{value}' for '{key}'. Expected one "
+                    f"of {sorted(PERMISSION_CODE_OPERATIONS)}, or an explicit list "
+                    "of operations."
+                )
+        elif isinstance(value, (list, tuple)):
+            unknown = [
+                operation
+                for operation in value
+                if operation not in VALID_PERMISSION_OPERATIONS
+            ]
+            if unknown:
+                raise ValueError(
+                    f"Invalid operation(s) {unknown} in the permission for '{key}'. "
+                    f"Expected operations from {sorted(VALID_PERMISSION_OPERATIONS)}."
+                )
+        else:
+            raise ValueError(
+                f"Invalid permission for '{key}': expected a permission code or a "
+                f"list of operations, got {type(value).__name__}."
+            )
+
 
 class PartETag(BaseModel):
     part_number: int
@@ -2209,126 +2415,10 @@ class ArtifactController:
     def _expand_permission(self, permission):
         """Get the list of operations allowed by the permission code."""
         if isinstance(permission, str):
-            permission_map = {
-                "n": [],
-                "l": [
-                    "list",
-                ],
-                "l+": ["list", "draft"],  # Can list and create drafts
-                "lv": ["list", "list_vectors"],
-                "lv+": [
-                    "list",
-                    "list_vectors",
-                    "draft",  # Can create drafts
-                    "attach",  # Can attach drafts to become children
-                    "add_vectors",
-                ],
-                "lf": ["list", "list_files"],
-                "lf+": ["list", "list_files", "draft", "attach", "put_file"],
-                "r": [
-                    "read",
-                    "get_file",
-                    "list_files",
-                    "list",
-                    "search_vectors",
-                    "get_vector",
-                ],
-                "r+": [
-                    "read",
-                    "get_file",
-                    "put_file",
-                    "list_files",
-                    "list",
-                    "search_vectors",
-                    "get_vector",
-                    "draft",  # Can create drafts
-                    "attach",  # Can attach drafts to become children
-                    "add_vectors",
-                ],
-                "rw": [
-                    "read",
-                    "get_file",
-                    "get_vector",
-                    "search_vectors",
-                    "list_files",
-                    "list_vectors",
-                    "list",
-                    "edit",
-                    "commit",
-                    "put_file",
-                    "add_vectors",
-                    "remove_file",
-                    "remove_vectors",
-                    "discard_changes",
-                    "detach",  # Can detach from parent (for rw and higher)
-                    "mutate",  # Can modify existing committed versions
-                ],
-                "rd+": [
-                    "read",
-                    "get_file",
-                    "get_status",
-                    "get_vector",
-                    "search_vectors",
-                    "list_files",
-                    "list_vectors",
-                    "list",
-                    "edit",
-                    # "commit", can create draft but not commit
-                    "put_file",
-                    "add_vectors",
-                    "remove_file",
-                    "remove_vectors",
-                    "discard_changes",
-                    "draft",  # Can create drafts
-                ],
-                "rw+": [
-                    "read",
-                    "get_file",
-                    "get_status",
-                    "get_vector",
-                    "search_vectors",
-                    "list_files",
-                    "list_vectors",
-                    "list",
-                    "edit",
-                    "commit",
-                    "put_file",
-                    "add_vectors",
-                    "remove_file",
-                    "remove_vectors",
-                    "discard_changes",
-                    "draft",  # Can create drafts
-                    "attach",  # Can attach drafts to become children
-                    "detach",  # Can detach from parent
-                    "mutate",  # Can modify existing committed versions
-                ],
-                "*": [
-                    "read",
-                    "get_file",
-                    "get_status",
-                    "get_vector",
-                    "search_vectors",
-                    "list_files",
-                    "list_vectors",
-                    "list",
-                    "edit",
-                    "commit",
-                    "put_file",
-                    "add_vectors",
-                    "remove_file",
-                    "remove_vectors",
-                    "discard_changes",
-                    "create",  # Full create permission (legacy, includes draft+attach)
-                    "draft",  # Can create drafts
-                    "attach",  # Can attach drafts to become children
-                    "detach",  # Can detach from parent
-                    "mutate",  # Can modify existing committed versions
-                    "reset_stats",
-                    "publish",
-                    "delete",
-                ],
-            }
-            return permission_map.get(permission, [])
+            # Unknown codes map to no operations (fail closed). New writes are
+            # rejected up-front by validate_permissions_config, so this only
+            # covers values stored before that validation existed.
+            return PERMISSION_CODE_OPERATIONS.get(permission, [])
         else:
             return permission  # Assume it's already a list
 
@@ -2435,34 +2525,9 @@ class ArtifactController:
         If artifact_permissions or parent_permissions are not specified, the function will
         determine them based on the operation type for backward compatibility.
         """
-        # Map operation to permission level
-        operation_map = {
-            "list": UserPermission.read,
-            "read": UserPermission.read,
-            "get_vector": UserPermission.read,
-            "get_file": UserPermission.read,
-            "get_status": UserPermission.read,
-            "list_files": UserPermission.read,
-            "list_vectors": UserPermission.read,
-            "search_vectors": UserPermission.read,
-            "create": UserPermission.read_write,
-            "draft": UserPermission.read_write,  # Creating drafts
-            "attach": UserPermission.read_write,  # Attaching drafts as children
-            "detach": UserPermission.read_write,  # Detaching from parent
-            "edit": UserPermission.read_write,
-            "commit": UserPermission.read_write,
-            "add_vectors": UserPermission.read_write,
-            "put_file": UserPermission.read_write,
-            "remove_vectors": UserPermission.read_write,
-            "remove_file": UserPermission.read_write,
-            "discard_changes": UserPermission.read_write,
-            "set_secret": UserPermission.read_write,
-            "set_download_weight": UserPermission.read_write,
-            "delete": UserPermission.admin,
-            "reset_stats": UserPermission.admin,
-            "publish": UserPermission.admin,
-            "get_secret": UserPermission.admin,
-        }
+        # Map operation to permission level (module-level, shared with the
+        # write-time permission validator).
+        operation_map = OPERATION_PERMISSION_LEVELS
 
         # Handle both single operation and list of operations
         operations = [operation] if isinstance(operation, str) else operation
@@ -5201,6 +5266,7 @@ class ArtifactController:
                     )
 
                 config = config or {}
+                validate_permissions_config(config)
                 id = str(uuid.uuid7())
                 if alias and "{" in alias and "}" in alias:
                     id_parts = {}
@@ -5287,9 +5353,10 @@ class ArtifactController:
                     except KeyError:
                         overwrite = False
 
-                parent_permissions = (
-                    parent_artifact.config["permissions"] if parent_artifact else {}
-                )
+                # NOTE: the parent collection's permissions are deliberately NOT copied
+                # in here. Inheritance for read operations happens at check time via the
+                # parent fallback in _get_artifact_with_permission; snapshotting the
+                # collection ACL into the child would freeze it at creation time.
                 permissions = config.get("permissions", {}) if config else {}
                 # created_by (below) is attributed to the EFFECTIVE (human) id
                 # (parent-or-self) so a user keeps VISIBILITY of artifacts an agent
@@ -5684,6 +5751,9 @@ class ArtifactController:
         session = await self._get_session()
         manifest = manifest and make_json_safe(manifest)
         config = config and make_json_safe(config)
+        # Validate before staging too: a staged config is applied verbatim by
+        # commit(), so an unrecognised code would otherwise only surface later.
+        validate_permissions_config(config)
 
         logger.info(
             f"Editing artifact {artifact_id} with version={version}, stage={stage}"
@@ -5913,10 +5983,18 @@ class ArtifactController:
                         artifact.type = type
                     if config is not None:
                         if parent_artifact:
-                            parent_permissions = parent_artifact.config.get("permissions", {})
-                            permissions = config.get("permissions", {})
-                            permissions[user_info.id] = "*"
-                            permissions.update(parent_permissions)
+                            # The parent collection's entries are DEFAULTS: they fill keys
+                            # the caller did not mention, but an explicit per-artifact
+                            # entry wins. Folding the parent over the caller's map instead
+                            # silently reverted any key the collection also listed — the
+                            # edit reported success while discarding the change, so an
+                            # admin could not grant a collection reviewer extra rights on
+                            # a single artifact (amun-ai/hypha#1066).
+                            permissions = dict(
+                                parent_artifact.config.get("permissions", {})
+                            )
+                            permissions.setdefault(user_info.id, "*")
+                            permissions.update(config.get("permissions", {}) or {})
                             config["permissions"] = permissions
                         artifact.config = config
                         flag_modified(artifact, "config")
