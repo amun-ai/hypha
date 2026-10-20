@@ -1110,9 +1110,97 @@ class RedisStore:
             await api.register_service(create_login_service(self), overwrite=True)
         return login_is_live
 
+    async def _reconcile_own_public_services(self, source="guard"):
+        """Re-register any public service THIS server registered whose registry
+        entry has gone missing (#0010).
+
+        Generalises the #63 login guard. That guard was hardcoded to
+        ``hypha-login``, but the failure class is not login-specific: it is
+        *"public singleton registered once at boot, no retry, no self-heal, on an
+        N=1 deployment"*. Every public service the server registers has that
+        shape. Prod lost **artifact-manager** this way on 2026-10-18 — a 13-day-old
+        pod, 0 restarts, readiness/liveness 200, zero ``artifact-manager`` keys in
+        Redis, so nothing in Kubernetes was wrong and nothing restarted it. Only a
+        manual rollout restored it. ``hypha-login`` stayed up throughout, because it
+        was the one service with a guard.
+
+        **Source of truth: the RPC peer's own ``_services`` dict.** It contains
+        exactly what *this* client registered — all of the server's public
+        singletons (``agent-skills``, ``artifact-manager``, ``built-in``,
+        ``hypha-login``, ``queue``, ``s3-storage``, ``server-apps``, plus
+        ``triton``/browser-worker when configured) and nothing else. Two
+        properties matter:
+
+        - It is **derived, never hardcoded**, so a newly added built-in is covered
+          automatically. A hardcoded list would silently go stale the moment
+          someone adds an eighth service, which is how artifact-manager came to be
+          unprotected in the first place.
+        - It is **ownership-scoped by construction**. Services registered by
+          external clients (``model-runner``, ``bioengine-worker``,
+          ``safe-colab-*``, ``svamp-daemon-worker``, …) live in *their* peers'
+          dicts, never ours, so this can never re-register another client's
+          service — the main safety property.
+
+        Repair uses ``overwrite=True`` for the same reason it is load-bearing for
+        login: the RPC peer keeps the entry in ``_services`` for the lifetime of
+        the process even after the Redis registration disappears, so a plain
+        re-register raises ``Service already exists`` and the reconcile would warn
+        forever while healing nothing.
+
+        **No liveness probe is needed or used here.** For our *own* services the
+        question is only "did my registration disappear?" — we know the owner is
+        alive, because we are it. That deliberately sidesteps the false-positive
+        hazard in ``ping_client`` (#0009), which is what makes this reconcile
+        strictly safer than the login path's cross-owner liveness check.
+        """
+        api = await self.get_public_api()
+        own_client = api.rpc.get_client_info()["id"]
+        repaired = []
+        for service_id in list(api.rpc._services.keys()):
+            keys = await self._scan_keys(
+                f"services:*|*:public/{own_client}:{service_id}@*"
+            )
+            if keys:
+                continue
+            logger.warning(
+                "svc-check[%s]: %s is MISSING from the registry (owner=public/%s) "
+                "— re-registering",
+                source,
+                service_id,
+                own_client,
+            )
+            try:
+                await api.register_service(
+                    api.rpc._services[service_id], overwrite=True
+                )
+                repaired.append(service_id)
+            except Exception as e:
+                logger.error(
+                    "svc-check[%s]: failed to re-register %s: %s: %r",
+                    source,
+                    service_id,
+                    type(e).__name__,
+                    e,
+                )
+        if repaired:
+            logger.warning(
+                "svc-check[%s]: re-registered %d missing public service(s): %s",
+                source,
+                len(repaired),
+                ", ".join(repaired),
+            )
+        else:
+            logger.info(
+                "svc-check[%s]: all %d own public services present",
+                source,
+                len(api.rpc._services),
+            )
+        return repaired
+
     async def _login_guard_loop(self):
         """Leader-gated periodic guard that keeps a live ``hypha-login``
-        registered (#63).
+        registered (#63), plus an UNGATED reconcile of this server's own public
+        services (#0010 — see ``_reconcile_own_public_services``).
 
         The default login service is registered once at boot, and the boot check
         correctly DEFERS when another server already owns a live login (#0042).
@@ -1173,8 +1261,23 @@ class RedisStore:
                 leader_now = self.is_leader()
                 just_acquired = leader_now and not was_leader
                 was_leader = leader_now
-                if leader_now and (just_acquired or elapsed >= interval):
+                due = just_acquired or elapsed >= interval
+                if leader_now and due:
+                    # Login is LEADER-GATED: it is a contended singleton that any
+                    # replica could own, so N replicas must not each register a
+                    # duplicate.
                     await self._ensure_login_service_registered(source="guard")
+                if due:
+                    # Own-service reconcile is deliberately NOT leader-gated.
+                    # This repairs registrations THIS pod made, which only THIS
+                    # pod can restore — a non-leader whose artifact-manager key
+                    # vanished would otherwise stay broken forever, and its
+                    # services are not something the leader can re-register on
+                    # its behalf. There is no duplicate-registration risk because
+                    # each replica only ever rewrites its own keys. At N=1 this is
+                    # moot (the sole pod is always leader); it matters at N>=2.
+                    await self._reconcile_own_public_services(source="guard")
+                if due:
                     elapsed = 0.0
             except asyncio.CancelledError:
                 raise
