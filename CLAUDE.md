@@ -674,6 +674,58 @@ correctness hazard at N≥2 if it is not invalidated when that client moves pods
   on topology changes. Tracked as F6; tests in `test_cross_pod_reconnect.py` and
   `test_multi_replica_integration.py::test_cross_pod_repin_no_false_reject`.
 
+### A Guard Named After ONE Service Protects Exactly One Service — Reconcile the Whole Derived Set (#0010)
+
+Direct sequel to #63. That fix was correct and it worked — but it was hardcoded to
+`hypha-login`, and the failure class is not login-specific. It is **"public
+singleton registered once at boot, no retry, no self-heal, N=1 deployment"**, which
+describes *every* public service the server registers.
+
+- **Incident (bioimage.io, 2026-10-18):** auto-login broke with
+  `KeyError: 'Service not found: public/*:artifact-manager@*'`. The pod was **13
+  days old, 0 restarts**, readiness and liveness both 200 — so nothing in
+  Kubernetes was wrong and nothing restarted it. Redis held **zero**
+  `artifact-manager` keys while `hypha-login` was present and its
+  `login-check[guard]` lines were ticking normally. Only a manual rollout restored
+  it. The #63 guard *proved itself* here: the one guarded service survived, which
+  is precisely how the real shape became visible. On the live registry the
+  server's own client owned **seven** such singletons (`agent-skills`,
+  `artifact-manager`, `built-in`, `hypha-login`, `queue`, `s3-storage`,
+  `server-apps`) — one guarded, six exposed.
+- **Fix:** `_reconcile_own_public_services()` (`hypha/core/store.py`), run from the
+  existing guard loop. For each service, if this client's own registry key is
+  missing, re-register it with `overwrite=True`.
+- **Source of truth is the RPC peer's own `_services` dict — DERIVED, never
+  hardcoded.** A hardcoded list of seven goes stale the moment an eighth built-in
+  is added, which is exactly how `artifact-manager` came to be unprotected. The
+  peer's dict also gives **ownership scoping for free**: services registered by
+  external clients (`model-runner`, `bioengine-worker`, `safe-colab-*`, …) live in
+  *their* peers' dicts, never ours, so the reconcile structurally cannot
+  re-register someone else's service — which would point the registry at a server
+  that cannot serve it. Key on **`(client_id, service_id)`**, never `service_id`
+  alone: two clients legitimately own services of the same name (every peer has a
+  `built-in`), and the regression test pins exactly that.
+- **No liveness probe here, deliberately.** For our *own* services the question is
+  only "did my registration disappear?" — we know the owner is alive because we
+  *are* it. That sidesteps the `ping_client` false-positive hazard (#0009)
+  entirely, making this reconcile strictly safer than the login path's cross-owner
+  liveness check.
+- **Own-service repair must NOT be leader-gated** (deviates from the "one leader
+  gate for all" instinct, on purpose). Login *is* leader-gated: it is a contended
+  singleton any replica could own, so N replicas must not register duplicates. But
+  a non-leader replica that loses its own `artifact-manager` key is the **only**
+  party that can restore it — the leader cannot re-register another pod's services
+  on its behalf — so gating it would leave that replica broken forever. There is no
+  duplicate risk because each replica only ever rewrites its own keys. Moot at N=1;
+  a correctness bug at N≥2.
+- **Key Lesson:** when you fix a missing-self-heal for one named resource, ask what
+  the resource is an *instance of*, and reconcile the whole set — derived from an
+  authoritative in-process record, scoped by ownership. A guard that names its
+  subject protects only that subject, and the next outage is simply a different
+  member of the same class. Same family as #0043's "grep for EVERY inline
+  peer-ping loop" note: the first fix of a class rarely covers the class.
+  `tests/test_public_singleton_reconcile.py` (6 tests, Docker-free).
+
 ### A Register-ONCE-at-Boot Singleton Is a TOCTOU — Needs a Periodic Guard, Not Just a Liveness-Proving Boot Check (#63)
 
 Sibling to #0042. #0042 taught: a Redis registration is not proof of liveness, so
