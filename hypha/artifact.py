@@ -9065,6 +9065,60 @@ class ArtifactController:
         finally:
             await session.close()
 
+    @staticmethod
+    def _pg_text(manifest_key, value):
+        """Render a manifest filter value as the TEXT Postgres' ``->>`` will compare it against.
+
+        ``manifest ->> :k`` always yields **text**, whatever the JSON value's type. The bound
+        parameter, however, was bound with its *Python* type — so a boolean filter emitted
+        ``manifest ->> $3 = $4::BOOLEAN`` and Postgres refused the whole query:
+
+            asyncpg.exceptions.UndefinedFunctionError:
+              operator does not exist: text = boolean
+            HINT: No operator matches the given name and argument types.
+
+        Reported 2026-11-26 (``mf-0018``): ``list(filters={'manifest': {'needs_maintainer': True}})``
+        raised, while the same field holding the *string* ``'yes'`` matched fine. What it cost was
+        not one failed call — the reporter had designed a collection around two boolean flags "so
+        each side could find the rows it owed an answer on", and had to redesign it as a single
+        string field because the boolean form could not be queried at all.
+
+        ⚠ **Numbers were broken by the same operator and nobody had hit it yet.** There is no
+        ``text = integer`` either, so ``{'count': 5}`` raised identically. Both are fixed here
+        because both are the same defect: the left side is text, so the right side must be.
+
+        The mapping is JSON's own text form, which is what ``->>`` produces:
+        ``True -> 'true'``, ``False -> 'false'``, ``5 -> '5'``, ``1.5 -> '1.5'``. Strings pass
+        through untouched.
+
+        ⚠ **SQLite is deliberately NOT routed through here.** ``json_extract`` returns a native SQL
+        value — ``1``/``0`` for a JSON boolean, a number for a number — so the raw Python value is
+        already the correct comparand there, and coercing it to ``'true'`` would turn a working
+        filter into one that silently matches nothing. That is why this is applied in the
+        ``is_pg`` branch only.
+
+        ``None`` is REFUSED rather than bound. ``manifest ->> 'k'`` is SQL NULL both when the key is
+        absent and when its value is JSON null, so ``= NULL`` is never true: binding it would answer
+        "no rows" for every input, with exit 0 and no error — a plausible wrong answer, which is
+        worse than the traceback this function exists to remove.
+        """
+        if value is None:
+            raise ValueError(
+                f"manifest filter {manifest_key!r}: None cannot be matched. "
+                "`manifest ->> key` is SQL NULL both for an absent key and for a JSON null, so an "
+                "equality test against it can never be true and would silently return no rows. "
+                "Filter on a concrete value, or omit the key."
+            )
+        # `bool` BEFORE `int`: in Python `True` is an `int`, so an isinstance check on int first
+        # would render it as '1' and match nothing.
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            # `repr` not `str`: identical for int, and for float it is the shortest round-tripping
+            # form, which is what a JSON serializer wrote into the manifest in the first place.
+            return repr(value)
+        return value
+
     def _build_manifest_condition(self, manifest_key, operator, value, backend):
         """Helper function to build SQL conditions for manifest fields.
 
@@ -9083,7 +9137,7 @@ class ArtifactController:
             if is_pg:
                 return text(f"manifest ->> :k {op_sql} :v").bindparams(
                     bindparam("k", value=manifest_key, unique=True),
-                    bindparam("v", value=param_value, unique=True),
+                    bindparam("v", value=self._pg_text(manifest_key, param_value), unique=True),
                 )
             return text(f"json_extract(manifest, :p) {op_sql} :v").bindparams(
                 bindparam("p", value=f"$.{manifest_key}", unique=True),
